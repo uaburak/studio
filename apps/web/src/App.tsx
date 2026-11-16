@@ -1,55 +1,95 @@
-import { useCallback, useEffect, useState } from "react";
-import { api } from "./api.ts";
-import { describeHealth, type HealthState } from "./health-view.ts";
+import { type ApiClient, ApiError } from "@studio/contract";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import type { ReactNode } from "react";
+import { Navigate, type RouteObject, useRouteError } from "react-router";
+import { ApiContext } from "./api.ts";
+import { PageHeader } from "./components/page.tsx";
+import { ErrorState } from "./components/states.tsx";
+import { ToastProvider } from "./components/toast.tsx";
+import { BrandDetailPage } from "./features/brands/BrandDetailPage.tsx";
+import { BrandsPage } from "./features/brands/BrandsPage.tsx";
+import { CalendarPage } from "./features/calendar/CalendarPage.tsx";
+import { ContentDetailPage } from "./features/contents/ContentDetailPage.tsx";
+import { ContentsPage } from "./features/contents/ContentsPage.tsx";
+import { JobDetailPage } from "./features/jobs/JobDetailPage.tsx";
+import { JobsPage } from "./features/jobs/JobsPage.tsx";
+import { MediaPage } from "./features/media/MediaPage.tsx";
+import { AppShell } from "./features/shell/AppShell.tsx";
+import { BrandProvider } from "./lib/brand-context.tsx";
+import { ThemeProvider } from "./lib/theme.tsx";
 
-const toneClass = {
-  neutral: "bg-zinc-100 text-zinc-700",
-  good: "bg-emerald-50 text-emerald-800 ring-1 ring-emerald-200",
-  warn: "bg-amber-50 text-amber-800 ring-1 ring-amber-200",
-  bad: "bg-rose-50 text-rose-800 ring-1 ring-rose-200",
-} as const;
+export function createQueryClient(): QueryClient {
+  return new QueryClient({
+    defaultOptions: {
+      queries: {
+        staleTime: 10_000,
+        refetchOnWindowFocus: true,
+        // 4xx answers are final; only retry network/5xx once.
+        retry: (count, error) =>
+          count < 1 && !(error instanceof ApiError && error.status && error.status < 500),
+      },
+    },
+  });
+}
 
-export function App() {
-  const [state, setState] = useState<HealthState>({ kind: "loading" });
-
-  const check = useCallback(async (signal?: AbortSignal) => {
-    setState({ kind: "loading" });
-    try {
-      const data = await api.health(signal ? { signal } : undefined);
-      setState({ kind: "ok", data });
-    } catch (error) {
-      if (signal?.aborted) return;
-      setState({ kind: "error", message: error instanceof Error ? error.message : String(error) });
-    }
-  }, []);
-
-  useEffect(() => {
-    const controller = new AbortController();
-    void check(controller.signal);
-    return () => controller.abort();
-  }, [check]);
-
-  const view = describeHealth(state);
-
+export function AppProviders({
+  api,
+  queryClient,
+  children,
+}: {
+  api: ApiClient;
+  queryClient: QueryClient;
+  children: ReactNode;
+}) {
   return (
-    <main className="mx-auto flex min-h-screen max-w-xl flex-col justify-center gap-6 p-6">
-      <header>
-        <h1 className="text-3xl font-semibold tracking-tight text-zinc-900">Studio</h1>
-        <p className="text-zinc-500">Sosyal medya üretim ve yayın stüdyosu</p>
-      </header>
-
-      <section className={`rounded-xl p-5 ${toneClass[view.tone]}`} aria-live="polite">
-        <h2 className="text-lg font-medium">{view.title}</h2>
-        <p className="mt-1 text-sm opacity-80">{view.detail}</p>
-      </section>
-
-      <button
-        type="button"
-        onClick={() => void check()}
-        className="self-start rounded-lg bg-zinc-900 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-700"
-      >
-        Yeniden kontrol et
-      </button>
-    </main>
+    <ApiContext.Provider value={api}>
+      <QueryClientProvider client={queryClient}>
+        <ThemeProvider>
+          <ToastProvider>
+            <BrandProvider>{children}</BrandProvider>
+          </ToastProvider>
+        </ThemeProvider>
+      </QueryClientProvider>
+    </ApiContext.Provider>
   );
 }
+
+function RouteError() {
+  const error = useRouteError();
+  return (
+    <div className="mx-auto max-w-xl p-8">
+      <PageHeader title="Bir şeyler ters gitti" />
+      <ErrorState error={error} onRetry={() => window.location.reload()} />
+    </div>
+  );
+}
+
+function NotFound() {
+  return (
+    <PageHeader
+      title="Sayfa bulunamadı"
+      description="Aradığınız adres yok ya da taşındı."
+      back={{ to: "/icerikler", label: "İçeriklere dön" }}
+    />
+  );
+}
+
+export const routes: RouteObject[] = [
+  {
+    path: "/",
+    element: <AppShell />,
+    errorElement: <RouteError />,
+    children: [
+      { index: true, element: <Navigate to="/icerikler" replace /> },
+      { path: "icerikler", element: <ContentsPage /> },
+      { path: "icerikler/:contentId", element: <ContentDetailPage /> },
+      { path: "markalar", element: <BrandsPage /> },
+      { path: "markalar/:brandId", element: <BrandDetailPage /> },
+      { path: "takvim", element: <CalendarPage /> },
+      { path: "medya", element: <MediaPage /> },
+      { path: "isler", element: <JobsPage /> },
+      { path: "isler/:jobId", element: <JobDetailPage /> },
+      { path: "*", element: <NotFound /> },
+    ],
+  },
+];

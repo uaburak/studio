@@ -2,8 +2,24 @@
 <html lang="tr">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="theme-color" content="#f4f1ea" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#12110f" media="(prefers-color-scheme: dark)" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
     <title>Studio</title>
+    <script>
+      // Apply the saved theme before first paint (no flash). Mirrors src/lib/theme.tsx.
+      try {
+        const pref = localStorage.getItem("studio.theme");
+        const dark =
+          pref === "dark" ||
+          (pref !== "light" && window.matchMedia("(prefers-color-scheme: dark)").matches);
+        document.documentElement.dataset.theme = dark ? "dark" : "light";
+      } catch {
+        document.documentElement.dataset.theme = "light";
+      }
+    </script>
   </head>
   <body>
     <div id="root"></div>

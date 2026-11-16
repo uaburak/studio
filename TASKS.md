@@ -32,10 +32,12 @@ Son güncelleme: 2026-11-16. Mimari ve kararlar için: [PLAN.md](PLAN.md).
 | F1-2 | Tasarım kiti: sözleşme, denetleyici, HTML yama araçları (denemeden ürüne) | xhigh | `packages/design-kit`                       |
 | F1-3 | Worker üretim hattı: ajan çağrısı, kalite döngüsü, render, yükleme        | xhigh | `apps/worker`                               |
 | F1-4 | Marka profili: post çekme, marka kiti yükleme, analiz, onay               | high  | `packages/brand`, `apps/api`, `apps/worker` |
-| F1-5 | Web panosu: markalar, prompt, inceleme, dışa aktarım (ÇALIŞIYOR)          | high  | `apps/web`                                  |
+| F1-5 | Web panosu: markalar, prompt, inceleme, dışa aktarım (TAMAM, denetlendi)   | high  | `apps/web`                                  |
 | F1-6 | Hub ve iş kuyruğu (denemeden ürüne) (TAMAM, denetlendi)                   | high  | `apps/api`, `apps/worker`                   |
 
 | F3-1 | Yayıncılar paketi: Instagram ve Facebook bağdaştırıcıları, sahte sunucuyla testler (ÇALIŞIYOR; Faz 3'ten öne alındı) | high | `packages/publishers` |
+| F4-1 | iOS uygulaması iskeleti ve ilk ekranlar (ÇALIŞIYOR; Faz 4'ten öne alındı) | high | `apps/ios` |
+| F1-5b | Web: canlı iş akışı, iş iptali, Mac çevrimiçi göstergesi (SIRADA) | medium | `apps/web` |
 
 Aynı klasöre dokunan görevler aynı anda yürütülmez.
 

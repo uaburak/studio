@@ -1,6 +1,6 @@
 import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
-import { defineConfig } from "vite";
+import { defineConfig } from "vitest/config";
 
 // Local API (wrangler dev) — see apps/api. Override with STUDIO_API_URL.
 const apiTarget = process.env.STUDIO_API_URL ?? "http://127.0.0.1:8787";
@@ -14,5 +14,11 @@ export default defineConfig({
     proxy: {
       "/api": { target: apiTarget, changeOrigin: true, ws: true },
     },
+  },
+  test: {
+    environment: "jsdom",
+    setupFiles: ["./test/setup.ts"],
+    // Fixed zone so date/time conversions are deterministic.
+    env: { TZ: "Europe/Istanbul" },
   },
 });
