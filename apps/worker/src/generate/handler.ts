@@ -22,9 +22,16 @@ import { describeGeminiError, isGeminiError } from "../gemini/errors.ts";
 import { callStructuredAi, hasGeminiApiKey, resolveStructuredRoute } from "../gemini/json-call.ts";
 import { extensionForMime, imageInfo } from "../media.ts";
 import { defineHandler, type JobContext, RetryableError } from "../registry.ts";
-import { generateAndRenderReel, type ReelEngineTestSeams } from "../video/render-reel.ts";
+import { RENDER_ASSET_PREFIXES } from "../render/handler.ts";
+import { layoutFromReport } from "../render/layout.ts";
+import {
+  createApiAssetPathResolver,
+  generateAndRenderReel,
+  type ReelEngineTestSeams,
+} from "../video/render-reel.ts";
 import { loadBrandContext } from "./brand.ts";
 import {
+  type DesignRevision,
   exportIssues,
   type MediaFile,
   presetFor,
@@ -164,6 +171,26 @@ async function runContentGenerate(
       : content.targetPlatforms.length
         ? content.targetPlatforms
         : ["instagram" as const];
+
+    // "Neyi değiştireyim?": a base version plus an instruction revises that design.
+    const instruction = payload.instructions?.trim() ?? "";
+    const revision =
+      payload.baseVersion !== undefined && instruction
+        ? await loadRevision(
+            deps,
+            contentId,
+            payload.baseVersion,
+            instruction,
+            content.caption,
+            signal,
+          )
+        : undefined;
+    const basePreset = presetFor(contentType, platforms);
+    const baseSlide = revision?.slides[0];
+    const preset =
+      baseSlide && (baseSlide.width !== basePreset.width || baseSlide.height !== basePreset.height)
+        ? { ...basePreset, width: baseSlide.width, height: baseSlide.height }
+        : basePreset;
     const brief: DesignBrief = {
       title: payload.title ?? content.title,
       brief: payload.brief || content.brief,
@@ -174,8 +201,10 @@ async function runContentGenerate(
       imageSlot: payload.imageSlot ?? (media.files.length ? "user_upload" : "none"),
       imageBrief: payload.imageBrief ?? null,
       instructions: payload.instructions ?? null,
-      preset: presetFor(contentType, platforms),
-      slides: slideBounds(contentType, `${payload.brief}\n${payload.instructions ?? ""}`),
+      preset,
+      slides: revision
+        ? revisionBounds(contentType, revision.slides.length)
+        : slideBounds(contentType, `${payload.brief}\n${payload.instructions ?? ""}`),
       media: media.files.map(({ bytes: _bytes, ...m }) => m),
       language: brand.brand.defaultLanguage.split("-")[0] ?? "tr",
     };
@@ -224,6 +253,13 @@ async function runContentGenerate(
       progress: (v, m) => ctx.progress(v, m),
       hooks,
       label: `content-${contentId.slice(-8)}`,
+      ...(revision
+        ? {
+            revision: revision.input,
+            extraResolver: createApiAssetPathResolver(api, signal),
+            assetPrefixes: RENDER_ASSET_PREFIXES,
+          }
+        : {}),
     });
     const final = result.final;
     const missing = final.slides.filter((s) => !s.jpeg);
@@ -271,7 +307,9 @@ async function runContentGenerate(
     );
     const providerLabel = result.provider === "gemini" ? "Gemini" : "Claude";
     const note = [
-      `Üretildi (${brand.label}).`,
+      revision
+        ? `AI düzenleme (v${revision.input.baseVersion} üzerine): ${instruction.slice(0, 400)}`
+        : `Üretildi (${brand.label}).`,
       final.errors === 0
         ? `Denetim temiz (${final.warnings} uyarı).`
         : `Denetimde ${final.errors} hata kaldı; düzenleyicide düzeltilmeli.`,
@@ -285,7 +323,7 @@ async function runContentGenerate(
     const version = await api.client.contents.versions.create(
       contentId,
       {
-        origin: "generated",
+        origin: revision ? "ai_edit" : "generated",
         slides: final.slides.map((s) => ({
           html: s.html,
           width: brief.preset.width,
@@ -294,6 +332,7 @@ async function runContentGenerate(
         note: note.slice(0, 2000),
         jobId: ctx.jobId,
         renderedAssetIds,
+        layouts: final.slides.map((s) => layoutFromReport(s.report)),
       },
       init,
     );
@@ -309,6 +348,7 @@ async function runContentGenerate(
     const u = result.usage;
     return {
       contentId,
+      ...(revision ? { baseVersion: revision.input.baseVersion, revised: true } : {}),
       version: version.version,
       versionId: version.id,
       contentHash: version.contentHash,
@@ -374,6 +414,53 @@ async function runContentGenerate(
     }
     throw error;
   }
+}
+
+interface LoadedRevision {
+  input: DesignRevision;
+  slides: { width: number; height: number }[];
+}
+
+/** The base version's HTML and renders for an AI revision. */
+async function loadRevision(
+  deps: ContentGenerateDeps,
+  contentId: string,
+  baseVersion: number,
+  instruction: string,
+  caption: string,
+  signal: AbortSignal,
+): Promise<LoadedRevision> {
+  const base = await deps.api.client.contents.versions.get(contentId, baseVersion, { signal });
+  const images: Uint8Array[] = [];
+  for (const slide of base.slides) {
+    if (!slide.renderedAssetId) continue;
+    try {
+      const { bytes } = await deps.api.downloadAsset(slide.renderedAssetId, {
+        maxBytes: deps.settings.imageMaxBytes,
+        signal,
+      });
+      images.push(bytes);
+    } catch (error) {
+      signal.throwIfAborted();
+      deps.logger.warn(`could not load the render of v${baseVersion}: ${(error as Error).message}`);
+    }
+  }
+  return {
+    input: {
+      baseVersion: base.version,
+      instruction,
+      caption,
+      html: base.slides.map((s) => s.html),
+      images,
+    },
+    slides: base.slides.map((s) => ({ width: s.width, height: s.height })),
+  };
+}
+
+/** Slide count of a revision: the base count; a carousel may grow or shrink a little. */
+function revisionBounds(contentType: string, count: number): { min: number; max: number } {
+  if (contentType !== "carousel") return { min: 1, max: 1 };
+  return { min: Math.max(2, count - 3), max: Math.min(10, Math.max(count, 2) + 3) };
 }
 
 interface ResolvedMedia {

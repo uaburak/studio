@@ -557,7 +557,7 @@ final class IOSChatViewController: UIViewController, PHPickerViewControllerDeleg
         block.alignment = .fill
         block.spacing = 10
 
-        for part in message.parts {
+        for part in message.parts where !part.isHiddenInChat {
             switch part {
             case .text(let text):
                 block.addArrangedSubview(UILabel.studio(text, size: 15, color: IOSTheme.textPrimary, lines: 0))

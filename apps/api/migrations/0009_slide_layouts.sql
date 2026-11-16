@@ -1,0 +1,1 @@
+ALTER TABLE `content_version_slides` ADD `layers` text;

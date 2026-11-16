@@ -172,12 +172,29 @@ export type ChatTurnPayload = z.infer<typeof ChatTurnPayload>;
 
 // --- content.render / image.generate / brand.analyze / schedule.publish --------
 
+/**
+ * `content.render`:
+ * - with `slotAssignments` / `patches` (design-kit patch ops, each with a `slide`
+ *   index): a new `manual_edit` version based on `version` (default: current) is
+ *   stored and rendered; unchanged slides keep their renders;
+ * - `jpeg` without edits: renders slides that have no render or no measured
+ *   layout yet (`force` re-renders all) and stores them on that version;
+ * - `png`: lossless exports (`pngAssetIds`, one per slide, `null` for slides not
+ *   in `slides`); the version is not changed;
+ * - `pdf` / `both`: one multi-page PDF (`pdfAssetId`).
+ */
 export const ContentRenderPayload = z
   .object({
     version: z.number().int().min(1).optional(),
-    format: z.enum(["jpeg", "pdf", "both", "mp4"]).default("jpeg"),
+    format: z.enum(["jpeg", "png", "pdf", "both", "mp4"]).default("jpeg"),
     slotAssignments: z.record(z.string(), EntityId).optional(),
     patches: z.array(z.record(z.string(), z.unknown())).optional(),
+    /** Slide indexes (0-based) to export as PNG; default all. */
+    slides: z.array(z.number().int().min(0).max(19)).max(20).optional(),
+    /** Re-render every slide even when renders exist. */
+    force: z.boolean().optional(),
+    /** Note stored on the new version (edits only). */
+    note: z.string().max(2_000).optional(),
   })
   .meta({ id: "ContentRenderPayload" });
 export type ContentRenderPayload = z.infer<typeof ContentRenderPayload>;
@@ -235,6 +252,7 @@ export const INTERNAL_JOB_TYPES = ["chat.turn"] as const satisfies readonly JobT
 export const JOB_PAYLOAD_SCHEMAS: Partial<Record<JobType, z.ZodType>> = {
   "demo.echo": DemoEchoPayload,
   "chat.turn": ChatTurnPayload,
+  "content.render": ContentRenderPayload,
   "image.generate": ImageGeneratePayload,
   "schedule.publish": SchedulePublishPayload,
 };

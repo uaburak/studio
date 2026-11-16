@@ -184,6 +184,7 @@ export function toVersion(r: ContentVersionRow, slides: SlideRow[]): ContentVers
         width: s.width,
         height: s.height,
         renderedAssetId: s.renderedAssetId,
+        layers: s.layers ?? null,
       })),
   };
 }

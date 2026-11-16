@@ -6,11 +6,13 @@ import path from "node:path";
 import type { ClaudeAccount, GeminiAccount } from "@studio/contract";
 import { z } from "zod";
 import type { StudioApi } from "./api.ts";
+import type { Skill } from "./chat/skills.ts";
 import type { ClaudeGate } from "./claude/gate.ts";
 import type { ClaudeHealth } from "./claude/health.ts";
 import type { UsageTracker } from "./claude/usage.ts";
 import { DEFAULT_GEMINI_MODELS, type GeminiModelAlias } from "./gemini/models.ts";
 import type { Logger } from "./log.ts";
+import type { StudioMcpServer } from "./mcp/server.ts";
 
 const AgentEnv = z.object({
   /** `0` runs the worker without the AI-backed job types (demo/smoke only). */
@@ -59,6 +61,8 @@ const AgentEnv = z.object({
   STUDIO_CLOUD_PUBLISHER_URL: z.url({ protocol: /^https?$/ }).optional(),
   STUDIO_CLOUD_PUBLISHER_TOKEN: z.string().trim().min(1).optional(),
   STUDIO_SCHEDULE_POLL_INTERVAL_S: z.coerce.number().min(0).max(3600).default(30),
+  /** Runtime skills of the chat agent (default: the repo's `agent/skills`). */
+  STUDIO_SKILLS_DIR: z.string().min(1).optional(),
 });
 
 export interface AgentSettings {
@@ -94,6 +98,8 @@ export interface AgentSettings {
   cloudPublisherUrl: string | undefined;
   cloudPublisherToken: string | undefined;
   schedulePollIntervalMs: number;
+  /** `STUDIO_SKILLS_DIR`; undefined = the repo's `agent/skills`. */
+  skillsDir: string | undefined;
   /** Source environment passed to `loadAgentSettings` (keeps unit tests hermetic). */
   parentEnv: NodeJS.ProcessEnv;
 }
@@ -140,6 +146,7 @@ export function loadAgentSettings(env: NodeJS.ProcessEnv = process.env): AgentSe
     cloudPublisherUrl: e.STUDIO_CLOUD_PUBLISHER_URL,
     cloudPublisherToken: e.STUDIO_CLOUD_PUBLISHER_TOKEN,
     schedulePollIntervalMs: e.STUDIO_SCHEDULE_POLL_INTERVAL_S * 1000,
+    skillsDir: e.STUDIO_SKILLS_DIR,
     parentEnv: env,
   };
 }
@@ -161,6 +168,12 @@ export interface AgentDeps {
   geminiAccount?: () => GeminiAccount;
   /** Latest Claude subscription usage windows (`worker.usage`). */
   usage?: UsageTracker;
+  /** Read `claude -p /usage` again (no model call; at most once a minute). */
+  refreshUsage?: () => void;
+  /** Studio's MCP server (one per worker); a turn without it starts its own. */
+  mcpServer?: StudioMcpServer;
+  /** Runtime skills (`agent/skills`). */
+  skills?: () => Promise<Skill[]>;
   /** Where caches and MCP work dirs live. */
   stateDir: string;
   now?: () => Date;
@@ -170,4 +183,7 @@ export interface AgentDeps {
   publisherFetch?: typeof globalThis.fetch;
   consentPollIntervalMs?: number;
   consentTimeoutMs?: number;
+  /** `ask_user` wait (default 10 min) and `wait_jobs` poll interval (default 3 s). */
+  askTimeoutMs?: number;
+  jobPollIntervalMs?: number;
 }

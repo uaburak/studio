@@ -4,6 +4,7 @@ import {
   Content,
   ContentApprove,
   ContentCreate,
+  ContentDuplicate,
   ContentList,
   ContentListQuery,
   type ContentStatus,
@@ -14,12 +15,15 @@ import {
   ContentVersionList,
   ContentVersionListQuery,
   ContentVersionNumber,
+  type ContentVersionOrigin,
+  ContentVersionRestore,
   ContentVersionUpdate,
   canTransitionContent,
   computeContentHash,
   EntityId,
   isManualContentTransition,
   SLIDE_LIMITS,
+  type SlideLayout,
   statusIn,
   UNDELETABLE_STATUSES,
   VERSIONABLE_STATUSES,
@@ -152,6 +156,69 @@ async function checkRenderedAssets(
     }
   }
   return [...ids];
+}
+
+/** Layer layouts: empty, or one per slide (`null` = not measured). */
+function checkLayouts(
+  layouts: ReadonlyArray<SlideLayout | null> | undefined,
+  slideCount: number,
+): Array<SlideLayout | null> {
+  if (!layouts || layouts.length === 0) return Array.from({ length: slideCount }, () => null);
+  if (layouts.length !== slideCount) {
+    throw badRequest("layouts must be empty or have one entry per slide", [
+      { path: "layouts", message: `expected ${slideCount} entries, got ${layouts.length}` },
+    ]);
+  }
+  return [...layouts];
+}
+
+/** Next version number and the statements that insert a version with its slides. */
+async function insertVersionStatements(
+  db: Db,
+  input: {
+    contentId: string;
+    origin: ContentVersionOrigin;
+    slides: ReadonlyArray<{ html: string; width: number; height: number }>;
+    note: string | null;
+    jobId: string | null;
+    renders: ReadonlyArray<string | null>;
+    layouts: ReadonlyArray<SlideLayout | null>;
+    now: Date;
+  },
+) {
+  const contentHash = await computeContentHash(input.slides);
+  const [last] = await db
+    .select({ version: max(contentVersions.version) })
+    .from(contentVersions)
+    .where(eq(contentVersions.contentId, input.contentId));
+  const versionId = newId();
+  const stmts: BatchItem<"sqlite">[] = [
+    db.insert(contentVersions).values({
+      id: versionId,
+      contentId: input.contentId,
+      version: (last?.version ?? 0) + 1,
+      origin: input.origin,
+      contentHash,
+      slideCount: input.slides.length,
+      note: input.note,
+      jobId: input.jobId,
+      createdAt: input.now,
+      updatedAt: input.now,
+    }),
+    // One statement per slide: D1 caps bound parameters per query at 100.
+    ...input.slides.map((slide, position) =>
+      db.insert(contentVersionSlides).values({
+        versionId,
+        position,
+        html: slide.html,
+        width: slide.width,
+        height: slide.height,
+        renderedAssetId: input.renders[position] ?? null,
+        layers: input.layouts[position] ?? null,
+      }),
+    ),
+  ];
+  return { versionId, stmts };
 }
 
 function sameSet(a: readonly string[], b: readonly string[]) {
@@ -503,44 +570,23 @@ export const contentRoutes = createRouter()
         input.renderedAssetIds,
         input.slides.length,
       );
+      const layouts = checkLayouts(input.layouts, input.slides.length);
       if (input.jobId) {
         const job = await db.query.jobs.findFirst({ where: eq(jobs.id, input.jobId) });
         if (!job) throw notFound("job", input.jobId);
       }
 
-      const contentHash = await computeContentHash(input.slides);
-      const [last] = await db
-        .select({ version: max(contentVersions.version) })
-        .from(contentVersions)
-        .where(eq(contentVersions.contentId, id));
-      const versionId = newId();
       const now = new Date();
-
-      const stmts: BatchItem<"sqlite">[] = [
-        db.insert(contentVersions).values({
-          id: versionId,
-          contentId: id,
-          version: (last?.version ?? 0) + 1,
-          origin: input.origin,
-          contentHash,
-          slideCount: input.slides.length,
-          note: input.note ?? null,
-          jobId: input.jobId ?? null,
-          createdAt: now,
-          updatedAt: now,
-        }),
-        // One statement per slide: D1 caps bound parameters per query at 100.
-        ...input.slides.map((slide, position) =>
-          db.insert(contentVersionSlides).values({
-            versionId,
-            position,
-            html: slide.html,
-            width: slide.width,
-            height: slide.height,
-            renderedAssetId: renders[position] ?? null,
-          }),
-        ),
-      ];
+      const { versionId, stmts } = await insertVersionStatements(db, {
+        contentId: id,
+        origin: input.origin,
+        slides: input.slides,
+        note: input.note ?? null,
+        jobId: input.jobId ?? null,
+        renders,
+        layouts,
+        now,
+      });
       if (row.status === "scheduled") stmts.push(cancelPendingSchedules(db, id, now));
       stmts.push(
         db
@@ -600,28 +646,158 @@ export const contentRoutes = createRouter()
           .set({ ...(input.note !== undefined ? { note: input.note } : {}), updatedAt: now })
           .where(eq(contentVersions.id, versionRow.id)),
       ];
-      if (input.renderedAssetIds !== undefined) {
-        const renders = await checkRenderedAssets(
-          db,
-          row.brandId,
-          input.renderedAssetIds,
-          versionRow.slideCount,
-        );
-        renders.forEach((assetId, position) => {
-          stmts.push(
-            db
-              .update(contentVersionSlides)
-              .set({ renderedAssetId: assetId })
-              .where(
-                and(
-                  eq(contentVersionSlides.versionId, versionRow.id),
-                  eq(contentVersionSlides.position, position),
-                ),
+      const renders =
+        input.renderedAssetIds !== undefined
+          ? await checkRenderedAssets(
+              db,
+              row.brandId,
+              input.renderedAssetIds,
+              versionRow.slideCount,
+            )
+          : undefined;
+      const layouts =
+        input.layouts !== undefined
+          ? checkLayouts(input.layouts, versionRow.slideCount)
+          : undefined;
+      for (let position = 0; position < versionRow.slideCount; position++) {
+        const set: Partial<typeof contentVersionSlides.$inferInsert> = {};
+        if (renders) set.renderedAssetId = renders[position] ?? null;
+        if (layouts) set.layers = layouts[position] ?? null;
+        if (Object.keys(set).length === 0) continue;
+        stmts.push(
+          db
+            .update(contentVersionSlides)
+            .set(set)
+            .where(
+              and(
+                eq(contentVersionSlides.versionId, versionRow.id),
+                eq(contentVersionSlides.position, position),
               ),
-          );
-        });
+            ),
+        );
       }
       await db.batch(stmts as Batch);
       return c.json(await versionWithSlides(db, await requireVersion(db, id, version)), 200);
+    },
+  )
+  .openapi(
+    createRoute({
+      method: "post",
+      path: "/api/contents/{id}/versions/{version}/restore",
+      tags,
+      summary: "Restore an older version as a new version",
+      description:
+        "Adds a new `manual_edit` version that copies the slides of `version` exactly (so the " +
+        "hash equals that version's hash); its renders and layer layouts are reused. Like any " +
+        "new version it clears the approval and cancels pending schedules. Refused (409) while " +
+        "publishing or published.",
+      request: { params: VersionParams, body: jsonBody(ContentVersionRestore) },
+      responses: {
+        201: json(ContentVersion, "Created."),
+        400: errors[400],
+        404: errors[404],
+        409: errors[409],
+      },
+    }),
+    async (c) => {
+      const { id, version } = c.req.valid("param");
+      const input = c.req.valid("json");
+      const db = createDb(c.env.DB);
+      const { row } = await loadContent(db, id);
+      if (!statusIn(row.status, VERSIONABLE_STATUSES)) {
+        throw invalidTransition(`content is ${row.status}; no new versions can be added`);
+      }
+      assertTransition(row.status, "draft", "restored version");
+      const source = await versionWithSlides(db, await requireVersion(db, id, version));
+      const now = new Date();
+      const { versionId, stmts } = await insertVersionStatements(db, {
+        contentId: id,
+        origin: "manual_edit",
+        slides: source.slides,
+        note: input.note ?? `v${source.version} geri yüklendi.`,
+        jobId: null,
+        renders: source.slides.map((s) => s.renderedAssetId),
+        layouts: source.slides.map((s) => s.layers ?? null),
+        now,
+      });
+      if (row.status === "scheduled") stmts.push(cancelPendingSchedules(db, id, now));
+      stmts.push(
+        db
+          .update(contents)
+          .set({ currentVersionId: versionId, status: "draft", ...clearedApproval, updatedAt: now })
+          .where(eq(contents.id, id)),
+      );
+      await db.batch(stmts as Batch);
+      const created = await db.query.contentVersions.findFirst({
+        where: eq(contentVersions.id, versionId),
+      });
+      if (!created) throw new Error("version vanished after insert");
+      return c.json(await versionWithSlides(db, created), 201);
+    },
+  )
+  .openapi(
+    createRoute({
+      method: "post",
+      path: "/api/contents/{id}/duplicate",
+      tags,
+      summary: "Duplicate a content item as a new draft",
+      description:
+        "Copies type, brief, caption and platforms, and the current version (slides, renders " +
+        "and layer layouts) as version 1 of the copy. Approval, schedules and older versions " +
+        "are not copied.",
+      request: { params: IdParams, body: jsonBody(ContentDuplicate) },
+      responses: {
+        201: json(Content, "Created."),
+        400: errors[400],
+        404: errors[404],
+        409: errors[409],
+      },
+    }),
+    async (c) => {
+      const { id } = c.req.valid("param");
+      const input = c.req.valid("json");
+      const db = createDb(c.env.DB);
+      const { row, current } = await loadContent(db, id);
+      const brand = await requireBrand(db, row.brandId);
+      if (brand.status !== "active") throw conflict(`brand ${brand.id} is archived`);
+      const now = new Date();
+      const copyId = newId();
+      const title = (input.title ?? `${row.title} (kopya)`).slice(0, 200);
+      const stmts: BatchItem<"sqlite">[] = [
+        db.insert(contents).values({
+          id: copyId,
+          brandId: row.brandId,
+          type: row.type,
+          title,
+          brief: row.brief,
+          status: "draft",
+          targetPlatforms: row.targetPlatforms,
+          caption: row.caption,
+          createdAt: now,
+          updatedAt: now,
+        }),
+      ];
+      if (current) {
+        const source = await versionWithSlides(db, await requireVersion(db, id, current.version));
+        const inserted = await insertVersionStatements(db, {
+          contentId: copyId,
+          origin: source.origin,
+          slides: source.slides,
+          note: `"${row.title}" v${source.version} kopyası.`.slice(0, 2000),
+          jobId: null,
+          renders: source.slides.map((s) => s.renderedAssetId),
+          layouts: source.slides.map((s) => s.layers ?? null),
+          now,
+        });
+        stmts.push(
+          ...inserted.stmts,
+          db
+            .update(contents)
+            .set({ currentVersionId: inserted.versionId })
+            .where(eq(contents.id, copyId)),
+        );
+      }
+      await db.batch(stmts as Batch);
+      return c.json(await respondContent(db, copyId), 201);
     },
   );

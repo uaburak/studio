@@ -16,7 +16,7 @@ final class AppSettings {
     static let remoteHostnameKey = "studio.host.remoteHostname"
     nonisolated static let defaultRemoteHostname = "social.burakkoc.net"
 
-    private let defaults: UserDefaults
+    let defaults: UserDefaults
 
     var serverURLString: String {
         didSet { defaults.set(serverURLString, forKey: Self.serverKey) }

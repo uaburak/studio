@@ -168,33 +168,26 @@ enum WorkerTokenKeychain {
     static let service = "net.burakkoc.studio"
     static let account = "local-worker-token"
 
-    static func loadOrCreate() throws -> String {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
-            kSecReturnData as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne,
-        ]
-        var result: CFTypeRef?
-        let status = SecItemCopyMatching(query as CFDictionary, &result)
-        if status == errSecSuccess, let data = result as? Data, let token = String(data: data, encoding: .utf8), !token.isEmpty {
+    /// The shared secret between the local API and the worker. Kept in a 0600 file in
+    /// Studio's Application Support folder rather than the Keychain: ad-hoc signed
+    /// rebuilds change the app's code signature, and macOS then asks for the login
+    /// keychain password before every read — which froze the app at launch. The token
+    /// only guards 127.0.0.1 services on this Mac, the same threat model as `.dev.vars`.
+    static func loadOrCreate(directory: URL = HostEnvironment.stateDirectory) throws -> String {
+        let fm = FileManager.default
+        let file = directory.appending(path: "worker-token")
+        if let data = fm.contents(atPath: file.path),
+           let token = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
+           token.count >= 32 {
             return token
         }
-        guard status == errSecItemNotFound || status == errSecSuccess else { throw KeychainFailure(status: status) }
         var bytes = [UInt8](repeating: 0, count: 32)
         guard SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes) == errSecSuccess else { throw KeychainFailure(status: errSecAllocate) }
         let token = bytes.map { String(format: "%02x", $0) }.joined()
-        let add: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
-            kSecAttrLabel as String: "Studio yerel worker anahtarı",
-            kSecValueData as String: Data(token.utf8),
-            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
-        ]
-        let added = SecItemAdd(add as CFDictionary, nil)
-        guard added == errSecSuccess else { throw KeychainFailure(status: added) }
+        try fm.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        guard fm.createFile(atPath: file.path, contents: Data(token.utf8), attributes: [.posixPermissions: 0o600]) else {
+            throw KeychainFailure(status: errSecIO)
+        }
         return token
     }
 

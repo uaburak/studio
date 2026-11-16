@@ -9,14 +9,20 @@
  * Every call emits a `tool_step` part (`running` -> `done` / `error`) on the
  * assistant message. Destructive / publishing actions emit a `consent` card
  * (`state: "pending"`) and poll `workerTurns.message(runId)` until the owner
- * allows or denies it, or the 5-minute consent window expires.
+ * allows or denies it, or the 5-minute consent window expires. `ask_user` holds
+ * the call the same way until the owner answers its question (10 minutes).
+ * `view_alias`, `list_aliases` (thumbnails) and `view_post` return pictures
+ * (`images`), which the MCP server sends as image content blocks (A5).
  */
 import {
   type AgentEffort,
   ApiError,
+  type ContentGeneratePayload,
   ContentStatus,
   ContentType,
   computeContentHash,
+  isTerminalJobStatus,
+  type Job,
   type Plan,
   Platform,
   slugify,
@@ -26,6 +32,7 @@ import type { StudioApi } from "../api.ts";
 import { abortableSleep } from "../claude/gate.ts";
 import type { Logger } from "../log.ts";
 import { silentLogger } from "../log.ts";
+import { prepareModelImage } from "../media.ts";
 import { profileFacts } from "./prompt.ts";
 import {
   CHAT_CONTENT_TYPES,
@@ -34,6 +41,7 @@ import {
   type KnownAlias,
   toQuestionPart,
 } from "./schema.ts";
+import type { Skill } from "./skills.ts";
 import { RunClosedError, type TurnWriter } from "./writer.ts";
 
 export interface ToolJsonSchema {
@@ -53,6 +61,9 @@ export interface StudioToolDefinition {
 
 export const DEFAULT_CONSENT_POLL_MS = 400;
 export const DEFAULT_CONSENT_TIMEOUT_MS = 5 * 60_000;
+/** `ask_user` waits this long for the owner's answer, then the turn ends gracefully. */
+export const DEFAULT_ASK_TIMEOUT_MS = 10 * 60_000;
+export const DEFAULT_JOB_POLL_MS = 3_000;
 
 export const STUDIO_TOOLS: readonly StudioToolDefinition[] = [
   {
@@ -172,36 +183,58 @@ export const STUDIO_TOOLS: readonly StudioToolDefinition[] = [
     },
   },
   {
-    name: "ask_question",
+    name: "ask_user",
     description:
-      "Kullanıcıdan eksik ve kritik bir bilgi almak için sohbete etkileşimli soru/seçenek kartı ekler.",
+      "Kullanıcıya sohbette tek ve net bir soru sorar (seçenekli kart) ve cevabını bekler; cevap bu aracın sonucu olarak gelir. Yalnızca gerçekten gerekli bir bilgi eksikse kullan. Uzun süre cevap gelmezse sonuç `answered: false` olur: o zaman turu kısa bir cümleyle bitir (cevap gelince yeni tur başlar).",
     inputSchema: {
       type: "object",
-      required: ["prompt", "mode"],
+      required: ["question"],
       properties: {
-        prompt: { type: "string", description: "Sorulacak net Türkçe soru." },
-        mode: {
-          type: "string",
-          enum: ["single", "multiple", "text"],
-          description: "single: tek seçim, multiple: çoklu seçim, text: serbest metin.",
-        },
+        question: { type: "string", description: "Sorulacak net Türkçe soru." },
         options: {
           type: "array",
-          description: "Seçenekler (single/multiple modunda en az 2 seçenek).",
+          description: "Seçenekler (en az 2; boşsa serbest metin cevabı beklenir).",
           items: {
             type: "object",
-            required: ["id", "label"],
+            required: ["label"],
             properties: {
-              id: { type: "string", description: "Kısa anahtar (a-z0-9_-)." },
+              id: { type: "string", description: "Kısa anahtar (a-z0-9_-); boşsa üretilir." },
               label: { type: "string", description: "Seçenek metni." },
               description: { type: "string", description: "İsteğe bağlı açıklama." },
             },
           },
         },
+        multiple: { type: "boolean", description: "Birden fazla seçenek seçilebilsin mi." },
         allowText: {
           type: "boolean",
-          description: "Seçeneklerin yanında serbest metin cevabına da izin verilsin mi.",
+          description:
+            "Seçeneklerin yanında serbest metin cevabına da izin verilsin mi (varsayılan evet).",
         },
+      },
+    },
+  },
+  {
+    name: "list_aliases",
+    description:
+      "Sohbete eklenen dosyaları @takma adlarıyla listeler (tür, boyut, dosya adı). `withThumbnails: true` ile görsellerin küçük önizlemelerini de gösterir.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        withThumbnails: {
+          type: "boolean",
+          description: "Görsellerin küçük önizlemeleri de gelsin mi (en fazla 8).",
+        },
+      },
+    },
+  },
+  {
+    name: "view_alias",
+    description: "Sohbetteki bir görsele @takma adıyla bakar (görseli gösterir).",
+    inputSchema: {
+      type: "object",
+      required: ["alias"],
+      properties: {
+        alias: { type: "string", description: "Takma ad, ör. 'image' ya da '@image-1'." },
       },
     },
   },
@@ -243,6 +276,83 @@ export const STUDIO_TOOLS: readonly StudioToolDefinition[] = [
         contentId: { type: "string", description: "İçerik id'si." },
         version: { type: "integer", description: "Belirli bir sürüm numarası (boşsa son sürüm)." },
       },
+    },
+  },
+  {
+    name: "view_post",
+    description:
+      "Bir postun render edilmiş slaytlarını görsel olarak gösterir (en fazla 10 slayt). Sürüm verilmezse güncel sürüm.",
+    inputSchema: {
+      type: "object",
+      required: ["contentId"],
+      properties: {
+        contentId: { type: "string", description: "İçerik id'si." },
+        version: { type: "integer", description: "Sürüm numarası (boşsa güncel sürüm)." },
+      },
+    },
+  },
+  {
+    name: "generate_post",
+    description:
+      "Post tasarım üretimini başlatır (`content.generate` işi kuyruğa alınır; tasarım burada yapılmaz). Ya kabul edilmiş bir plan kalemi (`planItemId`) ya da yeni bir brief ver. Sonuç iş kimliklerini döner; bitmesini `wait_jobs` ile bekle.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        planItemId: { type: "string", description: "Kabul edilmiş plan kaleminin id'si." },
+        brief: { type: "string", description: "Plan kalemi yoksa: postun ana mesajı ve içeriği." },
+        title: { type: "string", description: "Kısa başlık." },
+        type: { type: "string", enum: ["post", "carousel", "story"] },
+        platforms: {
+          type: "array",
+          items: { type: "string", enum: ["instagram", "facebook", "linkedin"] },
+        },
+        imageSlot: { type: "string", enum: ["none", "user_upload", "ai_generate"] },
+        imageBrief: {
+          type: "string",
+          description: "Görsel tarifi; kullanıcı görseli için başına @takma-ad yaz.",
+        },
+        instructions: { type: "string", description: "Bu üretim için ek talimat." },
+      },
+    },
+  },
+  {
+    name: "wait_jobs",
+    description:
+      "Kuyruktaki işlerin (ör. generate_post, revise_post) bitmesini bekler ve durumlarını döner. En fazla `timeoutSec` saniye (varsayılan 300, en çok 900).",
+    inputSchema: {
+      type: "object",
+      required: ["jobIds"],
+      properties: {
+        jobIds: { type: "array", items: { type: "string" } },
+        timeoutSec: { type: "integer", description: "En fazla kaç saniye beklensin." },
+      },
+    },
+  },
+  {
+    name: "revise_post",
+    description:
+      "Var olan bir postu verilen talimatla yeniden üretir (güncel sürümden başlayan `content.generate` işi kuyruğa alınır). Bitmesini `wait_jobs` ile bekle.",
+    inputSchema: {
+      type: "object",
+      required: ["contentId", "instruction"],
+      properties: {
+        contentId: { type: "string", description: "İçerik id'si." },
+        instruction: { type: "string", description: "Neyin değişeceği, Türkçe." },
+      },
+    },
+  },
+  {
+    name: "list_skills",
+    description: "Studio becerilerini (hazır çalışma talimatları) ad ve açıklamalarıyla listeler.",
+    inputSchema: { type: "object", properties: {} },
+  },
+  {
+    name: "get_skill",
+    description: "Bir Studio becerisinin tam talimatını getirir; işe uyduğunda okuyup uygula.",
+    inputSchema: {
+      type: "object",
+      required: ["name"],
+      properties: { name: { type: "string", description: "Beceri adı, ör. 'aylik-plan'." } },
     },
   },
   {
@@ -516,6 +626,54 @@ const AskQuestionInput = z.object({
   allowText: z.boolean().default(false),
 });
 
+const AskUserInput = z.object({
+  question: trimmed(2_000).refine((q) => q.length > 0, "Soru boş olamaz"),
+  options: z
+    .array(
+      z.object({
+        id: z.string().optional(),
+        label: trimmed(200),
+        description: z.string().optional(),
+      }),
+    )
+    .default([]),
+  multiple: z.boolean().default(false),
+  allowText: z.boolean().default(true),
+});
+
+const ListAliasesInput = z.object({ withThumbnails: z.boolean().default(false) });
+const ViewAliasInput = z.object({ alias: z.string().trim().min(1) });
+
+const ViewPostInput = z.object({
+  contentId: z.string().trim().min(1),
+  version: z.coerce.number().int().min(1).optional(),
+});
+
+const GeneratePostInput = z
+  .object({
+    planItemId: z.string().trim().min(1).optional(),
+    brief: trimmed(20_000).optional(),
+    title: trimmed(200).optional(),
+    type: z.enum(CHAT_CONTENT_TYPES).default("post"),
+    platforms: z.array(Platform).min(1).max(3).optional(),
+    imageSlot: z.enum(["none", "user_upload", "ai_generate"]).optional(),
+    imageBrief: trimmed(4_000).optional(),
+    instructions: z.string().max(4_000).optional(),
+  })
+  .refine((v) => Boolean(v.planItemId || v.brief), "planItemId ya da brief gerekli");
+
+const WaitJobsInput = z.object({
+  jobIds: z.array(z.string().trim().min(1)).min(1).max(30),
+  timeoutSec: z.coerce.number().int().min(1).max(900).default(300),
+});
+
+const RevisePostInput = z.object({
+  contentId: z.string().trim().min(1),
+  instruction: trimmed(4_000).refine((s) => s.length > 0, "Talimat boş olamaz"),
+});
+
+const GetSkillInput = z.object({ name: z.string().trim().min(1) });
+
 const ListContentsInput = z.object({
   brandId: z.string().trim().min(1).optional(),
   status: ContentStatus.optional(),
@@ -598,9 +756,17 @@ const PublishNowInput = z.object({
 
 // --- executor ------------------------------------------------------------------------------
 
+/** A picture in a tool result (base64), sent to MCP clients as an image content block. */
+export interface StudioToolImage {
+  mediaType: string;
+  data: string;
+}
+
 export interface StudioToolExecutionResult {
   data: Record<string, unknown>;
   isError: boolean;
+  /** Pictures for the model (view_alias, list_aliases thumbnails, view_post). */
+  images?: StudioToolImage[];
 }
 
 export interface StudioToolOutcome {
@@ -628,6 +794,14 @@ export interface StudioToolExecutorOptions {
   };
   consentPollIntervalMs?: number;
   consentTimeoutMs?: number;
+  /** `ask_user`: how long to wait for the answer (default 10 min). */
+  askTimeoutMs?: number;
+  /** `wait_jobs`: poll interval (default 3 s). */
+  jobPollIntervalMs?: number;
+  /** Runtime skills (`list_skills` / `get_skill`). */
+  skills?: readonly Skill[];
+  /** Long edge of pictures returned to the model (default 1568). */
+  imageMaxEdge?: number;
   now?: () => Date;
   sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
 }
@@ -713,8 +887,49 @@ export class StudioToolExecutor {
           () => this.proposePlan(args),
         );
       case "ask_question":
+        // Older name (no longer listed): adds the card without waiting for the answer.
         return this.runSafe(stepId, name, "Soru hazırlanıyor…", "Soru eklendi", () =>
           this.askQuestion(args),
+        );
+      case "ask_user":
+        return this.runSafe(stepId, name, "Cevabın bekleniyor…", "Cevap alındı", () =>
+          this.askUser(args),
+        );
+      case "list_aliases":
+        return this.runSafe(stepId, name, "Görseller listeleniyor…", "Görseller listelendi", () =>
+          this.listAliases(args),
+        );
+      case "view_alias":
+        return this.runSafe(stepId, name, "Görsele bakılıyor…", "Görsele bakıldı", () =>
+          this.viewAlias(args),
+        );
+      case "view_post":
+        return this.runSafe(stepId, name, "Posta bakılıyor…", "Posta bakıldı", () =>
+          this.viewPost(args),
+        );
+      case "generate_post":
+        return this.runSafe(
+          stepId,
+          name,
+          "Post üretimi başlatılıyor…",
+          "Post üretimi kuyruğa alındı",
+          () => this.generatePost(args),
+        );
+      case "wait_jobs":
+        return this.runSafe(stepId, name, "Üretim bekleniyor…", "Üretim bitti", () =>
+          this.waitJobs(args),
+        );
+      case "revise_post":
+        return this.runSafe(stepId, name, "Düzeltme başlatılıyor…", "Düzeltme kuyruğa alındı", () =>
+          this.revisePost(args),
+        );
+      case "list_skills":
+        return this.runSafe(stepId, name, "Beceriler listeleniyor…", "Beceriler listelendi", () =>
+          this.listSkills(),
+        );
+      case "get_skill":
+        return this.runSafe(stepId, name, "Beceri okunuyor…", "Beceri okundu", () =>
+          this.getSkill(args),
         );
       case "list_contents":
         return this.runSafe(stepId, name, "Postlar listeleniyor…", "Postlar okundu", () =>
@@ -791,7 +1006,13 @@ export class StudioToolExecutor {
     name: string,
     runningLabel: string,
     doneLabel: string,
-    fn: () => Promise<{ data: Record<string, unknown>; summary: string | null }>,
+    fn: () => Promise<{
+      data: Record<string, unknown>;
+      summary: string | null;
+      images?: StudioToolImage[];
+      /** Label of the finished step when it differs from `doneLabel`. */
+      label?: string;
+    }>,
   ): Promise<StudioToolExecutionResult> {
     this.options.signal.throwIfAborted();
     const stepIndex = await this.options.writer.setPart({
@@ -803,19 +1024,19 @@ export class StudioToolExecutor {
       summary: null,
     });
     try {
-      const { data, summary } = await fn();
+      const { data, summary, images, label } = await fn();
       await this.options.writer.setPart(
         {
           type: "tool_step",
           id: stepId,
           name,
-          label: doneLabel,
+          label: label ?? doneLabel,
           state: "done",
           summary: summary ? summary.slice(0, 300) : null,
         },
         stepIndex,
       );
-      return { data, isError: false };
+      return { data, isError: false, ...(images?.length ? { images } : {}) };
     } catch (error) {
       if (this.options.signal.aborted || error instanceof RunClosedError) throw error;
       const msg = error instanceof Error ? error.message : String(error);
@@ -937,7 +1158,7 @@ export class StudioToolExecutor {
           explicitBrandId = active[0].id;
         } else {
           throw new Error(
-            "Konuşmanın henüz markası yok; brandId belirtin ya da ask_question ile hangi marka olduğunu sorun.",
+            "Konuşmanın henüz markası yok; brandId belirtin ya da ask_user ile hangi marka olduğunu sorun.",
           );
         }
       }
@@ -1058,6 +1279,386 @@ export class StudioToolExecutor {
           : null,
       },
       summary,
+    };
+  }
+
+  /** Question card, then wait for the owner's answer (or give up after the timeout). */
+  private async askUser(args: Record<string, unknown>) {
+    const parsed = AskUserInput.safeParse(args);
+    if (!parsed.success) {
+      throw new Error(`Geçersiz soru verisi: ${z.prettifyError(parsed.error).slice(0, 300)}`);
+    }
+    const input = parsed.data;
+    const mode = input.options.length >= 2 ? (input.multiple ? "multiple" : "single") : "text";
+    const n = ++this.questionSeq;
+    const suffix = this.options.runId.replace(/[^A-Za-z0-9_-]/g, "").slice(-8) || "run";
+    const questionId = n === 1 ? `q-${suffix}` : `q-${suffix}-${n}`;
+    const part = toQuestionPart(
+      {
+        prompt: input.question,
+        mode,
+        options: input.options.map((o, i) => ({
+          id: o.id?.trim() || `secenek-${i + 1}`,
+          label: o.label,
+          ...(o.description ? { description: o.description } : {}),
+        })),
+        allowText: mode === "text" ? false : input.allowText,
+      },
+      questionId,
+    );
+    if (!part) throw new Error("Soru metni boş olamaz.");
+    await this.options.writer.setPart(part);
+    if (this.outcome.action === "none") this.outcome.action = "question";
+
+    const pollMs = Math.max(this.options.consentPollIntervalMs ?? 1_000, 100);
+    // A wait, not a business date: the real clock (the injected `now` may be frozen in tests).
+    const deadline = Date.now() + (this.options.askTimeoutMs ?? DEFAULT_ASK_TIMEOUT_MS);
+    for (;;) {
+      this.options.signal.throwIfAborted();
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) {
+        return {
+          data: {
+            ok: true,
+            answered: false,
+            questionId,
+            note: "Kullanıcı henüz cevaplamadı. Turu şimdi tek kısa cümleyle bitir; cevap gelince yeni bir tur başlar.",
+          },
+          summary: "Cevap gelmedi; tur bitiyor",
+          label: "Cevap beklenmedi",
+        };
+      }
+      await this.sleep(Math.min(pollMs, remaining), this.options.signal);
+      const snapshot = await this.options.api.client.workerTurns.message(this.options.runId, {
+        signal: this.options.signal,
+      });
+      if (["cancelled", "failed", "completed"].includes(snapshot.run.status)) {
+        throw new RunClosedError(`run ${this.options.runId} is ${snapshot.run.status}`);
+      }
+      const card = snapshot.message?.parts.find(
+        (p) => p.type === "question" && p.questionId === questionId,
+      );
+      if (card?.type !== "question" || !card.answer) continue;
+      const labels = card.answer.optionIds.map(
+        (id) => card.options.find((o) => o.id === id)?.label ?? id,
+      );
+      const said = [...labels, card.answer.text ?? ""].filter(Boolean).join(", ");
+      if (this.outcome.action === "question") this.outcome.action = "none";
+      return {
+        data: {
+          ok: true,
+          answered: true,
+          questionId,
+          optionIds: card.answer.optionIds,
+          labels,
+          text: card.answer.text,
+        },
+        summary: said.slice(0, 140) || "Cevap alındı",
+      };
+    }
+  }
+
+  private async aliasList() {
+    return (
+      await this.options.api.client.conversations.aliases.list(this.options.conversationId, {
+        signal: this.options.signal,
+      })
+    ).items;
+  }
+
+  /** Download an asset and shrink it for the model; null when it is not a picture. */
+  private async pictureOf(assetId: string, maxEdge: number): Promise<StudioToolImage | null> {
+    const { bytes } = await this.options.api.downloadAsset(assetId, {
+      maxBytes: 25 * 1024 * 1024,
+      signal: this.options.signal,
+    });
+    const image = await prepareModelImage(bytes, { maxEdge });
+    return image
+      ? { mediaType: image.mediaType, data: Buffer.from(image.data).toString("base64") }
+      : null;
+  }
+
+  private async listAliases(args: Record<string, unknown>) {
+    const parsed = ListAliasesInput.parse(args);
+    const list = await this.aliasList();
+    const aliases = list.map((a) => ({
+      alias: a.alias,
+      previousAliases: a.previousAliases,
+      kind: a.kind,
+      mimeType: a.mimeType,
+      width: a.width,
+      height: a.height,
+      filename: a.filename,
+    }));
+    const images: StudioToolImage[] = [];
+    const shown: string[] = [];
+    if (parsed.withThumbnails) {
+      for (const a of list.filter((x) => x.kind === "image").slice(0, 8)) {
+        const picture = await this.pictureOf(a.assetId, 384).catch(() => null);
+        if (picture) {
+          images.push(picture);
+          shown.push(a.alias);
+        }
+      }
+    }
+    return {
+      data: {
+        ok: true,
+        aliases,
+        ...(parsed.withThumbnails ? { thumbnailsInOrder: shown.map((x) => `@${x}`) } : {}),
+      },
+      summary:
+        list.length === 0 ? "Sohbette görsel yok" : list.map((a) => `@${a.alias}`).join(", "),
+      images,
+    };
+  }
+
+  private async viewAlias(args: Record<string, unknown>) {
+    const { alias } = ViewAliasInput.parse(args);
+    const cleaned = alias.replace(/^@/, "").toLowerCase();
+    const match = (await this.aliasList()).find(
+      (a) => a.alias === cleaned || a.previousAliases.includes(cleaned),
+    );
+    if (!match) throw new Error(`Görsel takma adı bulunamadı: @${cleaned}`);
+    const picture = await this.pictureOf(match.assetId, this.options.imageMaxEdge ?? 1568);
+    if (!picture) throw new Error(`@${match.alias} bir görsel değil (${match.mimeType}).`);
+    return {
+      data: {
+        ok: true,
+        alias: match.alias,
+        mimeType: match.mimeType,
+        width: match.width,
+        height: match.height,
+        filename: match.filename,
+      },
+      summary: `@${match.alias}`,
+      label: `@${match.alias} görseline bakıldı`,
+      images: [picture],
+    };
+  }
+
+  private async viewPost(args: Record<string, unknown>) {
+    const parsed = ViewPostInput.parse(args);
+    const content = await this.options.api.client.contents.get(parsed.contentId, {
+      signal: this.options.signal,
+    });
+    const versionNumber = parsed.version ?? content.currentVersion?.version;
+    if (!versionNumber) throw new Error(`"${content.title}" postunun henüz tasarımı yok.`);
+    const version = await this.options.api.client.contents.versions.get(
+      parsed.contentId,
+      versionNumber,
+      { signal: this.options.signal },
+    );
+    const images: StudioToolImage[] = [];
+    const missing: number[] = [];
+    for (const [i, slide] of version.slides.slice(0, 10).entries()) {
+      const picture = slide.renderedAssetId
+        ? await this.pictureOf(slide.renderedAssetId, 1080).catch(() => null)
+        : null;
+      if (picture) images.push(picture);
+      else missing.push(i + 1);
+    }
+    return {
+      data: {
+        ok: true,
+        contentId: content.id,
+        title: content.title,
+        status: content.status,
+        version: version.version,
+        slideCount: version.slideCount,
+        shownSlides: images.length,
+        ...(missing.length ? { notRendered: missing } : {}),
+        note: version.note,
+      },
+      summary: `${content.title} · s${version.version} · ${images.length} slayt`,
+      images,
+    };
+  }
+
+  private generationPayloadExtras(): Pick<ContentGeneratePayload, "model" | "effort"> {
+    const choice = this.options.generationChoice;
+    return {
+      ...(choice?.model ? { model: choice.model } : {}),
+      ...(choice?.effort ? { effort: choice.effort } : {}),
+    };
+  }
+
+  private async generatePost(args: Record<string, unknown>) {
+    const parsed = GeneratePostInput.safeParse(args);
+    if (!parsed.success) {
+      throw new Error(`Geçersiz üretim isteği: ${z.prettifyError(parsed.error).slice(0, 300)}`);
+    }
+    const input = parsed.data;
+    if (input.planItemId) {
+      const has = (p: Plan) => p.items.some((i) => i.id === input.planItemId);
+      let plan = this.openPlan && has(this.openPlan) ? this.openPlan : undefined;
+      if (!plan) {
+        const listed = (
+          await this.options.api.client.plans.list(
+            { conversationId: this.options.conversationId, limit: 20 },
+            { signal: this.options.signal },
+          )
+        ).items;
+        plan = listed.find(has);
+      }
+      if (!plan) throw new Error(`Plan kalemi bulunamadı: ${input.planItemId}`);
+      const item = plan.items.find((i) => i.id === input.planItemId);
+      if (plan.status !== "accepted" || item?.status !== "accepted") {
+        throw new Error(
+          "Plan henüz kabul edilmedi; önce accept_and_generate_plan ile (izin kartıyla) planı kabul et.",
+        );
+      }
+      const gen = await this.options.api.client.plans.generate(
+        plan.id,
+        {
+          itemIds: [input.planItemId],
+          ...(input.instructions ? { instructions: input.instructions } : {}),
+          ...this.generationPayloadExtras(),
+        },
+        { signal: this.options.signal },
+      );
+      this.openPlan = gen.plan;
+      return {
+        data: {
+          ok: true,
+          planId: plan.id,
+          contentId: item.contentId,
+          jobIds: gen.jobs.map((j) => j.id),
+          note:
+            gen.jobs.length === 0 ? "Bu kalemin üretimi zaten sürüyor ya da sırada." : undefined,
+        },
+        summary: `${item.title} · ${gen.jobs.length} iş`,
+      };
+    }
+    const brandId = this.brandId;
+    if (!brandId) throw new Error("Konuşmanın markası yok; önce set_conversation_brand kullan.");
+    const title = input.title || (input.brief ?? "").split("\n")[0]?.slice(0, 80) || "Yeni post";
+    const platforms = input.platforms ?? ["instagram"];
+    const content = await this.options.api.client.contents.create(
+      { brandId, type: input.type, title, brief: input.brief ?? "", targetPlatforms: platforms },
+      { signal: this.options.signal },
+    );
+    const payload: ContentGeneratePayload = {
+      brandId,
+      contentId: content.id,
+      title,
+      brief: input.brief ?? "",
+      type: input.type,
+      targetPlatforms: platforms,
+      ...(input.imageSlot ? { imageSlot: input.imageSlot } : {}),
+      ...(input.imageBrief ? { imageBrief: input.imageBrief } : {}),
+      conversationId: this.options.conversationId,
+      ...(input.instructions ? { instructions: input.instructions } : {}),
+      ...this.generationPayloadExtras(),
+    };
+    const job = await this.options.api.client.jobs.create(
+      { type: "content.generate", brandId, contentId: content.id, payload },
+      { signal: this.options.signal },
+    );
+    await this.options.writer
+      .setPart({ type: "content_ref", contentId: content.id, version: null, note: "Üretiliyor" })
+      .catch((error: unknown) => {
+        if (error instanceof RunClosedError) throw error;
+      });
+    return {
+      data: { ok: true, contentId: content.id, jobIds: [job.id] },
+      summary: `${title} · 1 iş`,
+    };
+  }
+
+  private async waitJobs(args: Record<string, unknown>) {
+    const parsed = WaitJobsInput.parse(args);
+    const pollMs = this.options.jobPollIntervalMs ?? DEFAULT_JOB_POLL_MS;
+    const deadline = Date.now() + parsed.timeoutSec * 1000;
+    let jobs: Job[] = [];
+    for (;;) {
+      this.options.signal.throwIfAborted();
+      jobs = await Promise.all(
+        parsed.jobIds.map((id) =>
+          this.options.api.client.jobs.get(id, { signal: this.options.signal }),
+        ),
+      );
+      if (jobs.every((j) => isTerminalJobStatus(j.status))) break;
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) break;
+      await this.sleep(Math.min(pollMs, remaining), this.options.signal);
+    }
+    const done = jobs.filter((j) => j.status === "succeeded").length;
+    const finished = jobs.every((j) => isTerminalJobStatus(j.status));
+    return {
+      data: {
+        ok: true,
+        finished,
+        jobs: jobs.map((j) => ({
+          id: j.id,
+          type: j.type,
+          status: j.status,
+          contentId: j.contentId ?? null,
+          ...(j.progressMessage ? { progress: j.progressMessage } : {}),
+          ...(j.error ? { error: j.error.slice(0, 500) } : {}),
+          ...(j.output ? { output: j.output } : {}),
+        })),
+      },
+      summary: `${done}/${jobs.length} tamamlandı${finished ? "" : " (süre doldu)"}`,
+      label: finished ? "Üretim bitti" : "Üretim sürüyor",
+    };
+  }
+
+  private async revisePost(args: Record<string, unknown>) {
+    const parsed = RevisePostInput.parse(args);
+    const content = await this.options.api.client.contents.get(parsed.contentId, {
+      signal: this.options.signal,
+    });
+    const baseVersion = content.currentVersion?.version;
+    if (!baseVersion) {
+      throw new Error(
+        `"${content.title}" postunun düzeltilecek bir tasarımı yok; generate_post kullan.`,
+      );
+    }
+    const payload: ContentGeneratePayload = {
+      brandId: content.brandId,
+      contentId: content.id,
+      title: content.title,
+      brief: content.brief || content.title,
+      type: content.type,
+      targetPlatforms: content.targetPlatforms,
+      baseVersion,
+      conversationId: this.options.conversationId,
+      instructions: parsed.instruction,
+      ...this.generationPayloadExtras(),
+    };
+    const job = await this.options.api.client.jobs.create(
+      { type: "content.generate", brandId: content.brandId, contentId: content.id, payload },
+      { signal: this.options.signal },
+    );
+    return {
+      data: { ok: true, contentId: content.id, baseVersion, jobIds: [job.id] },
+      summary: `${content.title} · s${baseVersion} üzerinden`,
+    };
+  }
+
+  private async listSkills() {
+    const skills = this.options.skills ?? [];
+    return {
+      data: { ok: true, skills: skills.map((s) => ({ name: s.name, description: s.description })) },
+      summary: skills.length ? skills.map((s) => s.name).join(", ") : "Beceri yok",
+    };
+  }
+
+  private async getSkill(args: Record<string, unknown>) {
+    const { name } = GetSkillInput.parse(args);
+    const wanted = name.replace(/^\//, "").toLowerCase();
+    const skill = (this.options.skills ?? []).find((s) => s.name === wanted);
+    if (!skill) throw new Error(`Beceri bulunamadı: ${name}`);
+    return {
+      data: {
+        ok: true,
+        name: skill.name,
+        description: skill.description,
+        instructions: skill.text,
+      },
+      summary: skill.name,
+      label: `/${skill.name} becerisi okundu`,
     };
   }
 

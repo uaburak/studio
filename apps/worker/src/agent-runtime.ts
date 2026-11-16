@@ -15,18 +15,27 @@ import { createRenderer, type Renderer } from "@studio/design-kit/render";
 import { type AgentSettings, claudeLogDir } from "./agent.ts";
 import { apiBaseFromHubUrl, createStudioApi, type StudioApi } from "./api.ts";
 import { createBrandAnalyzeHandler } from "./brand/handler.ts";
+import { findSkillsDir, loadSkills } from "./chat/skills.ts";
 import { createChatTurnHandler } from "./chat/turn.ts";
+import { buildClaudeEnv } from "./claude/args.ts";
 import { ClaudeAuthController, type RawClaudeAuthInfo } from "./claude/auth.ts";
 import { ClaudeError, ClaudeUsageLimitError } from "./claude/errors.ts";
 import { ClaudeGate } from "./claude/gate.ts";
 import { type ClaudeHealth, claudeSelfTest } from "./claude/health.ts";
 import { type ClaudeRunner, createClaudeRunner } from "./claude/runner.ts";
-import { UsageTracker, usageFromLimitError, usageFromRateLimit } from "./claude/usage.ts";
+import {
+  type UsageReport,
+  UsageTracker,
+  usageFromLimitError,
+  usageFromRateLimit,
+} from "./claude/usage.ts";
+import { readCliUsage, UsagePoller } from "./claude/usage-cli.ts";
 import type { WorkerConfig } from "./config.ts";
 import { checkGeminiHealth } from "./gemini/health.ts";
 import { type ContentGenerateDeps, createContentGenerateHandler } from "./generate/handler.ts";
 import { createImageGenerateHandler } from "./image/handler.ts";
 import type { Logger } from "./log.ts";
+import { StudioMcpServer } from "./mcp/server.ts";
 import { createSchedulePublishHandler, type SchedulePublishDeps } from "./publish/handler.ts";
 import { SchedulePoller } from "./publish/poller.ts";
 import type { JobRegistry } from "./registry.ts";
@@ -58,6 +67,8 @@ export interface AgentRuntimeOptions {
   publisherFetch?: typeof globalThis.fetch;
   recheckIntervalMs?: number;
   schedulePollIntervalMs?: number;
+  /** `claude -p /usage` reader (default: run the CLI; tests inject one). */
+  usageReader?: () => Promise<UsageReport | null>;
 }
 
 export class AgentRuntime {
@@ -68,6 +79,10 @@ export class AgentRuntime {
   readonly usage: UsageTracker;
   readonly claudeAuth: ClaudeAuthController;
   readonly schedulePoller: SchedulePoller;
+  /** Studio's MCP server for chat turns (127.0.0.1, a token per run). */
+  readonly mcpServer: StudioMcpServer;
+  /** `claude -p /usage` at startup and after each chat turn (≥ 60 s apart). */
+  readonly usagePoller: UsagePoller;
 
   private current: ClaudeHealth = {
     state: "error",
@@ -128,15 +143,30 @@ export class AgentRuntime {
     const tracked: ClaudeRunner = async (call) => {
       try {
         const res = await baseRunner(call);
-        if (res.rateLimit) this.usage.update(usageFromRateLimit(res.rateLimit, new Date()));
+        if (res.rateLimit) this.usage.merge(usageFromRateLimit(res.rateLimit, new Date()));
         return res;
       } catch (error) {
         if (error instanceof ClaudeUsageLimitError) {
-          this.usage.update(usageFromLimitError(error, new Date()));
+          this.usage.merge(usageFromLimitError(error, new Date()));
         }
         throw error;
       }
     };
+    this.usagePoller = new UsagePoller({
+      tracker: this.usage,
+      logger,
+      read:
+        options.usageReader ??
+        (options.selfTest
+          ? async () => null // unit tests with an injected self-test never spawn `claude`
+          : () =>
+              readCliUsage({
+                bin: settings.claudeBin,
+                env: buildClaudeEnv(settings.parentEnv, claudeEnv),
+              })),
+    });
+    this.mcpServer = new StudioMcpServer({ logger });
+    const skillsDir = findSkillsDir(undefined, settings.skillsDir);
 
     // An auth failure in a real job takes the Claude job types off the hub announcement.
     const runner: ClaudeRunner = async (call) => {
@@ -212,6 +242,9 @@ export class AgentRuntime {
       claudeAccount: () => this.claudeAuth.latest(),
       geminiAccount: () => this.gemini,
       usage: this.usage,
+      refreshUsage: () => void this.usagePoller.refresh(),
+      mcpServer: this.mcpServer,
+      skills: () => loadSkills(skillsDir),
       stateDir: config.stateDir,
       inFlightSchedules,
       ...(options.geminiFetch ? { geminiFetch: options.geminiFetch } : {}),
@@ -302,6 +335,9 @@ export class AgentRuntime {
   async start(onChange?: () => void): Promise<ClaudeHealth> {
     if (onChange) this.onChange = onChange;
     await this.usage.load();
+    await this.mcpServer.start();
+    // Subscription usage without a model call (`claude -p /usage`), in the background.
+    void this.usagePoller.refresh();
     await this.refreshGeminiStatus({ silentReannounce: true });
     const health = await this.check();
     const interval = this.options.recheckIntervalMs ?? 5 * 60_000;
@@ -382,6 +418,7 @@ export class AgentRuntime {
     this.timer = undefined;
     await this.schedulePoller.stop();
     this.claudeAuth.stop();
+    await this.mcpServer.stop();
     const r = this.renderer;
     this.renderer = undefined;
     await r?.close().catch(() => undefined);

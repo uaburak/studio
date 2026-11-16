@@ -1,7 +1,8 @@
 /**
  * `brand.analyze` handler (A5 / F1-4 & Faz 6):
- * - Inspects brand metadata, existing approved profile, uploaded brand assets (`logo`, `font`,
- *   `document`, `image` up to 8 visual references), `samplePosts` engagement metrics, and
+ * - Reads the brand kit (P2: sample posts 3–12, logos with their background, fonts with family and
+ *   licence, the user's palette, notes); without a kit it falls back to every uploaded brand asset
+ *   (`logo`, `font`, `document`, `image` up to 8 visual references), plus `samplePosts` metrics and
  *   approved/published content + manual edit history (`PLAN.md` §6 feedback loop),
  * - Calls Gemini (`gemini-flash` / `gemini-pro`) or Claude (`gate.call`) to synthesize
  *   valid `@studio/design-kit` `BrandTokens` (`brand.json`), Turkish `designRules` (`DESIGN.md`),
@@ -13,9 +14,13 @@ import {
   type Asset,
   type Brand,
   BrandAnalyzePayload,
+  type BrandKit,
   type BrandProfile,
+  MAX_KIT_SAMPLES,
+  MIN_KIT_SAMPLES,
 } from "@studio/contract";
 import { parseBrandTokens } from "@studio/design-kit/brand";
+import sharp from "sharp";
 import { z } from "zod";
 import type { AgentDeps } from "../agent.ts";
 import { describeClaudeError, isClaudeError } from "../claude/errors.ts";
@@ -27,6 +32,16 @@ import { extensionForMime, imageBlock, prepareModelImage } from "../media.ts";
 import { defineHandler, type JobContext, RetryableError } from "../registry.ts";
 
 const MAX_VISUAL_REFS = 8;
+/** With a kit: every sample (3–12) plus a few logos. */
+const MAX_KIT_LOGO_REFS = 3;
+/** Sample posts are compositions, not detail shots: a smaller edge keeps 12 of them affordable. */
+const KIT_SAMPLE_MAX_EDGE = 1024;
+
+const LOGO_BACKGROUND_LABEL = {
+  any: "her zemin",
+  light: "açık zemin için",
+  dark: "koyu zemin için",
+} as const;
 
 const BrandAnalysisModelOutput = z.object({
   colors: z
@@ -44,6 +59,8 @@ const BrandAnalysisModelOutput = z.object({
   displayFontFamily: z.string().default("Helvetica Neue"),
   textFontFamily: z.string().default("Helvetica Neue"),
   marginPx: z.number().min(24).max(160).default(72),
+  gutterPx: z.number().min(0).max(160).optional(),
+  cornerRadiusPx: z.number().min(0).max(200).optional(),
   designRules: z.string().min(1),
   voice: z.string().min(1),
   allowedNumbers: z.array(z.union([z.string(), z.number()])).default([]),
@@ -59,6 +76,8 @@ const BRAND_ANALYSIS_JSON_SCHEMA = {
     "displayFontFamily",
     "textFontFamily",
     "marginPx",
+    "gutterPx",
+    "cornerRadiusPx",
     "designRules",
     "voice",
     "allowedNumbers",
@@ -86,6 +105,14 @@ const BRAND_ANALYSIS_JSON_SCHEMA = {
     },
     textFontFamily: { type: "string", description: "Gövde yazı tipi ailesi." },
     marginPx: { type: "number", description: "1080px tuvalde kenar boşluğu (tipik 64 veya 72)." },
+    gutterPx: {
+      type: "number",
+      description: "1080px tuvalde öğeler/sütunlar arası boşluk (tipik 16-32).",
+    },
+    cornerRadiusPx: {
+      type: "number",
+      description: "Kart ve görsel köşe yarıçapı (keskin köşeli marka için 0).",
+    },
     designRules: {
       type: "string",
       description:
@@ -161,49 +188,106 @@ export function buildValidatedBrandTokens(input: {
   existingProfile: BrandProfile | null;
   uploadedAssets: readonly Asset[];
   analyzed: z.infer<typeof BrandAnalysisModelOutput>;
+  /** The brand kit (P2). When given, logos, fonts and palette come from it, not from every upload. */
+  kit?: BrandKit | null;
 }): Record<string, unknown> {
   const existingRaw = input.existingProfile?.tokens ?? {};
   const fileAssets: Record<string, string> = { ...fileAssetMap(existingRaw) };
+  const assetById = new Map(input.uploadedAssets.map((a) => [a.id, a]));
+  const kit = input.kit ?? null;
 
-  const fontFiles: string[] = [];
   const logos: Record<string, Record<string, unknown>> = {};
   const brandImageAssets: Record<string, Record<string, unknown>> = {};
 
-  for (const [i, asset] of input.uploadedAssets.entries()) {
-    if (asset.source === "generated") continue;
-    if (asset.kind === "font") {
-      const extMatch = /\.(woff2|woff|ttf|otf)$/i.exec(asset.originalFilename ?? "");
-      const ext = extMatch ? extMatch[0].toLowerCase() : ".woff2";
-      const rel = `fonts/${safeFileSlug(asset.originalFilename ?? "", `font-${i + 1}`)}${ext}`;
-      fileAssets[rel] = asset.id;
-      fontFiles.push(rel);
-    } else if (asset.kind === "logo") {
-      const ext = extensionForMime(asset.mimeType) || ".png";
-      const key =
-        sanitizeTokenKey(safeFileSlug(asset.originalFilename ?? "", `logo-${i + 1}`)) ??
-        `logo-${i + 1}`;
-      const rel = `logos/${key}${ext}`;
-      fileAssets[rel] = asset.id;
-      logos[key] = {
-        path: rel,
-        ...(asset.width && asset.height
-          ? {
-              intrinsic: [asset.width, asset.height],
-              aspect: Number((asset.width / asset.height).toFixed(3)),
-            }
-          : {}),
-        on: /white|dark|beyaz/i.test(asset.originalFilename ?? "") ? "dark" : "any",
-      };
-    } else if (asset.kind === "image" && Object.keys(brandImageAssets).length < 12) {
-      const ext = extensionForMime(asset.mimeType) || ".jpg";
-      const key = safeFileSlug(asset.originalFilename ?? "", `asset-${i + 1}`);
-      const rel = `assets/${key}${ext}`;
-      fileAssets[rel] = asset.id;
-      brandImageAssets[key] = {
-        path: rel,
-        ...(asset.originalFilename ? { note: asset.originalFilename } : {}),
-      };
+  const fontRel = (asset: Asset, i: number) => {
+    const extMatch = /\.(woff2|woff|ttf|otf)$/i.exec(asset.originalFilename ?? "");
+    const ext = extMatch ? extMatch[0].toLowerCase() : ".woff2";
+    return `fonts/${safeFileSlug(asset.originalFilename ?? "", `font-${i + 1}`)}${ext}`;
+  };
+  const addLogo = (asset: Asset, i: number, on: "any" | "light" | "dark") => {
+    const ext = extensionForMime(asset.mimeType) || ".png";
+    let key =
+      sanitizeTokenKey(safeFileSlug(asset.originalFilename ?? "", `logo-${i + 1}`)) ??
+      `logo-${i + 1}`;
+    while (logos[key]) key = `${key}-${i + 1}`;
+    const rel = `logos/${key}${ext}`;
+    fileAssets[rel] = asset.id;
+    logos[key] = {
+      path: rel,
+      ...(asset.width && asset.height
+        ? {
+            intrinsic: [asset.width, asset.height],
+            aspect: Number((asset.width / asset.height).toFixed(3)),
+          }
+        : {}),
+      on,
+    };
+  };
+
+  // Font roles: display/text family names and files.
+  let displayFiles: string[] = [];
+  let textFiles: string[] = [];
+  let displayFamilyFromKit: string | null = null;
+  let textFamilyFromKit: string | null = null;
+  const displayLicenses: string[] = [];
+  const textLicenses: string[] = [];
+
+  if (kit) {
+    for (const [i, entry] of kit.logos.entries()) {
+      const asset = assetById.get(entry.assetId);
+      if (asset) addLogo(asset, i, entry.background);
     }
+    for (const [i, entry] of kit.fonts.entries()) {
+      const asset = assetById.get(entry.assetId);
+      if (asset?.kind !== "font") continue;
+      const rel = fontRel(asset, i);
+      fileAssets[rel] = asset.id;
+      const note = entry.licenseNote ? `${entry.family}: ${entry.licenseNote}` : "";
+      if (entry.role !== "text") {
+        displayFiles.push(rel);
+        displayFamilyFromKit ??= entry.family;
+        if (note) displayLicenses.push(note);
+      }
+      if (entry.role !== "display") {
+        textFiles.push(rel);
+        textFamilyFromKit ??= entry.family;
+        if (note) textLicenses.push(note);
+      }
+    }
+    // A family's files are only useful under that family's role.
+    if (displayFamilyFromKit) {
+      displayFiles = displayFiles.filter((rel) =>
+        kit.fonts.some((f) => f.family === displayFamilyFromKit && fileAssets[rel] === f.assetId),
+      );
+    }
+    if (textFamilyFromKit) {
+      textFiles = textFiles.filter((rel) =>
+        kit.fonts.some((f) => f.family === textFamilyFromKit && fileAssets[rel] === f.assetId),
+      );
+    }
+  } else {
+    const fontFiles: string[] = [];
+    for (const [i, asset] of input.uploadedAssets.entries()) {
+      if (asset.source === "generated") continue;
+      if (asset.kind === "font") {
+        const rel = fontRel(asset, i);
+        fileAssets[rel] = asset.id;
+        fontFiles.push(rel);
+      } else if (asset.kind === "logo") {
+        addLogo(asset, i, /white|dark|beyaz/i.test(asset.originalFilename ?? "") ? "dark" : "any");
+      } else if (asset.kind === "image" && Object.keys(brandImageAssets).length < 12) {
+        const ext = extensionForMime(asset.mimeType) || ".jpg";
+        const key = safeFileSlug(asset.originalFilename ?? "", `asset-${i + 1}`);
+        const rel = `assets/${key}${ext}`;
+        fileAssets[rel] = asset.id;
+        brandImageAssets[key] = {
+          path: rel,
+          ...(asset.originalFilename ? { note: asset.originalFilename } : {}),
+        };
+      }
+    }
+    displayFiles = fontFiles;
+    textFiles = fontFiles;
   }
 
   // Merge AI colors over neutral baseline so required usage roles (`paper`, `ink`, `accent`, etc.) always exist
@@ -219,15 +303,32 @@ export function buildValidatedBrandTokens(input: {
     const use = typeof rawVal === "object" && rawVal.use ? rawVal.use : undefined;
     colorMap[key] = use ? { value: hex, use } : { value: hex };
   }
+  // The user's own palette is final: it wins over what the model saw.
+  for (const color of kit?.palette ?? []) {
+    const key = sanitizeTokenKey(color.name);
+    const hex = sanitizeHexColor(color.hex);
+    if (!key || !hex) continue;
+    colorMap[key] = color.use ? { value: hex, use: color.use } : { value: hex };
+  }
 
-  const displayFamily = sanitizeFontFamily(
-    input.analyzed.displayFontFamily,
-    fontFiles.length > 0 ? "Brand Display" : "Helvetica Neue",
-  );
-  const textFamily = sanitizeFontFamily(
-    input.analyzed.textFontFamily,
-    fontFiles.length > 0 ? "Brand Text" : "Helvetica Neue",
-  );
+  const displayFamily = displayFamilyFromKit
+    ? sanitizeFontFamily(displayFamilyFromKit, "Brand Display")
+    : sanitizeFontFamily(
+        input.analyzed.displayFontFamily,
+        displayFiles.length > 0 ? "Brand Display" : "Helvetica Neue",
+      );
+  const textFamily = textFamilyFromKit
+    ? sanitizeFontFamily(textFamilyFromKit, "Brand Text")
+    : sanitizeFontFamily(
+        input.analyzed.textFontFamily,
+        textFiles.length > 0 ? "Brand Text" : "Helvetica Neue",
+      );
+
+  const radius = { ...NEUTRAL_TOKENS.radius };
+  if (input.analyzed.cornerRadiusPx !== undefined) {
+    const md = Math.round(Math.min(200, Math.max(0, input.analyzed.cornerRadiusPx)));
+    Object.assign(radius, { sm: Math.round(md / 2), md, lg: md * 2 });
+  }
 
   const candidateTokens: Record<string, unknown> = {
     id: sanitizeTokenKey(input.brand.slug) ?? "brand",
@@ -238,23 +339,28 @@ export function buildValidatedBrandTokens(input: {
     font: {
       display: {
         family: displayFamily,
-        files: fontFiles.slice(0, 8),
+        files: displayFiles.slice(0, 8),
         fallback: "sans-serif",
         default: { weight: 800, leading: 1.0 },
+        ...(displayLicenses.length > 0 ? { license: displayLicenses.join(" · ") } : {}),
       },
       text: {
         family: textFamily,
-        files: fontFiles.slice(0, 8),
+        files: textFiles.slice(0, 8),
         fallback: "sans-serif",
         default: { weight: 400, leading: 1.38 },
+        ...(textLicenses.length > 0 ? { license: textLicenses.join(" · ") } : {}),
       },
     },
     type: { ...NEUTRAL_TOKENS.type },
     space: {
       ...NEUTRAL_TOKENS.space,
       margin: Math.round(Math.min(140, Math.max(40, input.analyzed.marginPx))),
+      ...(input.analyzed.gutterPx !== undefined
+        ? { gutter: Math.round(Math.min(160, Math.max(0, input.analyzed.gutterPx))) }
+        : {}),
     },
-    radius: { ...NEUTRAL_TOKENS.radius },
+    radius,
     rule: { width: 56, thickness: 6, color: "accent" },
     logos,
     assets: brandImageAssets,
@@ -352,6 +458,43 @@ async function collectApprovedContentFeedback(
   };
 }
 
+/**
+ * Logos are often SVG (which the model cannot take) or transparent PNG: render them
+ * as PNG on the background they are made for. Unreadable input is returned as is.
+ */
+export async function rasterizeLogo(bytes: Uint8Array, matte: string): Promise<Uint8Array> {
+  try {
+    const png = await sharp(bytes, { density: 192, limitInputPixels: 64_000_000 })
+      .resize({ width: 1024, height: 1024, fit: "inside", withoutEnlargement: false })
+      .flatten({ background: matte })
+      .png()
+      .toBuffer();
+    return new Uint8Array(png);
+  } catch {
+    return bytes;
+  }
+}
+
+/** The brand's kit, or null when it was never saved (or the API predates kits). */
+async function readKit(
+  deps: AgentDeps,
+  brandId: string,
+  init: { signal: AbortSignal },
+): Promise<BrandKit | null> {
+  try {
+    const kit = await deps.api.client.brandKits.get(brandId, init);
+    const empty =
+      kit.samples.length === 0 &&
+      kit.logos.length === 0 &&
+      kit.fonts.length === 0 &&
+      kit.palette.length === 0;
+    return kit.updatedAt === null || empty ? null : kit;
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 404) return null;
+    throw err;
+  }
+}
+
 export function createBrandAnalyzeHandler(deps: AgentDeps) {
   return defineHandler({
     payload: BrandAnalyzePayload,
@@ -377,16 +520,69 @@ export function createBrandAnalyzeHandler(deps: AgentDeps) {
         const uploadedAssets = (await deps.api.client.assets.list({ brandId, limit: 100 }, init))
           .items;
 
-        // Collect up to 8 visual references (logos + uploaded brand images + samplePost images)
+        // The brand kit (P2): when the user filled it, it decides which files are logos,
+        // fonts and sample posts. Without one, every upload is a reference (older flow).
+        const kit = await readKit(deps, brandId, init);
+        if (kit) {
+          const known = new Set(uploadedAssets.map((a) => a.id));
+          const referenced = [
+            ...kit.logos.map((l) => l.assetId),
+            ...kit.fonts.map((f) => f.assetId),
+            ...kit.samples.map((s) => s.assetId),
+          ];
+          for (const id of referenced) {
+            if (known.has(id)) continue;
+            known.add(id);
+            try {
+              uploadedAssets.push(await deps.api.client.assets.get(id, init));
+            } catch (err) {
+              if (!(err instanceof ApiError && err.status === 404)) throw err;
+            }
+          }
+        }
+
         ctx.progress(0.18, "Görsel referanslar hazırlanıyor");
-        const candidateImageIds: { id: string; label: string }[] = [];
-        for (const a of uploadedAssets) {
-          if (a.source === "generated") continue;
-          if (a.kind === "logo" || a.kind === "image") {
+        const candidateImageIds: {
+          id: string;
+          label: string;
+          maxEdge: number;
+          sample: boolean;
+          /** Matte for transparent logos (a white logo is invisible on white). */
+          matte?: string;
+        }[] = [];
+        const fullEdge = deps.settings.imageMaxEdge;
+        if (kit) {
+          const total = Math.min(kit.samples.length, MAX_KIT_SAMPLES);
+          for (const [i, sample] of kit.samples.slice(0, MAX_KIT_SAMPLES).entries()) {
+            const caption = sample.caption?.trim();
             candidateImageIds.push({
-              id: a.id,
-              label: `${a.kind}: ${a.originalFilename ?? a.id}`,
+              id: sample.assetId,
+              label: `örnek post ${i + 1}/${total}${caption ? ` — paylaşılan açıklama: "${caption.slice(0, 400)}"` : ""}`,
+              maxEdge: Math.min(fullEdge, KIT_SAMPLE_MAX_EDGE),
+              sample: true,
             });
+          }
+          for (const logo of kit.logos.slice(0, MAX_KIT_LOGO_REFS)) {
+            const asset = uploadedAssets.find((a) => a.id === logo.assetId);
+            candidateImageIds.push({
+              id: logo.assetId,
+              label: `logo (${LOGO_BACKGROUND_LABEL[logo.background]}): ${logo.label ?? asset?.originalFilename ?? logo.assetId}`,
+              maxEdge: Math.min(fullEdge, KIT_SAMPLE_MAX_EDGE),
+              sample: false,
+              matte: logo.background === "dark" ? "#141414" : "#FFFFFF",
+            });
+          }
+        } else {
+          for (const a of uploadedAssets) {
+            if (a.source === "generated") continue;
+            if (a.kind === "logo" || a.kind === "image") {
+              candidateImageIds.push({
+                id: a.id,
+                label: `${a.kind}: ${a.originalFilename ?? a.id}`,
+                maxEdge: fullEdge,
+                sample: false,
+              });
+            }
           }
         }
         for (const [idx, sp] of payload.samplePosts.entries()) {
@@ -394,30 +590,44 @@ export function createBrandAnalyzeHandler(deps: AgentDeps) {
             candidateImageIds.push({
               id: sp.imageAssetId,
               label: `samplePost #${idx + 1} image`,
+              maxEdge: fullEdge,
+              sample: true,
             });
           }
         }
+        const maxRefs = kit ? MAX_KIT_SAMPLES + MAX_KIT_LOGO_REFS : MAX_VISUAL_REFS;
 
         const visualBlocks: ClaudeContentBlock[] = [];
         let visualRefsCount = 0;
-        for (const ref of candidateImageIds.slice(0, MAX_VISUAL_REFS)) {
+        let samplesUsed = 0;
+        for (const ref of candidateImageIds.slice(0, maxRefs)) {
           signal.throwIfAborted();
           try {
             const { bytes } = await deps.api.downloadAsset(ref.id, {
               maxBytes: deps.settings.imageMaxBytes,
               signal,
             });
-            const prepared = await prepareModelImage(bytes, {
-              maxEdge: deps.settings.imageMaxEdge,
-            });
+            const prepared = await prepareModelImage(
+              ref.matte ? await rasterizeLogo(bytes, ref.matte) : bytes,
+              { maxEdge: ref.maxEdge },
+            );
             if (!prepared) continue;
             visualBlocks.push({ type: "text", text: `Görsel referans (${ref.label}):` });
             visualBlocks.push(imageBlock(prepared));
             visualRefsCount++;
-          } catch {
+            if (ref.sample) samplesUsed++;
+          } catch (err) {
+            if (signal.aborted) throw err;
             // Skip unreadable asset without failing the whole brand analysis
           }
         }
+        if (kit && kit.samples.length > 0 && samplesUsed === 0) {
+          throw new Error(
+            "Örnek post görselleri okunamadı; marka kitindeki görselleri yeniden yükleyip tekrar deneyin.",
+          );
+        }
+        // Fewer samples than the kit asks for: still useful, but say so in the profile.
+        const thinEvidence = kit !== null && samplesUsed < MIN_KIT_SAMPLES;
 
         let feedbackBlock = "";
         let feedbackCount = 0;
@@ -440,9 +650,19 @@ export function createBrandAnalyzeHandler(deps: AgentDeps) {
           .join("\n");
 
         const docAssets = uploadedAssets
-          .filter((a) => a.kind === "document" || a.kind === "font")
+          .filter((a) => a.kind === "document" || (!kit && a.kind === "font"))
           .map((a) => `- ${a.kind}: ${a.originalFilename ?? a.id} (${a.mimeType})`)
           .join("\n");
+        const kitPalette = (kit?.palette ?? [])
+          .map((c) => `- ${c.name}: ${c.hex.toUpperCase()}${c.use ? ` (${c.use})` : ""}`)
+          .join("\n");
+        const kitFonts = (kit?.fonts ?? [])
+          .map(
+            (f) =>
+              `- ${f.family} (${f.role === "display" ? "başlık" : f.role === "text" ? "gövde" : "başlık ve gövde"})${f.licenseNote ? ` — lisans: ${f.licenseNote}` : ""}`,
+          )
+          .join("\n");
+        const notes = [kit?.notes?.trim(), payload.notes?.trim()].filter(Boolean).join("\n\n");
 
         const route = resolveStructuredRoute({
           requestedModel: payload.model,
@@ -458,11 +678,19 @@ Görevin markanın görsel referanslarını, örnek postlarını, onaylanmış i
 1. \`colors\`: Markanın gerçek renk sistemi (#RRGGBB hex kodları; kontrast kurallarına uygun açık zemin \`paper\`, ikincil yüzey \`mist\`, koyu metin \`ink\`, gövde \`graphite\`, ikincil metin \`stone\`, ana vurgu \`accent\` ve koyu vurgu \`accent-deep\` dahil).
 2. \`designRules\` (DESIGN.md): Türkçe; tipografik hiyerarşi, ızgara ve boşluk disiplini, renk oranları, görsel/logo kullanımı, yapılacaklar ve yapılmayacaklar. Kullanıcının geçmişte yaptığı tekrar eden elle düzeltmeler varsa bunları net tasarım kuralına dönüştür.
 3. \`voice\` (VOICE.md): Türkçe; ses tonu, cümle uzunluğu, hitap biçimi, yüksek etkileşim alan açıklama kalıpları, hashtag ve CTA kuralları.
-4. \`allowedNumbers\`, \`statements\`, \`forbiddenClaims\`: Yalnızca kaynaklarda gerçekten geçen doğrulanmış sayıları ve gerçekleri yaz; asla ürün özelliği ya da rakam uydurma.`;
+4. \`allowedNumbers\`, \`statements\`, \`forbiddenClaims\`: Yalnızca kaynaklarda gerçekten geçen doğrulanmış sayıları ve gerçekleri yaz; asla ürün özelliği ya da rakam uydurma.
+5. \`marginPx\`, \`gutterPx\`, \`cornerRadiusPx\`: Örnek postlarda gözlenen kenar boşluğu, öğe aralığı ve köşe yarıçapı (1080 px genişliğe göre).
+Kullanıcı paleti ve font aileleri verildiyse onlar kesindir; görsellerden farklı bir renk ya da font tahmin etme.`;
 
         const promptSections = [
           `Marka: ${brand.name} (slug: ${brand.slug}, dil: ${brand.defaultLanguage})`,
-          payload.notes ? `<kullanici_notlari>\n${payload.notes}\n</kullanici_notlari>` : "",
+          notes ? `<kullanici_notlari>\n${notes}\n</kullanici_notlari>` : "",
+          kitPalette
+            ? `<kullanici_paleti>\nKullanıcının onayladığı marka renkleri; bunları aynen kullan ve rollere (paper, mist, ink, graphite, stone, accent, accent-deep) eşle, yeni ton uydurma:\n${kitPalette}\n</kullanici_paleti>`
+            : "",
+          kitFonts
+            ? `<marka_fontlari>\nYüklenen font dosyaları (aile adları kesin; displayFontFamily ve textFontFamily bunlardan seçilmeli):\n${kitFonts}\n</marka_fontlari>`
+            : "",
           docAssets ? `<yuklu_dosyalar>\n${docAssets}\n</yuklu_dosyalar>` : "",
           existingProfile
             ? `<mevcut_profil surum="${existingProfile.version}">\nVOICE:\n${existingProfile.voice.slice(0, 2500)}\n\nDESIGN:\n${existingProfile.designRules.slice(0, 2500)}\n\nFACTS:\n${JSON.stringify(existingProfile.tokens.facts ?? null)}\n</mevcut_profil>`
@@ -493,11 +721,13 @@ Görevin markanın görsel referanslarını, örnek postlarını, onaylanmış i
         });
 
         const parsed = BrandAnalysisModelOutput.parse(aiResult.output);
+        if (thinEvidence) parsed.provisional = true;
         const tokens = buildValidatedBrandTokens({
           brand,
           existingProfile,
           uploadedAssets,
           analyzed: parsed,
+          kit,
         });
 
         ctx.progress(0.85, "Marka profili kaydediliyor");
@@ -524,6 +754,8 @@ Görevin markanın görsel referanslarını, örnek postlarını, onaylanmış i
           provider: aiResult.provider,
           model: aiResult.model,
           visualReferencesUsed: visualRefsCount,
+          samplesUsed,
+          usedKit: kit !== null,
           feedbackItemsAnalyzed: feedbackCount,
         };
       } catch (error) {

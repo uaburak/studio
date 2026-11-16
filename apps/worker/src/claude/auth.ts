@@ -27,6 +27,8 @@ export interface ClaudeAuthControllerOptions {
   env?: ClaudeEnvOptions;
   parentEnv?: NodeJS.ProcessEnv;
   loginTimeoutMs?: number;
+  /** While signing in, re-read `claude auth status` this often (default 3 s). */
+  loginPollMs?: number;
   logger?: Logger;
   onLoginComplete?: () => void | Promise<void>;
   /** Test seams. */
@@ -124,6 +126,7 @@ export class ClaudeAuthController {
   private current: ClaudeAccount;
   private loginChild: ChildProcess | undefined;
   private loginTimer: ReturnType<typeof setTimeout> | undefined;
+  private pollTimer: ReturnType<typeof setInterval> | undefined;
   private readonly listeners = new Set<(account: ClaudeAccount) => void>();
   private readonly logger: Logger;
   private readonly now: () => Date;
@@ -237,10 +240,12 @@ export class ClaudeAuthController {
 
     let child: ChildProcess;
     try {
+      // stdin stays open (as in Wecra): the CLI waits for the browser instead of reading EOF.
       child = spawn(bin, ["auth", "login", "--claudeai"], {
         env,
-        stdio: ["ignore", "pipe", "pipe"],
+        stdio: ["pipe", "pipe", "pipe"],
       });
+      child.stdin?.on("error", () => undefined);
     } catch (error) {
       const failed: ClaudeAccount = {
         status: "error",
@@ -287,6 +292,21 @@ export class ClaudeAuthController {
     child.stderr?.setEncoding("utf8");
     child.stderr?.on("data", onChunk);
 
+    // Poll the status: once signed in, the background login is not needed any more.
+    const probe = this.options.probe ?? (() => probeClaudeAccountInfo(bin, env));
+    this.pollTimer = setInterval(() => {
+      if (this.loginChild !== child) return;
+      void probe()
+        .then((info) => {
+          if (info.loggedIn && this.loginChild === child) {
+            this.logger.info("claude: signed in; ending the background login");
+            child.kill("SIGINT");
+          }
+        })
+        .catch(() => undefined);
+    }, this.options.loginPollMs ?? 3_000);
+    this.pollTimer.unref?.();
+
     let timedOut = false;
     this.loginTimer = setTimeout(() => {
       if (this.loginChild !== child) return;
@@ -299,6 +319,7 @@ export class ClaudeAuthController {
     const finalize = () => {
       if (this.loginChild !== child) return;
       clearTimeout(this.loginTimer);
+      clearInterval(this.pollTimer);
       this.loginTimer = undefined;
       this.loginChild = undefined;
       void (async () => {
@@ -319,6 +340,7 @@ export class ClaudeAuthController {
     child.on("error", (err) => {
       if (this.loginChild !== child) return;
       clearTimeout(this.loginTimer);
+      clearInterval(this.pollTimer);
       this.loginTimer = undefined;
       this.loginChild = undefined;
       const notFound = (err as NodeJS.ErrnoException).code === "ENOENT";
@@ -341,6 +363,7 @@ export class ClaudeAuthController {
 
   stop(): void {
     clearTimeout(this.loginTimer);
+    clearInterval(this.pollTimer);
     this.loginTimer = undefined;
     const child = this.loginChild;
     this.loginChild = undefined;

@@ -377,6 +377,133 @@ describe("content.generate handler (fake renderer)", () => {
     expect(progress).toContain("Görseller yükleniyor");
   });
 
+  it("revises an existing version with the user's instruction in one call (ai_edit)", async () => {
+    const { api, state } = createFakeApi({ brands: [fakeBrand()] });
+    state.contents.set(
+      "content_1",
+      content({
+        caption: "Eski açıklama",
+        currentVersion: { id: "ver_1", version: 1, contentHash: "a".repeat(64) },
+      }),
+    );
+    const baseHtml = typographic.replace(
+      "</main>",
+      '<img data-layer="photo-x" data-type="image" src="/media/asset_user.jpg" alt=""></main>',
+    );
+    state.versions.push({
+      id: "ver_1",
+      contentId: "content_1",
+      version: 1,
+      origin: "manual_edit",
+      contentHash: "a".repeat(64),
+      slideCount: 1,
+      note: null,
+      jobId: null,
+      createdAt: NOW,
+      updatedAt: NOW,
+      slides: [
+        {
+          html: baseHtml,
+          width: 1080,
+          height: 1350,
+          renderedAssetId: "asset_render_v1",
+          layers: null,
+        },
+      ],
+    });
+    state.assets.set("asset_render_v1", { bytes: await jpeg(), contentType: "image/jpeg" });
+    state.assets.set("asset_user", { bytes: await jpeg(), contentType: "image/jpeg" });
+
+    const calls: ClaudeCallOptions[] = [];
+    const runner: ClaudeRunner = async (options) => {
+      calls.push(options);
+      return designResult(baseHtml.replace("</main>", "<!-- edited --></main>"));
+    };
+    let mediaResolved = false;
+    const renderer: SlideRenderer = {
+      async renderAndLint(req) {
+        mediaResolved = (await req.resolver?.resolve("/media/asset_user.jpg")) != null;
+        return {
+          jpeg: await jpeg(),
+          pixelWidth: 1080,
+          pixelHeight: 1350,
+          deviceScaleFactor: 1,
+          network: { blocked: [], missing: [] },
+          served: [],
+          timings: {
+            contextMs: 1,
+            loadMs: 1,
+            assetsMs: 1,
+            screenshotMs: 1,
+            encodeMs: 1,
+            totalMs: 5,
+          },
+          report: {
+            ...report(1),
+            layers: [
+              {
+                id: "headline",
+                type: "text",
+                role: "headline",
+                parent: null,
+                rect: { x: 64, y: 80, w: 900, h: 200 },
+                visible: true,
+              },
+            ],
+          } as LintReport,
+        };
+      },
+    };
+    const handler = createContentGenerateHandler(makeDeps(api, runner, renderer));
+    const job = jobFor({
+      brandId: "brand_1",
+      contentId: "content_1",
+      brief: "Ürünü tanıt.",
+      type: "post",
+      baseVersion: 1,
+      instructions: "Başlığı biraz küçült",
+    });
+    const { ctx } = ctxFor(job);
+    const out = await handler.run(job.payload as never, ctx);
+
+    // One edit call (lint errors alone do not trigger fix passes), with the base render attached.
+    expect(calls.map((c) => c.label)).toEqual(["content-ontent_1-edit"]);
+    const text = calls[0]?.content[0];
+    expect(text?.type === "text" && text.text).toContain("Başlığı biraz küçült");
+    expect(text?.type === "text" && text.text).toContain("Eski açıklama");
+    expect(text?.type === "text" && text.text).toContain('src="/media/asset_user.jpg"');
+    expect(calls[0]?.content.filter((b) => b.type === "image")).toHaveLength(1);
+    expect(mediaResolved).toBe(true);
+
+    const created = state.versionCreates[0];
+    expect(created).toMatchObject({ origin: "ai_edit", jobId: "job_gen" });
+    expect(created?.note).toContain("AI düzenleme (v1 üzerine): Başlığı biraz küçült");
+    expect(created?.slides[0]?.html).toContain("<!-- edited -->");
+    expect(created?.slides[0]?.html).toContain('src="/media/asset_user.jpg"');
+    expect(created?.layouts).toEqual([
+      [
+        {
+          id: "headline",
+          type: "text",
+          role: "headline",
+          parent: null,
+          x: 64,
+          y: 80,
+          w: 900,
+          h: 200,
+          visible: true,
+        },
+      ],
+    ]);
+    expect(out).toMatchObject({
+      version: 2,
+      baseVersion: 1,
+      revised: true,
+      calls: 1,
+      finalPass: "edit",
+    });
+  });
+
   it("runs a fix pass while errors remain and reuses a version stored by an earlier attempt", async () => {
     const { api, state } = createFakeApi({ brands: [fakeBrand()] });
     state.contents.set("content_1", content({ type: "carousel" }));

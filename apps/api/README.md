@@ -46,6 +46,13 @@ draft ──► in_review ──► approved ──► scheduled ──► publi
   `scheduled` yalnızca zamanlama oluşturunca, `publishing / published / failed` yalnızca yayın motoruyla gelir.
 - Tüm kurallar `packages/contract/src/content.ts` içinde (`CONTENT_TRANSITIONS`, `MANUAL_CONTENT_TRANSITIONS`).
 
+### Katman kutuları (`Slide.layers`, P1)
+
+Her slayt, render edildiği andaki `[data-layer]` kutularını taşır (`SlideLayerBox`: kimlik, tür, rol, üst grup,
+artboard pikselinde `x/y/w/h`, görünürlük). Worker render ettikçe `PATCH …/versions/{version}` ile `layouts` olarak
+yazar (`content_version_slides.layers`, migration `0009_slide_layouts`); hash'i etkilemez. Editörler seçim kutularını
+buradan çizer; ölçülmemiş slaytta `null`.
+
 ## Uçlar
 
 Tam liste ve şemalar: `GET /api/openapi.json`.
@@ -54,10 +61,11 @@ Tam liste ve şemalar: `GET /api/openapi.json`.
 | --------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Markalar        | `GET/POST /api/brands`, `GET/PATCH /api/brands/{id}`                                                                                                                                                                    |
 | Marka profili   | `GET/POST /api/brands/{brandId}/profiles`, `GET …/profiles/current`, `GET/PATCH …/profiles/{version}`, `POST …/profiles/{version}/approve`                                                                              |
+| Marka kiti      | `GET/PUT /api/brands/{brandId}/kit` (aşağıda)                                                                                                                                                                           |
 | Sosyal hesaplar | `GET/POST /api/social-accounts`, `GET/PATCH /api/social-accounts/{id}`                                                                                                                                                  |
 | Varlıklar       | `GET /api/assets`, `POST /api/assets` (multipart: `file`, `brandId`, isteğe bağlı `kind`, `source`, `width`, `height`, `durationMs`), `GET /api/assets/{id}`, `GET /api/assets/{id}/content` (Range ve ETag destekli)   |
-| İçerikler       | `GET/POST /api/contents`, `GET/PATCH/DELETE /api/contents/{id}`, `POST …/approve`, `POST …/transition`                                                                                                                  |
-| Sürümler        | `GET/POST /api/contents/{id}/versions`, `GET/PATCH /api/contents/{id}/versions/{version}`                                                                                                                               |
+| İçerikler       | `GET/POST /api/contents`, `GET/PATCH/DELETE /api/contents/{id}`, `POST …/approve`, `POST …/transition`, `POST …/duplicate` (güncel sürümle yeni taslak kopya)                                                           |
+| Sürümler        | `GET/POST /api/contents/{id}/versions`, `GET/PATCH /api/contents/{id}/versions/{version}`, `POST …/versions/{version}/restore` (eski sürümün birebir kopyası yeni sürüm olur; render ve katman kutuları korunur)        |
 | İşler           | `GET/POST /api/jobs`, `GET /api/jobs/{id}`, `POST /api/jobs/{id}/cancel`, `GET /api/jobs/stream` (WebSocket, canlı izleme)                                                                                              |
 | Worker          | `GET /api/workers/presence` (Mac çevrimiçi mi, şu an çalışan işler, kuyruk uzunluğu); `GET /api/hub` (worker WebSocket'i, token ister)                                                                                  |
 | Zamanlama       | `GET/POST /api/schedules`, `GET /api/schedules/{id}`, `POST …/cancel`, `GET …/logs`                                                                                                                                     |
@@ -65,6 +73,10 @@ Tam liste ve şemalar: `GET /api/openapi.json`.
 | Ajan turları    | `GET /api/agent-runs/{id}`, `POST /api/agent-runs/{id}/cancel`                                                                                                                                                          |
 | Planlar         | `GET /api/plans`, `GET/PATCH /api/plans/{id}`, `POST …/accept`, `POST …/reject`, `POST …/generate`                                                                                                                      |
 | Worker turu     | `POST /api/worker/runs/{runId}/start`, `GET …/context`, `POST …/ops`, `PUT …/plan`, `POST …/complete`, `POST …/fail` (worker token'ı ister)                                                                             |
+
+**Marka kiti** (P2): logolar (zemin `any`/`light`/`dark`), fontlar (aile, rol, lisans notu), palet (`#RRGGBB`),
+örnek postlar (3–12) ve notlar. Tek JSON belge olarak MEDIA'da `brands/{id}/kit.json` tutulur (migration yok);
+her dosya aynı markanın uygun türde varlığı olmalı, değilse `400`. `brand.analyze` bunu okur.
 
 `/api/health` ve `/api/openapi.json` aynen duruyor. Yalnızca geliştirmede açık `/api/dev/*` uçları artık gerçek iş yolunun
 ince takma adları: `POST /api/dev/jobs/demo` bir `demo.echo` işini `POST /api/jobs` ile aynı şekilde D1'e yazar,
@@ -306,6 +318,22 @@ platformlar, `baseVersion`, görsel yuvası beklentisi ve tarifi, plan kalemi, k
 ek talimat). `POST /api/jobs` bu şemayı geriye uyumluluk için henüz zorlamıyor; worker
 `parseContentGenerateJob(job)` ile okur (marka/içerik kimliklerini iş satırından tamamlar). İş durumları plan
 kartına `plan.updated` olarak yansır.
+
+### Araçlı ajan (A5): araç adımları, izin kartları, oturum, Claude girişi
+
+- **Yeni parça türleri** (ek, eski istemciler `unknown` olarak atlar): `tool_step {id, name, label, state
+  running|done|error, summary}` (worker yazar, aynı indekste değiştirir) ve `consent {consentId, tool, title, detail,
+  state pending|allowed|denied|expired, decidedAt}`. Worker kartı `pending` yazar; sahip
+  `POST /api/conversations/{id}/messages/{messageId}/consent {consentId, allow}` ile cevaplar (aynı karar etkisiz,
+  farklısı `409`, `expired` kart `409`; soru cevabından farklı olarak yeni tur başlatmaz). Karar verilmiş/süresi
+  dolmuş kart worker'ın `part.set`'iyle değişmez. Tur biterken (tamamlanma, hata, iptal) bekleyen kartlar `expired`.
+- **Worker okuması:** `GET /api/worker/runs/{runId}/message` → `{run, message}` (soru/izin beklerken yoklanır).
+- **Oturum:** `complete {session: {id}}` → konuşmada `agentSession {id, messageCount, runId, updatedAt}`
+  (`messageCount` o anki mesaj sayısı; migration `0007_agent_session`). `TurnContext.messageCount` konuşmanın tüm
+  mesaj sayısı; worker oturumu yalnızca arada başka bir şey olmadıysa sürdürür.
+- **Claude girişi:** worker `worker.claude` çerçevesiyle `claude auth status`'u bildirir (presence `claude`, DO
+  deposunda kalıcı). `GET /api/workers/claude`, `POST /api/workers/claude/login` (yalnızca Mac'in kendisi,
+  `requireLocal`) ve `POST …/status` hub üzerinden worker'a `worker.command` gönderir; bağlı worker yoksa `409`.
 
 ## Görsel takma adları ve @anmalar (A2b)
 

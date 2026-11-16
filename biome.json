@@ -17,7 +17,8 @@
       "!**/worker-configuration.d.ts",
       "!**/migrations/meta",
       "!apps/apple",
-      "!apps/ios"
+      "!apps/ios",
+      "!agent/skills"
     ]
   },
   "formatter": {

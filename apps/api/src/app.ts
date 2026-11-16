@@ -8,6 +8,7 @@ import { errorBody, handleError } from "./lib/errors.ts";
 import { createRouter } from "./lib/router.ts";
 import { accessControl } from "./middleware/access.ts";
 import { assetRoutes } from "./routes/assets.ts";
+import { brandKitRoutes } from "./routes/brand-kits.ts";
 import { brandProfileRoutes } from "./routes/brand-profiles.ts";
 import { brandRoutes } from "./routes/brands.ts";
 import { contentRoutes } from "./routes/contents.ts";
@@ -70,6 +71,7 @@ app.openapi(healthRoute, async (c) => {
 
 app.route("/", brandRoutes);
 app.route("/", brandProfileRoutes);
+app.route("/", brandKitRoutes);
 app.route("/", socialAccountRoutes);
 app.route("/", assetRoutes);
 app.route("/", contentRoutes);

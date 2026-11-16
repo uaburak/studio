@@ -23,7 +23,7 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
         case calendar
         case media
         case spacer
-        case brandHeader(Brand, expanded: Bool)
+        case brandHeader(Brand, expanded: Bool, current: Bool)
         case conversation(Conversation)
         case emptyBrand(EntityID)
         case actionNewBrand
@@ -58,6 +58,7 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
             guard let self else { return }
             Task { await self.app.conversationModel(convId).archive() }
         }
+        tableView.brandMenu = { [weak self] brandId in self?.brandMenu(brandId) }
 
         scrollView.drawsBackground = false
         scrollView.borderType = .noBorder
@@ -104,7 +105,7 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
         for brand in app.sidebarBrands {
             list.append(.spacer)
             let expanded = app.expandedBrands.contains(brand.id)
-            list.append(.brandHeader(brand, expanded: expanded))
+            list.append(.brandHeader(brand, expanded: expanded, current: brand.id == app.currentBrandId))
             if expanded {
                 let convs = app.conversations(of: brand.id)
                 if convs.isEmpty {
@@ -136,6 +137,10 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
             rows = next
             tableView.rowConversationIds = rows.map {
                 if case .conversation(let c) = $0 { return c.id }
+                return nil
+            }
+            tableView.rowBrandIds = rows.map {
+                if case .brandHeader(let brand, _, _) = $0 { return brand.id }
                 return nil
             }
             isSyncingSelection = true
@@ -195,8 +200,8 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
         case .actionNewBrand:
             app.newBrandPresented = true
             return false
-        case .brandHeader(let brand, _):
-            app.toggleBrand(brand.id)
+        case .brandHeader(let brand, _, _):
+            activateBrand(brand.id)
             return false
         case .posts, .calendar, .media, .conversation:
             return true
@@ -245,10 +250,10 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
             return makeIconLabelCell(symbol: "photo.on.rectangle.angled", title: "Medya", help: "Medya kütüphanesi ve AI görsel üretimi (⇧⌘M)")
 
         case .actionNewBrand:
-            return makeIconLabelCell(symbol: "plus.circle", title: "Yeni Marka…", muted: false, help: "Yeni müşteri markası ekle")
+            return makeIconLabelCell(symbol: "plus.circle", title: "Yeni marka…", muted: false, help: "Yeni müşteri markası ekle (⇧⌘N)")
 
-        case .brandHeader(let brand, let expanded):
-            return makeBrandHeaderCell(brand: brand, expanded: expanded)
+        case .brandHeader(let brand, let expanded, let current):
+            return makeBrandHeaderCell(brand: brand, expanded: expanded, current: current)
 
         case .unbrandedHeader:
             let cell = NSTableCellView()
@@ -335,13 +340,76 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
         return cell
     }
 
-    private func makeBrandHeaderCell(brand: Brand, expanded: Bool) -> NSView {
-        let cell = BrandHeaderCellView { [weak app] in
-            app?.toggleBrand(brand.id)
+    /// Brand header click: switch to that brand (chat, posts, calendar and media follow);
+    /// clicking the current brand again folds or unfolds its conversations.
+    private func activateBrand(_ id: EntityID) {
+        if app.currentBrandId == id {
+            app.toggleBrand(id)
+        } else {
+            app.selectBrand(id)
         }
-        cell.setAccessibilityLabel("\(brand.name), \(expanded ? "daralt" : "genişlet")")
+    }
 
-        let label = NSTextField.styledLabel(brand.name, font: Theme.captionFont, color: Theme.textSecondary)
+    private func brandMenu(_ brandId: EntityID) -> NSMenu? {
+        guard let brand = app.brand(brandId) else { return nil }
+        let menu = NSMenu()
+        func item(_ title: String, _ action: @escaping () -> Void) {
+            let entry = ClosureMenuItem(title: title, action: action)
+            menu.addItem(entry)
+        }
+        if app.currentBrandId != brandId {
+            item("Bu markaya geç") { [weak app] in app?.selectBrand(brandId) }
+            menu.addItem(.separator())
+        }
+        item("Marka ayarları…") { [weak app] in app?.openBrandSettings(brandId) }
+        item("Marka kiti…") { [weak app] in app?.openBrandSettings(brandId, tab: .kit) }
+        item("Marka profili…") { [weak app] in app?.openBrandSettings(brandId, tab: .profile) }
+        menu.addItem(.separator())
+        item("Postlar") { [weak app] in
+            app?.selectBrand(brandId)
+            app?.navigate(to: .posts)
+        }
+        item("Takvim") { [weak app] in
+            app?.selectBrand(brandId)
+            app?.navigate(to: .calendar)
+        }
+        menu.addItem(.separator())
+        item("Markayı arşivle…") { [weak self] in self?.confirmArchive(brand) }
+        return menu
+    }
+
+    private func confirmArchive(_ brand: Brand) {
+        let alert = NSAlert()
+        alert.messageText = "\(brand.name) arşivlensin mi?"
+        alert.informativeText = "Marka kenar çubuğundan kalkar ve yeni içerik üretilmez. Postlar, profil sürümleri ve sohbetler silinmez; Marka ayarları → Genel'den geri yükleyebilirsin."
+        alert.addButton(withTitle: "Arşivle")
+        alert.addButton(withTitle: "Vazgeç")
+        alert.buttons.last?.keyEquivalent = "\u{1b}"
+        let run: (NSApplication.ModalResponse) -> Void = { [weak self] response in
+            guard response == .alertFirstButtonReturn, let self else { return }
+            Task { @MainActor in
+                do {
+                    try await self.app.archiveBrand(brand.id)
+                } catch {
+                    self.app.show(error: error)
+                }
+            }
+        }
+        if let window = view.window { alert.beginSheetModal(for: window, completionHandler: run) } else { run(alert.runModal()) }
+    }
+
+    private func makeBrandHeaderCell(brand: Brand, expanded: Bool, current: Bool) -> NSView {
+        let cell = BrandHeaderCellView { [weak self] in
+            self?.activateBrand(brand.id)
+        }
+        cell.setAccessibilityLabel("\(brand.name)\(current ? ", seçili marka" : ""), \(expanded ? "daralt" : "genişlet")")
+        cell.toolTip = current ? "Seçili marka · tıkla: sohbetleri aç/kapat · sağ tık: marka ayarları" : "Bu markaya geç · sağ tık: marka ayarları"
+
+        let label = NSTextField.styledLabel(
+            brand.name,
+            font: current ? NSFont.systemFont(ofSize: 12, weight: .semibold) : Theme.captionFont,
+            color: current ? Theme.textPrimary : Theme.textSecondary
+        )
         let chevron = NSImageView()
         chevron.image = NSImage(systemSymbolName: expanded ? "chevron.down" : "chevron.right", accessibilityDescription: nil)?
             .withSymbolConfiguration(.init(pointSize: 8, weight: .semibold))
@@ -409,13 +477,33 @@ private final class BrandHeaderCellView: NSTableCellView {
     }
 }
 
+/// Menu item that runs a closure.
+final class ClosureMenuItem: NSMenuItem {
+    private let handler: () -> Void
+
+    init(title: String, action handler: @escaping () -> Void) {
+        self.handler = handler
+        super.init(title: title, action: #selector(run), keyEquivalent: "")
+        target = self
+    }
+
+    required init(coder: NSCoder) { fatalError("not used") }
+
+    @objc private func run() { handler() }
+}
+
 private final class SidebarTableView: NSTableView {
     var rowConversationIds: [EntityID?] = []
+    var rowBrandIds: [EntityID?] = []
     var onArchiveConversation: ((EntityID) -> Void)?
+    var brandMenu: ((EntityID) -> NSMenu?)?
 
     override func menu(for event: NSEvent) -> NSMenu? {
         let point = convert(event.locationInWindow, from: nil)
         let row = self.row(at: point)
+        if row >= 0, row < rowBrandIds.count, let brandId = rowBrandIds[row] {
+            return brandMenu?(brandId)
+        }
         guard row >= 0, row < rowConversationIds.count, let convId = rowConversationIds[row] else { return nil }
         let menu = NSMenu()
         let item = NSMenuItem(title: "Sohbeti arşivle", action: #selector(archiveClicked(_:)), keyEquivalent: "")

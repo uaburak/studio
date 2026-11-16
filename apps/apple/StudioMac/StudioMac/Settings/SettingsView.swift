@@ -142,6 +142,9 @@ final class SettingsSheetViewController: NSViewController, NSTextFieldDelegate {
         ))
         addSection(appearanceGroup, to: formStack)
 
+        // Markalar (active + archived, restore, first-run guide)
+        addSection(BrandsSectionView(app: app), to: formStack)
+
         // 2. Yapay Zekâ Bağlantıları (Claude + Gemini)
         let aiSection = AIConnectionsSectionView(app: app)
         addSection(aiSection, to: formStack)

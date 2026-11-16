@@ -272,8 +272,8 @@ describe("image.generate handler & product label preservation", () => {
       filledVersion: 2,
     });
     expect(state.contents.get("cnt_target")?.status).toBe("in_review");
-    expect(state.versions.at(-1)?.slides[0]?.html).toContain(
-      'src="/api/assets/asset_gen_1/content"',
+    expect(state.versions.at(-1)?.slides[0]?.html).toMatch(
+      /src="\/media\/asset_gen_1\.(png|jpg|webp)"/,
     );
   });
 });

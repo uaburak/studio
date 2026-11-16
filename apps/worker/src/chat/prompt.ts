@@ -14,9 +14,12 @@ export const CHAT_SYSTEM_PROMPT = `Sen Studio'nun içerik ve sosyal medya ajanı
 - İşlem yaparken uygun Studio aracını (tool) çağır:
   - **Marka işlemleri**: \`list_brands\`, \`create_brand\`, \`get_brand_profile\`, \`analyze_brand\`, \`set_conversation_brand\` (konuşmanın markası henüz yoksa ve marka netse bağla).
   - **İçerik planlama**: Kullanıcı bir dönem (ör. "bu ay", "kasım ayı", "önümüzdeki iki hafta") için post planlaması istediğinde ya da açık planı revize etmek istediğinde \`propose_plan\` aracını çağır. Plan kartı sohbete otomatik eklendiği için kalemleri düz metinde tek tek listeleme; stratejiyi, kaç post olduğunu, hangi görsellerin (@takma ad) kullanıldığını ve sonraki adımı özetle.
+  - **Görseller**: \`list_aliases\` sohbete eklenen dosyaları @takma adlarıyla listeler (\`withThumbnails: true\` ile küçük önizlemeler); \`view_alias\` bir görsele bakmanı sağlar. Görselin içeriği önemliyse tahmin etme, bak.
+  - **Post üretimi**: \`generate_post\` (kabul edilmiş bir plan kalemi ya da yeni bir brief için tasarım işini kuyruğa alır; tasarımı sen yapmazsın), \`wait_jobs\` (işlerin bitmesini bekler), \`view_post\` (render edilmiş slaytlara bakar), \`revise_post\` (postu verilen talimatla yeniden üretir).
   - **Görsel üretimi, yuva doldurma ve PDF dışa aktarım**: \`generate_ai_image\` (Gemini ile yapay zekâ görseli üretir; ürün ambalajı referansı varsa \`preserveProductLabel: true\` kullan), \`fill_post_slot\` (bir postun görsel yuvasını @takma ad veya assetId ile doldurup yeniden render eder), \`export_content_pdf\` (LinkedIn carousel için çok sayfalı PDF üretir).
-  - **Eksik bilgi sorusu**: Plan veya işlem için kritik bir bilgi eksikse (ör. birden fazla marka varken hangisi olduğu belirsizse) \`ask_question\` aracını çağırarak etkileşimli seçenek kartı göster. Makul bir varsayımla ilerleyebiliyorsan soru sorma; varsayımını yanıtta belirt.
-  - **Post ve hesap inceleme**: Üretilmiş postları, slaytları, onay durumunu veya bağlı sosyal hesapları görmek için \`list_contents\`, \`get_content\`, \`list_social_accounts\` araçlarını kullan.
+  - **Eksik bilgi sorusu**: Plan veya işlem için kritik bir bilgi eksikse (ör. birden fazla marka varken hangisi olduğu belirsizse) \`ask_user\` ile tek bir soru sor; cevap aracın sonucu olarak gelir ve aynı turda devam edersin. Cevap gelmezse (\`answered: false\`) turu kısa bir cümleyle bitir. Makul bir varsayımla ilerleyebiliyorsan soru sorma; varsayımını yanıtta belirt.
+  - **Post ve hesap inceleme**: Üretilmiş postları, slaytları, onay durumunu veya bağlı sosyal hesapları görmek için \`list_contents\`, \`get_content\`, \`view_post\`, \`list_social_accounts\` araçlarını kullan.
+  - **Beceriler**: <beceriler> listesindeki bir beceri işe uyuyorsa talimatını \`get_skill\` ile al ve uygula. Kullanıcı mesajı /ad ile başlıyorsa o becerinin talimatı mesajın içinde verilir.
   - **İzin gerektiren işlemler (Consent kartları)**:
     - \`accept_and_generate_plan\`: Açık planı kabul eder ve post tasarımlarının üretimini (\`content.generate\`) başlatır.
     - \`approve_content\`: Bir postun mevcut tasarım sürümünü yayına onaylar.
@@ -116,23 +119,32 @@ export function messageText(message: Message, aliases: readonly TurnAlias[]): st
   return out.join("\n");
 }
 
-function transcript(context: TurnContext, aliases: readonly TurnAlias[], maxChars: number): string {
-  const lines: string[] = [];
+function transcript(
+  context: TurnContext,
+  aliases: readonly TurnAlias[],
+  maxChars: number,
+  maxMessages = Number.POSITIVE_INFINITY,
+): string {
+  const all = context.messages.filter((m) => m.id !== context.assistantMessage?.id);
+  const messages = Number.isFinite(maxMessages) ? all.slice(-Math.max(1, maxMessages)) : all;
+  const picked: string[] = []; // newest first
   let total = 0;
-  const messages = context.messages.filter((m) => m.id !== context.assistantMessage?.id);
+  let cut = messages.length < all.length;
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i] as Message;
     const who = m.role === "user" ? "Kullanıcı" : m.role === "assistant" ? "Asistan" : "Sistem";
     const text = clip(messageText(m, aliases), 3_000);
     const line = `### ${who} (${m.createdAt.slice(0, 16).replace("T", " ")})\n${text}`;
-    if (total + line.length > maxChars && lines.length > 0) {
-      lines.push("[... daha eski mesajlar kısaltıldı]");
+    if (total + line.length > maxChars && picked.length > 0) {
+      cut = true;
       break;
     }
-    lines.push(line);
+    picked.push(line);
     total += line.length;
   }
-  return lines.reverse().join("\n\n");
+  picked.reverse();
+  if (cut) picked.unshift("[... daha eski mesajlar kısaltıldı]");
+  return picked.join("\n\n");
 }
 
 function planSummary(plan: Plan): string {
@@ -178,6 +190,8 @@ export interface ChatPromptInput {
   brands: readonly Brand[];
   images: readonly ChatImageNote[];
   maxTranscriptChars?: number;
+  /** Replay at most this many recent messages (a new agent session: ~12). */
+  maxMessages?: number;
 }
 
 function formatAliasesBlock(
@@ -215,7 +229,7 @@ export function buildConversationMetadataBlock(input: ChatPromptInput): string {
   } else {
     const list = input.brands.map((b) => `- ${b.name} (slug: ${b.slug}, id: ${b.id})`).join("\n");
     blocks.push(
-      `<marka>\nBu konuşmanın henüz markası yok. Kullanıcının kastettiği marka aşağıdaki listeden açıkça anlaşılıyorsa \`set_conversation_brand\` veya \`propose_plan(brandId)\` ile o markanın id'sini kullan; anlaşılmıyorsa \`ask_question\` ile hangi marka olduğunu sor.\n${list || "(kayıtlı marka yok: kullanıcıdan önce marka eklemesini iste)"}\n</marka>`,
+      `<marka>\nBu konuşmanın henüz markası yok. Kullanıcının kastettiği marka aşağıdaki listeden açıkça anlaşılıyorsa \`set_conversation_brand\` veya \`propose_plan(brandId)\` ile o markanın id'sini kullan; anlaşılmıyorsa \`ask_user\` ile hangi marka olduğunu sor.\n${list || "(kayıtlı marka yok: kullanıcıdan önce marka eklemesini iste)"}\n</marka>`,
     );
   }
 
@@ -256,9 +270,9 @@ export function buildChatContext(input: ChatPromptInput): string {
   const { context } = input;
   const aliases = context.aliases ?? [];
   const meta = buildConversationMetadataBlock(input);
-  const conv = `<konusma>\n${transcript(context, aliases, input.maxTranscriptChars ?? 24_000) || "(boş)"}\n</konusma>`;
+  const conv = `<konusma>\n${transcript(context, aliases, input.maxTranscriptChars ?? 24_000, input.maxMessages) || "(boş)"}\n</konusma>`;
   const tail =
-    "Yukarıdaki konuşmanın son mesajına Türkçe yanıt ver; gerekiyorsa uygun Studio araçlarını (propose_plan, ask_question, list_contents, accept_and_generate_plan vb.) kullan.";
+    "Yukarıdaki konuşmanın son mesajına Türkçe yanıt ver; gerekiyorsa uygun Studio araçlarını (propose_plan, ask_user, list_aliases, view_alias, generate_post, accept_and_generate_plan vb.) kullan.";
   return `${meta}\n\n${conv}\n\n${tail}`;
 }
 
@@ -276,6 +290,14 @@ export function buildIncrementalChatPrompt(input: {
   }
   if (context.openPlan) {
     blocks.push(`<acik_plan>\n${planSummary(context.openPlan)}\n</acik_plan>`);
+  }
+  const trigger = context.messages.find((m) => m.id === context.run.triggerMessageId);
+  if (trigger && trigger.role !== "user") {
+    // An answered question of the last turn started this one.
+    blocks.push(
+      `<cevap>\nKullanıcı son turdaki soruyu cevapladı:\n${messageText(trigger, aliases)}\n</cevap>`,
+    );
+    return blocks.join("\n\n");
   }
   const latest = latestUserMessage(context);
   const text = latest ? messageText(latest, aliases) : "";

@@ -244,6 +244,52 @@ ${input.html}
 </first_pass_html>`;
 }
 
+/**
+ * "Neyi değiştireyim?": apply one user instruction to an existing, already reviewed
+ * design. Everything the instruction does not touch stays byte-for-byte the same, so
+ * the editor's layer ids, filled image slots and the user's earlier edits survive.
+ */
+export function buildEditPrompt(input: {
+  brief: DesignBrief;
+  instruction: string;
+  baseVersion: number;
+  caption: string;
+  imageNames: string[];
+  html: string;
+  slideIds: string;
+}): string {
+  const plural = input.imageNames.length > 1 ? "s" : "";
+  return `Revise the existing design
+
+The user reviewed version ${input.baseVersion} of this design (attached render${plural}: ${input.imageNames.join(", ") || "none"})
+and asks for this change, in their own words:
+
+<instruction>
+${input.instruction}
+</instruction>
+
+${briefBlock(input.brief)}
+
+Rules for this revision:
+1. Apply exactly the requested change, as a senior designer would interpret it. Keep everything else as it is:
+   layout, copy, colours, type, spacing, decoration, layer ids (\`data-layer\`), image slots and every image
+   \`src\` (filled slots keep their \`<img data-slot-image src="…">\` exactly), unless the change requires otherwise.
+2. Inline \`translate\`, \`rotate\` and \`scale\` in a layer's style come from the user's manual edits: keep them.
+3. If the instruction is about the caption or hashtags, revise the caption; otherwise return it unchanged.
+4. Do not add new numbers or claims; FACTS rules still apply. If the request conflicts with the brand rules or
+   FACTS, do the closest compliant thing and explain it in \`rationale\`.
+5. Return the complete HTML of every slide${input.slideIds}, also the unchanged ones.
+   \`critique\`: []; \`changes\`: what you changed, in Turkish, one short item per change.
+
+<current_caption>
+${input.caption}
+</current_caption>
+
+<current_html>
+${input.html}
+</current_html>`;
+}
+
 export function buildFixPrompt(input: {
   brief: DesignBrief;
   lint: unknown;

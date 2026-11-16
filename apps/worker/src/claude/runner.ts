@@ -9,8 +9,9 @@ import { createWriteStream, type WriteStream } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { buildClaudeArgs, buildClaudeEnv, type ClaudeEnvOptions } from "./args.ts";
+import { buildAgentArgs, buildClaudeArgs, buildClaudeEnv, type ClaudeEnvOptions } from "./args.ts";
 import { ClaudeError, ClaudeUsageLimitError } from "./errors.ts";
+import { type AgentStreamEvent, newStreamParseState, parseStreamLine } from "./events.ts";
 import { classifyFailure, isRejectedStatus, type RateLimitInfo } from "./limits.ts";
 import { JsonStringFieldStream, LineSplitter } from "./stream.ts";
 
@@ -58,6 +59,26 @@ export interface ClaudeCallOptions {
   mcpConfigFile?: string;
   /** Allowed MCP tools (`--allowedTools`). */
   allowedTools?: readonly string[];
+  /**
+   * The chat agent (A5): Studio's MCP server, `system` appended to Claude Code's own
+   * prompt, a session kept in the conversation's own folder. Replaces the flags above.
+   */
+  agent?: ClaudeAgentCall;
+}
+
+export interface ClaudeAgentCall {
+  /** The conversation's work folder (stable across turns: sessions are stored per folder). */
+  cwd: string;
+  /** The run's MCP config (`--mcp-config`, mode 0600). */
+  mcpConfigFile: string;
+  /** Start a new session with this id (`--session-id`)… */
+  sessionId?: string;
+  /** …or continue this one (`--resume`). */
+  resumeSessionId?: string;
+  /** Extra environment for the child (e.g. MCP_TOOL_TIMEOUT). */
+  extraEnv?: Record<string, string>;
+  /** Parsed stream events (session, tool steps, limits, result); text goes to `onTextDelta`. */
+  onEvent?: (event: AgentStreamEvent) => void;
 }
 
 export interface ClaudeCallResult {
@@ -93,8 +114,19 @@ export interface ClaudeRunnerOptions {
 
 export type ClaudeRunner = (options: ClaudeCallOptions) => Promise<ClaudeCallResult>;
 
-/** Grace period between SIGTERM and SIGKILL. */
-const KILL_GRACE_MS = 3000;
+/** Grace period between SIGINT and SIGKILL (Wecra's stopTurn). */
+export const KILL_GRACE_MS = 3000;
+
+/** Stop a CLI run: SIGINT (lets it end the session cleanly), SIGKILL after `graceMs`. */
+export function stopChild(child: ChildProcess, graceMs = KILL_GRACE_MS): void {
+  if (child.exitCode !== null || child.signalCode !== null) return;
+  child.kill("SIGINT");
+  const timer = setTimeout(() => {
+    if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+  }, graceMs);
+  timer.unref?.();
+  child.once("close", () => clearTimeout(timer));
+}
 
 export function createClaudeRunner(runnerOptions: ClaudeRunnerOptions = {}): ClaudeRunner {
   return (options) => runClaude(options, runnerOptions);
@@ -107,6 +139,7 @@ export async function runClaude(
   const signal = options.signal;
   signal?.throwIfAborted();
   const now = runnerOptions.now ?? (() => new Date());
+  if (options.agent) return runAgent(options, options.agent, runnerOptions, now);
   const workRoot = runnerOptions.workRoot ?? tmpdir();
   await mkdir(workRoot, { recursive: true });
   const workDir = await mkdtemp(path.join(workRoot, "claude-"));
@@ -125,13 +158,7 @@ export async function runClaude(
     ...(options.allowedTools ? { allowedTools: options.allowedTools } : {}),
   });
   const env = buildClaudeEnv(runnerOptions.parentEnv ?? process.env, runnerOptions.env);
-  let log: WriteStream | undefined;
-  if (runnerOptions.logDir) {
-    await mkdir(runnerOptions.logDir, { recursive: true });
-    const stamp = now().toISOString().replace(/[:.]/g, "-");
-    const safe = options.label.replace(/[^a-zA-Z0-9_.-]+/g, "_").slice(0, 80);
-    log = createWriteStream(path.join(runnerOptions.logDir, `${stamp}-${safe}.stream.jsonl`));
-  }
+  const log = await openLog(runnerOptions, options.label, now);
   try {
     return await execute({
       options,
@@ -146,6 +173,46 @@ export async function runClaude(
     log?.end();
     await rm(workDir, { recursive: true, force: true }).catch(() => undefined);
   }
+}
+
+/** A chat agent turn: stable cwd, MCP config, append system prompt, `--session-id` / `--resume`. */
+async function runAgent(
+  options: ClaudeCallOptions,
+  agent: ClaudeAgentCall,
+  runnerOptions: ClaudeRunnerOptions,
+  now: () => Date,
+): Promise<ClaudeCallResult> {
+  await mkdir(agent.cwd, { recursive: true });
+  const args = buildAgentArgs({
+    mcpConfigFile: agent.mcpConfigFile,
+    appendSystemPrompt: options.system,
+    model: options.model ?? runnerOptions.defaultModel,
+    effort: options.effort,
+    resumeSessionId: agent.resumeSessionId,
+    sessionId: agent.sessionId,
+  });
+  const env = buildClaudeEnv(runnerOptions.parentEnv ?? process.env, {
+    ...runnerOptions.env,
+    ...(agent.extraEnv ? { extra: agent.extraEnv } : {}),
+  });
+  const log = await openLog(runnerOptions, options.label, now);
+  try {
+    return await execute({ options, runnerOptions, args, env, cwd: agent.cwd, log, now });
+  } finally {
+    log?.end();
+  }
+}
+
+async function openLog(
+  runnerOptions: ClaudeRunnerOptions,
+  label: string,
+  now: () => Date,
+): Promise<WriteStream | undefined> {
+  if (!runnerOptions.logDir) return undefined;
+  await mkdir(runnerOptions.logDir, { recursive: true });
+  const stamp = now().toISOString().replace(/[:.]/g, "-");
+  const safe = label.replace(/[^a-zA-Z0-9_.-]+/g, "_").slice(0, 80);
+  return createWriteStream(path.join(runnerOptions.logDir, `${stamp}-${safe}.stream.jsonl`));
 }
 
 interface ExecuteInput {
@@ -193,7 +260,11 @@ function execute(input: ExecuteInput): Promise<ClaudeCallResult> {
     const assistantErrorTexts: string[] = [];
     let stderr = "";
     let settled = false;
-    let killTimer: ReturnType<typeof setTimeout> | undefined;
+    // Agent turns: the Wecra-style parser drives text and tool events.
+    const agent = options.agent;
+    const parseState = newStreamParseState();
+    /** Text or a tool call went out: retrying the call would repeat them. */
+    let partial = false;
 
     const finish = (fn: () => void) => {
       if (settled) return;
@@ -202,12 +273,7 @@ function execute(input: ExecuteInput): Promise<ClaudeCallResult> {
       options.signal?.removeEventListener("abort", onAbort);
       fn();
     };
-    const kill = () => {
-      if (child.exitCode !== null || child.signalCode !== null) return;
-      child.kill("SIGTERM");
-      killTimer = setTimeout(() => child.kill("SIGKILL"), KILL_GRACE_MS);
-      killTimer.unref?.();
-    };
+    const kill = () => stopChild(child);
     const timer = setTimeout(() => {
       kill();
       finish(() =>
@@ -238,6 +304,21 @@ function execute(input: ExecuteInput): Promise<ClaudeCallResult> {
       if (typeof event.session_id === "string" && event.session_id) {
         initSessionId ??= event.session_id;
       }
+      if (agent) {
+        for (const ev of parseStreamLine(event, parseState)) {
+          if (ev.type === "text") {
+            partial = true;
+            options.onTextDelta?.(ev.delta);
+          } else {
+            if (ev.type === "tool") partial = true;
+            try {
+              agent.onEvent?.(ev);
+            } catch {
+              // a listener's problem never breaks the run
+            }
+          }
+        }
+      }
       switch (event.type) {
         case "system":
           if (event.subtype === "init") {
@@ -247,7 +328,7 @@ function execute(input: ExecuteInput): Promise<ClaudeCallResult> {
           }
           return;
         case "stream_event":
-          handleStreamEvent(event.event as Record<string, unknown> | undefined);
+          if (!agent) handleStreamEvent(event.event as Record<string, unknown> | undefined);
           return;
         case "assistant": {
           const error = (event as { error?: unknown }).error;
@@ -319,7 +400,6 @@ function execute(input: ExecuteInput): Promise<ClaudeCallResult> {
       );
     });
     child.on("close", (code) => {
-      clearTimeout(killTimer);
       for (const line of splitter.end()) handleLine(line);
       if (settled) return;
       const wallMs = Date.now() - started;
@@ -327,6 +407,7 @@ function execute(input: ExecuteInput): Promise<ClaudeCallResult> {
         stderr: stderr.slice(0, 4000),
         exitCode: code,
         resultText: typeof result?.result === "string" ? result.result.slice(0, 4000) : "",
+        ...(partial ? { partial: true } : {}),
       };
       if (!result || result.is_error === true) {
         const fallbackResetMs = runnerOptions.fallbackResetMs ?? 30 * 60_000;
@@ -384,7 +465,8 @@ function execute(input: ExecuteInput): Promise<ClaudeCallResult> {
         }
       }
       const text = typeof final.result === "string" ? final.result : "";
-      if (options.onTextDelta && !options.schema && text) {
+      // Agent turns streamed their text already (deltas, or whole messages without partials).
+      if (options.onTextDelta && !options.schema && !agent && text) {
         if (!sawStreamTextDelta) {
           options.onTextDelta(text);
         } else if (text.startsWith(lastTurnEmittedText)) {

@@ -1,5 +1,4 @@
-import { spawn } from "node:child_process";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
@@ -197,57 +196,70 @@ function result(text: string, overrides: Partial<ClaudeCallResult> = {}): Claude
   };
 }
 
-/** Invoke the turn's real `studio-mcp.mjs` stdio MCP server as a child process! */
-async function callMcpStdioTool(
+/**
+ * Call a tool the way Claude Code does: Streamable HTTP JSON-RPC to the URL and bearer token
+ * of the run's mcp.json (initialize, then tools/call; JSON or SSE answer).
+ */
+export async function callMcpHttpTool(
   mcpConfigFile: string,
   toolName: string,
   toolArgs: Record<string, unknown>,
-): Promise<Record<string, unknown>> {
+): Promise<{ data: Record<string, unknown>; content: { type: string }[]; isError: boolean }> {
+  expect(statSync(mcpConfigFile).mode & 0o777).toBe(0o600);
   const cfg = JSON.parse(readFileSync(mcpConfigFile, "utf8")) as {
-    mcpServers: {
-      studio: { command: string; args: string[]; env: Record<string, string> };
-    };
+    mcpServers: { studio: { type: string; url: string; headers: Record<string, string> } };
   };
   const srv = cfg.mcpServers.studio;
-  return new Promise((resolve, reject) => {
-    const child = spawn(srv.command, srv.args, {
-      env: { ...process.env, ...srv.env },
-      stdio: ["pipe", "pipe", "pipe"],
+  expect(srv.type).toBe("http");
+  const post = async (body: unknown, session?: string) => {
+    const res = await fetch(srv.url, {
+      method: "POST",
+      headers: {
+        ...srv.headers,
+        "content-type": "application/json",
+        accept: "application/json, text/event-stream",
+        ...(session ? { "mcp-session-id": session } : {}),
+      },
+      body: JSON.stringify(body),
     });
-    const responses: Record<string, unknown>[] = [];
-    let buf = "";
-    child.stdout.setEncoding("utf8");
-    child.stdout.on("data", (chunk: string) => {
-      buf += chunk;
-      const lines = buf.split("\n");
-      buf = lines.pop() ?? "";
-      for (const line of lines) {
-        if (!line.trim()) continue;
-        const msg = JSON.parse(line) as Record<string, unknown>;
-        responses.push(msg);
-        if (msg.id === 2) {
-          child.stdin.end();
-        }
-      }
-    });
-    child.on("error", reject);
-    child.on("close", () => {
-      const callRes = responses.find((r) => r.id === 2) as
-        | { result?: { content?: { text?: string }[] } }
-        | undefined;
-      const rawText = callRes?.result?.content?.[0]?.text ?? "{}";
-      resolve(JSON.parse(rawText) as Record<string, unknown>);
-    });
-    child.stdin.write(
-      `${JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2024-11-05" } })}\n`,
-    );
-    child.stdin.write(
-      `${JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" })}\n`,
-    );
-    child.stdin.write(
-      `${JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: toolName, arguments: toolArgs } })}\n`,
-    );
+    const text = await res.text();
+    const json = res.headers.get("content-type")?.includes("text/event-stream")
+      ? JSON.parse(
+          text
+            .split("\n")
+            .find((l) => l.startsWith("data: "))
+            ?.slice(6) ?? "{}",
+        )
+      : text
+        ? JSON.parse(text)
+        : null;
+    return { res, json };
+  };
+  const init = await post({
+    jsonrpc: "2.0",
+    id: 1,
+    method: "initialize",
+    params: { protocolVersion: "2025-06-18" },
   });
+  const session = init.res.headers.get("mcp-session-id") ?? undefined;
+  await post({ jsonrpc: "2.0", method: "notifications/initialized" }, session);
+  const call = await post(
+    {
+      jsonrpc: "2.0",
+      id: 2,
+      method: "tools/call",
+      params: { name: toolName, arguments: toolArgs },
+    },
+    session,
+  );
+  const result = (
+    call.json as { result: { content: { type: string; text?: string }[]; isError?: boolean } }
+  ).result;
+  return {
+    data: JSON.parse(result.content[0]?.text ?? "{}") as Record<string, unknown>,
+    content: result.content,
+    isError: Boolean(result.isError),
+  };
 }
 
 /** Wecra-style tool-using runner: streams intro text -> calls MCP tool -> streams summary text. */
@@ -268,8 +280,9 @@ function toolUsingRunner(
         await new Promise((r) => setTimeout(r, 1));
       }
     }
-    if (spec.tool && options.mcpConfigFile) {
-      await callMcpStdioTool(options.mcpConfigFile, spec.tool.name, spec.tool.args);
+    if (spec.sessionId) options.agent?.onEvent?.({ type: "session", id: spec.sessionId });
+    if (spec.tool && options.agent) {
+      await callMcpHttpTool(options.agent.mcpConfigFile, spec.tool.name, spec.tool.args);
     }
     for (let i = 0; i < spec.outro.length; i += 17) {
       options.onTextDelta?.(spec.outro.slice(i, i + 17));
@@ -635,18 +648,30 @@ describe("chat.turn handler (Wecra-style tools, MCP bridge & sessions)", () => {
       images: ["image"],
       provider: "claude",
     });
-    // Parts interleaved in exact execution order: text -> tool_step -> plan_proposal -> text
-    expect(state.parts.map((p) => p.type)).toEqual(["text", "tool_step", "plan_proposal", "text"]);
-    expect(state.parts[0]).toEqual({ type: "text", text: "Kasım planını hazırlıyorum." });
-    expect(state.parts[1]).toMatchObject({
+    // Parts in execution order: thinking -> text -> tool_step -> plan_proposal -> text
+    expect(state.parts.map((p) => p.type)).toEqual([
+      "progress",
+      "text",
+      "tool_step",
+      "plan_proposal",
+      "text",
+    ]);
+    expect(state.parts[0]).toMatchObject({
+      type: "progress",
+      stepId: "thinking",
+      label: "Düşündü",
+      state: "done",
+    });
+    expect(state.parts[1]).toEqual({ type: "text", text: "Kasım planını hazırlıyorum." });
+    expect(state.parts[2]).toMatchObject({
       type: "tool_step",
       name: "propose_plan",
       label: "İçerik planı hazırlandı",
       state: "done",
       summary: "3 post önerildi",
     });
-    expect(state.parts[2]).toEqual({ type: "plan_proposal", planId: "plan_1" });
-    expect(state.parts[3]).toEqual({ type: "text", text: planOutput.reply });
+    expect(state.parts[3]).toEqual({ type: "plan_proposal", planId: "plan_1" });
+    expect(state.parts[4]).toEqual({ type: "text", text: planOutput.reply });
     expect(state.plans[0]?.items[0]?.imageBrief).toBe("@image — Ürün ambalajı fotoğrafı");
     expect(state.plans[0]).not.toHaveProperty("brandId");
     expect(state.completed).toEqual([
@@ -665,12 +690,12 @@ describe("chat.turn handler (Wecra-style tools, MCP bridge & sessions)", () => {
         }),
       },
     ]);
-    expect([seen[0]?.model, seen[0]?.effort, seen[0]?.persistSession]).toEqual([
-      "opus",
-      "medium",
-      true,
-    ]);
-    expect(seen[0]?.allowedTools).toContain("mcp__studio__propose_plan");
+    expect([seen[0]?.model, seen[0]?.effort]).toEqual(["opus", "medium"]);
+    // First turn: a new session with our own id, in the conversation's own folder.
+    expect(seen[0]?.agent?.sessionId).toMatch(/^[0-9a-f-]{36}$/);
+    expect(seen[0]?.agent?.resumeSessionId).toBeUndefined();
+    expect(seen[0]?.agent?.cwd).toMatch(/chat[/\\]conv_1$/);
+    expect(seen[0]?.agent?.extraEnv?.MCP_TOOL_TIMEOUT).toBe("1800000");
     expect(state.failed).toEqual([]);
     const content = seen[0]?.content ?? [];
     expect(content[0]?.type === "text" && content[0].text).toContain("<takma_adlar>");
@@ -729,13 +754,15 @@ describe("chat.turn handler (Wecra-style tools, MCP bridge & sessions)", () => {
 
     expect(seen).toHaveLength(2);
     // First attempt tried --resume with incremental prompt (no old transcript)
-    expect(seen[0]?.resumeSessionId).toBe("sess_prev");
+    expect(seen[0]?.agent?.resumeSessionId).toBe("sess_prev");
+    expect(seen[0]?.agent?.sessionId).toBeUndefined();
     const firstPrompt = seen[0]?.content[0]?.type === "text" ? seen[0].content[0].text : "";
     expect(firstPrompt).toContain("<yeni_mesaj>");
     expect(firstPrompt).not.toContain("Eski yanıt");
 
     // Second attempt retried without --resume and included full transcript
-    expect(seen[1]?.resumeSessionId).toBeUndefined();
+    expect(seen[1]?.agent?.resumeSessionId).toBeUndefined();
+    expect(seen[1]?.agent?.sessionId).toMatch(/^[0-9a-f-]{36}$/);
     const secondPrompt = seen[1]?.content[0]?.type === "text" ? seen[1].content[0].text : "";
     expect(secondPrompt).toContain("Eski yanıt");
     expect(out.resumedSession).toBeUndefined();
@@ -806,33 +833,61 @@ describe("chat.turn handler (Wecra-style tools, MCP bridge & sessions)", () => {
     });
   });
 
-  it("asks a question part via MCP ask_question when the model needs information", async () => {
+  it("ask_user holds the tool call until the owner answers, then the turn goes on", async () => {
     const { api, state } = createFakeApi({ context: turnContext() });
-    const handler = createChatTurnHandler(
-      deps(
-        api,
-        toolUsingRunner({
-          tool: {
-            name: "ask_question",
-            args: {
-              prompt: "Hangi ay?",
-              mode: "single",
-              options: [
-                { id: "kasim", label: "Kasım" },
-                { id: "aralik", label: "Aralık" },
-              ],
-              allowText: true,
-            },
-          },
-          outro: "Hangi ay için planlayayım?",
-        }),
-      ),
+    let toolResult: Record<string, unknown> | undefined;
+    const runner: ClaudeRunner = async (options) => {
+      // The owner answers a moment after the card appears.
+      const answer = setInterval(() => {
+        const q = state.parts.find((p) => p.type === "question");
+        if (q?.type === "question" && !q.answer) {
+          q.answer = { optionIds: ["aralik"], text: null, answeredAt: NOW };
+          clearInterval(answer);
+        }
+      }, 10);
+      const out = await callMcpHttpTool(options.agent?.mcpConfigFile ?? "", "ask_user", {
+        question: "Hangi ay?",
+        options: [
+          { id: "kasim", label: "Kasım" },
+          { id: "aralik", label: "Aralık" },
+        ],
+      });
+      toolResult = out.data;
+      options.onTextDelta?.("Aralık için planlıyorum.");
+      return result("Aralık için planlıyorum.");
+    };
+    const d = deps(api, runner);
+    d.consentPollIntervalMs = 20;
+    const out = await createChatTurnHandler(d).run(
+      { conversationId: "conv_1", runId: "run_1" },
+      jobContext().ctx,
     );
-    const out = await handler.run({ conversationId: "conv_1", runId: "run_1" }, jobContext().ctx);
-    expect(out.action).toBe("question");
-    expect(state.parts.some((p) => p.type === "question" && p.prompt === "Hangi ay?")).toBe(true);
-    expect(state.plans).toEqual([]);
+    expect(toolResult).toMatchObject({ answered: true, optionIds: ["aralik"], labels: ["Aralık"] });
+    expect(out.action).toBe("none");
+    expect(state.parts.map((p) => p.type)).toEqual(["progress", "tool_step", "question", "text"]);
+    expect(state.parts[1]).toMatchObject({ name: "ask_user", state: "done", summary: "Aralık" });
     expect(state.completed).toHaveLength(1);
+  });
+
+  it("ask_user gives up after its timeout and tells the model to end the turn", async () => {
+    const { api } = createFakeApi({ context: turnContext() });
+    let toolResult: Record<string, unknown> | undefined;
+    const runner: ClaudeRunner = async (options) => {
+      toolResult = (
+        await callMcpHttpTool(options.agent?.mcpConfigFile ?? "", "ask_user", {
+          question: "Hangi ay?",
+        })
+      ).data;
+      return result("Cevabını bekliyorum.");
+    };
+    const d = deps(api, runner);
+    d.consentPollIntervalMs = 10;
+    d.askTimeoutMs = 50;
+    await createChatTurnHandler(d).run(
+      { conversationId: "conv_1", runId: "run_1" },
+      jobContext().ctx,
+    );
+    expect(toolResult).toMatchObject({ answered: false });
   });
 
   it("sets the brand when the conversation has none and the model picked one", async () => {
@@ -887,13 +942,14 @@ describe("chat.turn handler (Wecra-style tools, MCP bridge & sessions)", () => {
     const { ctx, progress } = jobContext();
     await handler.run({ conversationId: "conv_1", runId: "run_1" }, ctx);
     expect(calls).toBe(2);
-    expect(state.parts[0]).toMatchObject({
+    expect(state.parts[0]).toMatchObject({ type: "progress", stepId: "thinking" });
+    expect(state.parts[1]).toMatchObject({
       type: "progress",
       stepId: "usage-limit",
       state: "done",
       label: "Claude kullanım sınırı doldu",
     });
-    expect(state.parts[1]).toEqual({ type: "text", text: planOutput.reply });
+    expect(state.parts[2]).toEqual({ type: "text", text: planOutput.reply });
     expect(progress.some(([, m]) => m?.startsWith("Claude kullanım sınırı doldu"))).toBe(true);
     expect(state.completed).toHaveLength(1);
   });

@@ -10,6 +10,7 @@ import {
   type Asset,
   type Brand,
   type BrandCreate,
+  type BrandKit,
   type BrandProfile,
   type BrandProfileCreate,
   type Content,
@@ -19,6 +20,7 @@ import {
   type ContentVersionUpdate,
   type Conversation,
   type ConversationAlias,
+  emptyBrandKit,
   type Job,
   type JobCreate,
   type Message,
@@ -51,6 +53,8 @@ export interface FakeApiState {
   completed: unknown[];
   failed: unknown[];
   brands: Brand[];
+  /** Brand kits by brand id (P2); a brand without one reads as an empty kit. */
+  kits: Map<string, BrandKit>;
   profiles: Map<string, BrandProfile>;
   profileHistory: BrandProfile[];
   contents: Map<string, Content>;
@@ -151,6 +155,7 @@ export function createFakeApi(init: Partial<FakeApiState> = {}): {
     completed: [],
     failed: [],
     brands: [],
+    kits: new Map(),
     profiles: new Map(),
     profileHistory: [],
     contents: new Map(),
@@ -384,6 +389,14 @@ export function createFakeApi(init: Partial<FakeApiState> = {}): {
         return brand;
       },
     },
+    brandKits: {
+      get: async (brandId: string) => {
+        if (!state.brands.some((b) => b.id === brandId) && state.context?.brand?.id !== brandId) {
+          throw new ApiError("brand not found", 404, "not_found");
+        }
+        return state.kits.get(brandId) ?? emptyBrandKit(brandId);
+      },
+    },
     brandProfiles: {
       list: async (brandId: string) => ({
         items: state.profileHistory.filter((p) => p.brandId === brandId),
@@ -583,6 +596,30 @@ export function createFakeApi(init: Partial<FakeApiState> = {}): {
       list: async () => ({ items: state.jobs, nextCursor: null }),
     },
     contents: {
+      create: async (input: {
+        brandId: string;
+        type: Content["type"];
+        title: string;
+        brief?: string;
+        targetPlatforms?: Content["targetPlatforms"];
+      }) => {
+        const created: Content = {
+          id: `cnt_created_${state.contents.size + 1}`,
+          brandId: input.brandId,
+          type: input.type,
+          title: input.title,
+          brief: input.brief ?? "",
+          status: "draft",
+          targetPlatforms: input.targetPlatforms ?? [],
+          caption: "",
+          currentVersion: null,
+          approval: null,
+          createdAt: NOW,
+          updatedAt: NOW,
+        };
+        state.contents.set(created.id, created);
+        return created;
+      },
       list: async (query?: { brandId?: string; status?: string; type?: string }) => ({
         items: [...state.contents.values()].filter(
           (c) =>
@@ -662,6 +699,7 @@ export function createFakeApi(init: Partial<FakeApiState> = {}): {
             slides: input.slides.map((s, i) => ({
               ...s,
               renderedAssetId: input.renderedAssetIds?.[i] ?? null,
+              layers: input.layouts?.[i] ?? null,
             })),
           };
           state.versions.push(version);
@@ -697,6 +735,7 @@ export function createFakeApi(init: Partial<FakeApiState> = {}): {
                 input.renderedAssetIds !== undefined
                   ? (input.renderedAssetIds[i] ?? null)
                   : s.renderedAssetId,
+              layers: input.layouts !== undefined ? (input.layouts[i] ?? null) : (s.layers ?? null),
             })),
             updatedAt: NOW,
           };

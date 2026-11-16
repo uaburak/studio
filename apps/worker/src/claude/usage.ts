@@ -13,6 +13,7 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { ClaudeUsageLimitError } from "./errors.ts";
 import { isRejectedStatus, type RateLimitInfo } from "./limits.ts";
+import { mergeUsage } from "./usage-cli.ts";
 
 export type UsageWindowKind = "five_hour" | "weekly" | "other";
 
@@ -152,6 +153,12 @@ export class UsageTracker {
   onUpdate(fn: (report: UsageReport) => void): () => void {
     this.listeners.add(fn);
     return () => this.listeners.delete(fn);
+  }
+
+  /** Merge a report into the latest one (same-named windows replaced, others kept). */
+  merge(report: UsageReport | null): void {
+    if (!report) return;
+    this.update(this.current ? mergeUsage(this.current, report) : report);
   }
 
   update(report: UsageReport | null): void {

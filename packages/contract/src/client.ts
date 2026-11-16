@@ -8,6 +8,7 @@ import {
   type BrandListQuery,
   type BrandUpdate,
 } from "./brand.ts";
+import { BrandKit, type BrandKitPut } from "./brand-kit.ts";
 import {
   BrandProfile,
   type BrandProfileCreate,
@@ -54,6 +55,7 @@ import { ApiErrorBody, type ErrorCode, type ErrorIssue } from "./common.ts";
 import {
   Content,
   type ContentCreate,
+  type ContentDuplicate,
   ContentList,
   type ContentListQuery,
   type ContentTransition,
@@ -62,6 +64,7 @@ import {
   type ContentVersionCreate,
   ContentVersionList,
   type ContentVersionListQuery,
+  type ContentVersionRestore,
   type ContentVersionUpdate,
 } from "./content.ts";
 import { Device, DeviceList, type PairingClaim, PairingCode, PairingResult } from "./device.ts";
@@ -369,6 +372,14 @@ export function createApiClient(options: ApiClientOptions = {}) {
         call(Brand, `/api/brands/${enc(id)}`, { method: "PATCH", json: input, init }),
     },
 
+    brandKits: {
+      /** The brand's kit; an empty kit (`updatedAt: null`) until it was saved once. */
+      get: (brandId: string, init?: RequestInit) =>
+        call(BrandKit, `/api/brands/${enc(brandId)}/kit`, { init }),
+      put: (brandId: string, input: BrandKitPut, init?: RequestInit) =>
+        call(BrandKit, `/api/brands/${enc(brandId)}/kit`, { method: "PUT", json: input, init }),
+    },
+
     brandProfiles: {
       list: (brandId: string, query?: BrandProfileListQuery, init?: RequestInit) =>
         call(BrandProfileList, `/api/brands/${enc(brandId)}/profiles`, { query: q(query), init }),
@@ -476,6 +487,13 @@ export function createApiClient(options: ApiClientOptions = {}) {
           json: { to },
           init,
         }),
+      /** New draft copy with the current version (no approval, no schedules). */
+      duplicate: (id: string, input: ContentDuplicate = {}, init?: RequestInit) =>
+        call(Content, `/api/contents/${enc(id)}/duplicate`, {
+          method: "POST",
+          json: input,
+          init,
+        }),
       versions: {
         list: (contentId: string, query?: ContentVersionListQuery, init?: RequestInit) =>
           call(ContentVersionList, `/api/contents/${enc(contentId)}/versions`, {
@@ -498,6 +516,18 @@ export function createApiClient(options: ApiClientOptions = {}) {
         ) =>
           call(ContentVersion, `/api/contents/${enc(contentId)}/versions/${version}`, {
             method: "PATCH",
+            json: input,
+            init,
+          }),
+        /** Add a new version that copies `version` exactly (renders and layouts reused). */
+        restore: (
+          contentId: string,
+          version: number,
+          input: ContentVersionRestore = {},
+          init?: RequestInit,
+        ) =>
+          call(ContentVersion, `/api/contents/${enc(contentId)}/versions/${version}/restore`, {
+            method: "POST",
             json: input,
             init,
           }),

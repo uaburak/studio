@@ -81,25 +81,20 @@ struct Wave2MacTests {
         #expect(newBrand.slug == "anadolu-tohum")
         #expect(app.currentBrandId == newBrand.id)
 
-        let profileModel = BrandProfileModel(app: app, brandId: SampleData.mtm)
+        let profileModel = BrandSettingsModel(app: app, brandId: SampleData.mtm, tab: .profile)
+        profileModel.pollInterval = .milliseconds(10)
         await profileModel.load()
         #expect(profileModel.profiles.count == 2)
         #expect(profileModel.selectedProfile?.version == 1)
-        #expect(profileModel.colorSwatches.contains { $0.hex == "#FF6A00" })
 
         // Edit v2 draft and approve it
-        profileModel.selectVersion(2)
-        profileModel.designRulesDraft = "# Yeni Kurallar"
+        profileModel.select(2)
+        profileModel.draft.designRules = "# Yeni Kurallar"
         await profileModel.saveDraft()
         await profileModel.approveSelected()
         #expect(profileModel.selectedProfile?.isCurrent == true)
         #expect(profileModel.selectedProfile?.status == .approved)
-
-        // Run AI analysis to produce v3 draft
-        profileModel.analysisNotes = "Organik tarım vurgusu"
-        await profileModel.runAIAnalysis()
-        #expect(profileModel.profiles.first?.version == 3)
-        #expect(profileModel.profiles.first?.status == .draft)
+        #expect(profileModel.selectedProfile?.designRules == "# Yeni Kurallar")
     }
 
     @Test func postDetailSlotFillAndDirectLayerEditingCreateVersions() async throws {
@@ -109,28 +104,27 @@ struct Wave2MacTests {
         #expect(card.needsImage)
 
         let detail = PostDetailModel(app: app, card: card, sourceFrame: .zero)
-        await waitCondition { !detail.versionSummaries.isEmpty }
+        await waitCondition { !detail.versionSummaries.isEmpty && detail.activity == .idle }
 
-        // Upload slot image -> calls fillSlotAndRender -> v2 ready
+        // Upload a picture into the slot -> fillSlot patch -> v2 ready
         let png = try #require(SampleImages.png(seed: "slot-fill"))
         let imported = try ImageImport.from(data: png, filename: "urun.png")
-        detail.uploadSlotImage(imported)
-        await waitCondition { detail.card.content.currentVersion?.version == 2 }
+        detail.placeImage(imported, into: "photo")
+        await waitCondition { detail.card.content.currentVersion?.version == 2 && detail.activity == .idle }
         #expect(!detail.card.needsImage)
         #expect(detail.canApprove)
 
-        // Edit text layer directly in Katmanlar -> calls patchLayersAndRender -> v3
-        let titleIdx = try #require(detail.editableLayers.firstIndex { $0.layerId == "title" })
-        detail.editableLayers[titleIdx].text = "VENTA BORİNC YENİ"
-        #expect(detail.hasPendingLayerEdits)
-        await detail.applyLayerEdits()
-        #expect(detail.card.content.currentVersion?.version == 3)
+        // Edit the title layer -> setText patch -> v3
+        detail.setText("title", "VENTA BORİNC YENİ")
+        await waitCondition { detail.card.content.currentVersion?.version == 3 && detail.activity == .idle }
+        #expect(detail.layers.first { $0.layerId == "title" }?.text == "VENTA BORİNC YENİ")
         #expect(detail.versionSummaries.map(\.version) == [3, 2, 1])
 
         // Switch version preview to v1
         await detail.selectVersion(1)
         #expect(detail.activeVersion?.version == 1)
         #expect(!detail.isViewingCurrentVersion)
+        #expect(detail.editBlocker != nil)
     }
 
     @Test func remoteControlConfigurationAndCloudflaredTunnelArguments() throws {

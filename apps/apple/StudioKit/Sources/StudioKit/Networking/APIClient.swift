@@ -179,6 +179,18 @@ public final class APIClient: Sendable {
         try await send(Brand.self, .patch, "/api/brands/\(Self.enc(id))", body: input)
     }
 
+    // MARK: - Brand kit (P2)
+
+    /// The brand's kit; an empty kit (`updatedAt == nil`) until it was saved once.
+    public func brandKit(brandId: EntityID) async throws(StudioAPIError) -> BrandKit {
+        try await get(BrandKit.self, "/api/brands/\(Self.enc(brandId))/kit")
+    }
+
+    /// Replace the whole kit. 400 when a file is not this brand's or of the wrong kind.
+    public func saveBrandKit(brandId: EntityID, _ input: BrandKitPut) async throws(StudioAPIError) -> BrandKit {
+        try await send(BrandKit.self, .put, "/api/brands/\(Self.enc(brandId))/kit", body: input)
+    }
+
     // MARK: - Brand profiles
 
     public func brandProfiles(brandId: EntityID, status: BrandProfileStatus? = nil) async throws(StudioAPIError) -> [BrandProfile] {
@@ -212,11 +224,12 @@ public final class APIClient: Sendable {
         try await send(BrandProfile.self, .post, "/api/brands/\(Self.enc(brandId))/profiles/\(version)/approve")
     }
 
-    public func analyzeBrand(brandId: EntityID, notes: String? = nil) async throws(StudioAPIError) -> Job {
+    public func analyzeBrand(brandId: EntityID, notes: String? = nil, model: AgentModel? = nil) async throws(StudioAPIError) -> Job {
         var payload: JSONObject = [:]
         if let notes = notes?.trimmingCharacters(in: .whitespacesAndNewlines), !notes.isEmpty {
             payload["notes"] = .string(notes)
         }
+        if let model = model?.sendable { payload["model"] = .string(model.rawValue) }
         return try await createJob(JobCreate(type: .brandAnalyze, payload: payload, brandId: brandId))
     }
 

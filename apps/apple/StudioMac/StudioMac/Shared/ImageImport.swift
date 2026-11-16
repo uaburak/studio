@@ -84,6 +84,15 @@ enum ImageImport {
         return (images, errors)
     }
 
+    /// Image file URLs on a dragging / general pasteboard.
+    static func imageURLs(from pasteboard: NSPasteboard) -> [URL] {
+        let options: [NSPasteboard.ReadingOptionKey: Any] = [
+            .urlReadingFileURLsOnly: true,
+            .urlReadingContentsConformToTypes: fileTypes.map(\.identifier),
+        ]
+        return pasteboard.readObjects(forClasses: [NSURL.self], options: options) as? [URL] ?? []
+    }
+
     static func pasteboardHasImages(_ pasteboard: NSPasteboard) -> Bool {
         let options: [NSPasteboard.ReadingOptionKey: Any] = [
             .urlReadingFileURLsOnly: true,

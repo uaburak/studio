@@ -1,12 +1,17 @@
 import AppKit
+import Quartz
 import QuartzCore
 import StudioKit
 import UniformTypeIdentifiers
 
 /// Pure AppKit Posts screen (05):
-/// - Month title, brand & count subtitle, segmented `FilterPillsControlView`
-/// - Responsive multi-column grid of 4:5 `PostCardItemView`s (rendered image or typographic placeholder + drag-and-drop slot)
-/// - Floating Liquid Glass `ApproveBarView` at the bottom when `approvable` is non-empty.
+/// - Month title with ‹ › navigation, brand & count subtitle, status filter pills
+/// - Responsive grid of 4:5 cards (rendered image or typographic placeholder + drag-and-drop slot),
+///   date + status, keyboard selection, context menu, "render ediliyor" badge
+/// - Loading, empty and error states; floating approve bar when posts are ready.
+///
+/// Keys: arrows move the selection, ↩ opens, space previews (Quick Look), ⌫ deletes (with
+/// confirmation), ⌘D duplicates, ⌘E exports.
 final class PostsViewController: NSViewController {
     private unowned let app: AppModel
 
@@ -16,22 +21,26 @@ final class PostsViewController: NSViewController {
 
     private let monthLabel = NSTextField(labelWithString: "")
     private let subtitleLabel = NSTextField(labelWithString: "")
+    private var previousMonthButton: GlyphButton!
+    private var nextMonthButton: GlyphButton!
+    private var headerRow: NSStackView!
     private var filterControl: FilterPillsControlView!
     private let errorBanner = InlineErrorBannerView()
-    private let emptyView = NSStackView()
-    private let emptyPrimaryLabel = NSTextField(labelWithString: "")
-    private let emptySecondaryLabel = NSTextField(labelWithString: "Postlar sohbette onaylanan planlardan gelir.")
+    private let stateView = PostsStateView()
     private var gridView: PostGridContainerView!
     private var approveBar: ApproveBarView!
 
     private var observation: ObservationToken?
     private var lastLoadedBrandId: EntityID?
     private var renderedKey: GridRenderKey?
+    private var detailWasOpen = false
 
     private struct GridRenderKey: Equatable {
         var cards: [PostCard]
         var slotUploads: [EntityID: Double]
         var openedCardId: EntityID?
+        var selectedId: EntityID?
+        var busy: Set<EntityID>
     }
 
     init(app: AppModel) {
@@ -42,8 +51,9 @@ final class PostsViewController: NSViewController {
     required init?(coder: NSCoder) { fatalError("not used") }
 
     override func loadView() {
-        let root = ThemedView()
+        let root = PostsKeyView()
         root.backgroundColor = Theme.canvas
+        root.controller = self
 
         let clip = FlippedClipView()
         clip.drawsBackground = false
@@ -58,25 +68,44 @@ final class PostsViewController: NSViewController {
         scrollView.documentView = documentView
         scrollView.applyMinimalScroller()
 
-        // Header
+        // Header: ‹ Kasım › + subtitle, filters on the right.
         monthLabel.font = NSFont.systemFont(ofSize: 28, weight: .bold)
         monthLabel.textColor = Theme.textPrimary
+        monthLabel.setAccessibilityRole(.staticText)
         subtitleLabel.font = Theme.captionFont
         subtitleLabel.textColor = Theme.textSecondary
 
-        let titleStack = NSStackView(views: [monthLabel, subtitleLabel])
+        previousMonthButton = GlyphButton(symbol: "chevron.left", size: 11, weight: .semibold, diameter: 26) { [weak self] in
+            self?.app.posts.showPreviousMonth()
+        }
+        previousMonthButton.toolTip = "Önceki ay"
+        previousMonthButton.setAccessibilityLabel("Önceki ay")
+        nextMonthButton = GlyphButton(symbol: "chevron.right", size: 11, weight: .semibold, diameter: 26) { [weak self] in
+            self?.app.posts.showNextMonth()
+        }
+        nextMonthButton.toolTip = "Sonraki ay"
+        nextMonthButton.setAccessibilityLabel("Sonraki ay")
+
+        let monthRow = NSStackView(views: [monthLabel, previousMonthButton, nextMonthButton])
+        monthRow.orientation = .horizontal
+        monthRow.alignment = .centerY
+        monthRow.spacing = 4
+        monthRow.setCustomSpacing(10, after: monthLabel)
+
+        let titleStack = NSStackView(views: [monthRow, subtitleLabel])
         titleStack.orientation = .vertical
         titleStack.alignment = .leading
         titleStack.spacing = 4
 
         filterControl = FilterPillsControlView { [weak self] selected in
             self?.app.posts.filter = selected
+            self?.app.posts.selectedId = nil
         }
 
         let spacer = NSView()
         spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
 
-        let headerRow = NSStackView(views: [titleStack, spacer, filterControl])
+        headerRow = NSStackView(views: [titleStack, spacer, filterControl])
         headerRow.orientation = .horizontal
         headerRow.alignment = .centerY
         headerRow.spacing = 20
@@ -85,20 +114,16 @@ final class PostsViewController: NSViewController {
         errorBanner.isHidden = true
         errorBanner.onDismiss = { [weak self] in self?.app.posts.error = nil }
 
-        // Empty state
-        emptyPrimaryLabel.font = Theme.chatFont
-        emptyPrimaryLabel.textColor = Theme.textSecondary
-        emptySecondaryLabel.font = Theme.captionFont
-        emptySecondaryLabel.textColor = Theme.textTertiary
-        emptyView.orientation = .vertical
-        emptyView.alignment = .centerX
-        emptyView.spacing = 8
-        emptyView.edgeInsets = NSEdgeInsets(top: 80, left: 0, bottom: 0, right: 0)
-        emptyView.addArrangedSubview(emptyPrimaryLabel)
-        emptyView.addArrangedSubview(emptySecondaryLabel)
-        emptyView.isHidden = true
+        stateView.isHidden = true
+        stateView.onRetry = { [weak self] in
+            guard let self else { return }
+            Task { await self.app.posts.load() }
+        }
+        stateView.onShowAll = { [weak self] in self?.app.posts.filter = .all }
+        stateView.onOpenChat = { [weak self] in self?.app.startNewChat() }
+        stateView.onJumpToPosts = { [weak self] direction in self?.app.posts.showAdjacentMonthWithPosts(direction) }
 
-        gridView = PostGridContainerView(app: app)
+        gridView = PostGridContainerView(app: app, controller: self)
 
         contentStack.orientation = .vertical
         contentStack.alignment = .leading
@@ -106,7 +131,7 @@ final class PostsViewController: NSViewController {
         contentStack.translatesAutoresizingMaskIntoConstraints = false
         contentStack.addArrangedSubview(headerRow)
         contentStack.addArrangedSubview(errorBanner)
-        contentStack.addArrangedSubview(emptyView)
+        contentStack.addArrangedSubview(stateView)
         contentStack.addArrangedSubview(gridView)
 
         documentView.addSubview(contentStack)
@@ -134,15 +159,15 @@ final class PostsViewController: NSViewController {
             documentView.topAnchor.constraint(equalTo: clip.topAnchor),
 
             contentStack.centerXAnchor.constraint(equalTo: documentView.centerXAnchor),
-            contentStack.leadingAnchor.constraint(greaterThanOrEqualTo: documentView.leadingAnchor, constant: 76),
-            contentStack.trailingAnchor.constraint(lessThanOrEqualTo: documentView.trailingAnchor, constant: -76),
+            contentStack.leadingAnchor.constraint(greaterThanOrEqualTo: documentView.leadingAnchor, constant: 40),
+            contentStack.trailingAnchor.constraint(lessThanOrEqualTo: documentView.trailingAnchor, constant: -40),
             maxW,
             contentStack.topAnchor.constraint(equalTo: documentView.topAnchor, constant: 30),
             contentStack.bottomAnchor.constraint(equalTo: documentView.bottomAnchor, constant: -96),
 
             headerRow.widthAnchor.constraint(equalTo: contentStack.widthAnchor),
             errorBanner.widthAnchor.constraint(equalTo: contentStack.widthAnchor),
-            emptyView.widthAnchor.constraint(equalTo: contentStack.widthAnchor),
+            stateView.widthAnchor.constraint(equalTo: contentStack.widthAnchor),
             gridView.widthAnchor.constraint(equalTo: contentStack.widthAnchor),
 
             approveBar.centerXAnchor.constraint(equalTo: root.centerXAnchor),
@@ -162,6 +187,20 @@ final class PostsViewController: NSViewController {
     override func viewDidAppear() {
         super.viewDidAppear()
         Task { await app.posts.load() }
+        // Keyboard navigation from the sidebar keeps its focus there.
+        if app.detail == nil, !app.navigatedByKeyboard { view.window?.makeFirstResponder(view) }
+    }
+
+    override func viewDidLayout() {
+        super.viewDidLayout()
+        // Narrow windows: the filter pills go under the title.
+        let narrow = contentStack.frame.width > 0 && contentStack.frame.width < 760
+        let wanted: NSUserInterfaceLayoutOrientation = narrow ? .vertical : .horizontal
+        if headerRow.orientation != wanted {
+            headerRow.orientation = wanted
+            headerRow.alignment = narrow ? .leading : .centerY
+            headerRow.spacing = narrow ? 14 : 20
+        }
     }
 
     private func syncState() {
@@ -173,10 +212,11 @@ final class PostsViewController: NSViewController {
 
         let counts = posts.counts
         monthLabel.stringValue = TurkishFormat.monthTitle(posts.month, currentYear: MonthKey(Date()).year)
-        subtitleLabel.stringValue = "\(app.brand(app.currentBrandId)?.name ?? "Marka seçilmedi") · \(counts[.all] ?? 0) post"
+        let brandName = app.brand(app.currentBrandId)?.name ?? "Marka seçilmedi"
+        subtitleLabel.stringValue = posts.isLoading && !posts.hasLoaded ? "\(brandName) · yükleniyor" : "\(brandName) · \(counts[.all] ?? 0) post"
         filterControl.update(selection: posts.filter, counts: counts)
 
-        if let err = posts.error {
+        if let err = posts.error, posts.hasLoaded, !posts.board.cards.isEmpty || posts.loadedBrandId != nil {
             errorBanner.message = err
             errorBanner.isHidden = false
         } else {
@@ -184,18 +224,33 @@ final class PostsViewController: NSViewController {
         }
 
         let cards = posts.visibleCards
-        let showEmpty = cards.isEmpty && !posts.isLoading
-        emptyView.isHidden = !showEmpty
-        gridView.isHidden = showEmpty
-        if showEmpty {
-            emptyPrimaryLabel.stringValue = posts.filter == .all ? "Bu ayda post yok." : "Bu filtrede post yok."
-            emptySecondaryLabel.isHidden = posts.filter != .all
-        }
+        let state: PostsStateView.State? = {
+            if app.currentBrandId == nil { return .noBrand }
+            if !posts.hasLoaded, posts.isLoading { return .loading }
+            if let err = posts.error, posts.board.cards.isEmpty { return .error(err) }
+            guard cards.isEmpty else { return nil }
+            if posts.filter != .all { return .emptyFilter(posts.filter.label) }
+            let months = posts.months
+            return .emptyMonth(
+                hasEarlier: months.contains { $0 < posts.month },
+                hasLater: months.contains { $0 > posts.month })
+        }()
+        stateView.isHidden = state == nil
+        if let state { stateView.show(state) }
+        gridView.isHidden = state != nil
 
-        let key = GridRenderKey(cards: cards, slotUploads: posts.slotUploads, openedCardId: app.detail?.card.id)
+        let busy = Set(cards.compactMap { posts.activeJob(for: $0.id) != nil ? $0.id : nil })
+        let key = GridRenderKey(cards: cards, slotUploads: posts.slotUploads, openedCardId: app.detail?.card.id, selectedId: posts.selectedId, busy: busy)
         if key != renderedKey {
+            let selectionMoved = renderedKey?.selectedId != key.selectedId
+            let onlySelectionChanged = renderedKey.map { $0.cards == key.cards && $0.slotUploads == key.slotUploads && $0.openedCardId == key.openedCardId && $0.busy == key.busy } ?? false
             renderedKey = key
-            gridView.setCards(cards, slotUploads: posts.slotUploads, openedCardId: app.detail?.card.id)
+            if onlySelectionChanged {
+                gridView.updateSelection(key.selectedId)
+            } else {
+                gridView.setCards(cards, slotUploads: posts.slotUploads, openedCardId: app.detail?.card.id, selectedId: posts.selectedId, busy: busy)
+            }
+            if selectionMoved, let selected = key.selectedId { gridView.scrollToCard(selected) }
         }
 
         let approvableCount = posts.approvable.count
@@ -203,6 +258,279 @@ final class PostsViewController: NSViewController {
         if approvableCount > 0 {
             approveBar.update(count: approvableCount, isApproving: posts.isApproving)
         }
+
+        if let card = posts.pendingDeletion {
+            posts.pendingDeletion = nil
+            confirmDelete(card)
+        }
+
+        // Back from the opened post: the grid takes the keyboard again.
+        let detailOpen = app.detail != nil
+        if detailWasOpen, !detailOpen {
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.app.detail == nil, let window = self.view.window else { return }
+                window.makeFirstResponder(self.view)
+            }
+        }
+        detailWasOpen = detailOpen
+    }
+
+    // MARK: Actions (also used by the cards' context menus)
+
+    func open(_ card: PostCard, from view: NSView?) {
+        app.posts.selectedId = card.id
+        let frame = view.map { $0.convert($0.bounds, to: nil) } ?? .zero
+        app.detail = PostDetailModel(app: app, card: card, sourceFrame: frame)
+    }
+
+    func quickLook(_ card: PostCard) {
+        app.posts.selectedId = card.id
+        PostQuickLook.shared.toggle(assetIds: card.renderedAssetIds, service: app.dataService)
+    }
+
+    func confirmDelete(_ card: PostCard) {
+        if let blocker = PostsModel.deletionBlocker(card) {
+            app.posts.error = blocker
+            NSSound.beep()
+            return
+        }
+        Task {
+            if await PostDeletion.confirm(title: card.title, window: view.window) {
+                await app.posts.delete(card)
+            }
+        }
+    }
+
+    func duplicate(_ card: PostCard) {
+        Task { await app.posts.duplicate(card) }
+    }
+
+    func copyCaption(_ card: PostCard) {
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(card.content.caption, forType: .string)
+    }
+
+    func exportMenu(for card: PostCard) -> NSMenu {
+        let reason: String? = card.version == nil ? "Bu postun henüz bir tasarımı yok." : nil
+        let menu = PostFileExport.menu(target: self, action: #selector(exportChosen(_:)), slideCount: card.version?.slides.count ?? 1, currentSlide: nil, disabledReason: reason)
+        for item in menu.items { item.representedObject = CardExportChoice(card: card, choice: item.representedObject as! ExportChoice) }
+        return menu
+    }
+
+    @objc private func exportChosen(_ sender: NSMenuItem) {
+        guard let pick = sender.representedObject as? CardExportChoice, let version = pick.card.version else { return }
+        let count = PostFileExport.fileCount(pick.choice, slideCount: version.slides.count)
+        let base = PostExporter.baseName(title: pick.card.title, version: version.version)
+        let name = count == 1 && pick.choice.format != .pdf && version.slides.count > 1 ? "\(base)-1.\(pick.choice.format.fileExtension)" : "\(base).\(pick.choice.format.fileExtension)"
+        Task {
+            guard let destination = await PostFileExport.chooseDestination(fileCount: count, suggestedName: name, format: pick.choice.format, window: view.window) else { return }
+            do {
+                let files = try await PostExporter(service: app.dataService).export(content: pick.card.content, version: version, format: pick.choice.format, slides: pick.choice.slides)
+                var written: [URL] = []
+                if count == 1, let file = files.first {
+                    try file.data.write(to: destination, options: .atomic)
+                    written = [destination]
+                } else {
+                    for file in files {
+                        let url = PostDetailModel.uniqueURL(destination.appendingPathComponent(file.filename))
+                        try file.data.write(to: url, options: .atomic)
+                        written.append(url)
+                    }
+                }
+                NSWorkspace.shared.activateFileViewerSelecting(written)
+            } catch {
+                app.posts.error = "Dışa aktarma: \(AppModel.describe(error))"
+            }
+        }
+    }
+
+    // MARK: Keyboard (PostsKeyView forwards here)
+
+    func handleKey(_ event: NSEvent) -> Bool {
+        let posts = app.posts
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        let columns = gridView.columns
+        switch event.keyCode {
+        case 123 where flags.isDisjoint(with: [.command, .option, .control]): posts.moveSelection(by: -1); return true // ←
+        case 124 where flags.isDisjoint(with: [.command, .option, .control]): posts.moveSelection(by: 1); return true // →
+        case 126 where flags.isDisjoint(with: [.command, .option, .control]): posts.moveSelection(by: -columns); return true // ↑
+        case 125 where flags.isDisjoint(with: [.command, .option, .control]): posts.moveSelection(by: columns); return true // ↓
+        case 36, 76: // ↩, enter
+            if let card = posts.selectedCard { open(card, from: gridView.itemView(card.id)) }
+            return posts.selectedCard != nil
+        case 49: // space
+            if let card = posts.selectedCard { quickLook(card) } else { NSSound.beep() }
+            return true
+        case 51, 117: // ⌫, ⌦
+            if let card = posts.selectedCard { confirmDelete(card) } else { NSSound.beep() }
+            return true
+        case 53: // esc
+            if posts.selectedId != nil { posts.selectedId = nil; return true }
+            return false
+        default:
+            break
+        }
+        if flags == .command, let chars = event.charactersIgnoringModifiers?.lowercased() {
+            switch chars {
+            case "d":
+                if let card = posts.selectedCard { duplicate(card) } else { NSSound.beep() }
+                return true
+            case "e":
+                if let card = posts.selectedCard, let itemView = gridView.itemView(card.id) {
+                    exportMenu(for: card).popUp(positioning: nil, at: NSPoint(x: 0, y: itemView.bounds.height + 4), in: itemView)
+                } else {
+                    NSSound.beep()
+                }
+                return true
+            default:
+                break
+            }
+        }
+        return false
+    }
+
+    // MARK: Quick Look panel control
+
+    override func acceptsPreviewPanelControl(_ panel: QLPreviewPanel!) -> Bool { true }
+    override func beginPreviewPanelControl(_ panel: QLPreviewPanel!) {
+        MainActor.assumeIsolated {
+            panel.dataSource = PostQuickLook.shared
+            panel.delegate = PostQuickLook.shared
+        }
+    }
+    override func endPreviewPanelControl(_ panel: QLPreviewPanel!) {}
+}
+
+private final class CardExportChoice: NSObject {
+    let card: PostCard
+    let choice: ExportChoice
+    init(card: PostCard, choice: ExportChoice) {
+        self.card = card
+        self.choice = choice
+    }
+}
+
+/// The posts screen's root view: first responder for the grid's keyboard shortcuts.
+private final class PostsKeyView: ThemedView {
+    weak var controller: PostsViewController?
+
+    override var acceptsFirstResponder: Bool { true }
+
+    override func keyDown(with event: NSEvent) {
+        if controller?.handleKey(event) != true { super.keyDown(with: event) }
+    }
+
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        // ⌘D / ⌘E only while the grid has the focus (the opened post handles its own).
+        guard window?.firstResponder === self, event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
+              let chars = event.charactersIgnoringModifiers?.lowercased(), chars == "d" || chars == "e" else {
+            return super.performKeyEquivalent(with: event)
+        }
+        return controller?.handleKey(event) ?? false
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        window?.makeFirstResponder(self)
+        controller?.clearSelectionFromBackgroundClick()
+        super.mouseDown(with: event)
+    }
+}
+
+extension PostsViewController {
+    fileprivate func clearSelectionFromBackgroundClick() {
+        app.posts.selectedId = nil
+    }
+}
+
+// MARK: - Empty / loading / error states
+
+private final class PostsStateView: NSView {
+    enum State: Equatable {
+        case loading
+        case noBrand
+        case error(String)
+        case emptyFilter(String)
+        case emptyMonth(hasEarlier: Bool, hasLater: Bool)
+    }
+
+    var onRetry: (() -> Void)?
+    var onShowAll: (() -> Void)?
+    var onOpenChat: (() -> Void)?
+    var onJumpToPosts: ((Int) -> Void)?
+
+    private let spinner = NSProgressIndicator()
+    private let primary = NSTextField(labelWithString: "")
+    private let secondary = NSTextField(wrappingLabelWithString: "")
+    private let buttons = NSStackView()
+    private var current: State?
+
+    init() {
+        super.init(frame: .zero)
+        translatesAutoresizingMaskIntoConstraints = false
+        spinner.style = .spinning
+        spinner.controlSize = .small
+        spinner.isDisplayedWhenStopped = false
+        primary.font = Theme.chatFont
+        primary.textColor = Theme.textSecondary
+        primary.alignment = .center
+        secondary.font = Theme.captionFont
+        secondary.textColor = Theme.textTertiary
+        secondary.alignment = .center
+        buttons.orientation = .horizontal
+        buttons.spacing = 8
+
+        let stack = NSStackView(views: [spinner, primary, secondary, buttons])
+        stack.orientation = .vertical
+        stack.alignment = .centerX
+        stack.spacing = 10
+        stack.setCustomSpacing(18, after: secondary)
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.topAnchor.constraint(equalTo: topAnchor, constant: 90),
+            stack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -40),
+            stack.centerXAnchor.constraint(equalTo: centerXAnchor),
+            secondary.widthAnchor.constraint(lessThanOrEqualToConstant: 380),
+        ])
+    }
+
+    required init?(coder: NSCoder) { fatalError("not used") }
+
+    func show(_ state: State) {
+        guard state != current else { return }
+        current = state
+        buttons.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        spinner.isHidden = state != .loading
+        if state == .loading { spinner.startAnimation(nil) } else { spinner.stopAnimation(nil) }
+        switch state {
+        case .loading:
+            primary.stringValue = "Postlar yükleniyor"
+            secondary.stringValue = ""
+        case .noBrand:
+            primary.stringValue = "Henüz bir marka yok."
+            secondary.stringValue = "Kenar çubuğundan bir marka ekle; postlar onun planlarından gelir."
+        case .error(let message):
+            primary.stringValue = "Postlar yüklenemedi."
+            secondary.stringValue = message
+            buttons.addArrangedSubview(PillButton(title: "Yeniden dene", kind: .secondary, height: 28) { [weak self] in self?.onRetry?() })
+        case .emptyFilter(let label):
+            primary.stringValue = "“\(label)” durumunda post yok."
+            secondary.stringValue = "Bu ayın diğer postlarını görmek için filtreyi kaldır."
+            buttons.addArrangedSubview(PillButton(title: "Tümünü göster", kind: .secondary, height: 28) { [weak self] in self?.onShowAll?() })
+        case .emptyMonth(let earlier, let later):
+            primary.stringValue = "Bu ayda post yok."
+            secondary.stringValue = "Postlar sohbette onaylanan planlardan gelir."
+            if earlier {
+                buttons.addArrangedSubview(PillButton(title: "Önceki postlar", kind: .secondary, height: 28) { [weak self] in self?.onJumpToPosts?(-1) })
+            }
+            if later {
+                buttons.addArrangedSubview(PillButton(title: "Sonraki postlar", kind: .secondary, height: 28) { [weak self] in self?.onJumpToPosts?(1) })
+            }
+            buttons.addArrangedSubview(PillButton(title: "Sohbette plan iste", kind: .ink, height: 28) { [weak self] in self?.onOpenChat?() })
+        }
+        secondary.isHidden = secondary.stringValue.isEmpty
+        buttons.isHidden = buttons.arrangedSubviews.isEmpty
     }
 }
 
@@ -210,33 +538,53 @@ final class PostsViewController: NSViewController {
 
 private final class PostGridContainerView: NSView {
     private unowned let app: AppModel
+    private weak var controller: PostsViewController?
     private var itemViews: [PostCardItemView] = []
     private var lastWidth: CGFloat = 0
+    private(set) var columns = 1
 
     override var isFlipped: Bool { true }
 
-    init(app: AppModel) {
+    init(app: AppModel, controller: PostsViewController) {
         self.app = app
+        self.controller = controller
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
 
-    func setCards(_ cards: [PostCard], slotUploads: [EntityID: Double], openedCardId: EntityID?) {
+    func setCards(_ cards: [PostCard], slotUploads: [EntityID: Double], openedCardId: EntityID?, selectedId: EntityID?, busy: Set<EntityID>) {
         itemViews.forEach { $0.removeFromSuperview() }
         itemViews = cards.map { card in
             let item = PostCardItemView(
                 app: app,
+                controller: controller,
                 card: card,
                 uploadProgress: slotUploads[card.id],
-                dimmed: openedCardId == card.id
+                dimmed: openedCardId == card.id,
+                busy: busy.contains(card.id)
             )
+            item.isSelected = card.id == selectedId
+            // A provisional size so the card's constraints are never solved at zero width.
+            item.frame = NSRect(x: 0, y: 0, width: 200, height: 276)
+            item.layoutItem(visualHeight: 250)
             addSubview(item)
             return item
         }
         needsLayout = true
         invalidateIntrinsicContentSize()
+    }
+
+    func updateSelection(_ selectedId: EntityID?) {
+        for item in itemViews { item.isSelected = item.cardId == selectedId }
+    }
+
+    func itemView(_ id: EntityID) -> NSView? { itemViews.first { $0.cardId == id } }
+
+    func scrollToCard(_ id: EntityID) {
+        guard let item = itemViews.first(where: { $0.cardId == id }) else { return }
+        item.scrollToVisible(item.bounds.insetBy(dx: -10, dy: -30))
     }
 
     override func layout() {
@@ -263,6 +611,7 @@ private final class PostGridContainerView: NSView {
         let maxColWidth: CGFloat = 260
 
         let cols = max(1, Int(floor((width + hSpacing) / (minColWidth + hSpacing))))
+        if place { columns = cols }
         let rawColWidth = floor((width - CGFloat(cols - 1) * hSpacing) / CGFloat(cols))
         let colWidth = min(maxColWidth, max(minColWidth, rawColWidth))
         let cardVisualHeight = round(colWidth * 5.0 / 4.0)
@@ -287,21 +636,28 @@ private final class PostGridContainerView: NSView {
 
 private final class PostCardItemView: NSView {
     private unowned let app: AppModel
+    private weak var controller: PostsViewController?
     private let card: PostCard
     private let placeholder: PostPlaceholderView
     private let footerRow = NSView()
-    private var trackingArea: NSTrackingArea?
+    private let selectionRing = CAShapeLayer()
+    private var badge: ThemedView?
+
+    var cardId: EntityID { card.id }
+    var isSelected = false {
+        didSet { updateRing() }
+    }
 
     override var isFlipped: Bool { true }
 
-    init(app: AppModel, card: PostCard, uploadProgress: Double?, dimmed: Bool) {
+    init(app: AppModel, controller: PostsViewController?, card: PostCard, uploadProgress: Double?, dimmed: Bool, busy: Bool) {
         self.app = app
+        self.controller = controller
         self.card = card
         self.placeholder = PostPlaceholderView(
             imageStore: app.images,
             card: card,
             scale: 1,
-            showsSlotArea: false,
             uploadProgress: uploadProgress,
             onDropImage: { [weak app] url in app?.posts.uploadSlotImage(card: card, url: url) },
             onPickImage: { [weak app] in
@@ -310,10 +666,49 @@ private final class PostCardItemView: NSView {
             }
         )
         super.init(frame: .zero)
+        wantsLayer = true
         alphaValue = dimmed ? 0 : 1
 
-        placeholder.onTapCard = { [weak self] in self?.openCard() }
+        placeholder.onTapCard = { [weak self] in
+            guard let self else { return }
+            self.controller?.open(self.card, from: self.placeholder)
+        }
         addSubview(placeholder)
+
+        selectionRing.fillColor = nil
+        selectionRing.lineWidth = 2
+        selectionRing.zPosition = 10
+        layer?.addSublayer(selectionRing)
+
+        if busy {
+            let pill = ThemedView()
+            pill.backgroundColor = NSColor.black.withAlphaComponent(0.62)
+            pill.cornerRadius = 11
+            let spinner = NSProgressIndicator()
+            spinner.style = .spinning
+            spinner.controlSize = .mini
+            spinner.appearance = NSAppearance(named: .darkAqua)
+            spinner.startAnimation(nil)
+            let job = app.posts.activeJob(for: card.id)
+            let text = job?.type == .contentGenerate ? (card.content.currentVersion == nil ? "Üretiliyor" : "AI düzenliyor") : "Render ediliyor"
+            let label = NSTextField.styledLabel(text, font: NSFont.systemFont(ofSize: 10, weight: .medium), color: .white)
+            let row = NSStackView(views: [spinner, label])
+            row.orientation = .horizontal
+            row.spacing = 5
+            row.translatesAutoresizingMaskIntoConstraints = false
+            pill.addSubview(row)
+            pill.translatesAutoresizingMaskIntoConstraints = false
+            addSubview(pill)
+            NSLayoutConstraint.activate([
+                row.leadingAnchor.constraint(equalTo: pill.leadingAnchor, constant: 8),
+                row.trailingAnchor.constraint(equalTo: pill.trailingAnchor, constant: -9),
+                row.centerYAnchor.constraint(equalTo: pill.centerYAnchor),
+                pill.heightAnchor.constraint(equalToConstant: 22),
+                pill.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10),
+                pill.topAnchor.constraint(equalTo: topAnchor, constant: 10),
+            ])
+            badge = pill
+        }
 
         let dateLabel = NSTextField.styledLabel(
             card.day.map(TurkishFormat.shortDay) ?? "Tarih yok",
@@ -346,45 +741,84 @@ private final class PostCardItemView: NSView {
     func layoutItem(visualHeight: CGFloat) {
         placeholder.frame = NSRect(x: 0, y: 0, width: bounds.width, height: visualHeight)
         footerRow.frame = NSRect(x: 0, y: visualHeight + 6, width: bounds.width, height: 20)
+        updateRing()
     }
 
-    private func openCard() {
-        let winFrame = placeholder.convert(placeholder.bounds, to: nil)
-        app.detail = PostDetailModel(app: app, card: card, sourceFrame: winFrame)
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        updateRing()
     }
+
+    private func updateRing() {
+        let rect = placeholder.frame.insetBy(dx: -4, dy: -4)
+        selectionRing.frame = bounds
+        selectionRing.path = CGPath(roundedRect: rect, cornerWidth: Theme.cardRadius + 4, cornerHeight: Theme.cardRadius + 4, transform: nil)
+        selectionRing.strokeColor = resolvedCGColor(Theme.ink)
+        selectionRing.isHidden = !isSelected
+    }
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        app.posts.selectedId = card.id
+        let menu = NSMenu()
+        menu.addItem(item("Aç", action: #selector(openItem)))
+        let preview = item("Hızlı bakış", action: #selector(quickLookItem))
+        preview.isEnabled = !card.renderedAssetIds.isEmpty
+        menu.addItem(preview)
+        menu.addItem(.separator())
+        let export = NSMenuItem(title: "Dışa aktar", action: nil, keyEquivalent: "")
+        export.submenu = controller?.exportMenu(for: card)
+        menu.addItem(export)
+        menu.addItem(item("Açıklamayı kopyala", action: #selector(copyCaptionItem)))
+        menu.addItem(item("Çoğalt", action: #selector(duplicateItem)))
+        menu.addItem(.separator())
+        let delete = item("Sil…", action: #selector(deleteItem))
+        if let blocker = PostsModel.deletionBlocker(card) {
+            delete.isEnabled = false
+            delete.toolTip = blocker
+        }
+        menu.addItem(delete)
+        menu.autoenablesItems = false
+        return menu
+    }
+
+    private func item(_ title: String, action: Selector) -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+        item.target = self
+        return item
+    }
+
+    @objc private func openItem() { controller?.open(card, from: placeholder) }
+    @objc private func quickLookItem() { controller?.quickLook(card) }
+    @objc private func copyCaptionItem() { controller?.copyCaption(card) }
+    @objc private func duplicateItem() { controller?.duplicate(card) }
+    @objc private func deleteItem() { controller?.confirmDelete(card) }
 }
 
-// MARK: - PostPlaceholderView (shared by Posts grid & PostDetailOverlay)
+// MARK: - PostPlaceholderView (grid card; the opened post falls back to it without a render)
 
 final class PostPlaceholderView: ThemedView {
     var onTapCard: (() -> Void)?
 
     private let card: PostCard
     private let scale: CGFloat
-    private let showsSlotArea: Bool
     private let onDropImage: ((URL) -> Void)?
     private let onPickImage: (() -> Void)?
-    private let onGenerateAISlot: (() -> Void)?
     private var slotControl: NSView?
 
     init(
         imageStore: ImageStore?,
         card: PostCard,
         scale: CGFloat,
-        showsSlotArea: Bool = false,
         slideIndex: Int = 0,
         overrideVersion: ContentVersion? = nil,
         uploadProgress: Double? = nil,
         onDropImage: ((URL) -> Void)? = nil,
-        onPickImage: (() -> Void)? = nil,
-        onGenerateAISlot: (() -> Void)? = nil
+        onPickImage: (() -> Void)? = nil
     ) {
         self.card = card
         self.scale = scale
-        self.showsSlotArea = showsSlotArea
         self.onDropImage = onDropImage
         self.onPickImage = onPickImage
-        self.onGenerateAISlot = onGenerateAISlot
         super.init(frame: .zero)
 
         let effectiveVersion = overrideVersion ?? card.version
@@ -418,7 +852,9 @@ final class PostPlaceholderView: ThemedView {
         }
 
         let renderedId = activeSlide?.renderedAssetId ?? card.renderedAssetIds.first
-        if let rendered = renderedId, !slideNeedsImage {
+        if let rendered = renderedId {
+            borderColor = Theme.border
+            borderWidth = scale > 1 ? 0 : 1
             let img = AssetImageView(store: imageStore, assetId: rendered, contentMode: .fill, cornerRadius: radius)
             img.translatesAutoresizingMaskIntoConstraints = false
             addSubview(img)
@@ -428,6 +864,16 @@ final class PostPlaceholderView: ThemedView {
                 img.topAnchor.constraint(equalTo: topAnchor),
                 img.bottomAnchor.constraint(equalTo: bottomAnchor),
             ])
+            // The rendered image shows the brand's empty-slot placeholder; offer the slot on top.
+            if slideNeedsImage, scale <= 1 {
+                let smallSlot = SmallSlotDropView(card: card, uploadProgress: uploadProgress, onDropImage: onDropImage, onPickImage: onPickImage, onDark: true)
+                addSubview(smallSlot)
+                NSLayoutConstraint.activate([
+                    smallSlot.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
+                    smallSlot.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -16),
+                ])
+                slotControl = smallSlot
+            }
         } else {
             let fgColor: NSColor = switch tone {
             case .light: Theme.postLightText
@@ -446,9 +892,8 @@ final class PostPlaceholderView: ThemedView {
             addSubview(vStack)
 
             let scannedLayers = activeSlide.map { SlideLayerScanner.layers(inHTML: $0.html) } ?? []
-            let editedManual = effectiveVersion?.origin == .manualEdit
-            let eyebrowLayer = scannedLayers.first { $0.layerId == "eyebrow" }
-            let titleLayer = scannedLayers.first { $0.layerId == "title" || $0.layerId == "headline" }
+            let eyebrowLayer = scannedLayers.first { $0.layerId == "eyebrow" || $0.role == "eyebrow" }
+            let titleLayer = scannedLayers.first { $0.layerId == "title" || $0.layerId == "headline" || $0.role == "headline" }
 
             let eyebrowText: String? = if let eyebrowLayer {
                 eyebrowLayer.isHidden ? nil : eyebrowLayer.text
@@ -457,14 +902,14 @@ final class PostPlaceholderView: ThemedView {
             }
 
             if let eyebrow = eyebrowText, !eyebrow.isEmpty {
-                let eyebrowLabel = NSTextField(labelWithString: eyebrow)
+                let eyebrowLabel = NSTextField(labelWithString: TurkishFormat.upper(eyebrow))
                 eyebrowLabel.font = NSFont.systemFont(ofSize: 8.5 * min(scale, 1.55), weight: .bold)
                 eyebrowLabel.textColor = Theme.accent
                 vStack.addArrangedSubview(eyebrowLabel)
             }
 
-            let displayTitle: String = if editedManual, let titleLayer {
-                titleLayer.isHidden ? "" : titleLayer.text
+            let displayTitle: String = if let titleLayer, !titleLayer.text.isEmpty {
+                titleLayer.isHidden ? "" : TurkishFormat.upper(titleLayer.text)
             } else {
                 TurkishFormat.upper(card.title)
             }
@@ -478,30 +923,15 @@ final class PostPlaceholderView: ThemedView {
                 titleLabel.widthAnchor.constraint(equalTo: vStack.widthAnchor).isActive = true
             }
 
-            if showsSlotArea, slideNeedsImage || card.state == .imageUploaded {
-                let largeSlot = LargeSlotDropView(
-                    onDropImage: onDropImage,
-                    onPickImage: onPickImage,
-                    onGenerateAISlot: onGenerateAISlot
-                )
-                largeSlot.setContentHuggingPriority(.defaultLow, for: .vertical)
-                vStack.addArrangedSubview(largeSlot)
-                largeSlot.widthAnchor.constraint(equalTo: vStack.widthAnchor).isActive = true
-                self.slotControl = largeSlot
-            } else {
-                let spacer = NSView()
-                spacer.setContentHuggingPriority(.defaultLow, for: .vertical)
-                vStack.addArrangedSubview(spacer)
-                if slideNeedsImage || card.state == .imageUploaded {
-                    let smallSlot = SmallSlotDropView(
-                        card: card,
-                        uploadProgress: uploadProgress,
-                        onDropImage: onDropImage,
-                        onPickImage: onPickImage
-                    )
-                    vStack.addArrangedSubview(smallSlot)
-                    self.slotControl = smallSlot
-                }
+            let spacer = NSView()
+            spacer.setContentHuggingPriority(.defaultLow, for: .vertical)
+            vStack.addArrangedSubview(spacer)
+            if slideNeedsImage || card.state == .imageUploaded {
+                let smallSlot = SmallSlotDropView(card: card, uploadProgress: uploadProgress, onDropImage: onDropImage, onPickImage: onPickImage, onDark: false)
+                vStack.addArrangedSubview(smallSlot)
+                slotControl = smallSlot
+            } else if card.state == .generating {
+                vStack.addArrangedSubview(NSTextField.styledLabel("Tasarım hazırlanıyor…", font: NSFont.systemFont(ofSize: 10), color: fgColor.withAlphaComponent(0.6)))
             }
 
             NSLayoutConstraint.activate([
@@ -516,18 +946,18 @@ final class PostPlaceholderView: ThemedView {
     required init?(coder: NSCoder) { fatalError("not used") }
 
     override func mouseDown(with event: NSEvent) {
-        if let slotControl {
+        if let slotControl, !slotControl.isHidden {
             let pt = slotControl.convert(event.locationInWindow, from: nil)
             if slotControl.bounds.contains(pt) {
                 slotControl.mouseDown(with: event)
                 return
             }
         }
-        onTapCard?()
+        if event.clickCount == 1 { onTapCard?() }
     }
 }
 
-// MARK: - Small & Large Image Slots
+// MARK: - Small image slot (grid cards)
 
 private final class SmallSlotDropView: NSView {
     private let onDropImage: ((URL) -> Void)?
@@ -536,7 +966,7 @@ private final class SmallSlotDropView: NSView {
     private var targeted = false { didSet { updateRing() } }
     private var showsDashedPlus = false
 
-    init(card: PostCard, uploadProgress: Double?, onDropImage: ((URL) -> Void)?, onPickImage: (() -> Void)?) {
+    init(card: PostCard, uploadProgress: Double?, onDropImage: ((URL) -> Void)?, onPickImage: (() -> Void)?, onDark: Bool) {
         self.onDropImage = onDropImage
         self.onPickImage = onPickImage
         super.init(frame: .zero)
@@ -549,6 +979,7 @@ private final class SmallSlotDropView: NSView {
         stack.spacing = 10
         stack.translatesAutoresizingMaskIntoConstraints = false
         addSubview(stack)
+        let captionColor = onDark ? NSColor.white.withAlphaComponent(0.85) : Theme.textSecondary
 
         if uploadProgress != nil {
             let spinner = NSProgressIndicator()
@@ -561,7 +992,7 @@ private final class SmallSlotDropView: NSView {
                 spinner.heightAnchor.constraint(equalToConstant: 36),
             ])
             stack.addArrangedSubview(spinner)
-            stack.addArrangedSubview(NSTextField.styledLabel("Yükleniyor", font: NSFont.systemFont(ofSize: 10), color: Theme.textSecondary))
+            stack.addArrangedSubview(NSTextField.styledLabel("Yükleniyor", font: NSFont.systemFont(ofSize: 10), color: captionColor))
         } else if card.state == .imageUploaded {
             let badge = ThemedView()
             badge.backgroundColor = Theme.canvas
@@ -580,11 +1011,12 @@ private final class SmallSlotDropView: NSView {
                 check.centerYAnchor.constraint(equalTo: badge.centerYAnchor),
             ])
             stack.addArrangedSubview(badge)
-            stack.addArrangedSubview(NSTextField.styledLabel("Görsel yüklendi", font: NSFont.systemFont(ofSize: 10), color: Theme.textSecondary))
+            stack.addArrangedSubview(NSTextField.styledLabel("Görsel yüklendi", font: NSFont.systemFont(ofSize: 10), color: captionColor))
         } else {
             showsDashedPlus = true
-            let ringHolder = NSView(frame: NSRect(x: 0, y: 0, width: 36, height: 36))
-            ringHolder.wantsLayer = true
+            let ringHolder = ThemedView(frame: NSRect(x: 0, y: 0, width: 36, height: 36))
+            ringHolder.backgroundColor = onDark ? NSColor.black.withAlphaComponent(0.35) : nil
+            ringHolder.cornerRadius = 18
             ringHolder.translatesAutoresizingMaskIntoConstraints = false
             ringHolder.layer?.addSublayer(circleLayer)
             let plus = NSImageView()
@@ -600,8 +1032,10 @@ private final class SmallSlotDropView: NSView {
                 plus.centerYAnchor.constraint(equalTo: ringHolder.centerYAnchor),
             ])
             toolTip = "Görsel ekle: tıkla ya da görseli buraya sürükle"
+            setAccessibilityLabel("Görsel ekle")
+            setAccessibilityRole(.button)
             stack.addArrangedSubview(ringHolder)
-            stack.addArrangedSubview(NSTextField.styledLabel("Görsel ekle", font: NSFont.systemFont(ofSize: 10), color: Theme.textSecondary))
+            stack.addArrangedSubview(NSTextField.styledLabel("Görsel ekle", font: NSFont.systemFont(ofSize: 10), color: captionColor))
             updateRing()
         }
 
@@ -640,108 +1074,7 @@ private final class SmallSlotDropView: NSView {
 
     override func performDragOperation(_ sender: any NSDraggingInfo) -> Bool {
         targeted = false
-        let options: [NSPasteboard.ReadingOptionKey: Any] = [
-            .urlReadingFileURLsOnly: true,
-            .urlReadingContentsConformToTypes: ImageImport.fileTypes.map(\.identifier),
-        ]
-        guard let url = (sender.draggingPasteboard.readObjects(forClasses: [NSURL.self], options: options) as? [URL])?.first else {
-            return false
-        }
-        onDropImage?(url)
-        return true
-    }
-}
-
-private final class LargeSlotDropView: ThemedView {
-    private let onDropImage: ((URL) -> Void)?
-    private let onPickImage: (() -> Void)?
-    private let onGenerateAISlot: (() -> Void)?
-    private var aiButton: PillButton?
-    private let dashLayer = CAShapeLayer()
-    private var targeted = false { didSet { updateAppearance() } }
-
-    init(onDropImage: ((URL) -> Void)?, onPickImage: (() -> Void)?, onGenerateAISlot: (() -> Void)? = nil) {
-        self.onDropImage = onDropImage
-        self.onPickImage = onPickImage
-        self.onGenerateAISlot = onGenerateAISlot
-        super.init(frame: .zero)
-        translatesAutoresizingMaskIntoConstraints = false
-        cornerRadius = 18
-        backgroundColor = Theme.slotFill
-        layer?.addSublayer(dashLayer)
-        registerForDraggedTypes([.fileURL])
-
-        let title = NSTextField.styledLabel("Görsel ekle", font: NSFont.systemFont(ofSize: 13, weight: .medium), color: NSColor.white.withAlphaComponent(0.85))
-        let sub = NSTextField.styledLabel("sürükle ya da dosyadan seç", font: NSFont.systemFont(ofSize: 10), color: NSColor.white.withAlphaComponent(0.5))
-        var views: [NSView] = [title, sub]
-
-        if let onGenerateAISlot {
-            let btn = PillButton(title: "AI ile Yuvayı Doldur…", kind: .primary, height: 26, action: onGenerateAISlot)
-            self.aiButton = btn
-            views.append(btn)
-        }
-
-        let stack = NSStackView(views: views)
-        stack.orientation = .vertical
-        stack.alignment = .centerX
-        stack.spacing = 8
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(stack)
-        NSLayoutConstraint.activate([
-            heightAnchor.constraint(greaterThanOrEqualToConstant: 140),
-            stack.centerXAnchor.constraint(equalTo: centerXAnchor),
-            stack.centerYAnchor.constraint(equalTo: centerYAnchor),
-        ])
-    }
-
-    required init?(coder: NSCoder) { fatalError("not used") }
-
-    override func layout() {
-        super.layout()
-        updateAppearance()
-    }
-
-    private func updateAppearance() {
-        backgroundColor = targeted ? Theme.slotFill.withAlphaComponent(0.7) : Theme.slotFill
-        let inset = bounds.insetBy(dx: 0.75, dy: 0.75)
-        guard inset.width > 0, inset.height > 0 else { return }
-        dashLayer.frame = bounds
-        dashLayer.path = CGPath(roundedRect: inset, cornerWidth: 18, cornerHeight: 18, transform: nil)
-        dashLayer.fillColor = nil
-        dashLayer.strokeColor = resolvedCGColor(Theme.accent)
-        dashLayer.lineWidth = 1.2
-        dashLayer.lineDashPattern = [5, 4]
-    }
-
-    override func mouseDown(with event: NSEvent) {
-        if let aiButton {
-            let pt = aiButton.convert(event.locationInWindow, from: nil)
-            if aiButton.bounds.contains(pt) {
-                aiButton.mouseDown(with: event)
-                return
-            }
-        }
-        onPickImage?()
-    }
-
-    override func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation {
-        guard ImageImport.pasteboardHasImages(sender.draggingPasteboard) else { return [] }
-        targeted = true
-        return .copy
-    }
-
-    override func draggingExited(_ sender: (any NSDraggingInfo)?) { targeted = false }
-    override func draggingEnded(_ sender: any NSDraggingInfo) { targeted = false }
-
-    override func performDragOperation(_ sender: any NSDraggingInfo) -> Bool {
-        targeted = false
-        let options: [NSPasteboard.ReadingOptionKey: Any] = [
-            .urlReadingFileURLsOnly: true,
-            .urlReadingContentsConformToTypes: ImageImport.fileTypes.map(\.identifier),
-        ]
-        guard let url = (sender.draggingPasteboard.readObjects(forClasses: [NSURL.self], options: options) as? [URL])?.first else {
-            return false
-        }
+        guard let url = ImageImport.imageURLs(from: sender.draggingPasteboard).first else { return false }
         onDropImage?(url)
         return true
     }
@@ -793,19 +1126,20 @@ private final class ApproveBarView: NSView {
 }
 
 private final class FilterPillsControlView: ThemedView {
-    private let onSelect: (PostFilter) -> Void
-    private var segments: [PostFilter: SegmentPillView] = [:]
+    private let onSelect: (PostListFilter) -> Void
+    private var segments: [PostListFilter: SegmentPillView] = [:]
 
-    init(onSelect: @escaping (PostFilter) -> Void) {
+    init(onSelect: @escaping (PostListFilter) -> Void) {
         self.onSelect = onSelect
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
         backgroundColor = Theme.fill
         cornerRadius = 15
         setAccessibilityLabel("Durum filtresi")
+        setAccessibilityRole(.radioGroup)
 
         var views: [NSView] = []
-        for filter in PostFilter.allCases {
+        for filter in PostListFilter.allCases {
             let pill = SegmentPillView(title: filter.label) { [weak self] in
                 self?.onSelect(filter)
             }
@@ -830,8 +1164,8 @@ private final class FilterPillsControlView: ThemedView {
 
     required init?(coder: NSCoder) { fatalError("not used") }
 
-    func update(selection: PostFilter, counts: [PostFilter: Int]) {
-        for filter in PostFilter.allCases {
+    func update(selection: PostListFilter, counts: [PostListFilter: Int]) {
+        for filter in PostListFilter.allCases {
             segments[filter]?.update(selected: filter == selection, count: counts[filter] ?? 0)
         }
     }
@@ -847,6 +1181,8 @@ private final class FilterPillsControlView: ThemedView {
             super.init(frame: .zero)
             translatesAutoresizingMaskIntoConstraints = false
             cornerRadius = 13
+            setAccessibilityRole(.radioButton)
+            setAccessibilityLabel(title)
 
             countLabel.font = NSFont.systemFont(ofSize: 12)
             countLabel.textColor = Theme.textSecondary
@@ -860,8 +1196,8 @@ private final class FilterPillsControlView: ThemedView {
 
             NSLayoutConstraint.activate([
                 heightAnchor.constraint(equalToConstant: 26),
-                row.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
-                row.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
+                row.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 11),
+                row.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -11),
                 row.centerYAnchor.constraint(equalTo: centerYAnchor),
             ])
         }
@@ -874,6 +1210,7 @@ private final class FilterPillsControlView: ThemedView {
             titleLabel.textColor = selected ? Theme.textPrimary : Theme.textSecondary
             countLabel.font = NSFont.systemFont(ofSize: 12, weight: selected ? .semibold : .regular)
             countLabel.stringValue = "\(count)"
+            setAccessibilityValue(selected)
             if selected {
                 layer?.shadowColor = NSColor.black.cgColor
                 layer?.shadowOpacity = 0.08

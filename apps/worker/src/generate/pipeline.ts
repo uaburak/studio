@@ -29,6 +29,7 @@ import { prepareModelImage } from "../media.ts";
 import type { BrandContext } from "./brand.ts";
 import {
   buildDesignSystemPrompt,
+  buildEditPrompt,
   buildFixPrompt,
   buildGeneratePrompt,
   buildRevisePrompt,
@@ -104,6 +105,25 @@ export interface PipelineInput {
   hooks?: GateHooks;
   /** Label prefix for Claude logs. */
   label: string;
+  /**
+   * Revise an existing design with one instruction (one model call, plus fix passes
+   * only when a slide could not be sanitised or rendered) instead of designing anew.
+   */
+  revision?: DesignRevision;
+  /** Serves asset paths the existing design references (e.g. `/media/<assetId>.jpg`). */
+  extraResolver?: AssetResolver;
+  /** Asset path prefixes the sanitiser keeps (default `/brand/`, `/media/`). */
+  assetPrefixes?: readonly string[];
+}
+
+export interface DesignRevision {
+  baseVersion: number;
+  instruction: string;
+  caption: string;
+  /** Sanitised HTML of each slide of the base version. */
+  html: string[];
+  /** Renders of the base version (JPEG/PNG), in slide order; may be empty. */
+  images: Uint8Array[];
 }
 
 export interface PipelineResult {
@@ -148,6 +168,7 @@ export async function runDesignPipeline(input: PipelineInput): Promise<PipelineR
   const resolver: AssetResolver = combineResolvers(
     brand.resolver,
     createMemoryResolver(Object.fromEntries(input.media.map((m) => [m.path, m.bytes]))),
+    ...(input.extraResolver ? [input.extraResolver] : []),
   );
   let usage: ClaudeUsage | undefined;
   let calls = 0;
@@ -229,7 +250,10 @@ export async function runDesignPipeline(input: PipelineInput): Promise<PipelineR
         renderMs: 0,
       };
       try {
-        const clean = sanitizeSlideHtml(s.html);
+        const clean = sanitizeSlideHtml(
+          s.html,
+          input.assetPrefixes ? { assetPrefixes: input.assetPrefixes } : {},
+        );
         slide.html = clean.html;
         slide.sanitizeFindings = clean.findings.length;
       } catch (error) {
@@ -340,6 +364,73 @@ export async function runDesignPipeline(input: PipelineInput): Promise<PipelineR
   const htmlOf = (v: CheckedVersion) =>
     v.output.slides.map((s) => `<!-- ${s.id} -->\n${s.html}`).join("\n\n");
 
+  const ids =
+    brief.slides.max === 1
+      ? " (slide-1)"
+      : ` (slide-1 … slide-N, N between ${brief.slides.min} and ${brief.slides.max})`;
+
+  // Revision of an existing design: one edit call, then fix passes only for hard failures.
+  if (input.revision) {
+    const rev = input.revision;
+    input.progress(0.2, "İstenen değişiklik uygulanıyor");
+    const blocks: ClaudeContentBlock[] = [];
+    const names: string[] = [];
+    for (const [i, bytes] of rev.images.entries()) {
+      const img = await prepareModelImage(bytes, { maxEdge: input.imageMaxEdge, quality: 85 });
+      if (!img) continue;
+      blocks.push({ type: "text", text: `slide-${i + 1}.jpg (v${rev.baseVersion} render):` });
+      blocks.push({ type: "image", mediaType: img.mediaType, data: img.data });
+      names.push(`slide-${i + 1}.jpg`);
+    }
+    const edited = await check(
+      "edit",
+      await call(
+        "edit",
+        buildEditPrompt({
+          brief,
+          instruction: rev.instruction,
+          baseVersion: rev.baseVersion,
+          caption: rev.caption,
+          imageNames: names,
+          html: rev.html.map((h, i) => `<!-- slide-${i + 1} -->\n${h}`).join("\n\n"),
+          slideIds: ids,
+        }),
+        blocks,
+      ),
+    );
+    const versions = [edited];
+    let final = edited;
+    const hardFailures = (v: CheckedVersion) => v.slides.filter((s) => s.failure).length;
+    for (let pass = 1; pass <= input.fixPasses && hardFailures(final) > 0; pass++) {
+      input.progress(0.75, "Render hataları düzeltiliyor");
+      const r = await renders(final);
+      const fixed = await check(
+        `fix${pass}`,
+        await call(
+          `fix${pass}`,
+          buildFixPrompt({
+            brief,
+            lint: lintPayload(final),
+            extraIssues: extraIssues(final),
+            html: htmlOf(final),
+          }),
+          r.blocks,
+        ),
+      );
+      versions.push(fixed);
+      if (hardFailures(fixed) <= hardFailures(final)) final = fixed;
+    }
+    return {
+      final,
+      versions,
+      calls,
+      usage,
+      timings: { claudeMs, renderMs, totalMs: Date.now() - t0 },
+      model,
+      ...(provider ? { provider } : {}),
+    };
+  }
+
   // 1. First pass, with the user's images attached so the model sees what they show.
   input.progress(0.2, "Tasarım yazılıyor (1/2)");
   const mediaBlocks: ClaudeContentBlock[] = [];
@@ -352,10 +443,6 @@ export async function runDesignPipeline(input: PipelineInput): Promise<PipelineR
     });
     mediaBlocks.push({ type: "image", mediaType: img.mediaType, data: img.data });
   }
-  const ids =
-    brief.slides.max === 1
-      ? " (slide-1)"
-      : ` (slide-1 … slide-N, N between ${brief.slides.min} and ${brief.slides.max})`;
   const v1 = await check(
     "v1",
     await call("generate", buildGeneratePrompt(brief, ids), mediaBlocks),

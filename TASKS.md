@@ -51,10 +51,10 @@ Kurallar: ajanlar en fazla Opus 5.5 / xhigh; aynı anda en fazla 3 ajan; para ha
 
 | Dalga | No | İş | Efor | Durum |
 |---|---|---|---|---|
-| 1 | A5 | Sohbet ajanı (Wecra yöntemi) — ajan çalışmaya devam ediyor | xhigh | Çalışıyor |
-| 1 | P1 | Mac postlar ve editör: postlar ızgarası, açık post, katman düzenleme, görsel yuvası doldurma, sürüm geçmişi ve geri al, "Neyi değiştireyim?", dışa aktarım (JPEG/PNG/PDF, paylaş) | xhigh | Çalışıyor |
-| 1 | P2 | Mac ilk açılış ve marka: ilk açılış akışı (Claude girişi, Mac sunucusu, ilk marka), marka sihirbazı, marka kiti, örnek postlardan profil çıkarma, profil düzenleme ve onay | high | Çalışıyor |
-| 2 | P3 | Mac yayın, hesaplar, takvim, bildirimler: hesap bağlama, zamanlama ve takvim, bulut yayıncı eşitleme, yayın günlüğü, macOS bildirimleri | high | Sırada |
+| 1 | A5 | Sohbet ajanı (Wecra yöntemi): oturum sürdürme, HTTP MCP araçları, onay kartları, /usage | xhigh | Tamam (denetlendi; canlı: --resume ile ikinci tur 4 sn) |
+| 1 | P1 | Mac postlar ve editör: postlar ızgarası, açık post, katman düzenleme, görsel yuvası doldurma, sürüm geçmişi ve geri al, "Neyi değiştireyim?", dışa aktarım (JPEG/PNG/PDF, paylaş) | xhigh | Tamam (denetlendi; canlı: metin+taşıma, yuva doldurma, onay, dışa aktarım, AI düzeltme) |
+| 1 | P2 | Mac ilk açılış ve marka: ilk açılış akışı (Claude girişi, Mac sunucusu, ilk marka), marka sihirbazı, marka kiti, örnek postlardan profil çıkarma, profil düzenleme ve onay | high | Tamam (denetlendi; canlı: kit → profil çıkar → onay) |
+| 2 | P3 | Mac yayın, hesaplar, takvim, bildirimler: hesap bağlama, zamanlama ve takvim, bulut yayıncı eşitleme, yayın günlüğü, macOS bildirimleri | high | Çalışıyor |
 | 2 | P4 | Mac nihai cila: menüler ve kısayollar, boş/yükleniyor/hata durumları, arama, medya, tutarlılık ve erişilebilirlik | high | Sırada |
 | 3 | P5 | iOS: Mac ile eş düzey | xhigh | Sırada |
 | 3 | P6 | Reels'in Mac arayüzünde uçtan uca kullanımı | high | Sırada |

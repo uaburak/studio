@@ -1,6 +1,7 @@
 export * from "./agent.ts";
 export * from "./asset.ts";
 export * from "./brand.ts";
+export * from "./brand-kit.ts";
 export * from "./brand-profile.ts";
 export * from "./chat.ts";
 export * from "./chat-alias.ts";

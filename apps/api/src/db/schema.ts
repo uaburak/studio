@@ -332,6 +332,19 @@ export const contentVersions = sqliteTable(
  * carousel never approaches D1's 2 MB row limit, and so rendered assets are
  * real foreign keys.
  */
+/** Stored shape of `content_version_slides.layers` (mirrors `SlideLayout` in @studio/contract). */
+export type SlideLayoutJson = Array<{
+  id: string;
+  type: string;
+  role: string | null;
+  parent: string | null;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  visible: boolean;
+}>;
+
 export const contentVersionSlides = sqliteTable(
   "content_version_slides",
   {
@@ -343,6 +356,8 @@ export const contentVersionSlides = sqliteTable(
     width: integer("width").notNull(),
     height: integer("height").notNull(),
     renderedAssetId: text("rendered_asset_id").references(() => assets.id),
+    /** Layer boxes measured in that render (`SlideLayout` JSON); null until measured. */
+    layers: text("layers", { mode: "json" }).$type<SlideLayoutJson>(),
   },
   (t) => [
     primaryKey({ columns: [t.versionId, t.position] }),

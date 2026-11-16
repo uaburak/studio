@@ -1,14 +1,21 @@
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import type { Asset, Content, ContentVersion, Job } from "@studio/contract";
+import {
+  type Asset,
+  BrandAnalyzePayload,
+  type Content,
+  type ContentVersion,
+  type Job,
+} from "@studio/contract";
 import { parseBrandTokens } from "@studio/design-kit/brand";
 import sharp from "sharp";
 import { describe, expect, it } from "vitest";
 import { type AgentDeps, loadAgentSettings } from "../src/agent.ts";
-import { createBrandAnalyzeHandler } from "../src/brand/handler.ts";
+import { createBrandAnalyzeHandler, rasterizeLogo } from "../src/brand/handler.ts";
 import { ClaudeGate } from "../src/claude/gate.ts";
 import { silentLogger } from "../src/log.ts";
+import { prepareModelImage } from "../src/media.ts";
 import type { JobContext } from "../src/registry.ts";
 import { createFakeApi, fakeBrand, NOW } from "./fake-api.ts";
 
@@ -234,5 +241,257 @@ describe("brand.analyze handler", () => {
       statements: ["MTM Agro bitki besleme çözümleri üretir."],
       forbidden: ["%100 verim artışı garantisi"],
     });
+  });
+
+  it("uses the brand kit: every sample, logo backgrounds, the user's palette and fonts with licence", async () => {
+    const { api, state } = createFakeApi({ brands: [fakeBrand()] });
+    const asset = (id: string, kind: Asset["kind"], name: string, mime = "image/png"): Asset => ({
+      id,
+      brandId: "brand_1",
+      kind,
+      source: "upload",
+      objectKey: `brands/brand_1/${id}`,
+      mimeType: mime,
+      bytes: 100,
+      sha256: "0".repeat(64),
+      width: kind === "logo" ? 320 : 1080,
+      height: kind === "logo" ? 80 : 1350,
+      durationMs: null,
+      originalFilename: name,
+      createdAt: NOW,
+    });
+    const png = await tinyLogoPng();
+    const records = [
+      asset("s1", "image", "post-1.png"),
+      asset("s2", "image", "post-2.png"),
+      asset("s3", "image", "post-3.png"),
+      asset("unrelated", "image", "chat-attachment.png"),
+      asset("logo_light", "logo", "logo.png"),
+      asset("logo_dark", "logo", "logo-negatif.png"),
+      asset("font_archivo", "font", "Archivo-Bold.woff2", "font/woff2"),
+    ];
+    // One kit file is not in the first page of assets: the handler fetches it by id.
+    const hidden = records.pop() as Asset;
+    state.assetRecords.push(...records);
+    const fontOnlyById = new Map([[hidden.id, hidden]]);
+    const baseGet = api.client.assets.get;
+    (api.client.assets as { get: typeof baseGet }).get = async (id, init) =>
+      fontOnlyById.get(id) ?? baseGet(id, init);
+    for (const r of records) {
+      if (r.kind !== "font") state.assets.set(r.id, { bytes: png, contentType: "image/png" });
+    }
+    state.kits.set("brand_1", {
+      brandId: "brand_1",
+      logos: [
+        { assetId: "logo_light", background: "light" },
+        { assetId: "logo_dark", background: "dark", label: "Negatif logo" },
+      ],
+      fonts: [
+        {
+          assetId: "font_archivo",
+          family: "Archivo",
+          role: "display",
+          licenseNote: "SIL OFL 1.1, Google Fonts",
+        },
+      ],
+      palette: [
+        { name: "accent", hex: "#FF6A00", use: "tek vurgu" },
+        { name: "ink", hex: "#0A0A0A" },
+      ],
+      samples: [
+        { assetId: "s1", caption: "Hasat başladı, tarlada ilk gün." },
+        { assetId: "s2" },
+        { assetId: "s3" },
+      ],
+      notes: "Siyah beyaz, tek turuncu vurgu.",
+      updatedAt: NOW,
+    });
+
+    let capturedBody = "";
+    const fakeGeminiFetch: typeof fetch = async (_url, init) => {
+      capturedBody = String(init?.body ?? "");
+      return new Response(
+        JSON.stringify({
+          candidates: [
+            {
+              content: {
+                parts: [
+                  {
+                    text: JSON.stringify({
+                      colors: {
+                        paper: { value: "#FFFFFF", use: "zemin" },
+                        accent: { value: "#3366FF", use: "modelin tahmini" },
+                      },
+                      displayFontFamily: "Inter",
+                      textFontFamily: "Inter",
+                      marginPx: 64,
+                      gutterPx: 20,
+                      cornerRadiusPx: 0,
+                      designRules: "# Tasarım\n- Siyah zemin, tek turuncu vurgu.",
+                      voice: "# Ses\n- Kısa ve net.",
+                      allowedNumbers: [],
+                      statements: [],
+                      forbiddenClaims: [],
+                      provisional: false,
+                    }),
+                  },
+                ],
+              },
+            },
+          ],
+          modelVersion: "gemini-2.5-flash",
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    };
+
+    const handler = createBrandAnalyzeHandler({
+      api,
+      gate: new ClaudeGate({
+        runner: async () => {
+          throw new Error("Claude should not be called while limited");
+        },
+      }),
+      settings: loadAgentSettings({ GEMINI_API_KEY: "fake-brand-key" }),
+      logger: silentLogger,
+      health: () => ({ state: "limited", message: "limit dolu", checkedAt: NOW }),
+      stateDir: mkdtempSync(path.join(tmpdir(), "worker-brand-kit-")),
+      geminiFetch: fakeGeminiFetch,
+    });
+    const payload = BrandAnalyzePayload.parse({ includeApprovedContentFeedback: false });
+    const out = await handler.run(payload, analyzeJobCtx(payload));
+
+    // 3 samples + 2 logos; the unrelated chat image is not a reference.
+    expect(out).toMatchObject({
+      version: 1,
+      status: "draft",
+      visualReferencesUsed: 5,
+      samplesUsed: 3,
+      usedKit: true,
+    });
+    expect(capturedBody).toContain("örnek post 1/3");
+    expect(capturedBody).toContain("Hasat başladı");
+    expect(capturedBody).toContain("koyu zemin için");
+    expect(capturedBody).toContain("accent: #FF6A00");
+    expect(capturedBody).toContain("SIL OFL 1.1");
+    expect(capturedBody).toContain("Siyah beyaz, tek turuncu vurgu.");
+    expect(capturedBody).not.toContain("chat-attachment");
+
+    const draft = state.profileHistory.at(-1);
+    expect(draft?.status).toBe("draft");
+    expect(state.profiles.get("brand_1")).toBeUndefined();
+    const tokens = parseBrandTokens(draft?.tokens);
+    // The user's palette wins over the model's guess.
+    expect(tokens.color.accent).toMatchObject({ value: "#FF6A00", use: "tek vurgu" });
+    expect(tokens.color.ink).toMatchObject({ value: "#0A0A0A" });
+    expect(tokens.color.paper).toMatchObject({ value: "#FFFFFF" });
+    expect(tokens.font.display).toMatchObject({
+      family: "Archivo",
+      files: ["fonts/archivo-bold.woff2"],
+      license: "Archivo: SIL OFL 1.1, Google Fonts",
+    });
+    // No text font in the kit: the model's family for running text, no files.
+    expect(tokens.font.text).toMatchObject({ family: "Inter", files: [] });
+    expect(Object.values(tokens.logos).map((l) => l.on)).toEqual(["light", "dark"]);
+    expect(tokens.space).toMatchObject({ margin: 64, gutter: 20 });
+    expect(tokens.radius).toMatchObject({ md: 0 });
+    expect(tokens.assets).toEqual({});
+    const fileAssets = (draft?.tokens.fileAssets ?? {}) as Record<string, string>;
+    expect(fileAssets["fonts/archivo-bold.woff2"]).toBe("font_archivo");
+    expect(Object.values(fileAssets).sort()).toEqual(["font_archivo", "logo_dark", "logo_light"]);
+  });
+
+  it("marks the draft provisional when fewer than 3 samples could be read", async () => {
+    const { api, state } = createFakeApi({ brands: [fakeBrand()] });
+    const png = await tinyLogoPng();
+    state.assetRecords.push({
+      id: "s1",
+      brandId: "brand_1",
+      kind: "image",
+      source: "upload",
+      objectKey: "k",
+      mimeType: "image/png",
+      bytes: 1,
+      sha256: "0".repeat(64),
+      width: 10,
+      height: 10,
+      durationMs: null,
+      originalFilename: "a.png",
+      createdAt: NOW,
+    });
+    state.assets.set("s1", { bytes: png, contentType: "image/png" });
+    state.kits.set("brand_1", {
+      brandId: "brand_1",
+      logos: [],
+      fonts: [],
+      palette: [],
+      samples: [{ assetId: "s1" }, { assetId: "missing_1" }, { assetId: "missing_2" }],
+      notes: "",
+      updatedAt: NOW,
+    });
+    const handler = createBrandAnalyzeHandler({
+      api,
+      gate: new ClaudeGate({ runner: async () => Promise.reject(new Error("no claude")) }),
+      settings: loadAgentSettings({ GEMINI_API_KEY: "k" }),
+      logger: silentLogger,
+      health: () => ({ state: "limited", message: "", checkedAt: NOW }),
+      stateDir: mkdtempSync(path.join(tmpdir(), "worker-brand-thin-")),
+      geminiFetch: async () =>
+        new Response(
+          JSON.stringify({
+            candidates: [
+              {
+                content: {
+                  parts: [
+                    {
+                      text: JSON.stringify({
+                        colors: {},
+                        displayFontFamily: "Inter",
+                        textFontFamily: "Inter",
+                        marginPx: 72,
+                        designRules: "d",
+                        voice: "v",
+                        allowedNumbers: [],
+                        statements: [],
+                        forbiddenClaims: [],
+                        provisional: false,
+                      }),
+                    },
+                  ],
+                },
+              },
+            ],
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        ),
+    });
+    const payload = BrandAnalyzePayload.parse({ includeApprovedContentFeedback: false });
+    const out = await handler.run(payload, analyzeJobCtx(payload));
+    expect(out).toMatchObject({ samplesUsed: 1, usedKit: true });
+    expect(state.profileHistory.at(-1)?.tokens.status).toBe("provisional");
+
+    // None readable: an honest error instead of a profile from nothing.
+    state.kits.set("brand_1", {
+      ...(state.kits.get("brand_1") as NonNullable<ReturnType<typeof state.kits.get>>),
+      samples: [{ assetId: "missing_1" }, { assetId: "missing_2" }, { assetId: "missing_3" }],
+    });
+    await expect(handler.run(payload, analyzeJobCtx(payload))).rejects.toThrow(
+      "Örnek post görselleri okunamadı",
+    );
+  });
+
+  it("renders SVG logos on their background so the model can see them", async () => {
+    const svg = new TextEncoder().encode(
+      '<svg xmlns="http://www.w3.org/2000/svg" width="320" height="80"><text x="10" y="50" font-size="40" fill="#FFFFFF">Logo</text></svg>',
+    );
+    expect(await prepareModelImage(svg)).toBeNull();
+    const png = await rasterizeLogo(svg, "#141414");
+    const prepared = await prepareModelImage(png);
+    expect(prepared?.mediaType).toMatch(/^image\/(png|jpeg)$/);
+    const stats = await sharp(png).stats();
+    expect(stats.isOpaque).toBe(true);
+    // Not an image at all: handed back untouched (and skipped later).
+    const junk = new TextEncoder().encode("not an image");
+    expect(await rasterizeLogo(junk, "#FFFFFF")).toBe(junk);
   });
 });

@@ -102,9 +102,11 @@ export class ClaudeGate {
         if (signal?.aborted) throw signal.reason ?? error;
         if (error instanceof ClaudeUsageLimitError) {
           this.park(error.resetsAt, error.message, error.resetSource);
+          // An agent turn that already wrote or called tools is not repeated blindly.
+          if (error.details?.partial) throw error;
           continue;
         }
-        if (error instanceof ClaudeError && error.code === "transient") {
+        if (error instanceof ClaudeError && error.code === "transient" && !error.details?.partial) {
           transientFailures++;
           if (transientFailures > (this.options.transientRetries ?? 3)) throw error;
           const delay = (this.options.transientDelayMs ?? 20_000) * 2 ** (transientFailures - 1);

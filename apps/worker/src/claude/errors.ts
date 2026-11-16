@@ -21,7 +21,13 @@ export class ClaudeError extends Error {
   constructor(
     readonly code: ClaudeErrorCode,
     message: string,
-    readonly details?: { stderr?: string; resultText?: string; exitCode?: number | null },
+    readonly details?: {
+      stderr?: string;
+      resultText?: string;
+      exitCode?: number | null;
+      /** An agent turn had already streamed text or called a tool: do not repeat the call. */
+      partial?: boolean;
+    },
   ) {
     super(message);
   }

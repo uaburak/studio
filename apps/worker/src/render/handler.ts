@@ -1,9 +1,14 @@
 /**
  * `content.render` handler (Faz 2 & Faz 6):
- * - Slot-fill (`slotAssignments[slotLayerId] = assetId` -> `/api/assets/${assetId}/content`),
- * - Typed `@studio/design-kit` layer patching (`patches`),
- * - Creates a new `ContentVersion` and moves `draft` -> `in_review` when edits are applied,
- * - Renders slides to sRGB JPEG (respecting Instagram 1440px max width) and updates `renderedAssetIds`,
+ * - Slot-fill (`slotAssignments[slotLayerId] = assetId` -> `/media/${assetId}.<ext>`),
+ * - Typed `@studio/design-kit` layer patching (`patches`, each `{ slide, op, ... }`; the
+ *   older `set_text` / `set_visible` spellings are accepted),
+ * - Creates a new `manual_edit` version from `version` (default: current) and moves
+ *   `draft` -> `in_review` when edits are applied; slides whose HTML did not change keep
+ *   their render and layer layout,
+ * - Renders slides to sRGB JPEG (respecting Instagram 1440px max width) and stores
+ *   `renderedAssetIds` plus the measured layer boxes (`layouts`) on the version,
+ * - Lossless PNG exports (`format: "png"`, `pngAssetIds`) without touching the version,
  * - Renders single-pass multi-page Chromium vector PDF (`page.pdf`) for LinkedIn carousels (`format: "pdf" | "both"`),
  * - Delegates Reels (`content.type === "reel"` or `format === "mp4"`) to the Reels Video Engine.
  */
@@ -13,6 +18,7 @@ import {
   ContentRenderPayload,
   type ContentVersion,
   type SlideInput,
+  type SlideLayout,
 } from "@studio/contract";
 import { brandPatchContext } from "@studio/design-kit/brand";
 import { parseSlide } from "@studio/design-kit/document";
@@ -32,12 +38,14 @@ import { STRICT_CSP, sanitizeSlideHtml } from "@studio/design-kit/sanitize";
 import sharp from "sharp";
 import type { AgentDeps } from "../agent.ts";
 import { loadBrandContext } from "../generate/brand.ts";
+import { extensionForMime } from "../media.ts";
 import { defineHandler, type JobContext, RetryableError } from "../registry.ts";
 import {
   createApiAssetPathResolver,
   type ReelEngineTestSeams,
   renderExistingReelVersion,
 } from "../video/render-reel.ts";
+import { layoutFromReport } from "./layout.ts";
 
 export const RENDER_ASSET_PREFIXES = ["/brand/", "/media/", "/api/assets/"] as const;
 
@@ -68,6 +76,32 @@ function escapeAttr(value: string): string {
 }
 
 /**
+ * Contract-conform image path of an uploaded asset (`/media/<assetId><ext>`). The
+ * renderer's API resolver serves `/media/<id>.*` from `GET /api/assets/<id>/content`.
+ */
+export function mediaSrcFor(assetId: string, extension = ".jpg"): string {
+  return `/media/${encodeURIComponent(assetId)}${extension}`;
+}
+
+/**
+ * The patch spellings the apps send, normalised to design-kit `PatchOp`s:
+ * `set_text` -> `setText`, `set_visible {visible}` / `setVisibility {visible}` ->
+ * `setVisibility {hidden}`.
+ */
+export function normalizePatchOp(raw: Record<string, unknown>): Record<string, unknown> {
+  const { op, ...rest } = raw;
+  if (op === "set_text") return { ...rest, op: "setText" };
+  if (
+    op === "set_visible" ||
+    (op === "setVisibility" && !("hidden" in rest) && "visible" in rest)
+  ) {
+    const { visible, ...others } = rest;
+    return { ...others, op: "setVisibility", hidden: visible === false };
+  }
+  return raw;
+}
+
+/**
  * Fill a single slot or image layer across a slide's HTML using `@studio/design-kit`'s
  * `applyPatch`, with a clean fallback for non-contract `<img>` / `[data-slot]` markup.
  */
@@ -76,8 +110,8 @@ export function applySlotAssignmentToSlide(
   slotLayerId: string,
   assetId: string,
   patchCtx: PatchContext,
+  src: string = mediaSrcFor(assetId),
 ): { html: string; matched: boolean } {
-  const src = `/api/assets/${encodeURIComponent(assetId)}/content`;
   const doc = parseSlide(html);
   const entry = doc.entries.get(slotLayerId);
 
@@ -171,7 +205,11 @@ function applyPayloadPatchesToSlides(
           entry && typeof entry === "object" && "op" in entry
             ? (entry as { op: unknown }).op
             : entry;
-        const parsedOp = PatchOp.parse(opCandidate);
+        const parsedOp = PatchOp.parse(
+          opCandidate && typeof opCandidate === "object"
+            ? normalizePatchOp(opCandidate as Record<string, unknown>)
+            : opCandidate,
+        );
         currentHtml = applyPatch(currentHtml, parsedOp, patchCtx).html;
       }
       targetSlide.html = currentHtml;
@@ -186,7 +224,7 @@ function applyPayloadPatchesToSlides(
         : typeof slideIndex === "number"
           ? slideIndex
           : undefined;
-    const parsedOp = PatchOp.parse(rest);
+    const parsedOp = PatchOp.parse(normalizePatchOp(rest));
 
     if (explicitIdx !== undefined) {
       const targetSlide = out[explicitIdx];
@@ -375,6 +413,48 @@ async function renderMultiSlideChromiumPdf(input: {
   return buildImagePdf(pages, { title: input.title });
 }
 
+/**
+ * Render one slide: PNG + sRGB JPEG and, when the renderer can lint, the measured
+ * layer boxes. A renderer whose lint pass fails falls back to a plain render
+ * (no layout) instead of failing the job.
+ */
+async function renderSlideRaster(input: {
+  renderer: RenderCapable;
+  html: string;
+  width: number;
+  height: number;
+  resolver: AssetResolver;
+  signal: AbortSignal;
+  formats: ("png" | "jpeg")[];
+}): Promise<{ png?: Uint8Array; jpeg?: Uint8Array; layout: SlideLayout | null }> {
+  const request = {
+    html: input.html,
+    width: input.width,
+    height: input.height,
+    formats: input.formats,
+    jpegQuality: 92,
+    resolver: input.resolver,
+    signal: input.signal,
+  };
+  try {
+    const res = await input.renderer.renderAndLint(request);
+    return {
+      ...(res.png ? { png: res.png } : {}),
+      ...(res.jpeg ? { jpeg: res.jpeg } : {}),
+      layout: layoutFromReport(res.report),
+    };
+  } catch (error) {
+    input.signal.throwIfAborted();
+    if (typeof input.renderer.render !== "function") throw error;
+    const res = await input.renderer.render(request);
+    return {
+      ...(res.png ? { png: res.png } : {}),
+      ...(res.jpeg ? { jpeg: res.jpeg } : {}),
+      layout: null,
+    };
+  }
+}
+
 async function renderSingleSlideJpeg(input: {
   renderer: RenderCapable;
   html: string;
@@ -383,36 +463,10 @@ async function renderSingleSlideJpeg(input: {
   clampInstagramWidth: boolean;
   resolver: AssetResolver;
   signal: AbortSignal;
-}): Promise<{ jpeg: Uint8Array; width: number; height: number }> {
-  let pngBytes: Uint8Array | undefined;
-  let jpegBytes: Uint8Array | undefined;
-
-  if (typeof input.renderer.render === "function") {
-    const res = await input.renderer.render({
-      html: input.html,
-      width: input.width,
-      height: input.height,
-      formats: ["png", "jpeg"],
-      jpegQuality: 92,
-      resolver: input.resolver,
-      signal: input.signal,
-    });
-    pngBytes = res.png;
-    jpegBytes = res.jpeg;
-  } else {
-    const res = await input.renderer.renderAndLint({
-      html: input.html,
-      width: input.width,
-      height: input.height,
-      formats: ["png", "jpeg"],
-      jpegQuality: 92,
-      resolver: input.resolver,
-      signal: input.signal,
-    });
-    pngBytes = res.png;
-    jpegBytes = res.jpeg;
-  }
-
+}): Promise<{ jpeg: Uint8Array; width: number; height: number; layout: SlideLayout | null }> {
+  const res = await renderSlideRaster({ ...input, formats: ["png", "jpeg"] });
+  const pngBytes = res.png;
+  const jpegBytes = res.jpeg;
   const sourceBytes = pngBytes ?? jpegBytes;
   if (!sourceBytes) {
     throw new Error("Slayt render çıktısı (PNG/JPEG) alınamadı.");
@@ -430,14 +484,20 @@ async function renderSingleSlideJpeg(input: {
       jpeg: new Uint8Array(out.data.buffer, out.data.byteOffset, out.data.byteLength),
       width: out.info.width,
       height: out.info.height,
+      layout: res.layout,
     };
   }
 
   if (pngBytes) {
     const srgbJpeg = await pngToSrgbJpeg(pngBytes, 92);
-    return { jpeg: srgbJpeg, width: input.width, height: input.height };
+    return { jpeg: srgbJpeg, width: input.width, height: input.height, layout: res.layout };
   }
-  return { jpeg: jpegBytes as Uint8Array, width: input.width, height: input.height };
+  return {
+    jpeg: jpegBytes as Uint8Array,
+    width: input.width,
+    height: input.height,
+    layout: res.layout,
+  };
 }
 
 export interface ExecuteContentRenderOptions {
@@ -455,9 +515,37 @@ export interface ContentRenderOutput extends Record<string, unknown> {
   version: number;
   versionId: string;
   renderedAssetIds: (string | null)[];
+  /** Slides (0-based) rendered by this job. */
+  renderedSlides?: number[];
+  /** The edits left every slide unchanged: no new version was stored. */
+  unchanged?: boolean;
+  pngAssetIds?: (string | null)[];
   pdfAssetId?: string;
   videoAssetId?: string;
   coverAssetId?: string;
+}
+
+/** `/media/<id><ext>` for each slot assignment (extension from the asset's mime type). */
+async function slotSources(
+  deps: ContentRenderDeps,
+  assignments: Record<string, string>,
+  signal: AbortSignal,
+): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  for (const assetId of new Set(Object.values(assignments))) {
+    let ext = ".jpg";
+    try {
+      const asset = await deps.api.client.assets.get(assetId, { signal });
+      ext = extensionForMime(asset.mimeType) || ext;
+    } catch (error) {
+      signal.throwIfAborted();
+      if (error instanceof ApiError && error.status === 404) {
+        throw new Error(`Görsel bulunamadı: ${assetId}`);
+      }
+    }
+    out.set(assetId, mediaSrcFor(assetId, ext));
+  }
+  return out;
 }
 
 export async function executeContentRender(
@@ -510,25 +598,38 @@ export async function executeContentRender(
   const hasSlotAssignments =
     payload.slotAssignments !== undefined && Object.keys(payload.slotAssignments).length > 0;
   const hasPatches = payload.patches !== undefined && payload.patches.length > 0;
+  const hasEdits = hasSlotAssignments || hasPatches;
 
-  if (hasSlotAssignments || hasPatches) {
+  // Renders and layouts carried over to the version that gets rendered.
+  let renderedAssetIds: (string | null)[] = targetVersion.slides.map((s) => s.renderedAssetId);
+  let layouts: (SlideLayout | null)[] = targetVersion.slides.map((s) => s.layers ?? null);
+  let changed: boolean[] = targetVersion.slides.map(() => false);
+
+  if (hasEdits) {
     progress(0.22, "Görsel yuvaları ve katman yamaları uygulanıyor");
     const patchCtx: PatchContext = {
       ...brandPatchContext(brand.tokens),
       assetPrefixes: RENDER_ASSET_PREFIXES,
     };
-
-    let workingSlides: SlideInput[] = targetVersion.slides.map((s) => ({
+    const base = targetVersion;
+    let workingSlides: SlideInput[] = base.slides.map((s) => ({
       html: s.html,
       width: s.width,
       height: s.height,
     }));
 
     if (hasSlotAssignments && payload.slotAssignments) {
+      const sources = await slotSources(deps, payload.slotAssignments, signal);
       for (const [slotLayerId, assetId] of Object.entries(payload.slotAssignments)) {
         let matchedAny = false;
         workingSlides = workingSlides.map((s) => {
-          const res = applySlotAssignmentToSlide(s.html, slotLayerId, assetId, patchCtx);
+          const res = applySlotAssignmentToSlide(
+            s.html,
+            slotLayerId,
+            assetId,
+            patchCtx,
+            sources.get(assetId),
+          );
           if (res.matched) matchedAny = true;
           return { ...s, html: res.html };
         });
@@ -546,17 +647,36 @@ export async function executeContentRender(
       ...s,
       html: sanitizeSlideHtml(s.html, { assetPrefixes: RENDER_ASSET_PREFIXES }).html,
     }));
+    changed = workingSlides.map((s, i) => s.html !== base.slides[i]?.html);
+
+    if (!changed.some(Boolean)) {
+      progress(1, "Değişiklik yok");
+      return {
+        contentId: content.id,
+        version: base.version,
+        versionId: base.id,
+        renderedAssetIds,
+        renderedSlides: [],
+        unchanged: true,
+      };
+    }
 
     const noteParts: string[] = [];
+    if (payload.note) noteParts.push(payload.note);
     if (hasSlotAssignments && payload.slotAssignments) {
       noteParts.push(
         `Görsel yuvası dolduruldu (${Object.keys(payload.slotAssignments).join(", ")}).`,
       );
     }
-    if (hasPatches && payload.patches) {
-      noteParts.push(`${payload.patches.length} katman yaması uygulandı.`);
+    if (hasPatches && payload.patches && !payload.note) {
+      noteParts.push(
+        `${payload.patches.length} katman yaması uygulandı (v${base.version} üzerine).`,
+      );
     }
 
+    // Unchanged slides keep their render and layout; changed ones get new ones below.
+    renderedAssetIds = renderedAssetIds.map((id, i) => (changed[i] ? null : id));
+    layouts = layouts.map((l, i) => (changed[i] ? null : l));
     targetVersion = await deps.api.client.contents.versions.create(
       content.id,
       {
@@ -564,6 +684,9 @@ export async function executeContentRender(
         slides: workingSlides,
         note: noteParts.join(" ").slice(0, 2000),
         ...(options.jobId ? { jobId: options.jobId } : {}),
+        ...(renderedAssetIds.some((id) => id !== null)
+          ? { renderedAssetIds: [...renderedAssetIds], layouts: [...layouts] }
+          : {}),
       },
       init,
     );
@@ -571,14 +694,17 @@ export async function executeContentRender(
 
   const resolver = combineResolvers(brand.resolver, createApiAssetPathResolver(deps.api, signal));
   const renderer = deps.renderer();
-  const shouldRenderJpeg =
-    payload.format === "jpeg" ||
-    payload.format === "both" ||
-    hasSlotAssignments ||
-    hasPatches ||
-    targetVersion.slides.some((s) => !s.renderedAssetId);
+  const wantsJpeg = payload.format === "jpeg" || payload.format === "both";
+  const toRender = targetVersion.slides
+    .map((_, i) => i)
+    .filter(
+      (i) =>
+        payload.force === true ||
+        changed[i] === true ||
+        !renderedAssetIds[i] ||
+        (wantsJpeg && layouts[i] === null),
+    );
 
-  let renderedAssetIds: (string | null)[] = targetVersion.slides.map((s) => s.renderedAssetId);
   const renderedJpegPages: {
     jpeg: Uint8Array;
     pixelWidth: number;
@@ -587,13 +713,14 @@ export async function executeContentRender(
     cssHeight: number;
   }[] = [];
 
-  if (shouldRenderJpeg) {
+  if (toRender.length > 0) {
     progress(0.45, "Slaytlar JPEG olarak render ediliyor");
     const clampInstagram = content.targetPlatforms.includes("instagram");
-    const freshIds: string[] = [];
     const baseSlug = slug(content.title);
 
-    for (const [i, slide] of targetVersion.slides.entries()) {
+    for (const i of toRender) {
+      const slide = targetVersion.slides[i];
+      if (!slide) continue;
       signal.throwIfAborted();
       const rendered = await renderSingleSlideJpeg({
         renderer,
@@ -604,13 +731,13 @@ export async function executeContentRender(
         resolver,
         signal,
       });
-      renderedJpegPages.push({
+      renderedJpegPages[i] = {
         jpeg: rendered.jpeg,
         pixelWidth: rendered.width,
         pixelHeight: rendered.height,
         cssWidth: slide.width,
         cssHeight: slide.height,
-      });
+      };
       const uploaded = await deps.api.client.assets.upload(
         {
           brandId,
@@ -623,27 +750,65 @@ export async function executeContentRender(
         },
         init,
       );
-      freshIds.push(uploaded.id);
+      renderedAssetIds[i] = uploaded.id;
+      layouts[i] = rendered.layout;
     }
 
-    renderedAssetIds = freshIds;
     targetVersion = await deps.api.client.contents.versions.update(
       content.id,
       targetVersion.version,
-      { renderedAssetIds: freshIds },
+      { renderedAssetIds: [...renderedAssetIds], layouts: [...layouts] },
       init,
     );
+  }
+
+  let pngAssetIds: (string | null)[] | undefined;
+  if (payload.format === "png") {
+    progress(0.6, "PNG olarak dışa aktarılıyor");
+    const wanted = new Set(payload.slides ?? targetVersion.slides.map((_, i) => i));
+    pngAssetIds = [];
+    for (const [i, slide] of targetVersion.slides.entries()) {
+      if (!wanted.has(i)) {
+        pngAssetIds.push(null);
+        continue;
+      }
+      signal.throwIfAborted();
+      const res = await renderSlideRaster({
+        renderer,
+        html: slide.html,
+        width: slide.width,
+        height: slide.height,
+        resolver,
+        signal,
+        formats: ["png"],
+      });
+      if (!res.png) throw new Error("Slayt PNG olarak render edilemedi.");
+      const uploaded = await deps.api.client.assets.upload(
+        {
+          brandId,
+          kind: "image",
+          source: "generated",
+          width: slide.width,
+          height: slide.height,
+          file: new Blob([res.png.slice()], { type: "image/png" }),
+          filename: `${slug(content.title)}-v${targetVersion.version}-${i + 1}.png`,
+        },
+        init,
+      );
+      pngAssetIds.push(uploaded.id);
+    }
   }
 
   let pdfAssetId: string | undefined;
   if (payload.format === "pdf" || payload.format === "both") {
     progress(0.78, "LinkedIn çok sayfalı PDF dışa aktarılıyor");
+    const allPagesRendered =
+      targetVersion.slides.length > 0 &&
+      targetVersion.slides.every((_, i) => renderedJpegPages[i] !== undefined);
     const pdfBytes = await renderMultiSlideChromiumPdf({
       renderer,
       slides: targetVersion.slides,
-      ...(renderedJpegPages.length === targetVersion.slides.length
-        ? { renderedJpegs: renderedJpegPages }
-        : {}),
+      ...(allPagesRendered ? { renderedJpegs: renderedJpegPages } : {}),
       title: content.title,
       resolver,
       signal,
@@ -663,7 +828,7 @@ export async function executeContentRender(
     pdfAssetId = pdfAsset.id;
   }
 
-  if (hasSlotAssignments || hasPatches) {
+  if (hasEdits) {
     const refreshed = await deps.api.client.contents.get(content.id, init);
     if (refreshed.status === "draft") {
       await deps.api.client.contents
@@ -678,6 +843,8 @@ export async function executeContentRender(
     version: targetVersion.version,
     versionId: targetVersion.id,
     renderedAssetIds,
+    renderedSlides: toRender,
+    ...(pngAssetIds ? { pngAssetIds } : {}),
     ...(pdfAssetId ? { pdfAssetId } : {}),
   };
 }

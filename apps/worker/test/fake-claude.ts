@@ -15,6 +15,10 @@ export interface Scenario {
   exitCode?: number;
   stderr?: string;
   hang?: boolean;
+  /** Written ("SIGINT") when the fake gets SIGINT. */
+  sigintFile?: string;
+  /** Keep running after SIGINT (the worker must escalate to SIGKILL). */
+  ignoreSigint?: boolean;
 }
 
 export interface FakeClaude {

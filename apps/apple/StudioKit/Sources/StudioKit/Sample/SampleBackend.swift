@@ -16,6 +16,7 @@ public actor SampleBackend: ConversationService, StudioDataService {
     private var observers: [EntityID: [UUID: AsyncStream<ConversationFeedEvent>.Continuation]] = [:]
     private var jobObservers: [UUID: AsyncStream<JobFeedEvent>.Continuation] = [:]
     private var seqs: [EntityID: Int] = [:]
+    private var kits: [EntityID: BrandKit] = [:]
     private var counter = 0
     /// Simulated upload duration per image (0 in tests).
     private let uploadDelay: Duration
@@ -491,6 +492,38 @@ public actor SampleBackend: ConversationService, StudioDataService {
         return data.brands[index]
     }
 
+    public func archivedBrands() async throws -> [Brand] {
+        data.brands.filter { $0.status == .archived }
+    }
+
+    public func brandKit(brandId: EntityID) async throws -> BrandKit {
+        guard data.brands.contains(where: { $0.id == brandId }) else {
+            throw StudioAPIError.server(status: 404, code: .notFound, message: "brand not found", issues: [])
+        }
+        return kits[brandId] ?? .empty(brandId)
+    }
+
+    public func saveBrandKit(brandId: EntityID, _ input: BrandKitPut) async throws -> BrandKit {
+        guard data.brands.contains(where: { $0.id == brandId }) else {
+            throw StudioAPIError.server(status: 404, code: .notFound, message: "brand not found", issues: [])
+        }
+        let own = Set(data.assets.values.filter { $0.brandId == brandId }.map(\.id))
+        let refs = input.logos.map(\.assetId) + input.fonts.map(\.assetId) + input.samples.map(\.assetId)
+        if let bad = refs.first(where: { !own.contains($0) }) {
+            throw StudioAPIError.server(
+                status: 400, code: .validationError, message: "the kit references unusable files",
+                issues: [APIErrorBody.Issue(path: "assetId", message: "\(bad) is not an asset of this brand")]
+            )
+        }
+        let kit = BrandKit(
+            brandId: brandId, logos: input.logos, fonts: input.fonts,
+            palette: input.palette.map { BrandKitColor(name: $0.name, hex: $0.hex.uppercased(), use: $0.use) },
+            samples: input.samples, notes: input.notes, updatedAt: now
+        )
+        kits[brandId] = kit
+        return kit
+    }
+
     public func brandProfiles(brandId: EntityID) async throws -> [BrandProfile] {
         (data.brandProfiles[brandId] ?? []).sorted { $0.version > $1.version }
     }
@@ -554,13 +587,7 @@ public actor SampleBackend: ConversationService, StudioDataService {
             version: nextVer,
             status: .draft,
             isCurrent: false,
-            tokens: [
-                "colors": .object([
-                    "primary": .string("#FF6A00"),
-                    "background": .string("#0A0A0A"),
-                    "surface": .string("#F4F4F5"),
-                ]),
-            ],
+            tokens: Self.sampleTokens(kit: kits[brandId]),
             designRules: "# AI Analiz Tasarım Kuralları (\(brandName))\n\n- Güçlü tipografi hiyerarşisi ve net boşluk kullanımı.\(noteLine)",
             voice: "# AI Analiz Metin Tonu (\(brandName))\n\n- Doğrudan, anlaşılır ve hedef kitleye uygun Türkçe ton.\(noteLine)",
             createdAt: now,
@@ -579,6 +606,37 @@ public actor SampleBackend: ConversationService, StudioDataService {
         data.jobs.insert(job, at: 0)
         broadcastJobs()
         return job
+    }
+
+    /// Design-kit shaped tokens like the worker writes (colours, fonts, spacing, facts).
+    private static func sampleTokens(kit: BrandKit?) -> JSONObject {
+        var colors: JSONObject = [
+            "paper": .object(["value": .string("#FFFFFF"), "use": .string("zemin")]),
+            "ink": .object(["value": .string("#0A0A0A"), "use": .string("başlık ve metin")]),
+            "accent": .object(["value": .string("#FF6A00"), "use": .string("tek vurgu")]),
+        ]
+        for color in kit?.palette ?? [] {
+            var entry: JSONObject = ["value": .string(color.hex)]
+            if let use = color.use { entry["use"] = .string(use) }
+            colors[color.name] = .object(entry)
+        }
+        let display = kit?.fonts.first { $0.role != .text }?.family ?? "Helvetica Neue"
+        let text = kit?.fonts.first { $0.role != .display }?.family ?? "Helvetica Neue"
+        return [
+            "status": .string("approved"),
+            "color": .object(colors),
+            "font": .object([
+                "display": .object(["family": .string(display), "files": .array([]), "fallback": .string("sans-serif")]),
+                "text": .object(["family": .string(text), "files": .array([]), "fallback": .string("sans-serif")]),
+            ]),
+            "space": .object(["margin": .number(72), "gutter": .number(24), "unit": .number(8), "scale": .array([])]),
+            "radius": .object(["sm": .number(8), "md": .number(16), "lg": .number(32)]),
+            "facts": .object([
+                "allowedNumbers": .array([]),
+                "statements": .array([]),
+                "forbidden": .array([]),
+            ]),
+        ]
     }
 
     // MARK: - Social Accounts & Token Vault
@@ -926,6 +984,171 @@ public actor SampleBackend: ConversationService, StudioDataService {
         return job
     }
 
+    // MARK: - Post editor (delete, duplicate, restore, render with design patches, AI revision)
+
+    public func deleteContent(_ id: EntityID) async throws {
+        let item = try await content(id)
+        guard ![ContentStatus.scheduled, .publishing, .published].contains(item.status) else {
+            throw StudioAPIError.server(status: 409, code: .invalidTransition, message: "content is \(item.status.rawValue) and cannot be deleted", issues: [])
+        }
+        data.contents.removeAll { $0.id == id }
+        data.versions[id] = nil
+        versionHistory[id] = nil
+    }
+
+    public func duplicateContent(_ id: EntityID) async throws -> Content {
+        let source = try await content(id)
+        var copy = source
+        copy.id = nextId("post")
+        copy.title = String("\(source.title) (kopya)".prefix(200))
+        copy.status = .draft
+        copy.approval = nil
+        copy.currentVersion = nil
+        copy.createdAt = now
+        copy.updatedAt = now
+        data.contents.append(copy)
+        if let ref = source.currentVersion, let base = try? await version(contentId: id, version: ref.version) {
+            let index = data.contents.count - 1
+            _ = storeNewVersion(contentIndex: index, slides: base.slides, origin: base.origin, note: "\"\(source.title)\" v\(base.version) kopyası.")
+        }
+        return data.contents.last ?? copy
+    }
+
+    public func restoreVersion(contentId: EntityID, version number: Int) async throws -> ContentVersion {
+        let item = try await content(contentId)
+        guard item.status != .publishing, item.status != .published,
+              let index = data.contents.firstIndex(where: { $0.id == contentId }) else {
+            throw StudioAPIError.server(status: 409, code: .invalidTransition, message: "content is \(item.status.rawValue)", issues: [])
+        }
+        let source = try await version(contentId: contentId, version: number)
+        return storeNewVersion(contentIndex: index, slides: source.slides, origin: .manualEdit, note: "v\(number) geri yüklendi.")
+    }
+
+    public func render(contentId: EntityID, _ request: ContentRenderRequest) async throws -> Job {
+        let item = try await content(contentId)
+        guard let index = data.contents.firstIndex(where: { $0.id == contentId }), let ref = item.currentVersion else {
+            throw StudioAPIError.server(status: 409, code: .conflict, message: "nothing to render", issues: [])
+        }
+        let base = try await version(contentId: contentId, version: request.version ?? ref.version)
+        var target = base
+        var output: JSONObject = ["contentId": .string(contentId)]
+        if !request.patches.isEmpty || !request.slotAssignments.isEmpty {
+            var slides = SlideLayerScanner.apply(designPatches: request.patches, to: base.slides)
+            for (slotId, assetId) in request.slotAssignments {
+                let src = DesignPatch.mediaSource(assetId: assetId, mimeType: data.assets[assetId]?.mimeType)
+                for i in slides.indices {
+                    slides[i].html = SlideLayerScanner.apply(designPatch: DesignPatch(slide: i, .fillSlot(layer: slotId, src: src)), toHTML: slides[i].html)
+                }
+            }
+            let changed = slides.indices.filter { slides[$0].html != base.slides[$0].html }
+            if changed.isEmpty {
+                output["unchanged"] = .bool(true)
+            } else {
+                for i in changed {
+                    slides[i].renderedAssetId = registerGeneratedImage(brandId: item.brandId, name: "\(Brand.slugify(item.title))-\(i + 1).jpg")
+                    slides[i].layers = Self.sampleLayout(html: slides[i].html, width: slides[i].width, height: slides[i].height)
+                }
+                target = storeNewVersion(contentIndex: index, slides: slides, origin: .manualEdit, note: request.note ?? "\(request.patches.count) katman yaması uygulandı (v\(base.version) üzerine).")
+                output["renderedSlides"] = .array(changed.map { .number(Double($0)) })
+            }
+        } else if request.format == .jpeg || request.format == .both {
+            var slides = base.slides
+            for i in slides.indices where request.force || slides[i].renderedAssetId == nil || slides[i].layers == nil {
+                slides[i].renderedAssetId = slides[i].renderedAssetId ?? registerGeneratedImage(brandId: item.brandId, name: "\(Brand.slugify(item.title))-\(i + 1).jpg")
+                slides[i].layers = Self.sampleLayout(html: slides[i].html, width: slides[i].width, height: slides[i].height)
+            }
+            target.slides = slides
+            if var list = versionHistory[contentId], let at = list.firstIndex(where: { $0.version == base.version }) {
+                list[at] = target
+                versionHistory[contentId] = list
+            }
+            if data.versions[contentId]?.version == base.version { data.versions[contentId] = target }
+        }
+        if request.format == .png {
+            let wanted = Set(request.slides ?? Array(target.slides.indices))
+            output["pngAssetIds"] = .array(target.slides.indices.map { i in
+                wanted.contains(i) ? .string(registerGeneratedImage(brandId: item.brandId, name: "\(Brand.slugify(item.title))-\(i + 1).png", mimeType: "image/png")) : .null
+            })
+        }
+        if request.format == .pdf || request.format == .both {
+            let pdfBytes = Self.samplePDF(title: item.title)
+            let pdfId = nextId("pdf")
+            data.assets[pdfId] = Asset(
+                id: pdfId, brandId: item.brandId, kind: .document, source: .generated,
+                objectKey: "brands/\(item.brandId)/exports/\(pdfId).pdf", mimeType: "application/pdf",
+                bytes: pdfBytes.count, sha256: String(repeating: "b", count: 64), width: 1080, height: 1350,
+                originalFilename: "\(Brand.slugify(item.title)).pdf", createdAt: now)
+            uploads[pdfId] = pdfBytes
+            output["pdfAssetId"] = .string(pdfId)
+        }
+        output["version"] = .number(Double(target.version))
+        output["versionId"] = .string(target.id)
+        output["renderedAssetIds"] = .array(target.slides.map { $0.renderedAssetId.map(JSONValue.string) ?? .null })
+        let job = Job(
+            id: nextId("job"), type: .contentRender, status: .succeeded, payload: request.payload,
+            brandId: item.brandId, contentId: contentId, createdAt: now, updatedAt: now,
+            startedAt: now, finishedAt: now, progress: 1, output: output)
+        data.jobs.insert(job, at: 0)
+        broadcastJobs()
+        return job
+    }
+
+    public func requestRevision(of content: Content, baseVersion: Int, instructions: String) async throws -> Job {
+        guard let index = data.contents.firstIndex(where: { $0.id == content.id }) else {
+            throw StudioAPIError.server(status: 404, code: .notFound, message: "content not found", issues: [])
+        }
+        let base = try await version(contentId: content.id, version: baseVersion)
+        var slides = base.slides
+        for i in slides.indices {
+            slides[i].html = slides[i].html.replacingOccurrences(of: "</body>", with: "<!-- AI: \(instructions.prefix(60)) --></body>")
+            slides[i].renderedAssetId = registerGeneratedImage(brandId: content.brandId, name: "\(Brand.slugify(content.title))-ai-\(i + 1).jpg")
+            slides[i].layers = Self.sampleLayout(html: slides[i].html, width: slides[i].width, height: slides[i].height)
+        }
+        let created = storeNewVersion(contentIndex: index, slides: slides, origin: .aiEdit, note: "AI düzenleme (v\(baseVersion) üzerine): \(instructions)")
+        let job = Job(
+            id: nextId("job"), type: .contentGenerate, status: .succeeded,
+            payload: ["title": .string(content.title), "instructions": .string(instructions), "baseVersion": .number(Double(baseVersion))],
+            brandId: content.brandId, contentId: content.id, createdAt: now, updatedAt: now,
+            startedAt: now, finishedAt: now, progress: 1,
+            output: ["version": .number(Double(created.version)), "versionId": .string(created.id), "revised": .bool(true)])
+        data.jobs.insert(job, at: 0)
+        broadcastJobs()
+        return job
+    }
+
+    private func registerGeneratedImage(brandId: EntityID, name: String, mimeType: String = "image/jpeg") -> EntityID {
+        let id = nextId("render")
+        data.assets[id] = Asset(
+            id: id, brandId: brandId, kind: .image, source: .generated,
+            objectKey: "brands/\(brandId)/assets/\(id)", mimeType: mimeType, bytes: 1,
+            sha256: String(repeating: "d", count: 64), width: 1080, height: 1350,
+            originalFilename: name, createdAt: now)
+        return id
+    }
+
+    /// Plausible layer boxes for the sample: inline `left/top/width/height` when the layer
+    /// declares them, else stacked text bands from the top margin.
+    static func sampleLayout(html: String, width: Int, height: Int) -> [SlideLayerBox] {
+        var nextTop = 72.0
+        return SlideLayerScanner.layers(inHTML: html).map { layer in
+            let style = (layer.style ?? "").lowercased().replacingOccurrences(of: " ", with: "")
+            func value(_ key: String) -> Double? {
+                guard let range = style.range(of: "\(key):") else { return nil }
+                let rest = style[range.upperBound...]
+                let number = rest.prefix { $0.isNumber || $0 == "." || $0 == "-" }
+                return Double(number)
+            }
+            let t = layer.transform
+            var box = CGRect(x: value("left") ?? 72, y: value("top") ?? nextTop, width: value("width") ?? Double(width) - 144, height: value("height") ?? 96)
+            if value("top") == nil { nextTop += box.height + 24 }
+            let k = t.scale
+            box = CGRect(x: box.midX + t.translate.x - box.width * k / 2, y: box.midY + t.translate.y - box.height * k / 2, width: box.width * k, height: box.height * k)
+            return SlideLayerBox(
+                id: layer.layerId, type: layer.kind == .other ? "" : layer.kind.rawValue, role: layer.role, parent: nil,
+                x: box.minX, y: box.minY, w: box.width, h: box.height, visible: !layer.isHidden)
+        }
+    }
+
     private func storeNewVersion(contentIndex: Int, slides: [Slide], origin: ContentVersionOrigin, note: String?) -> ContentVersion {
         let contentId = data.contents[contentIndex].id
         var list = versionHistory[contentId] ?? data.versions[contentId].map { [$0] } ?? []
@@ -1040,6 +1263,13 @@ public actor SampleBackend: ConversationService, StudioDataService {
         }
         broadcastJobs()
         return GeminiControl(account: data.presence.gemini, online: data.presence.online, sent: data.presence.online ? 1 : 0)
+    }
+
+    public func job(_ id: EntityID) async throws -> Job {
+        guard let found = data.jobs.first(where: { $0.id == id }) else {
+            throw StudioAPIError.server(status: 404, code: .notFound, message: "job \(id) not found", issues: [])
+        }
+        return found
     }
 
     public func jobs(brandId: EntityID?) async throws -> [Job] {

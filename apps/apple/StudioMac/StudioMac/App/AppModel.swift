@@ -37,6 +37,8 @@ final class AppModel {
 
     // Data
     var brands: [Brand] = []
+    /// Archived brands (not in the sidebar; restorable from brand settings).
+    var archivedBrands: [Brand] = []
     var accounts: [SocialAccount] = []
     var conversations: [Conversation] = []
     var jobBoard = JobBoard()
@@ -56,7 +58,19 @@ final class AppModel {
     /// Settings open as an in-window sheet, not a separate window.
     var settingsPresented = false
     var newBrandPresented = false
-    var brandProfileTarget: BrandProfileTarget?
+    /// Older entry point (inspector): opens the brand settings on the profile or kit tab.
+    var brandProfileTarget: BrandProfileTarget? {
+        get { nil }
+        set {
+            guard let target = newValue else { return }
+            openBrandSettings(target.brandId, tab: target.startAnalysis ? .kit : .profile, startAnalysis: target.startAnalysis)
+        }
+    }
+    /// Brand settings sheet (general, kit, profile, accounts).
+    var brandSettingsTarget: BrandSettingsTarget?
+    /// First-run flow sheet.
+    var onboardingPresented = false
+    let onboarding: OnboardingModel
     var accountConnectTarget: AccountConnectTarget?
     var aiGeneratorTarget: AIGeneratorTarget?
     /// The last sidebar navigation came from the keyboard (do not steal focus).
@@ -96,11 +110,13 @@ final class AppModel {
             isSample = false
         }
         images = ImageStore()
+        onboarding = OnboardingModel(defaults: settings.defaults)
         newChat = NewChatModel()
         posts = PostsModel()
         calendar = CalendarModel()
         media = MediaModel()
         images.app = self
+        onboarding.app = self
         newChat.app = self
         posts.app = self
         calendar.app = self
@@ -140,6 +156,12 @@ final class AppModel {
             loadError = Self.describe(error)
         }
         startJobFeed()
+        await refreshArchivedBrands()
+        await onboarding.appDidLoad()
+    }
+
+    func refreshArchivedBrands() async {
+        if let list = try? await dataService.archivedBrands() { archivedBrands = list }
     }
 
     func refreshConversations() async {
@@ -151,13 +173,64 @@ final class AppModel {
     }
 
     @discardableResult
-    func createNewBrand(name: String, slug: String? = nil) async throws -> Brand {
-        let created = try await dataService.createBrand(BrandCreate(name: name, slug: slug))
+    func createNewBrand(name: String, slug: String? = nil, language: String = "tr") async throws -> Brand {
+        let created = try await dataService.createBrand(BrandCreate(name: name, slug: slug, defaultLanguage: language))
         brands.append(created)
-        currentBrandId = created.id
-        expandedBrands.insert(created.id)
-        newChat.updatePlaceholder()
+        selectBrand(created.id)
         return created
+    }
+
+    // MARK: Brands
+
+    /// Switch the working brand: new chats, posts, calendar and media follow it.
+    func selectBrand(_ id: EntityID) {
+        guard brands.contains(where: { $0.id == id }) else { return }
+        let changed = currentBrandId != id
+        currentBrandId = id
+        expandedBrands.insert(id)
+        newChat.updatePlaceholder()
+        guard changed else { return }
+        switch route {
+        case .posts: Task { await posts.load() }
+        case .calendar: Task { await calendar.load() }
+        case .media: Task { await media.load() }
+        case .newChat, .conversation: break
+        }
+    }
+
+    func openBrandSettings(_ id: EntityID, tab: BrandSettingsTab = .general, startAnalysis: Bool = false) {
+        brandSettingsTarget = BrandSettingsTarget(brandId: id, tab: tab, startAnalysis: startAnalysis)
+    }
+
+    /// A brand was renamed or its language changed.
+    func brandChanged(_ brand: Brand) {
+        if let index = brands.firstIndex(where: { $0.id == brand.id }) { brands[index] = brand }
+        if let index = archivedBrands.firstIndex(where: { $0.id == brand.id }) { archivedBrands[index] = brand }
+        newChat.updatePlaceholder()
+    }
+
+    /// Archive (brands are never deleted). The sidebar drops it; another brand becomes current.
+    @discardableResult
+    func archiveBrand(_ id: EntityID) async throws -> Brand {
+        let updated = try await dataService.updateBrand(id, BrandUpdate(status: .archived))
+        brands.removeAll { $0.id == id }
+        archivedBrands.removeAll { $0.id == id }
+        archivedBrands.insert(updated, at: 0)
+        expandedBrands.remove(id)
+        if currentBrandId == id {
+            currentBrandId = nil
+            if let next = sidebarBrands.first?.id { selectBrand(next) } else { newChat.updatePlaceholder() }
+        }
+        return updated
+    }
+
+    @discardableResult
+    func restoreBrand(_ id: EntityID) async throws -> Brand {
+        let updated = try await dataService.updateBrand(id, BrandUpdate(status: .active))
+        archivedBrands.removeAll { $0.id == id }
+        if !brands.contains(where: { $0.id == id }) { brands.append(updated) }
+        if currentBrandId == nil { selectBrand(id) }
+        return updated
     }
 
     private func startJobFeed() {
@@ -175,6 +248,13 @@ final class AppModel {
                         }
                     } else if job.type == .imageGenerate {
                         self.media.jobChanged(job)
+                        // An AI picture generated for a post's slot lands as a new version of that post.
+                        if job.status.isTerminal, let target = job.payload["targetContentId"]?.stringValue {
+                            Task { await self.posts.load() }
+                            if self.detail?.content.id == target {
+                                Task { await self.detail?.reloadVersionsAndContent() }
+                            }
+                        }
                     } else if job.type == .schedulePublish, job.status.isTerminal {
                         Task { await self.calendar.load() }
                     }

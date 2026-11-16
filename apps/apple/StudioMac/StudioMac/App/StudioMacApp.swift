@@ -35,7 +35,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         // SIGTERM quits gracefully so supervised children stop cleanly.
         signal(SIGTERM, SIG_IGN)
         let source = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
-        source.setEventHandler { NSApp.terminate(nil) }
+        // Not `NSApp.terminate` right here: inside a main-queue callout, `.terminateLater`
+        // spins a nested event loop while the main queue is busy, so the main-actor task that
+        // stops the children never runs (the app hung on `kill <pid>`). A run-loop perform
+        // calls it from the event loop, like ⌘Q.
+        source.setEventHandler { NSApp.perform(#selector(NSApplication.terminate(_:)), with: nil, afterDelay: 0) }
         source.resume()
         termSource = source
 
@@ -138,6 +142,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         search.target = self
         fileMenu.addItem(search)
         fileMenu.addItem(.separator())
+        let newBrand = NSMenuItem(title: "Yeni marka…", action: #selector(openNewBrandMenu), keyEquivalent: "n")
+        newBrand.keyEquivalentModifierMask = [.command, .shift]
+        newBrand.target = self
+        fileMenu.addItem(newBrand)
+        let brandSettings = NSMenuItem(title: "Marka ayarları…", action: #selector(openBrandSettingsMenu), keyEquivalent: "b")
+        brandSettings.keyEquivalentModifierMask = [.command, .shift]
+        brandSettings.target = self
+        fileMenu.addItem(brandSettings)
+        fileMenu.addItem(.separator())
         fileMenu.addItem(withTitle: "Kapat", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
         fileMenuItem.submenu = fileMenu
         mainMenu.addItem(fileMenuItem)
@@ -232,6 +245,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         mainMenu.addItem(windowMenuItem)
         NSApp.windowsMenu = windowMenu
 
+        // 7. Yardım
+        let helpMenuItem = NSMenuItem()
+        let helpMenu = NSMenu(title: "Yardım")
+        let onboarding = NSMenuItem(title: "Başlangıç rehberi…", action: #selector(openOnboardingMenu), keyEquivalent: "")
+        onboarding.target = self
+        helpMenu.addItem(onboarding)
+        helpMenuItem.submenu = helpMenu
+        mainMenu.addItem(helpMenuItem)
+        NSApp.helpMenu = helpMenu
+
         NSApp.mainMenu = mainMenu
     }
 
@@ -246,6 +269,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         switch menuItem.action {
         case #selector(goBackMenu): return model?.canGoBack ?? false
         case #selector(goForwardMenu): return model?.canGoForward ?? false
+        case #selector(openBrandSettingsMenu): return model?.currentBrandId != nil
+        case #selector(openOnboardingMenu): return model?.isSample == false
         default: return true
         }
     }
@@ -262,6 +287,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     @objc private func openPostsMenu() { model.navigate(to: .posts) }
     @objc private func openCalendarMenu() { model.navigate(to: .calendar) }
     @objc private func openMediaMenu() { model.navigate(to: .media) }
+    @objc private func openNewBrandMenu() { model.newBrandPresented = true }
+    @objc private func openOnboardingMenu() { model.onboarding.reopen() }
+
+    @objc private func openBrandSettingsMenu() {
+        guard let id = model.currentBrandId else { return }
+        model.openBrandSettings(id)
+    }
 
     @objc private func pickAppearanceMenu(_ sender: NSMenuItem) {
         guard let raw = sender.representedObject as? String, let pref = AppearancePreference(rawValue: raw) else { return }

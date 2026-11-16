@@ -8,6 +8,14 @@ import { readFileSync, writeFileSync } from "node:fs";
 const [scenarioPath, ...args] = process.argv.slice(2);
 const scenario = JSON.parse(readFileSync(scenarioPath, "utf8"));
 
+if (scenario.sigintFile) {
+  // Record how the run was stopped; `ignoreSigint` makes the worker escalate to SIGKILL.
+  process.on("SIGINT", () => {
+    writeFileSync(scenario.sigintFile, "SIGINT");
+    if (!scenario.ignoreSigint) process.exit(130);
+  });
+}
+
 let stdin = "";
 process.stdin.setEncoding("utf8");
 process.stdin.on("data", (chunk) => {

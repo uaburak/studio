@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 
 // content.ts, schedule.ts
@@ -32,6 +33,38 @@ public enum ContentStatus: String, OpenEnum {
     public var isLocked: Bool { self == .publishing || self == .published }
 }
 
+/// Where one `[data-layer]` element sat in a rendered slide (`SlideLayerBox`):
+/// border box in artboard px, transforms included, as the renderer measured it.
+public struct SlideLayerBox: Codable, Sendable, Hashable, Identifiable {
+    /// `data-layer` id.
+    public var id: String
+    /// `data-type` (`text`, `image`, `shape`, `logo`, `slot`, `group`).
+    public var type: String
+    public var role: String?
+    /// Enclosing layer (a group), nil on the artboard.
+    public var parent: String?
+    public var x: Double
+    public var y: Double
+    public var w: Double
+    public var h: Double
+    /// Painted (not hidden, not zero-sized).
+    public var visible: Bool
+
+    public init(id: String, type: String, role: String? = nil, parent: String? = nil, x: Double, y: Double, w: Double, h: Double, visible: Bool = true) {
+        self.id = id
+        self.type = type
+        self.role = role
+        self.parent = parent
+        self.x = x
+        self.y = y
+        self.w = w
+        self.h = h
+        self.visible = visible
+    }
+
+    public var rect: CGRect { CGRect(x: x, y: y, width: w, height: h) }
+}
+
 public struct Slide: Codable, Sendable, Hashable {
     /// Full HTML document following the design contract. Never rendered by the apps.
     public var html: String
@@ -39,12 +72,15 @@ public struct Slide: Codable, Sendable, Hashable {
     public var height: Int
     /// Rendered image of this slide, once the worker has produced it.
     public var renderedAssetId: EntityID?
+    /// Layer boxes measured in that render (nil until a render stored them).
+    public var layers: [SlideLayerBox]?
 
-    public init(html: String, width: Int, height: Int, renderedAssetId: EntityID? = nil) {
+    public init(html: String, width: Int, height: Int, renderedAssetId: EntityID? = nil, layers: [SlideLayerBox]? = nil) {
         self.html = html
         self.width = width
         self.height = height
         self.renderedAssetId = renderedAssetId
+        self.layers = layers
     }
 }
 

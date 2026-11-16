@@ -138,6 +138,39 @@ export const SlideInput = z
   .meta({ id: "SlideInput" });
 export type SlideInput = z.infer<typeof SlideInput>;
 
+/**
+ * Where one `[data-layer]` element sat in the rendered slide: its border box in
+ * artboard px (transforms included), as the renderer measured it. Editors draw
+ * selection boxes from it; it never affects the content hash.
+ */
+export const SlideLayerBox = z
+  .object({
+    /** `data-layer` id. */
+    id: z.string().min(1).max(64),
+    /** `data-type` (`text`, `image`, `shape`, `logo`, `slot`, `group`; empty when missing). */
+    type: z.string().max(16),
+    role: z.string().max(32).nullable(),
+    /** Enclosing layer (a group), `null` on the artboard. */
+    parent: z.string().max(64).nullable(),
+    x: z.number().finite(),
+    y: z.number().finite(),
+    w: z.number().finite().min(0),
+    h: z.number().finite().min(0),
+    /** Painted (not hidden, not zero-sized). */
+    visible: z.boolean(),
+  })
+  .meta({ id: "SlideLayerBox" });
+export type SlideLayerBox = z.infer<typeof SlideLayerBox>;
+
+export const MAX_SLIDE_LAYOUT_LAYERS = 200;
+
+/** Layer boxes of one rendered slide, in document order. */
+export const SlideLayout = z
+  .array(SlideLayerBox)
+  .max(MAX_SLIDE_LAYOUT_LAYERS)
+  .meta({ id: "SlideLayout" });
+export type SlideLayout = z.infer<typeof SlideLayout>;
+
 export const Slide = z
   .object({
     html: z.string(),
@@ -145,6 +178,11 @@ export const Slide = z
     height: z.number().int(),
     /** Rendered image of this slide, once the worker has produced it. */
     renderedAssetId: EntityId.nullable(),
+    /**
+     * Layer boxes measured in the render that produced `renderedAssetId`
+     * (`null` until a render stored them; absent from older servers).
+     */
+    layers: SlideLayout.nullable().optional(),
   })
   .meta({ id: "Slide" });
 export type Slide = z.infer<typeof Slide>;
@@ -176,6 +214,8 @@ export type ContentVersionOrigin = z.infer<typeof ContentVersionOrigin>;
 
 const VersionNote = z.string().max(2_000);
 const RenderedAssetIds = z.array(EntityId.nullable()).max(SLIDE_LIMITS.carousel.max);
+/** Empty, or one layout per slide (`null` = not measured). */
+const SlideLayouts = z.array(SlideLayout.nullable()).max(SLIDE_LIMITS.carousel.max);
 
 export const ContentVersionNumber = z.coerce.number().int().min(1);
 
@@ -212,18 +252,22 @@ export const ContentVersionCreate = z
     jobId: EntityId.optional(),
     /** Empty, or exactly one entry per slide (`null` = not rendered yet). */
     renderedAssetIds: RenderedAssetIds.optional(),
+    /** Empty, or exactly one layer layout per slide, measured with `renderedAssetIds`. */
+    layouts: SlideLayouts.optional(),
   })
   .meta({ id: "ContentVersionCreate" });
 export type ContentVersionCreate = z.input<typeof ContentVersionCreate>;
 
 /**
  * Versions are immutable except for metadata that does not affect the hash:
- * the note and the rendered asset references (renders arrive after creation).
+ * the note, the rendered asset references and their measured layer layouts
+ * (renders arrive after creation).
  */
 export const ContentVersionUpdate = z
   .object({
     note: VersionNote.nullable().optional(),
     renderedAssetIds: RenderedAssetIds.optional(),
+    layouts: SlideLayouts.optional(),
   })
   .refine(nonEmptyUpdate, "at least one field is required")
   .meta({ id: "ContentVersionUpdate" });
@@ -323,6 +367,32 @@ export const ContentTransition = z
   .object({ to: z.enum(["draft", "in_review", "approved"]) })
   .meta({ id: "ContentTransition" });
 export type ContentTransition = z.input<typeof ContentTransition>;
+
+/**
+ * `POST /api/contents/{id}/duplicate`: a new draft with the same brief, caption,
+ * platforms and a copy of the current version (slides, renders, layouts).
+ * Approval and schedules are not copied.
+ */
+export const ContentDuplicate = z
+  .object({
+    /** Default: the original title with " (kopya)". */
+    title: Title.optional(),
+  })
+  .meta({ id: "ContentDuplicate" });
+export type ContentDuplicate = z.input<typeof ContentDuplicate>;
+
+/**
+ * `POST /api/contents/{id}/versions/{version}/restore`: add a new version that is
+ * an exact copy of an older one (same slides, so the same hash; renders and
+ * layouts are reused). Like any new version it returns the content to draft.
+ */
+export const ContentVersionRestore = z
+  .object({
+    /** Default: "vN geri yüklendi." */
+    note: VersionNote.optional(),
+  })
+  .meta({ id: "ContentVersionRestore" });
+export type ContentVersionRestore = z.input<typeof ContentVersionRestore>;
 
 export const ContentListQuery = PageQuery.extend({
   brandId: EntityId.optional(),

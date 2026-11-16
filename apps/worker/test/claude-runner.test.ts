@@ -73,7 +73,8 @@ describe("environment and flags", () => {
     );
     expect(env).toEqual({
       HOME: "/Users/x",
-      PATH: "/bin",
+      // PATH plus the usual install folders (a worker started by the Mac app has a short PATH).
+      PATH: "/bin:/Users/x/.local/bin:/Users/x/.claude/local:/opt/homebrew/bin:/usr/local/bin:/Users/x/.npm-global/bin:/Users/x/.bun/bin:/Users/x/.volta/bin:/usr/bin",
       USER: "x",
       LANG: "tr_TR.UTF-8",
       CLAUDE_CONFIG_DIR: "/Users/x/.studio/claude",

@@ -203,7 +203,9 @@ struct AppModelTests {
         await app.posts.approveReady()
         #expect(app.posts.error == nil)
         #expect(app.posts.approvable.isEmpty)
-        #expect(app.posts.counts[.approved] == 6)
+        // "Onaylandı" counts approved posts only; the scheduled one has its own filter.
+        #expect(app.posts.counts[.approved] == 5)
+        #expect(app.posts.counts[.scheduled] == 1)
     }
 
     @Test func postDetailEditsCaptionAndApproves() async throws {

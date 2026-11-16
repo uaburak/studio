@@ -350,6 +350,7 @@ final class ChatViewController: NSViewController {
 
             let part = message.parts[index]
             index += 1
+            if part.isHiddenInChat { continue }
             let partView = makeAssistantPartView(message: message, part: part)
             stack.addArrangedSubview(partView)
             if !(partView is AttachmentThumbnailControlView) && !(partView is ContentRefRowControlView) {

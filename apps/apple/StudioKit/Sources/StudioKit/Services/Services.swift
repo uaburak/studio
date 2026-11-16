@@ -45,6 +45,14 @@ public protocol StudioDataService: Sendable {
     func updateBrandProfile(brandId: EntityID, version: Int, _ input: BrandProfileUpdate) async throws -> BrandProfile
     func approveBrandProfile(brandId: EntityID, version: Int) async throws -> BrandProfile
     func analyzeBrand(brandId: EntityID, notes: String?) async throws -> Job
+    /// `brand.analyze` with an explicit model (nil = worker default).
+    func analyzeBrand(brandId: EntityID, notes: String?, model: AgentModel?) async throws -> Job
+    /// Archived brands (the sidebar lists only active ones).
+    func archivedBrands() async throws -> [Brand]
+    /// The brand kit; an empty kit until it was saved once.
+    func brandKit(brandId: EntityID) async throws -> BrandKit
+    /// Replace the brand kit.
+    func saveBrandKit(brandId: EntityID, _ input: BrandKitPut) async throws -> BrandKit
 
     // Social accounts & OAuth / Token vault
     func socialAccounts(brandId: EntityID?) async throws -> [SocialAccount]
@@ -75,6 +83,18 @@ public protocol StudioDataService: Sendable {
     func patchLayersAndRender(contentId: EntityID, patches: [SlideLayerPatch]) async throws -> Job
     func exportContent(contentId: EntityID, format: String) async throws -> Job
 
+    // Post editor
+    /// `DELETE /api/contents/{id}` (refused while scheduled, publishing or published).
+    func deleteContent(_ id: EntityID) async throws
+    /// A new draft copy with the current version.
+    func duplicateContent(_ id: EntityID) async throws -> Content
+    /// A new version that copies `version` exactly ("Bu sürümü geri yükle").
+    func restoreVersion(contentId: EntityID, version: Int) async throws -> ContentVersion
+    /// Queue `content.render` (edits as design-kit patches, PNG/PDF exports, layer measuring).
+    func render(contentId: EntityID, _ request: ContentRenderRequest) async throws -> Job
+    /// "Neyi değiştireyim?": revise `baseVersion` with the user's words (`content.generate`).
+    func requestRevision(of content: Content, baseVersion: Int, instructions: String) async throws -> Job
+
     // Assets & AI image generation
     func assets(brandId: EntityID?, kind: AssetKind?) async throws -> [Asset]
     func uploadAsset(_ file: UploadFile, brandId: EntityID, kind: AssetKind?, progress: @escaping @Sendable (Double) -> Void) async throws -> Asset
@@ -94,9 +114,30 @@ public protocol StudioDataService: Sendable {
     func geminiControl() async throws -> GeminiControl
     func geminiRefresh() async throws -> GeminiControl
     func jobs(brandId: EntityID?) async throws -> [Job]
+    /// One job by id (progress and output of a job the screen started).
+    func job(_ id: EntityID) async throws -> Job
     /// Live jobs + presence (all brands).
     func jobFeed() -> AsyncStream<JobFeedEvent>
     func cancelJob(_ id: EntityID) async throws -> Job
+}
+
+/// Brand kit, archived brands and single-job reads (P2). Default implementations keep
+/// other conformers compiling; the real API and the sample backend implement them.
+extension StudioDataService {
+    public func archivedBrands() async throws -> [Brand] { [] }
+    public func brandKit(brandId: EntityID) async throws -> BrandKit { .empty(brandId) }
+    public func saveBrandKit(brandId: EntityID, _ input: BrandKitPut) async throws -> BrandKit {
+        throw StudioAPIError.invalidConfiguration("Marka kiti bu bağlantıda kaydedilemiyor.")
+    }
+    public func job(_ id: EntityID) async throws -> Job {
+        guard let found = try await jobs(brandId: nil).first(where: { $0.id == id }) else {
+            throw StudioAPIError.server(status: 404, code: .notFound, message: "job \(id) not found", issues: [])
+        }
+        return found
+    }
+    public func analyzeBrand(brandId: EntityID, notes: String?, model: AgentModel?) async throws -> Job {
+        try await analyzeBrand(brandId: brandId, notes: notes)
+    }
 }
 
 extension ConversationService {
@@ -239,6 +280,14 @@ public struct RemoteStudioDataService: StudioDataService {
     public func updateBrandProfile(brandId: EntityID, version: Int, _ input: BrandProfileUpdate) async throws -> BrandProfile { try await client.updateBrandProfile(brandId: brandId, version: version, input) }
     public func approveBrandProfile(brandId: EntityID, version: Int) async throws -> BrandProfile { try await client.approveBrandProfile(brandId: brandId, version: version) }
     public func analyzeBrand(brandId: EntityID, notes: String?) async throws -> Job { try await client.analyzeBrand(brandId: brandId, notes: notes) }
+    public func analyzeBrand(brandId: EntityID, notes: String?, model: AgentModel?) async throws -> Job {
+        try await client.analyzeBrand(brandId: brandId, notes: notes, model: model)
+    }
+    public func archivedBrands() async throws -> [Brand] { try await client.brands(status: .archived) }
+    public func brandKit(brandId: EntityID) async throws -> BrandKit { try await client.brandKit(brandId: brandId) }
+    public func saveBrandKit(brandId: EntityID, _ input: BrandKitPut) async throws -> BrandKit {
+        try await client.saveBrandKit(brandId: brandId, input)
+    }
 
     public func socialAccounts(brandId: EntityID?) async throws -> [SocialAccount] { try await client.socialAccounts(brandId: brandId) }
     public func createSocialAccount(_ input: SocialAccountCreate) async throws -> SocialAccount { try await client.createSocialAccount(input) }
@@ -299,6 +348,21 @@ public struct RemoteStudioDataService: StudioDataService {
         try await client.exportContent(contentId: contentId, format: format)
     }
 
+    public func deleteContent(_ id: EntityID) async throws { try await client.deleteContent(id) }
+    public func duplicateContent(_ id: EntityID) async throws -> Content { try await client.duplicateContent(id) }
+
+    public func restoreVersion(contentId: EntityID, version: Int) async throws -> ContentVersion {
+        try await client.restoreContentVersion(contentId: contentId, version: version)
+    }
+
+    public func render(contentId: EntityID, _ request: ContentRenderRequest) async throws -> Job {
+        try await client.renderContent(contentId: contentId, request)
+    }
+
+    public func requestRevision(of content: Content, baseVersion: Int, instructions: String) async throws -> Job {
+        try await client.requestRevision(of: content, baseVersion: baseVersion, instructions: instructions)
+    }
+
     public func assets(brandId: EntityID?, kind: AssetKind?) async throws -> [Asset] {
         try await client.assets(brandId: brandId, kind: kind)
     }
@@ -331,6 +395,7 @@ public struct RemoteStudioDataService: StudioDataService {
     public func geminiControl() async throws -> GeminiControl { try await client.geminiControl() }
     public func geminiRefresh() async throws -> GeminiControl { try await client.geminiRefresh() }
     public func jobs(brandId: EntityID?) async throws -> [Job] { try await client.jobs(brandId: brandId) }
+    public func job(_ id: EntityID) async throws -> Job { try await client.job(id) }
 
     public func jobFeed() -> AsyncStream<JobFeedEvent> {
         JobStream(client: client, deps: streamDependencies).events()

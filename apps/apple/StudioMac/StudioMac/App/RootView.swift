@@ -83,7 +83,7 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate {
         toolbarDefaultItemIdentifiers(toolbar)
     }
 
-    func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier itemIdentifier: NSToolbarItem.Identifier, willBeInsertedIntoGrid flag: Bool) -> NSToolbarItem? {
+    func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier itemIdentifier: NSToolbarItem.Identifier, willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
         switch itemIdentifier {
         case Self.sidebarSeparatorId:
             return NSTrackingSeparatorToolbarItem(
@@ -208,10 +208,10 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate {
         addBrandItem.target = self
         menu.addItem(addBrandItem)
         if let brandId = app.currentBrandId {
-            let profileItem = NSMenuItem(title: "Marka Profili…", action: #selector(openCurrentBrandProfile), keyEquivalent: "")
-            profileItem.target = self
-            profileItem.representedObject = brandId
-            menu.addItem(profileItem)
+            let settingsItem = NSMenuItem(title: "Marka ayarları…", action: #selector(openCurrentBrandProfile), keyEquivalent: "")
+            settingsItem.target = self
+            settingsItem.representedObject = brandId
+            menu.addItem(settingsItem)
         }
     }
 
@@ -221,20 +221,12 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate {
 
     @objc private func openCurrentBrandProfile(_ sender: NSMenuItem) {
         guard let brandId = sender.representedObject as? EntityID else { return }
-        app.brandProfileTarget = BrandProfileTarget(brandId: brandId)
+        app.openBrandSettings(brandId)
     }
 
     @objc private func pickBrand(_ sender: NSMenuItem) {
         guard let id = sender.representedObject as? EntityID else { return }
-        app.currentBrandId = id
-        app.newChat.updatePlaceholder()
-        if app.route == .posts {
-            Task { await app.posts.load() }
-        } else if app.route == .calendar {
-            Task { await app.calendar.load() }
-        } else if app.route == .media {
-            Task { await app.media.load() }
-        }
+        app.selectBrand(id)
     }
 
     @objc private func pickMonth(_ sender: NSMenuItem) {
@@ -443,7 +435,8 @@ final class RootViewController: NSViewController {
     private var postDetailOverlay: PostDetailOverlayView?
     private weak var activeSettingsSheet: SettingsSheetViewController?
     private weak var activeNewBrandSheet: NewBrandSheetController?
-    private weak var activeBrandProfileSheet: BrandProfileSheetController?
+    private weak var activeBrandSettingsSheet: BrandSettingsSheetController?
+    private weak var activeOnboardingSheet: OnboardingSheetController?
     private weak var activeAccountSheet: AccountConnectSheetController?
     private weak var activeAIGeneratorSheet: AIImageGeneratorSheetController?
 
@@ -568,26 +561,38 @@ final class RootViewController: NSViewController {
                 presentAsSheet(sheet)
             }
         } else if let sheet = activeNewBrandSheet {
-            dismiss(sheet)
+            if sheet.presentingViewController != nil { dismiss(sheet) }
             activeNewBrandSheet = nil
         }
 
-        // Brand Profile sheet
-        if let profileTarget = app.brandProfileTarget {
-            if activeBrandProfileSheet == nil, view.window != nil {
-                let sheet = BrandProfileSheetController(
-                    app: app,
-                    brandId: profileTarget.brandId,
-                    startAnalysisImmediately: profileTarget.startAnalysis
-                ) { [weak self] in
-                    self?.app.brandProfileTarget = nil
+        // Brand settings sheet (general, kit, profile, accounts)
+        if let target = app.brandSettingsTarget {
+            if let sheet = activeBrandSettingsSheet, sheet.model.brandId != target.brandId {
+                dismiss(sheet)
+                activeBrandSettingsSheet = nil
+            }
+            if activeBrandSettingsSheet == nil, view.window != nil {
+                let sheet = BrandSettingsSheetController(app: app, target: target) { [weak self] in
+                    self?.app.brandSettingsTarget = nil
                 }
-                activeBrandProfileSheet = sheet
+                activeBrandSettingsSheet = sheet
                 presentAsSheet(sheet)
             }
-        } else if let sheet = activeBrandProfileSheet {
-            dismiss(sheet)
-            activeBrandProfileSheet = nil
+        } else if let sheet = activeBrandSettingsSheet {
+            if sheet.presentingViewController != nil { dismiss(sheet) }
+            activeBrandSettingsSheet = nil
+        }
+
+        // First-run flow
+        if app.onboardingPresented {
+            if activeOnboardingSheet == nil, view.window != nil {
+                let sheet = OnboardingSheetController(app: app, host: host)
+                activeOnboardingSheet = sheet
+                presentAsSheet(sheet)
+            }
+        } else if let sheet = activeOnboardingSheet {
+            if sheet.presentingViewController != nil { dismiss(sheet) }
+            activeOnboardingSheet = nil
         }
 
         // Social Account Connect sheet

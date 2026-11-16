@@ -4,10 +4,16 @@
  * Supports:
  * - `/usage` & `/kullanım` slash command (instant Turkish status & usage report),
  * - Direct Gemini SSE API (`GEMINI_API_KEY`) and `gemini` CLI fallback,
- * - Headless Claude Code CLI with local MCP bridge (`studio-mcp.mjs`) and
- *   `--resume` session continuation (with automatic full-context fallback on stale sessions),
- * - Multi-part interleaved streaming (`text` -> `tool_step` -> `consent` -> `text`).
+ * - Headless Claude Code CLI with Studio's in-process MCP server (Streamable HTTP, a token per
+ *   run) and session continuation: the first turn starts `--session-id <uuid>` in the
+ *   conversation's own folder, later turns `--resume` it with only the new message while the
+ *   session is current (`sessionToResume`); otherwise (or when resuming fails) a new session
+ *   with the last ~12 messages,
+ * - runtime skills (`agent/skills`; `/name` at the start of a message runs one),
+ * - Multi-part interleaved streaming (`Düşünüyor…` -> `text` -> `tool_step` -> `consent` -> `text`).
  */
+import { randomUUID } from "node:crypto";
+import { mkdir, rm } from "node:fs/promises";
 import path from "node:path";
 import {
   type AgentEffort,
@@ -21,6 +27,7 @@ import {
 } from "@studio/contract";
 import type { AgentDeps, AgentSettings } from "../agent.ts";
 import { ClaudeError, describeClaudeError, formatClock, isClaudeError } from "../claude/errors.ts";
+import type { AgentStreamEvent } from "../claude/events.ts";
 import type { ParkInfo } from "../claude/gate.ts";
 import type { ClaudeHealth } from "../claude/health.ts";
 import {
@@ -34,7 +41,7 @@ import {
   readChoice,
 } from "../claude/models.ts";
 import type { ClaudeCallResult, ClaudeContentBlock } from "../claude/runner.ts";
-import type { UsageReport } from "../claude/usage.ts";
+import { type UsageReport, usageFromRateLimit } from "../claude/usage.ts";
 import { buildGeminiContents, runGeminiApiTurn } from "../gemini/api-runner.ts";
 import { runGeminiCliTurn } from "../gemini/cli-runner.ts";
 import { describeGeminiError, GeminiError, isGeminiError } from "../gemini/errors.ts";
@@ -43,10 +50,12 @@ import {
   isGeminiModelAlias,
   resolveGeminiModelId,
 } from "../gemini/models.ts";
+import { type McpGrant, StudioMcpServer, writeMcpConfig } from "../mcp/server.ts";
 import { defineHandler, type JobContext, RetryableError } from "../registry.ts";
-import { loadTurnImages, selectTurnImages } from "./images.ts";
+import { latestUserMessage, loadTurnImages, selectTurnImages } from "./images.ts";
 import { startMcpBridge } from "./mcp-bridge.ts";
 import { buildChatContext, buildIncrementalChatPrompt, CHAT_SYSTEM_PROMPT } from "./prompt.ts";
+import { invokedSkill, type Skill, skillsNote } from "./skills.ts";
 import { StudioToolExecutor } from "./tools.ts";
 import { RunClosedError, TurnWriter } from "./writer.ts";
 
@@ -62,6 +71,7 @@ export interface ChatTurnOutputSummary extends Record<string, unknown> {
   model?: string;
   effort?: string;
   resumedSession?: boolean;
+  sessionId?: string;
   usage?: RunUsage;
 }
 
@@ -324,15 +334,60 @@ export function formatUsageSlashReport(input: {
   return lines.join("\n");
 }
 
-function canResumeClaudeSession(context: TurnContext): string | undefined {
+/**
+ * The conversation's Claude Code session to continue (`--resume`), or undefined for a new one.
+ * Current only while nothing else happened since its last turn (Wecra's `sessionOf` `upTo`
+ * check): the conversation has exactly the messages it covered plus this turn's trigger (a new
+ * user message; an answered question of that turn adds none). A retried attempt never resumes
+ * (the lost attempt may have written into the session).
+ */
+export function sessionToResume(context: TurnContext): string | undefined {
   const session = context.conversation.agentSession;
   if (!session?.id || session.id.startsWith("gemini:")) return undefined;
-  if (context.assistantMessage && context.assistantMessage.parts.length > 0) return undefined;
-  const totalMessages = context.messageCount ?? context.messages.length;
-  if (totalMessages !== session.messageCount + 1) return undefined;
+  if (session.runId === context.run.id || context.run.attempt > 1) return undefined;
+  if (context.assistantMessage) return undefined;
+  const total =
+    context.messageCount ?? (context.messagesTruncated ? undefined : context.messages.length);
+  if (total === undefined) return undefined;
   const trigger = context.messages.find((m) => m.id === context.run.triggerMessageId);
-  if (trigger?.role !== "user") return undefined;
-  return session.id;
+  if (!trigger) return undefined;
+  const added = trigger.role === "user" ? 1 : 0;
+  return total === session.messageCount + added ? session.id : undefined;
+}
+
+/** MCP_TOOL_TIMEOUT for the CLI: longer than any tool holds a call (consent 5, ask_user 10 min). */
+const MCP_TOOL_TIMEOUT_MS = 30 * 60_000;
+
+/** The executor as an MCP grant: JSON text plus image content blocks. */
+export function executorGrant(executor: StudioToolExecutor, label: string): McpGrant {
+  return {
+    label,
+    tools: () =>
+      executor.mcpTools().map((t) => ({
+        name: t.name,
+        description: t.description,
+        inputSchema: t.inputSchema,
+      })),
+    call: async (name, args, { callId }) => {
+      const out = await executor.execute(name, args, callId);
+      return {
+        content: [
+          { type: "text", text: JSON.stringify(out.data) },
+          ...(out.images ?? []).map((i) => ({
+            type: "image" as const,
+            data: i.data,
+            mimeType: i.mediaType,
+          })),
+        ],
+        ...(out.isError ? { isError: true } : {}),
+      };
+    },
+  };
+}
+
+/** `<stateDir>/chat/<conversationId>`: the conversation's own folder (its Claude sessions live per folder). */
+export function conversationWorkDir(stateDir: string, conversationId: string): string {
+  return path.join(stateDir, "chat", conversationId.replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 100));
 }
 
 async function runChatTurn(
@@ -439,9 +494,21 @@ async function runChatTurn(
     const rawEffort = route.provider === "claude" ? route.choice.effort : route.effort;
     const genEffort: AgentEffort | undefined = rawEffort !== "max" ? rawEffort : "xhigh";
 
+    const skills: Skill[] = (await deps.skills?.().catch(() => [])) ?? [];
+    const latestText =
+      latestUserMessage(context)
+        ?.parts.filter((p) => p.type === "text")
+        .map((p) => p.text)
+        .join("\n") ?? "";
+    const trigger = context.messages.find((m) => m.id === context.run.triggerMessageId);
+    const invoked = trigger?.role === "user" ? invokedSkill(latestText, skills) : null;
+    const skillsBlock = skillsNote(skills, invoked?.skill);
+
     const executor = new StudioToolExecutor({
       api,
       writer,
+      skills,
+      imageMaxEdge: settings.imageMaxEdge,
       runId: payload.runId,
       conversationId: context.conversation.id,
       initialBrandId: context.conversation.brandId,
@@ -457,6 +524,10 @@ async function runChatTurn(
         ? { consentPollIntervalMs: deps.consentPollIntervalMs }
         : {}),
       ...(deps.consentTimeoutMs !== undefined ? { consentTimeoutMs: deps.consentTimeoutMs } : {}),
+      ...(deps.askTimeoutMs !== undefined ? { askTimeoutMs: deps.askTimeoutMs } : {}),
+      ...(deps.jobPollIntervalMs !== undefined
+        ? { jobPollIntervalMs: deps.jobPollIntervalMs }
+        : {}),
       now,
     });
 
@@ -545,12 +616,15 @@ async function runChatTurn(
       };
     }
 
-    // --- Claude Wecra-style chat with MCP bridge & session persistence -------------------
+    // --- Claude Code with Studio's MCP server & its own session ----------------------------
     const choice = route.choice;
-    const bridge = await startMcpBridge(executor, {
-      workRoot: path.join(deps.stateDir, "mcp-work"),
-      signal,
-    });
+    const cwd = conversationWorkDir(deps.stateDir, context.conversation.id);
+    const ownServer = deps.mcpServer ? undefined : new StudioMcpServer({ logger });
+    const mcp = deps.mcpServer ?? (ownServer as StudioMcpServer);
+    const url = await mcp.start();
+    const token = mcp.grant(executorGrant(executor, payload.runId));
+    const mcpConfigFile = path.join(cwd, "mcp.json");
+    signal.addEventListener("abort", () => mcp.revoke(token), { once: true });
 
     let parkIndex: number | null = null;
     const onPark = async (info: ParkInfo) => {
@@ -583,40 +657,81 @@ async function runChatTurn(
         .catch(() => undefined);
     };
 
+    // "Düşünüyor…" until the first text or tool call (then "Düşündü"; clients hide it).
+    const thinkingStarted = Date.now();
+    const thinkingIndex = await writer.setPart({
+      type: "progress",
+      stepId: "thinking",
+      label: "Düşünüyor…",
+      state: "running",
+    });
+    let thinking = true;
+    const firstOutput = () => {
+      if (!thinking) return;
+      thinking = false;
+      const seconds = Math.max(1, Math.round((Date.now() - thinkingStarted) / 1000));
+      void writer
+        .setPart(
+          {
+            type: "progress",
+            stepId: "thinking",
+            label: "Düşündü",
+            state: "done",
+            detail: `${seconds} sn`,
+          },
+          thinkingIndex,
+        )
+        .catch(() => undefined);
+    };
+    let initSessionId: string | undefined;
+    const onEvent = (event: AgentStreamEvent) => {
+      if (event.type === "session") {
+        initSessionId = event.id;
+        if (event.mcpProblem) {
+          logger.warn(`[job ${ctx.jobId}] studio MCP server not connected: ${event.mcpProblem}`);
+        }
+      } else if (event.type === "tool") {
+        firstOutput();
+      } else if (event.type === "limits") {
+        deps.usage?.merge(usageFromRateLimit(event.info, new Date()));
+      }
+    };
+
     try {
+      await mkdir(cwd, { recursive: true });
+      await writeMcpConfig(mcpConfigFile, url, token);
       ctx.progress(0.15, "Claude yanıtlıyor");
-      const resumeSessionId = canResumeClaudeSession(context);
+      const resumeSessionId = sessionToResume(context);
       let resumedSession = Boolean(resumeSessionId);
       let result: ClaudeCallResult;
 
-      const buildFullBlocks = (): ClaudeContentBlock[] => [
-        {
-          type: "text",
-          text: buildChatContext({
+      const freshText = () =>
+        [
+          buildChatContext({
             context,
             now: now(),
             brands,
             images: loaded.notes,
+            maxMessages: 12,
           }),
-        },
-        ...loaded.blocks,
-      ];
+          skillsBlock,
+        ]
+          .filter(Boolean)
+          .join("\n\n");
+      const resumeText = () =>
+        [buildIncrementalChatPrompt({ context, now: now(), images: loaded.notes }), skillsBlock]
+          .filter(Boolean)
+          .join("\n\n");
 
       const callClaude = (sessionIdToResume: string | undefined) => {
-        const content: ClaudeContentBlock[] = sessionIdToResume
-          ? [
-              {
-                type: "text",
-                text: buildIncrementalChatPrompt({
-                  context,
-                  now: now(),
-                  images: loaded.notes,
-                }),
-              },
-              ...loaded.blocks,
-            ]
-          : buildFullBlocks();
-
+        const newSessionId = sessionIdToResume ? undefined : randomUUID();
+        logger.info(
+          `[job ${ctx.jobId}] claude: ${sessionIdToResume ? `--resume ${sessionIdToResume}` : `--session-id ${newSessionId} (new session, last 12 messages)`}`,
+        );
+        const content: ClaudeContentBlock[] = [
+          { type: "text", text: sessionIdToResume ? resumeText() : freshText() },
+          ...loaded.blocks,
+        ];
         return gate.call(
           {
             label: `chat-${payload.runId}`,
@@ -626,11 +741,19 @@ async function runChatTurn(
             effort: choice.effort,
             timeoutMs: settings.claudeTimeoutMs,
             signal,
-            persistSession: true,
-            ...(sessionIdToResume ? { resumeSessionId: sessionIdToResume } : {}),
-            mcpConfigFile: bridge.claudeMcpConfigPath,
-            allowedTools: bridge.allowedTools,
-            onTextDelta: (text) => writer.appendText(text),
+            onTextDelta: (text) => {
+              firstOutput();
+              writer.appendText(text);
+            },
+            agent: {
+              cwd,
+              mcpConfigFile,
+              ...(sessionIdToResume
+                ? { resumeSessionId: sessionIdToResume }
+                : { sessionId: newSessionId }),
+              extraEnv: { MCP_TOOL_TIMEOUT: String(MCP_TOOL_TIMEOUT_MS) },
+              onEvent,
+            },
           },
           { onPark, onResume },
         );
@@ -645,10 +768,11 @@ async function runChatTurn(
           !writer.written &&
           executor.outcome.toolCalls.length === 0 &&
           error instanceof ClaudeError &&
-          error.code === "process"
+          error.code === "process" &&
+          !error.details?.partial
         ) {
           logger.warn(
-            `[job ${ctx.jobId}] claude session ${resumeSessionId} could not be resumed (${error.message}); retrying with full context`,
+            `[job ${ctx.jobId}] claude session ${resumeSessionId} could not be resumed (${error.message}); starting a new session with the history`,
           );
           resumedSession = false;
           result = await callClaude(undefined);
@@ -656,13 +780,14 @@ async function runChatTurn(
           throw error;
         }
       }
+      firstOutput();
 
       await writer.flush();
       ctx.progress(0.9, "Yanıt kaydediliyor");
 
       const usage = toRunUsage(result, choice);
       const usedModel = result.model ?? aliasOf(choice.model) ?? choice.model;
-      const finalSessionId = result.sessionId ?? resumeSessionId;
+      const finalSessionId = result.sessionId ?? initSessionId ?? resumeSessionId;
 
       await writer.complete(usedModel, usage, finalSessionId ? { id: finalSessionId } : undefined);
       ctx.progress(1, "Tamamlandı");
@@ -681,10 +806,16 @@ async function runChatTurn(
         ...(result.model ? { model: result.model } : {}),
         effort: choice.effort,
         ...(resumedSession ? { resumedSession: true } : {}),
+        ...(finalSessionId ? { sessionId: finalSessionId } : {}),
         usage,
       };
     } finally {
-      await bridge.close();
+      // The run is over: its token stops working and its config goes.
+      mcp.revoke(token);
+      await rm(mcpConfigFile, { force: true }).catch(() => undefined);
+      await ownServer?.stop();
+      // `/usage` after every turn (at most once a minute; no model call).
+      deps.refreshUsage?.();
     }
   } catch (error) {
     writer.dispose();

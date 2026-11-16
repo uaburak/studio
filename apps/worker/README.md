@@ -39,10 +39,11 @@ başlamaz. Gerçek değerler hiçbir zaman depoya girmez.
 
 Worker iki gerçek iş çalıştırır; ikisi de Mac'teki `claude` komut satırını **sahibin aboneliğiyle** çağırır:
 
-| İş türü            | Ne yapar                                                                                                                                                                                                                                                                |
-| ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `chat.turn`        | Sohbet turu: bağlamı alır (marka, onaylı profil, son mesajlar, takma adlar), son mesajda eklenen/anılan görselleri modele gösterir, yanıtı **yazıldıkça** sohbete akıtır; içerik istenmişse planı (`PUT plan`) önerir, bilgi eksikse soru parçası ekler.                |
-| `content.generate` | Plan kalemi (ya da doğrudan içerik) için tasarım: Claude HTML yazar → temizlenir → Chromium render + denetim → ekran görüntüsü ve denetim raporuyla bir eleştiri/düzeltme geçişi → (hata kaldıysa) bir düzeltme geçişi → JPEG'ler yüklenir → `generated` içerik sürümü. |
+| İş türü            | Ne yapar                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `chat.turn`        | Sohbet turu: bağlamı alır (marka, onaylı profil, son mesajlar, takma adlar), son mesajda eklenen/anılan görselleri modele gösterir, yanıtı **yazıldıkça** sohbete akıtır; içerik istenmişse planı (`PUT plan`) önerir, bilgi eksikse soru parçası ekler.                                                                                                                                                                                                                                                                  |
+| `content.generate` | Plan kalemi (ya da doğrudan içerik) için tasarım: Claude HTML yazar → temizlenir → Chromium render + denetim → ekran görüntüsü ve denetim raporuyla bir eleştiri/düzeltme geçişi → (hata kaldıysa) bir düzeltme geçişi → JPEG'ler yüklenir → `generated` içerik sürümü. `baseVersion` + `instructions` ile gelirse ("Neyi değiştireyim?") o sürümün HTML'i ve render'ı tek çağrıda yalnızca istenen değişiklikle düzeltilir (katman kimlikleri, dolu yuvalar ve elle yapılan taşımalar korunur) ve `ai_edit` sürümü olur. |
+| `content.render`   | Claude kullanmaz. `patches` (design-kit yama işlemleri, her biri `slide` indeksiyle; eski `set_text`/`set_visible` yazımı da kabul edilir) ve `slotAssignments` ile `version` üzerine `manual_edit` sürümü yazar; yalnızca değişen slaytlar yeniden render edilir. Her render'ın katman kutuları sürüme `layouts` olarak yazılır. `jpeg` eksik render/kutuyu tamamlar, `png` kayıpsız dışa aktarır (`pngAssetIds`), `pdf` çok sayfalı PDF üretir (`pdfAssetId`). Yuvaya konan görsel `/media/<assetId>.<uzantı>` olur.    |
 
 ### Bir kez: oturum
 
@@ -135,6 +136,17 @@ sonra hub'a bağlanır. Sonuç `hello`'yu belirler:
 - **Onaylı profil yoksa** nötr varsayılan kullanılır (Helvetica Neue, tek vurgu rengi, logo yok, hiç gerçek yok)
   ve sürüm notunda/yanıtta açıkça söylenir. Bu iki anahtar sözleşmeye taşınana kadar geçici bir dikiştir.
 
+### Marka profili çıkarma (`brand.analyze`)
+
+- Önce markanın **kitini** okur (`GET /api/brands/{id}/kit`): örnek postların hepsi (en fazla 12, uzun kenar
+  1024 px) ve en fazla 3 logo görsel olarak modele gider; açıklamalar, kullanıcı paleti ("kesin renkler"), font
+  aileleri ve lisans notları, notlar prompta yazılır. Kit hiç kaydedilmemişse eski yol: markanın yüklenmiş tüm
+  logo/görselleri (en fazla 8).
+- Çıktı her zaman **taslak** profil (`autoApprove: true` verilmedikçe): `color` (kullanıcı paleti modelin
+  tahminini ezer), `font.display/text` (kit fontlarının ailesi, dosyaları ve `license`), `space.margin/gutter`,
+  `radius`, `logos` (`on: light|dark|any` kitten), `fileAssets`, `facts`. Okunabilen örnek 3'ten azsa profil
+  `provisional`; hiçbiri okunamazsa iş açık bir Türkçe hatayla başarısız olur. Sonuç `output.version`'ı taşır.
+
 ### Görseller ve @takma adlar
 
 - Sohbet turu yalnızca **son kullanıcı mesajında eklenen ya da anılan** görselleri görür (en fazla 4).
@@ -168,6 +180,74 @@ STUDIO_E2E_API=http://127.0.0.1:8797 STUDIO_WORKER_TOKEN=test-token STUDIO_E2E_S
 ```
 
 Betik paylaşılan :8787 API'sine karşı çalışmayı reddeder. Son çalıştırmanın çıktıları: [docs/e2e/](docs/e2e/).
+
+## Sohbet ajanı: araçlı Claude Code oturumu (A5)
+
+`chat.turn` artık Wecra yöntemiyle çalışan, araç kullanan bir ajan (DesignerV2 `providers/claudeCode.ts`,
+`mcpServer.ts`, `host.ts` örnek alındı). Gemini yolu (`GEMINI_API_KEY` / `gemini` CLI) aynı araçları kullanır;
+bu bölüm Claude yolunu anlatır.
+
+**Tur başına tek süreç, konuşmanın kendi klasöründe** (`<state>/chat/<conversationId>/`; Claude oturumları klasör
+başına saklanır):
+
+```
+claude -p --input-format stream-json --output-format stream-json --verbose --include-partial-messages
+  --mcp-config <klasör>/mcp.json --strict-mcp-config --tools "" --allowedTools mcp__studio
+  --permission-mode dontAsk --append-system-prompt <Türkçe stüdyo rehberi>
+  --setting-sources "" --disable-slash-commands --model <run> --effort <run>
+  (--session-id <yeni uuid> | --resume <oturum>)
+```
+
+- **Oturum sürdürme:** ilk tur `--session-id` ile başlar; `complete` turun oturumunu gönderir, API onu o andaki mesaj
+  sayısıyla konuşmaya yazar (`agentSession`). Sonraki tur, konuşmada tam olarak o mesajlar + bu turun tetikleyicisi
+  varsa (`sessionToResume`) `--resume` ile yalnızca yeni mesajı ve kısa bir bağlam satırı gönderir. Başka bir tur
+  araya girdiyse, sayı tutmuyorsa, tur yeniden deneniyorsa ya da `--resume` başarısız olursa yeni oturum + son 12
+  mesaj. Son kullanıcı mesajının görselleri her durumda satır içi görsel blok olarak gider.
+- **Studio MCP sunucusu** (`src/mcp/server.ts`): worker içinde, `127.0.0.1:<boş port>/mcp`, Streamable HTTP, yalnızca
+  POST JSON-RPC (GET 405). Her tur kendi bearer token'ını alır (`mcp.json`, mod 0600), tur bitince token iptal
+  edilir ve dosya silinir. Host yalnızca `127.0.0.1|localhost|[::1]`, `Origin` taşıyan istek 403, oturum
+  (`Mcp-Session-Id`) açan token'a aittir. 1 sn'yi aşan araç çağrıları SSE ile cevaplanır (hemen başlık, 15 sn'de bir
+  keep-alive); CLI'ya `MCP_TOOL_TIMEOUT=30 dk` verilir. Canlı denemede 65 sn bekleyen izin kartı sorunsuz döndü.
+- **Araçlar** (`src/chat/tools.ts`, hepsi API'yi worker token'ıyla çağırır, her çağrı bir `tool_step` parçası yazar):
+  `list_brands`, `get_brand_profile`, `set_conversation_brand`, `create_brand`, `analyze_brand`, `list_aliases`
+  (`withThumbnails` ile görsel bloklar), `view_alias` (görsel), `propose_plan` (`PUT plan`), `ask_user` (soru kartı;
+  cevaba kadar çağrıyı tutar, 10 dk sonra `answered: false` ile turu bitirtir), `list_contents`, `get_content`,
+  `view_post` (render edilmiş slaytlar görsel olarak), `generate_post` (plan kalemi ya da brief için
+  `content.generate` kuyruğa alır; tasarım satır içinde yapılmaz), `wait_jobs`, `revise_post` (`baseVersion` +
+  talimat), `fill_post_slot` (`content.render` ile yuva doldurma), `generate_ai_image`, `export_content_pdf`,
+  `list_social_accounts`, `list_skills`, `get_skill`; **izin kartlı**: `accept_and_generate_plan`, `approve_content`,
+  `schedule_content`, `publish_now` (kart `pending` yazılır, sahip `Allow once / Deny` der ya da 5 dk'da `expired`).
+- **Beceriler:** depo kökündeki `agent/skills/<ad>/SKILL.md` (`aylik-plan`, `carousel`, `urun-postu`; yer
+  `STUDIO_SKILLS_DIR` ile değişir). İstem yalnızca ad + açıklama listeler; ajan metni `get_skill` ile alır. Mesaj
+  `/ad` ile başlıyorsa o becerinin tam metni o turun istemine konur.
+- **Akış:** stream-json Wecra gibi ayrıştırılır (`src/claude/events.ts`): `text_delta` (`streamed` bayrağıyla tam
+  mesaj tekrar yazılmaz), `tool_use` → adım `running`, `tool_result` → `done/error`, `rate_limit_event` → kullanım,
+  `result` → kullanım/hata. İlk çıktıya kadar `progress` `thinking` "Düşünüyor…" gösterilir, sonra "Düşündü"
+  olur (uygulamalar gizler). Metin ya da araç çağrısı başladıktan sonra çağrı kendiliğinden tekrar edilmez.
+- **Durdurma:** iptal → CLI'ya SIGINT, 3 sn'de çıkmazsa SIGKILL; araç çağrıları ve token iptal edilir; API turu
+  kapatırken bekleyen izin kartlarını `expired` yapar.
+- **Kullanım (harcamadan):** açılışta ve her turdan sonra (en sık dakikada bir) `claude -p /usage --output-format
+  json --no-session-persistence --strict-mcp-config --tools "" --setting-sources ""` (model çağrısı yok:
+  `num_turns 0`, `total_cost_usd 0`); satırlar (`Current session: 20% used · resets …`) pencereye çevrilir,
+  `rate_limit_event` ile birleştirilip `worker.usage` olarak gider.
+- **Claude girişi:** worker `claude auth status --json` (e-posta, plan) okur ve `worker.claude` ile bildirir
+  (presence `claude`). Uygulama `POST /api/workers/claude/login` (yalnızca Mac'in kendisi) ile `claude auth login
+  --claudeai`'yi arka planda başlatır: tarayıcıda giriş sayfası açılır, durum 3 sn'de bir okunur, 10 dk sonra süreç
+  kapatılır. `POST /api/workers/claude/status` durumu yeniden okutur. Worker parola görmez.
+- **Ortam:** izin listesi aynı (asla `ANTHROPIC_*`; `CLAUDECODE`, `CLAUDE_CODE_*`, `CLAUDE_AGENT_SDK_*`,
+  `NODE_OPTIONS` geçmez); PATH'e Wecra'nın `searchPath` klasörleri eklenir (`~/.local/bin`, `/opt/homebrew/bin`, …),
+  böylece Mac uygulamasından (launchd'nin kısa PATH'iyle) başlatılan worker da `claude`'u bulur.
+
+Canlı deneme (`scripts/e2e-agent.ts`, özel API, 2 Claude çağrısı, sonnet/low, 2026-11-16): tur 1'de ajan
+`list_aliases` → `view_alias` (ürün ambalajını doğru tarif etti) → `propose_plan` (3 kalem) → `schedule_content`
+izin kartı; kart API'den 65 sn sonra onaylandı, zamanlama oluştu (80 sn, 1 491 çıktı tokenı). Tur 2 `--resume` ile
+aynı oturumu sürdürdü (4 sn, önbellekten 20 K okuma). Kaydedilen akış: `test/fixtures/real-agent-turn.stream.jsonl`.
+
+```sh
+# özel API (kendi --persist-to'su; 8787 ve 8790 kullanılmaz), sonra:
+STUDIO_E2E_API=http://127.0.0.1:8797 STUDIO_WORKER_TOKEN=<test token> STUDIO_E2E_STATE=$S/worker \
+  STUDIO_E2E_OUT=$S/out pnpm --filter @studio/worker exec tsx scripts/e2e-agent.ts
+```
 
 ## İşin yaşam döngüsü (worker tarafı)
 
@@ -223,22 +303,23 @@ taklidi), `chat.turn` ve `content.generate` (Claude oturumu varken; aşağıda).
 
 ## Dosyalar
 
-| Dosya                                  | Görev                                                                                                                                                                     |
-| -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `src/main.ts`                          | Giriş noktası, ayarlar, sinyaller ve düzgün kapanış                                                                                                                       |
-| `src/worker.ts`                        | Kayıt defteri + runner + bağlantıyı birbirine bağlar                                                                                                                      |
-| `src/connection.ts`                    | WebSocket, `Authorization` başlığı, `hello`, ping, üstel geri çekilmeli yeniden bağlanma                                                                                  |
-| `src/runner.ts`                        | Ack, handler çalıştırma, ilerleme, heartbeat, iptal, outbox, release                                                                                                      |
-| `src/registry.ts`                      | Tür → handler kayıt defteri, `JobContext`, `RetryableError`                                                                                                               |
-| `src/outbox.ts`                        | Onay bekleyen sonuçlar (bellek ve dosya)                                                                                                                                  |
-| `scripts/smoke.ts`                     | Çalışan API'ye karşı uçtan uca kontrol (`demo.echo`)                                                                                                                      |
-| `scripts/e2e.ts`                       | Gerçek Claude ile uçtan uca kabul denemesi (özel API'ye karşı)                                                                                                            |
-| `scripts/selftest.ts`                  | Claude öz sınaması                                                                                                                                                        |
-| `src/agent.ts`, `src/agent-runtime.ts` | Claude ayarları; API istemcisi, kapı, sağlık durumu, renderer, kayıt                                                                                                      |
-| `src/claude/`                          | Başsız çağrı: `runner` (spawn, akış, iptal, zaman aşımı), `gate` (sıra, sınırda bekleme), `limits` (hata sınıfları), `health` (öz sınama), `usage` (pencereler), `models` |
-| `src/chat/`                            | `chat.turn`: `turn` (handler), `prompt` (sistem promptu + bağlam), `schema` (JSON şeması, plan dönüşümü), `images`, `writer` (deltalar, parçalar)                         |
-| `src/generate/`                        | `content.generate`: `handler`, `pipeline` (üret → render+denetim → eleştiri → düzelt), `prompt`, `schema`, `brand` (brand.css, gerçekler, nötr profil, dosya çözücü)      |
-| `src/usage-report.ts`                  | `worker.usage` çerçevesi (sözleşme biliyorsa gönderilir)                                                                                                                  |
+| Dosya                                  | Görev                                                                                                                                                                                                                |
+| -------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/main.ts`                          | Giriş noktası, ayarlar, sinyaller ve düzgün kapanış                                                                                                                                                                  |
+| `src/worker.ts`                        | Kayıt defteri + runner + bağlantıyı birbirine bağlar                                                                                                                                                                 |
+| `src/connection.ts`                    | WebSocket, `Authorization` başlığı, `hello`, ping, üstel geri çekilmeli yeniden bağlanma                                                                                                                             |
+| `src/runner.ts`                        | Ack, handler çalıştırma, ilerleme, heartbeat, iptal, outbox, release                                                                                                                                                 |
+| `src/registry.ts`                      | Tür → handler kayıt defteri, `JobContext`, `RetryableError`                                                                                                                                                          |
+| `src/outbox.ts`                        | Onay bekleyen sonuçlar (bellek ve dosya)                                                                                                                                                                             |
+| `scripts/smoke.ts`                     | Çalışan API'ye karşı uçtan uca kontrol (`demo.echo`)                                                                                                                                                                 |
+| `scripts/e2e.ts`                       | Gerçek Claude ile uçtan uca kabul denemesi (özel API'ye karşı)                                                                                                                                                       |
+| `scripts/selftest.ts`                  | Claude öz sınaması                                                                                                                                                                                                   |
+| `src/agent.ts`, `src/agent-runtime.ts` | Claude ayarları; API istemcisi, kapı, sağlık durumu, renderer, kayıt                                                                                                                                                 |
+| `src/claude/`                          | Başsız çağrı: `runner` (spawn, akış, iptal, zaman aşımı), `gate` (sıra, sınırda bekleme), `limits` (hata sınıfları), `health` (öz sınama), `usage` (pencereler), `models`                                            |
+| `src/chat/`                            | `chat.turn`: `turn` (handler, oturum seçimi), `tools` (araçlar), `prompt` (rehber + bağlam), `skills`, `schema` (plan dönüşümü), `images`, `writer` (deltalar, parçalar), `mcp-bridge` (Gemini CLI için stdio köprü) |
+| `src/mcp/server.ts`                    | Studio MCP sunucusu (Streamable HTTP, tur başına token, Host/Origin denetimi, uzun çağrılarda SSE)                                                                                                                   |
+| `src/generate/`                        | `content.generate`: `handler`, `pipeline` (üret → render+denetim → eleştiri → düzelt), `prompt`, `schema`, `brand` (brand.css, gerçekler, nötr profil, dosya çözücü)                                                 |
+| `src/usage-report.ts`                  | `worker.usage` çerçevesi (sözleşme biliyorsa gönderilir)                                                                                                                                                             |
 
 Testler (`pnpm --filter @studio/worker test`) sahte soket ile çalışır: kayıt defteri, ack/ilerleme/sonuç sırası,
 iptal, kapasite, düzgün kapanış, heartbeat ve ack gelmeyen sonucun yeniden gönderilmesi, bağlantı koptuğunda

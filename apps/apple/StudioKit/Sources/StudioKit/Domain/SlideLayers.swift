@@ -40,6 +40,11 @@ public struct SlideLayer: Sendable, Hashable, Identifiable {
     public var slotLabel: String?
     public var slotState: ImageSlot.State?
     public var isHidden: Bool
+    /// Inline `style` attribute (holds the editor's `translate` / `scale`).
+    public var style: String?
+
+    /// The editor transform in the inline style.
+    public var transform: LayerTransform { LayerTransform(style: style) }
 
     public init(
         slideIndex: Int = 0,
@@ -51,7 +56,8 @@ public struct SlideLayer: Sendable, Hashable, Identifiable {
         src: String? = nil,
         slotLabel: String? = nil,
         slotState: ImageSlot.State? = nil,
-        isHidden: Bool = false
+        isHidden: Bool = false,
+        style: String? = nil
     ) {
         self.slideIndex = slideIndex
         self.layerId = layerId
@@ -63,6 +69,7 @@ public struct SlideLayer: Sendable, Hashable, Identifiable {
         self.slotLabel = slotLabel
         self.slotState = slotState
         self.isHidden = isHidden
+        self.style = style
     }
 }
 
@@ -73,7 +80,7 @@ public enum SlideLayerPatch: Sendable, Hashable, Codable {
     case setVisible(layer: String, visible: Bool, slideIndex: Int = 0)
 
     private enum CodingKeys: String, CodingKey {
-        case op, layer, text, visible, slide
+        case op, layer, text, visible, hidden, slide
     }
 
     public init(from decoder: any Decoder) throws {
@@ -86,7 +93,11 @@ public enum SlideLayerPatch: Sendable, Hashable, Codable {
             let text = try c.decode(String.self, forKey: .text)
             self = .setText(layer: layer, text: text, slideIndex: slide)
         case "set_visible", "setVisibility":
-            let visible = try c.decodeIfPresent(Bool.self, forKey: .visible) ?? true
+            let visible: Bool = if let hidden = try c.decodeIfPresent(Bool.self, forKey: .hidden) {
+                !hidden
+            } else {
+                try c.decodeIfPresent(Bool.self, forKey: .visible) ?? true
+            }
             self = .setVisible(layer: layer, visible: visible, slideIndex: slide)
         default:
             throw DecodingError.dataCorruptedError(forKey: .op, in: c, debugDescription: "unsupported patch op \(op)")
@@ -97,38 +108,31 @@ public enum SlideLayerPatch: Sendable, Hashable, Codable {
         var c = encoder.container(keyedBy: CodingKeys.self)
         switch self {
         case .setText(let layer, let text, let slideIndex):
-            try c.encode("set_text", forKey: .op)
+            try c.encode("setText", forKey: .op)
             try c.encode(layer, forKey: .layer)
             try c.encode(text, forKey: .text)
-            if slideIndex > 0 { try c.encode(slideIndex, forKey: .slide) }
+            try c.encode(slideIndex, forKey: .slide)
         case .setVisible(let layer, let visible, let slideIndex):
-            try c.encode("set_visible", forKey: .op)
+            try c.encode("setVisibility", forKey: .op)
             try c.encode(layer, forKey: .layer)
-            try c.encode(visible, forKey: .visible)
-            if slideIndex > 0 { try c.encode(slideIndex, forKey: .slide) }
+            try c.encode(!visible, forKey: .hidden)
+            try c.encode(slideIndex, forKey: .slide)
         }
     }
 
-    /// JSON dictionary matching `[{ op: "set_text", layer: id, text }, { op: "set_visible", layer: id, visible }]`.
-    public func toJSONObject() -> JSONObject {
+    /// The design-kit op (`setText` / `setVisibility`) the worker applies.
+    public var designPatch: DesignPatch {
         switch self {
         case .setText(let layer, let text, let slideIndex):
-            var obj: JSONObject = [
-                "op": .string("set_text"),
-                "layer": .string(layer),
-                "text": .string(text),
-            ]
-            if slideIndex > 0 { obj["slide"] = .number(Double(slideIndex)) }
-            return obj
+            DesignPatch(slide: slideIndex, .setText(layer: layer, text: text))
         case .setVisible(let layer, let visible, let slideIndex):
-            var obj: JSONObject = [
-                "op": .string("set_visible"),
-                "layer": .string(layer),
-                "visible": .bool(visible),
-            ]
-            if slideIndex > 0 { obj["slide"] = .number(Double(slideIndex)) }
-            return obj
+            DesignPatch(slide: slideIndex, .setVisibility(layer: layer, hidden: !visible))
         }
+    }
+
+    /// Wire JSON: `{ slide, op: "setText", layer, text }` / `{ slide, op: "setVisibility", layer, hidden }`.
+    public func toJSONObject() -> JSONObject {
+        designPatch.toJSONObject()
     }
 }
 
@@ -201,7 +205,8 @@ public enum SlideLayerScanner {
                 src: src,
                 slotLabel: attrs["data-slot-label"]?.value,
                 slotState: slotState,
-                isHidden: hidden
+                isHidden: hidden,
+                style: attrs["style"]?.value
             ))
         }
         return results
@@ -248,6 +253,74 @@ public enum SlideLayerScanner {
             }
         }
         return current
+    }
+
+    /// Apply design-kit patches locally (approximation of the worker's splice edits, for
+    /// the in-memory sample backend and previews). Unknown layers are left alone.
+    public static func apply(designPatches patches: [DesignPatch], to slides: [Slide]) -> [Slide] {
+        var copy = slides
+        for patch in patches where copy.indices.contains(patch.slide) {
+            copy[patch.slide].html = apply(designPatch: patch, toHTML: copy[patch.slide].html)
+        }
+        return copy
+    }
+
+    public static func apply(designPatch patch: DesignPatch, toHTML html: String) -> String {
+        switch patch.operation {
+        case .setText(let layer, let text):
+            return replaceLayerText(in: html, layerId: layer, newText: text)
+        case .setVisibility(let layer, let hidden):
+            return setLayerVisibility(in: html, layerId: layer, visible: !hidden)
+        case .transform(let layer, let translate, let scale):
+            guard let match = findLayerElement(in: html, layerId: layer) else { return html }
+            var declarations = (match.attrs["style"]?.value ?? "")
+                .split(separator: ";")
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty && !$0.lowercased().hasPrefix("translate:") && !$0.lowercased().hasPrefix("scale:") }
+            let p = patch.toJSONObject()
+            if case .object(let t)? = p["translate"], let x = t["x"]?.doubleValue, let y = t["y"]?.doubleValue {
+                declarations.append("translate: \(cssNumber(x))px \(cssNumber(y))px")
+            }
+            if let s = p["scale"]?.doubleValue { declarations.append("scale: \(cssNumber(s))") }
+            _ = (translate, scale)
+            var openTag = String(html[match.openTagRange])
+            openTag = declarations.isEmpty
+                ? removeBooleanOrValuedAttribute(inOpenTag: openTag, name: "style")
+                : upsertAttribute(inOpenTag: openTag, name: "style", value: declarations.joined(separator: "; "))
+            var out = html
+            out.replaceSubrange(match.openTagRange, with: openTag)
+            return out
+        case .replaceImage(let layer, let src):
+            guard let match = findLayerElement(in: html, layerId: layer) else { return html }
+            var out = html
+            out.replaceSubrange(match.openTagRange, with: upsertAttribute(inOpenTag: String(html[match.openTagRange]), name: "src", value: src))
+            return out
+        case .fillSlot(let layer, let src):
+            guard let match = findLayerElement(in: html, layerId: layer) else { return html }
+            var openTag = String(html[match.openTagRange])
+            openTag = upsertAttribute(inOpenTag: openTag, name: "data-slot-state", value: "filled")
+            var out = html
+            if let inner = match.innerRange {
+                out.replaceSubrange(inner, with: "<img data-slot-image src=\"\(escapeAttribute(src))\" alt=\"\">")
+            }
+            if let reopened = findLayerElement(in: out, layerId: layer) {
+                out.replaceSubrange(reopened.openTagRange, with: openTag)
+            }
+            return out
+        case .clearSlot(let layer):
+            guard let match = findLayerElement(in: html, layerId: layer) else { return html }
+            var out = html
+            if let inner = match.innerRange { out.replaceSubrange(inner, with: "") }
+            if let reopened = findLayerElement(in: out, layerId: layer) {
+                let openTag = upsertAttribute(inOpenTag: String(out[reopened.openTagRange]), name: "data-slot-state", value: "empty")
+                out.replaceSubrange(reopened.openTagRange, with: openTag)
+            }
+            return out
+        }
+    }
+
+    private static func cssNumber(_ value: Double) -> String {
+        value == value.rounded() ? String(Int(value)) : String(value)
     }
 
     /// Fill an image slot in `html` with `/media/<assetId>.jpg` and `data-slot-state="filled"`.

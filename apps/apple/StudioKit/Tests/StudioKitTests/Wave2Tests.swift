@@ -111,15 +111,18 @@ struct Wave2Tests {
             .setText(layer: "headline", text: "Venta Borinc\nŞimdi Bayilerde", slideIndex: 0),
             .setVisible(layer: "badge", visible: true, slideIndex: 0),
         ])
+        // design-kit op names (the worker parses these with `PatchOp`), always with the slide index.
         #expect(patches[0].toJSONObject() == [
-            "op": .string("set_text"),
+            "slide": .number(0),
+            "op": .string("setText"),
             "layer": .string("headline"),
             "text": .string("Venta Borinc\nŞimdi Bayilerde"),
         ])
         #expect(patches[1].toJSONObject() == [
-            "op": .string("set_visible"),
+            "slide": .number(0),
+            "op": .string("setVisibility"),
             "layer": .string("badge"),
-            "visible": .bool(true),
+            "hidden": .bool(false),
         ])
 
         let patchedHTML = SlideLayerScanner.apply(patches: patches, toHTML: html)

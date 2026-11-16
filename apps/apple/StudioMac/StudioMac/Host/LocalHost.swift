@@ -171,8 +171,13 @@ final class LocalHost {
             return fail("Depo klasörü eksik ya da `pnpm install` yapılmamış: \(required.path) yok. Ayarlar → Mac sunucusu → Depo klasörü.")
         }
 
-        let token: String
-        do { token = try WorkerTokenKeychain.loadOrCreate() } catch { return fail(error.localizedDescription) }
+        // Off the main thread: after a rebuild (ad-hoc signature) macOS may ask for the login
+        // keychain password before handing the item over; the UI must not freeze meanwhile.
+        status = .starting("Anahtar Zinciri bekleniyor (izin penceresi açıldıysa onayla)")
+        let loaded: (token: String?, error: String?) = await Task.detached {
+            do { return (try WorkerTokenKeychain.loadOrCreate(), nil) } catch { return (nil, error.localizedDescription) }
+        }.value
+        guard let token = loaded.token else { return fail(loaded.error ?? "Anahtar Zinciri okunamadı.") }
 
         // 3. Ports: the preferred ones when free (a hand-started `wrangler dev` may hold them).
         guard let api = HostEnvironment.isPortFree(config.preferredAPIPort, address: "127.0.0.1") && HostEnvironment.isPortFree(config.preferredAPIPort, address: "0.0.0.0")
