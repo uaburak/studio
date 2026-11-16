@@ -16,6 +16,7 @@ import {
   PROTOCOL_VERSION,
   type WorkerPresence,
   type WorkerToHubMessage,
+  type WorkerUsage,
 } from "@studio/contract";
 import { conversationSnapshot, eventsAfter, requireConversation } from "./chat/read.ts";
 import {
@@ -70,6 +71,8 @@ export type CancelJobResult =
   | { ok: false; reason: "terminal"; status: Job["status"] };
 
 const LAST_SEEN_KEY = "presence:lastSeenAt";
+/** Latest `worker.usage` report (subscription limits), shown in presence as `usage`. */
+const USAGE_KEY = "presence:usage";
 
 /**
  * Hub — the job dispatcher (one instance, "main").
@@ -85,7 +88,8 @@ const LAST_SEEN_KEY = "presence:lastSeenAt";
  * - a serial queue so that messages, RPCs and alarms never interleave their
  *   D1 reads and writes (D1 calls open the input gate, so without this two
  *   events could both see the same `queued` row);
- * - DO storage only for the worker's last-seen time (presence).
+ * - DO storage only for presence: the worker's last-seen time and its latest
+ *   usage report.
  *
  * Chat (A2): every conversation / plan mutation runs through `chat()` in the
  * same serial queue (src/chat/service.ts), which writes the change and its
@@ -392,6 +396,16 @@ export class Hub extends DurableObject<Env> {
         await this.broadcastPresence();
         return;
       }
+      case "worker.usage": {
+        const usage: WorkerUsage = {
+          windows: message.windows,
+          source: message.source,
+          observedAt: message.observedAt,
+        };
+        await this.ctx.storage.put(USAGE_KEY, usage);
+        await this.broadcastPresence();
+        return;
+      }
       case "worker.drain":
         att.draining = true;
         ws.serializeAttachment(att);
@@ -625,10 +639,11 @@ export class Hub extends DurableObject<Env> {
 
   private async computePresence(exclude?: WebSocket): Promise<WorkerPresence> {
     const workers = this.workerSockets().filter(({ ws }) => ws !== exclude);
-    const [running, queueLength, stored] = await Promise.all([
+    const [running, queueLength, stored, usage] = await Promise.all([
       this.store.running(),
       this.store.queueLength(),
       this.ctx.storage.get<number>(LAST_SEEN_KEY),
+      this.ctx.storage.get<WorkerUsage>(USAGE_KEY),
     ]);
     const lastSeen = Math.max(stored ?? 0, ...workers.map((w) => w.att.lastSeenAt));
     return {
@@ -656,6 +671,7 @@ export class Hub extends DurableObject<Env> {
         };
       }),
       queueLength,
+      ...(usage ? { usage } : {}),
     };
   }
 

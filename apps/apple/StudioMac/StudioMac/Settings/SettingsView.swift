@@ -104,3 +104,24 @@ struct SettingsView: View {
         app.reconnect()
     }
 }
+
+/// Settings presented as a sheet inside the main window.
+struct SettingsSheet: View {
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text("Ayarlar").font(.system(size: 15, weight: .semibold))
+                Spacer()
+                Button("Bitti") { dismiss() }
+                    .keyboardShortcut(.defaultAction)
+            }
+            .padding(.horizontal, 20)
+            .padding(.top, 16)
+            .padding(.bottom, 8)
+            SettingsView()
+        }
+        .frame(width: 560, height: 600)
+    }
+}

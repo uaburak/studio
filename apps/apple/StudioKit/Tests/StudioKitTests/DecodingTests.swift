@@ -52,6 +52,41 @@ struct DecodingTests {
         #expect(!jobs.isEmpty)
         let presence = try Fixture.decode(WorkerPresence.self, "presence")
         #expect(presence.online == false)
+        #expect(presence.usage == nil)
+    }
+
+    @Test func presenceUsageAndRunChoice() throws {
+        let usage = #""usage":{"windows":[{"kind":"five_hour","usedPercent":42.5,"resetsAt":"2026-11-16T18:00:00.000Z","limited":false},{"kind":"weekly","usedPercent":80,"limited":false},{"kind":"monthly","limited":true}],"source":"claude-cli","observedAt":"2026-11-16T14:00:00.000Z"}"#
+        let presenceJSON = #"{"online":true,"lastSeenAt":null,"workers":[],"currentJobs":[],"queueLength":0,"# + usage + "}"
+        let presence = try StudioJSON.decoder().decode(WorkerPresence.self, from: Data(presenceJSON.utf8))
+        let windows = try #require(presence.usage?.windows)
+        #expect(windows.map(\.kind) == [.fiveHour, .weekly, .unknown])
+        #expect(windows[0].usedPercent == 42.5)
+        #expect(windows[0].resetsAt == ISO8601DateFormatter().date(from: "2026-11-16T18:00:00Z"))
+        #expect(windows[1].resetsAt == nil)
+        #expect(presence.usage?.source == "claude-cli")
+        // A limited window counts as full.
+        #expect(presence.usage?.mostUsed?.kind == .unknown)
+        #expect(presence.usage?.mostUsed?.effectivePercent == 100)
+
+        // The same usage arrives on both streams' presence frames.
+        guard case .presence(let jobs) = try JobStreamMessage.decode(#"{"type":"presence","presence":"# + presenceJSON + "}") else {
+            Issue.record("expected a presence frame"); return
+        }
+        #expect(jobs.usage == presence.usage)
+        guard case .presence(let chat) = try ConversationStreamMessage.decode(#"{"type":"presence","presence":"# + presenceJSON + "}") else {
+            Issue.record("expected a presence frame"); return
+        }
+        #expect(chat.usage == presence.usage)
+
+        let run = #"{"id":"r1","conversationId":"c1","triggerMessageId":"m1","jobId":null,"status":"queued","attempt":0,"model":"opus","effort":"xhigh","usage":null,"error":null,"createdAt":"2026-11-16T10:00:00.000Z","updatedAt":"2026-11-16T10:00:00.000Z","startedAt":null,"finishedAt":null}"#
+        let decoded = try StudioJSON.decoder().decode(AgentRun.self, from: Data(run.utf8))
+        #expect(decoded.requestedModel == .opus)
+        #expect(decoded.effort == .xhigh)
+        let reported = run.replacingOccurrences(of: #""model":"opus","effort":"xhigh","#, with: #""model":"claude-opus-5-5","#)
+        let finished = try StudioJSON.decoder().decode(AgentRun.self, from: Data(reported.utf8))
+        #expect(finished.requestedModel == nil)
+        #expect(finished.effort == nil)
     }
 
     @Test func conversationsMessagesAliases() throws {

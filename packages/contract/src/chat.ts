@@ -4,6 +4,8 @@ import { Brand } from "./brand.ts";
 import { BrandProfile } from "./brand-profile.ts";
 import { AttachmentAlias, MessageMention, TurnAlias } from "./chat-alias.ts";
 import {
+  AgentEffort,
+  AgentModel,
   EntityId,
   jsonWithin,
   nonEmptyUpdate,
@@ -414,6 +416,10 @@ export const UserMessageCreate = z
      * the original message and run (`replayed: true`) instead of a second turn.
      */
     clientMessageId: z.string().min(1).max(128).optional(),
+    /** Model the turn should use; absent = the worker's default. Stored on the run as `model`. */
+    model: AgentModel.optional(),
+    /** Reasoning effort for the turn; absent = the worker's default. Stored on the run as `effort`. */
+    effort: AgentEffort.optional(),
   })
   .refine(
     (m) =>
@@ -511,7 +517,14 @@ export const AgentRun = z
     status: AgentRunStatus,
     /** Worker attempt currently writing (0 until the worker starts). */
     attempt: z.number().int().min(0),
+    /**
+     * Requested model (`opus` / `sonnet` / `haiku`) from the user's message
+     * until the worker finishes the run; `complete` / `fail` may then replace
+     * it with the model id actually used. Null = worker default.
+     */
     model: z.string().nullable(),
+    /** Requested reasoning effort; null = worker default. Always sent by the server. */
+    effort: AgentEffort.nullable().optional(),
     usage: RunUsage.nullable(),
     error: z.string().nullable(),
     createdAt: Timestamp,

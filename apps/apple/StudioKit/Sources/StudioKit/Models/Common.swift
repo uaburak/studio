@@ -35,6 +35,37 @@ public enum Platform: String, OpenEnum {
     }
 }
 
+/// Model family the user picks for a turn or a generation (`AgentModel` in common.ts).
+public enum AgentModel: String, OpenEnum {
+    case opus, sonnet, haiku
+    case unknown
+
+    public var displayName: String {
+        switch self {
+        case .opus: "Opus"
+        case .sonnet: "Sonnet"
+        case .haiku: "Haiku"
+        case .unknown: "Bilinmeyen model"
+        }
+    }
+}
+
+/// Reasoning effort the user picks for a turn or a generation (`AgentEffort` in common.ts).
+public enum AgentEffort: String, OpenEnum {
+    case low, medium, high, xhigh
+    case unknown
+
+    public var displayName: String {
+        switch self {
+        case .low: "Düşük"
+        case .medium: "Orta"
+        case .high: "Yüksek"
+        case .xhigh: "Çok yüksek"
+        case .unknown: "Bilinmeyen"
+        }
+    }
+}
+
 /// Machine-readable error codes (`ErrorCode` in common.ts).
 public enum APIErrorCode: String, OpenEnum {
     case validationError = "validation_error"

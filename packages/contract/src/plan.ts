@@ -1,5 +1,13 @@
 import { z } from "zod";
-import { EntityId, PageQuery, Platform, pageOf, Timestamp } from "./common.ts";
+import {
+  AgentEffort,
+  AgentModel,
+  EntityId,
+  PageQuery,
+  Platform,
+  pageOf,
+  Timestamp,
+} from "./common.ts";
 import { ContentType } from "./content.ts";
 import { Job, JobStatus } from "./job.ts";
 
@@ -242,6 +250,10 @@ export const PlanGenerate = z
     itemIds: z.array(EntityId).min(1).max(MAX_PLAN_ITEMS).optional(),
     /** Extra instructions for this generation round. */
     instructions: z.string().max(4_000).optional(),
+    /** Model for the generation jobs; copied into each job's payload. */
+    model: AgentModel.optional(),
+    /** Reasoning effort for the generation jobs; copied into each job's payload. */
+    effort: AgentEffort.optional(),
   })
   .meta({ id: "PlanGenerate" });
 export type PlanGenerate = z.input<typeof PlanGenerate>;
@@ -306,6 +318,10 @@ export const ContentGeneratePayload = z
     brandProfileVersion: z.number().int().min(1).optional(),
     /** Extra instructions from the user for this round. */
     instructions: z.string().max(4_000).optional(),
+    /** Model the user picked; absent = the worker's default. */
+    model: AgentModel.optional(),
+    /** Reasoning effort the user picked; absent = the worker's default. */
+    effort: AgentEffort.optional(),
   })
   .meta({ id: "ContentGeneratePayload" });
 export type ContentGeneratePayload = z.infer<typeof ContentGeneratePayload>;

@@ -34,12 +34,6 @@ struct StudioMacApp: App {
         .windowResizability(.contentMinSize)
         .windowToolbarStyle(.unified)
         .commands { StudioCommands(model: model, settings: settings) }
-
-        Settings {
-            SettingsView()
-                .environment(model)
-                .environment(settings)
-        }
     }
 }
 
@@ -73,6 +67,10 @@ struct StudioCommands: Commands {
     let settings: AppSettings
 
     var body: some Commands {
+        CommandGroup(replacing: .appSettings) {
+            Button("Ayarlar…") { model.settingsPresented = true }
+                .keyboardShortcut(",", modifiers: .command)
+        }
         CommandGroup(replacing: .newItem) {
             Button("Yeni sohbet") { model.startNewChat() }
                 .keyboardShortcut("n", modifiers: .command)

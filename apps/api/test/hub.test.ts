@@ -580,3 +580,59 @@ describe("client stream", () => {
     expect(both.status).toBe(400);
   });
 });
+
+describe("worker usage", () => {
+  const report = {
+    windows: [
+      {
+        kind: "five_hour" as const,
+        usedPercent: 42,
+        resetsAt: "2026-11-16T18:00:00.000Z",
+        limited: false,
+      },
+      { kind: "weekly" as const, usedPercent: 91.5, limited: false },
+    ],
+    source: "claude-cli",
+    observedAt: "2026-11-16T14:00:00.000Z",
+  };
+
+  it("stores the latest report, serves it in presence and keeps it across hub restarts", async () => {
+    expect((await presence()).usage).toBeUndefined();
+    const client = await openSocket<JobStreamMessage>("/api/jobs/stream", (raw) => {
+      const decoded = decodeJobStreamMessage(raw);
+      if (!decoded.ok) throw new Error(decoded.error);
+      return decoded.message;
+    });
+    expect((await client.next()).type).toBe("jobs.snapshot");
+
+    const worker = await connectWorker();
+    worker.send({ type: "worker.usage", ...report });
+    await worker.sync();
+    expect((await presence()).usage).toEqual(report);
+
+    let seen: JobStreamMessage;
+    do seen = await client.next();
+    while (!(seen.type === "presence" && seen.presence.usage));
+    expect(seen.type === "presence" && seen.presence.usage).toEqual(report);
+
+    const newer = { ...report, windows: [{ kind: "other" as const, limited: true }] };
+    worker.send({ type: "worker.usage", ...newer });
+    await worker.sync();
+    expect((await presence()).usage).toEqual(newer);
+    client.ws.close(1000);
+    worker.ws.close(1000);
+
+    await abortAllDurableObjects(); // hub restart: DO storage survives
+    expect((await presence()).usage).toEqual(newer);
+  });
+
+  it("ignores a malformed usage report", async () => {
+    const worker = await connectWorker();
+    worker.ws.send(
+      JSON.stringify({ type: "worker.usage", windows: [{ kind: "daily" }], source: "x" }),
+    );
+    await worker.sync();
+    expect((await presence()).usage).toBeUndefined();
+    worker.ws.close(1000);
+  });
+});

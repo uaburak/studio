@@ -8,68 +8,114 @@ struct ChatView: View {
     @Bindable var model: ConversationModel
 
     var body: some View {
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: 28) {
-                if model.state == nil {
-                    ProgressView().frame(maxWidth: .infinity).padding(.top, 80)
-                } else if model.messages.isEmpty {
-                    Text("Bu sohbette henüz mesaj yok. Aşağıdan yaz.")
-                        .font(Theme.chatFont)
-                        .foregroundStyle(Theme.textSecondary)
-                        .padding(.top, 40)
-                }
-                ForEach(model.messages) { message in
-                    MessageView(model: model, message: message)
-                        .id(message.id)
-                }
-                RunStatusView(model: model)
+        conversation
+            // The conversation scrolls underneath the composer. The composer is an overlay (not a
+            // safe-area inset) so the scroll bar runs the full height of the window; the content
+            // margin keeps the last message clear of the composer.
+            .overlay(alignment: .bottom) { composerOverlay }
+            .task(id: model.id) {
+                guard !app.navigatedByKeyboard else { return }
+                try? await Task.sleep(for: .milliseconds(150))
+                model.composer.bridge?.focus()
             }
-            .chatColumn()
-            .padding(.top, 24)
-            .padding(.bottom, 20)
+            .environment(\.openURL, OpenURLAction { url in
+                guard url.scheme == "studio-mention", let aliasId = url.host() else { return .systemAction }
+                model.previewAliasId = aliasId
+                return .handled
+            })
+            .sheet(item: previewedAlias) { alias in
+                AliasPreview(model: model, alias: alias)
+            }
+            .onDrop(of: [.fileURL], isTargeted: nil, perform: dropFiles)
+    }
+
+    private var conversation: some View {
+        ScrollView {
+            messageColumn
         }
         .defaultScrollAnchor(.top, for: .alignment)
         .defaultScrollAnchor(.bottom, for: .initialOffset)
         .defaultScrollAnchor(.bottom, for: .sizeChanges)
-        // Soft (feathered) edges under the toolbar and behind the composer; macOS defaults to hard.
-        .scrollEdgeEffectStyle(.soft, for: .all)
-        .safeAreaBar(edge: .bottom) {
-            VStack(alignment: .trailing, spacing: 8) {
-                if let error = model.error {
-                    InlineError(message: error) { model.error = nil }
-                }
-                ComposerView(
-                    model: model.composer,
-                    isBusy: model.isSending,
-                    onStop: model.activeRun.map { _ in { Task { await model.cancelRun() } } },
-                    onSend: { Task { await model.send() } })
-                MacStatusView().padding(.trailing, 14)
+        // Soft (feathered) edge under the toolbar; macOS defaults to hard.
+        .scrollEdgeEffectStyle(.soft, for: .top)
+        .scrollEdgeEffectHidden(true, for: .bottom)
+        .contentMargins(.bottom, 132, for: .scrollContent)
+    }
+
+    private var messageColumn: some View {
+        LazyVStack(alignment: .leading, spacing: 28) {
+            if model.state == nil {
+                ProgressView().frame(maxWidth: .infinity).padding(.top, 80)
+            } else if model.messages.isEmpty {
+                Text("Bu sohbette henüz mesaj yok. Aşağıdan yaz.")
+                    .font(Theme.chatFont)
+                    .foregroundStyle(Theme.textSecondary)
+                    .padding(.top, 40)
             }
-            .chatColumn()
-            .padding(.bottom, 12)
-        }
-        .task(id: model.id) {
-            guard !app.navigatedByKeyboard else { return }
-            try? await Task.sleep(for: .milliseconds(150))
-            model.composer.bridge?.focus()
-        }
-        .environment(\.openURL, OpenURLAction { url in
-            guard url.scheme == "studio-mention", let aliasId = url.host() else { return .systemAction }
-            model.previewAliasId = aliasId
-            return .handled
-        })
-        .sheet(item: Binding(get: { model.previewAliasId.flatMap { model.state?.alias(id: $0) } }, set: { _ in model.previewAliasId = nil })) { alias in
-            AliasPreview(model: model, alias: alias)
-        }
-        .onDrop(of: [.fileURL], isTargeted: nil) { providers in
-            for provider in providers {
-                _ = provider.loadObject(ofClass: URL.self) { url, _ in
-                    guard let url else { return }
-                    Task { @MainActor in model.composer.addFiles([url]) }
-                }
+            ForEach(model.messages) { message in
+                MessageView(model: model, message: message)
+                    .id(message.id)
             }
-            return true
+            RunStatusView(model: model)
         }
+        .chatColumn()
+        .padding(.top, 24)
+        .padding(.bottom, 20)
+        .background(MinimalScroller())
+    }
+
+    private var composerOverlay: some View {
+        ZStack(alignment: .bottom) {
+            // Light darkening at the bottom of the window, under the composer.
+            LinearGradient(
+                colors: [.black.opacity(0), .black.opacity(0.28)],
+                startPoint: .top, endPoint: .bottom)
+                .frame(height: 150)
+                .frame(maxWidth: .infinity)
+                .allowsHitTesting(false)
+            composerStack
+        }
+        .ignoresSafeArea(edges: .bottom)
+    }
+
+    private var composerStack: some View {
+        VStack(alignment: .trailing, spacing: 8) {
+            if let error = model.error {
+                InlineError(message: error) { model.error = nil }
+            }
+            ComposerView(
+                model: model.composer,
+                isBusy: model.isSending,
+                onStop: stopAction,
+                onSend: { Task { await model.send() } })
+            ComposerFooter(model: model)
+                .padding(.horizontal, 14)
+        }
+        .chatColumn()
+        .padding(.bottom, 12)
+    }
+
+    private var stopAction: (() -> Void)? {
+        guard model.activeRun != nil else { return nil }
+        let model = model
+        return { Task { await model.cancelRun() } }
+    }
+
+    private var previewedAlias: Binding<ConversationAlias?> {
+        Binding(
+            get: { model.previewAliasId.flatMap { model.state?.alias(id: $0) } },
+            set: { _ in model.previewAliasId = nil })
+    }
+
+    private func dropFiles(_ providers: [NSItemProvider]) -> Bool {
+        let composer = model.composer
+        for provider in providers {
+            _ = provider.loadObject(ofClass: URL.self) { url, _ in
+                guard let url else { return }
+                Task { @MainActor in composer.addFiles([url]) }
+            }
+        }
+        return true
     }
 }
 

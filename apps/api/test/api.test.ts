@@ -1,5 +1,6 @@
 import { env, exports } from "cloudflare:workers";
 import {
+  AgentEffort,
   AssetKind,
   AssetSource,
   BrandProfileStatus,
@@ -106,6 +107,7 @@ describe("D1 + Drizzle", () => {
       [ENUMS.jobStatus, JobStatus.options],
       [ENUMS.scheduleStatus, ScheduleStatus.options],
       [ENUMS.publishLogStatus, PublishLogStatus.options],
+      [ENUMS.agentEffort, AgentEffort.options],
     ];
     for (const [db, contract] of pairs) expect([...db]).toEqual([...contract]);
   });

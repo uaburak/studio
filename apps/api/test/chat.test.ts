@@ -572,7 +572,11 @@ describe("happy path", () => {
     expect(contents.items.every((c) => c.currentVersion === null)).toBe(true);
 
     // Generation for all accepted items.
-    const gen = await api("POST", `/api/plans/${plan.id}/generate`, { instructions: "sade" });
+    const gen = await api("POST", `/api/plans/${plan.id}/generate`, {
+      instructions: "sade",
+      model: "sonnet",
+      effort: "high",
+    });
     expect(gen.status, JSON.stringify(gen.body)).toBe(200);
     const generated = PlanGenerateResult.parse(gen.body);
     expect(generated.jobs).toHaveLength(2);
@@ -589,6 +593,8 @@ describe("happy path", () => {
         conversationId: conv.id,
         brandProfileVersion: 1,
         instructions: "sade",
+        model: "sonnet",
+        effort: "high",
       });
     }
     expect(generated.plan.items.map((i) => i.generation?.status)).toEqual(["queued", "queued"]);
@@ -620,6 +626,56 @@ describe("happy path", () => {
 });
 
 describe("rules and edge cases", () => {
+  it("keeps the requested model and effort on the run and in the turn context", async () => {
+    const conv = await newConversation();
+    expectError(await send(conv.id, { text: "selam", model: "gpt" }), 400, "validation_error");
+    expectError(await send(conv.id, { text: "selam", effort: "max" }), 400, "validation_error");
+
+    const sent = await send(conv.id, { text: "selam", model: "opus", effort: "xhigh" });
+    expect(sent.status, JSON.stringify(sent.body)).toBe(201);
+    const result = UserMessageResult.parse(sent.body);
+    expect(result.run).toMatchObject({ model: "opus", effort: "xhigh" });
+    expect(await getRun(result.run.id)).toMatchObject({ model: "opus", effort: "xhigh" });
+
+    const w = await connectWorker();
+    const [dispatch] = dispatches(w.initial);
+    w.send({ type: "job.ack", jobId: result.run.jobId ?? "", attempt: dispatch?.attempt ?? 1 });
+    await w.sync();
+    const ctx = TurnContext.parse((await start(result.run.id, dispatch?.attempt ?? 1)).body);
+    expect(ctx.run).toMatchObject({ model: "opus", effort: "xhigh" });
+
+    // A question answered after the turn ends starts a turn with the same choice.
+    const ask = await ops(result.run.id, {
+      ops: [
+        {
+          op: "part.set",
+          index: 0,
+          part: { type: "question", questionId: "q", prompt: "Hangisi?", mode: "text" },
+        },
+      ],
+    });
+    const messageId = TurnWriteResult.parse(ask.body).message.id;
+    await finishTurn({ ...result, worker: w, attempt: dispatch?.attempt ?? 1, context: ctx });
+    const answered = await api(
+      "POST",
+      `/api/conversations/${conv.id}/messages/${messageId}/answer`,
+      {
+        questionId: "q",
+        text: "ilki",
+      },
+    );
+    expect(answered.status, JSON.stringify(answered.body)).toBe(200);
+    expect(QuestionAnswerResult.parse(answered.body).run).toMatchObject({
+      model: "opus",
+      effort: "xhigh",
+    });
+
+    // Without a choice both stay null (worker default).
+    const plain = await newConversation();
+    expect((await sendOk(plain.id)).run).toMatchObject({ model: null, effort: null });
+    w.ws.close(1000);
+  });
+
   it("allows one active run per conversation", async () => {
     const conv = await newConversation();
     const [a, b] = await Promise.all([

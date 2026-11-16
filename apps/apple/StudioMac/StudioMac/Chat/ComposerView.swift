@@ -29,6 +29,9 @@ struct ComposerView: View {
                     .glassEffectID("composer", in: glass)
             }
         }
+        // Glass normally dims when the window loses key status (e.g. Settings open);
+        // keep the composer rendered as if the window were active so it never changes colour.
+        .environment(\.controlActiveState, .key)
         .animation(.snappy(duration: 0.22), value: model.isSuggesting)
         .onDrop(of: [.fileURL, .image], isTargeted: $isTargeted) { providers in
             loadDropped(providers)

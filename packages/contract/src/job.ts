@@ -194,6 +194,30 @@ export const PresenceJob = z
   .meta({ id: "PresenceJob" });
 export type PresenceJob = z.infer<typeof PresenceJob>;
 
+/** One subscription limit window as the worker observed it. */
+export const UsageWindow = z
+  .object({
+    kind: z.enum(["five_hour", "weekly", "other"]),
+    /** 0..100 */
+    usedPercent: z.number().min(0).max(100).optional(),
+    resetsAt: Timestamp.optional(),
+    /** True when the window's limit is reached. */
+    limited: z.boolean(),
+  })
+  .meta({ id: "UsageWindow" });
+export type UsageWindow = z.infer<typeof UsageWindow>;
+
+/** Remaining subscription usage, last reported by a worker (`worker.usage`). */
+export const WorkerUsage = z
+  .object({
+    windows: z.array(UsageWindow).max(16),
+    /** Where the worker read it (free-form, e.g. "claude-cli"). */
+    source: z.string().min(1).max(200),
+    observedAt: Timestamp,
+  })
+  .meta({ id: "WorkerUsage" });
+export type WorkerUsage = z.infer<typeof WorkerUsage>;
+
 /** "Is the Mac online?" — `GET /api/workers/presence` and the job stream. */
 export const WorkerPresence = z
   .object({
@@ -205,6 +229,8 @@ export const WorkerPresence = z
     currentJobs: z.array(PresenceJob),
     /** Jobs waiting in `queued`. */
     queueLength: z.number().int().min(0),
+    /** Latest `worker.usage` report (kept across hub restarts); absent until a worker sent one. */
+    usage: WorkerUsage.optional(),
   })
   .meta({ id: "WorkerPresence" });
 export type WorkerPresence = z.infer<typeof WorkerPresence>;

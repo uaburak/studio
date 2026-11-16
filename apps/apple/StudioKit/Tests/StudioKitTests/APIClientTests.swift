@@ -138,6 +138,39 @@ struct APIClientTests {
 
         let plain = try JSONSerialization.jsonObject(with: MessageWire.encode(OutgoingMessage(text: "merhaba", clientMessageId: "k2"))) as! [String: Any]
         #expect(plain["attachments"] == nil)
+        #expect(plain["model"] == nil)
+        #expect(plain["effort"] == nil)
+    }
+
+    @Test func messageWireCarriesModelAndEffort() throws {
+        let chosen = OutgoingMessage(text: "selam", clientMessageId: "k3", model: .opus, effort: .xhigh)
+        let json = try JSONSerialization.jsonObject(with: MessageWire.encode(chosen)) as! [String: Any]
+        #expect(json["model"] as? String == "opus")
+        #expect(json["effort"] as? String == "xhigh")
+        // An unknown value is never sent (the server would refuse it).
+        let odd = OutgoingMessage(text: "selam", clientMessageId: "k4", model: .unknown, effort: .unknown)
+        let oddJSON = try JSONSerialization.jsonObject(with: MessageWire.encode(odd)) as! [String: Any]
+        #expect(oddJSON["model"] == nil)
+        #expect(oddJSON["effort"] == nil)
+    }
+
+    @Test func acceptAndGenerateSendsModelAndEffort() async throws {
+        let plan = try #require(try Fixture.decode(Page<Plan>.self, "plan-list").items.first { $0.status == .accepted })
+        let planJSON = try StudioJSON.encoder().encode(plan)
+        let generated = Data(#"{"plan":"#.utf8) + planJSON + Data(#","jobs":[]}"#.utf8)
+        let (api, host) = client { request, _ in
+            .init(status: 200, body: request.url!.path.hasSuffix("/generate") ? generated : planJSON)
+        }
+        let service = RemoteConversationService(client: api)
+        _ = try await service.acceptAndGenerate(plan, model: .sonnet, effort: .high)
+        let recorded = StubURLProtocol.recorded(host: host)
+        let generate = try #require(recorded.first { $0.0.url!.path.hasSuffix("/generate") })
+        let body = try JSONSerialization.jsonObject(with: generate.1) as? [String: String]
+        #expect(body == ["model": "sonnet", "effort": "high"])
+
+        _ = try await service.acceptAndGenerate(plan)
+        let plain = try #require(StubURLProtocol.recorded(host: host).last)
+        #expect(try JSONSerialization.jsonObject(with: plain.1) as? [String: String] == [:])
     }
 }
 

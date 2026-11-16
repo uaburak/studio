@@ -144,7 +144,9 @@ public actor SampleBackend: ConversationService, StudioDataService {
         if !text.isEmpty { parts.append(.text(text)) }
         let mentions = MentionText.resolve(text, aliases: aliases.map(MentionText.Target.init))
         let stored = Message(id: messageId, conversationId: conversationId, role: .user, parts: parts, mentions: mentions, createdAt: now, updatedAt: now)
-        let run = AgentRun(id: nextId("run"), conversationId: conversationId, triggerMessageId: stored.id, jobId: nextId("job"), status: .queued, createdAt: now, updatedAt: now)
+        let run = AgentRun(
+            id: nextId("run"), conversationId: conversationId, triggerMessageId: stored.id, jobId: nextId("job"), status: .queued,
+            model: message.model?.sendable?.rawValue, effort: message.effort?.sendable, createdAt: now, updatedAt: now)
         data.messages[conversationId, default: []].append(stored)
         data.runs.append(run)
         data.jobs.insert(Job(id: run.jobId!, type: .chatTurn, status: .queued, payload: ["conversationId": .string(conversationId), "runId": .string(run.id)], createdAt: now, updatedAt: now), at: 0)
@@ -227,7 +229,7 @@ public actor SampleBackend: ConversationService, StudioDataService {
         return aliases[index]
     }
 
-    public func acceptAndGenerate(_ plan: Plan) async throws -> Plan {
+    public func acceptAndGenerate(_ plan: Plan, model: AgentModel?, effort: AgentEffort?) async throws -> Plan {
         guard let index = data.plans.firstIndex(where: { $0.id == plan.id }) else {
             throw StudioAPIError.server(status: 404, code: .notFound, message: "plan not found", issues: [])
         }

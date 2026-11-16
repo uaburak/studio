@@ -152,6 +152,55 @@ public struct PresenceJob: Codable, Sendable, Hashable, Identifiable {
     public var startedAt: Date?
 }
 
+/// One subscription limit window (`UsageWindow` in job.ts).
+public struct UsageWindow: Codable, Sendable, Hashable {
+    public enum Kind: String, OpenEnum {
+        case fiveHour = "five_hour"
+        case weekly, other
+        case unknown
+    }
+
+    public var kind: Kind
+    /// 0...100; nil when the worker could not read it.
+    public var usedPercent: Double?
+    public var resetsAt: Date?
+    /// True when the window's limit is reached.
+    public var limited: Bool
+
+    public init(kind: Kind, usedPercent: Double? = nil, resetsAt: Date? = nil, limited: Bool = false) {
+        self.kind = kind
+        self.usedPercent = usedPercent
+        self.resetsAt = resetsAt
+        self.limited = limited
+    }
+}
+
+/// Remaining subscription usage, last reported by the Mac (`WorkerUsage` in job.ts).
+public struct WorkerUsage: Codable, Sendable, Hashable {
+    public var windows: [UsageWindow]
+    public var source: String
+    public var observedAt: Date
+
+    public init(windows: [UsageWindow], source: String, observedAt: Date) {
+        self.windows = windows
+        self.source = source
+        self.observedAt = observedAt
+    }
+
+    /// The fullest window (a limited one counts as 100 %): what a single usage ring shows.
+    public var mostUsed: UsageWindow? {
+        windows.max { $0.effectivePercent < $1.effectivePercent }
+    }
+}
+
+extension UsageWindow {
+    /// `usedPercent` clamped to 0...100; 100 when limited, 0 when unknown.
+    public var effectivePercent: Double {
+        if limited { return 100 }
+        return min(max(usedPercent ?? 0, 0), 100)
+    }
+}
+
 /// "Is the Mac online?": `GET /api/workers/presence` and the stream frames.
 public struct WorkerPresence: Codable, Sendable, Hashable {
     public var online: Bool
@@ -160,8 +209,14 @@ public struct WorkerPresence: Codable, Sendable, Hashable {
     public var workers: [ConnectedWorker]
     public var currentJobs: [PresenceJob]
     public var queueLength: Int
+    /// Latest subscription usage the Mac reported; nil until it sent one.
+    public var usage: WorkerUsage?
 
-    public init(online: Bool, lastSeenAt: Date? = nil, workers: [ConnectedWorker] = [], currentJobs: [PresenceJob] = [], queueLength: Int = 0) {
+    public init(
+        online: Bool, lastSeenAt: Date? = nil, workers: [ConnectedWorker] = [], currentJobs: [PresenceJob] = [], queueLength: Int = 0,
+        usage: WorkerUsage? = nil
+    ) {
+        self.usage = usage
         self.online = online
         self.lastSeenAt = lastSeenAt
         self.workers = workers

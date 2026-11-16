@@ -319,7 +319,11 @@ public struct AgentRun: Codable, Sendable, Hashable, Identifiable {
     public var jobId: EntityID?
     public var status: AgentRunStatus
     public var attempt: Int
+    /// The requested model (`opus` / `sonnet` / `haiku`) until the worker
+    /// finishes; then possibly the model id it actually used.
     public var model: String?
+    /// The requested reasoning effort; nil = worker default.
+    public var effort: AgentEffort?
     public var usage: JSONObject?
     public var error: String?
     public var createdAt: Date
@@ -327,11 +331,17 @@ public struct AgentRun: Codable, Sendable, Hashable, Identifiable {
     public var startedAt: Date?
     public var finishedAt: Date?
 
+    /// `model` as a picker value, when it is one (nil for a worker-reported model id).
+    public var requestedModel: AgentModel? {
+        model.flatMap { AgentModel(rawValue: $0) }.flatMap { $0 == .unknown ? nil : $0 }
+    }
+
     public init(
         id: EntityID, conversationId: EntityID, triggerMessageId: EntityID, jobId: EntityID? = nil,
-        status: AgentRunStatus, attempt: Int = 0, model: String? = nil, error: String? = nil,
+        status: AgentRunStatus, attempt: Int = 0, model: String? = nil, effort: AgentEffort? = nil, error: String? = nil,
         createdAt: Date, updatedAt: Date, startedAt: Date? = nil, finishedAt: Date? = nil
     ) {
+        self.effort = effort
         self.id = id
         self.conversationId = conversationId
         self.triggerMessageId = triggerMessageId

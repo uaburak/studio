@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { Job, JobId, WorkerPresence } from "./job.ts";
+import { Job, JobId, WorkerPresence, WorkerUsage } from "./job.ts";
 
 /**
  * Worker <-> hub WebSocket protocol.
@@ -7,7 +7,7 @@ import { Job, JobId, WorkerPresence } from "./job.ts";
  * Every frame is a JSON text message with a `type` discriminator.
  * Direction:
  *   worker -> hub: hello, job.ack, job.progress, job.heartbeat, job.result,
- *                  job.release, worker.drain, ping, pong
+ *                  job.release, worker.drain, worker.usage, ping, pong
  *   hub -> worker: job.dispatch, job.cancel, job.result.ack, ping, pong
  *
  * Job lifecycle on the wire (see apps/api/README.md for the full picture):
@@ -103,6 +103,14 @@ export const WorkerDrainMessage = z.object({
   type: z.literal("worker.drain"),
 });
 
+/**
+ * Remaining subscription usage as the worker sees it. The hub keeps the
+ * latest report (durably) and shows it in presence as `usage`.
+ */
+export const WorkerUsageMessage = WorkerUsage.extend({
+  type: z.literal("worker.usage"),
+});
+
 /** Hub asks the worker to abort a job; the worker answers with a `cancelled` result. */
 export const JobCancelMessage = z.object({
   type: z.literal("job.cancel"),
@@ -136,6 +144,7 @@ export const ProtocolMessage = z.discriminatedUnion("type", [
   JobResultMessage,
   JobReleaseMessage,
   WorkerDrainMessage,
+  WorkerUsageMessage,
   JobCancelMessage,
   JobResultAckMessage,
   PingMessage,
@@ -150,6 +159,7 @@ export type JobHeartbeatMessage = z.infer<typeof JobHeartbeatMessage>;
 export type JobResultMessage = z.infer<typeof JobResultMessage>;
 export type JobReleaseMessage = z.infer<typeof JobReleaseMessage>;
 export type WorkerDrainMessage = z.infer<typeof WorkerDrainMessage>;
+export type WorkerUsageMessage = z.infer<typeof WorkerUsageMessage>;
 export type JobCancelMessage = z.infer<typeof JobCancelMessage>;
 export type JobResultAckMessage = z.infer<typeof JobResultAckMessage>;
 export type PingMessage = z.infer<typeof PingMessage>;
@@ -169,6 +179,7 @@ export type WorkerToHubMessage = Extract<
       | "job.result"
       | "job.release"
       | "worker.drain"
+      | "worker.usage"
       | "ping"
       | "pong";
   }

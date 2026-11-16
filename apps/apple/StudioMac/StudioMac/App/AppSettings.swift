@@ -28,9 +28,12 @@ final class AppSettings {
     let useSampleData: Bool
 
     let credentials: any CredentialStore
+    /// Model / effort per conversation and the last one used.
+    let agentChoices: AgentChoiceStore
 
     init(defaults: UserDefaults = .standard, credentials: any CredentialStore = KeychainCredentialStore(), useSampleData: Bool? = nil) {
         self.defaults = defaults
+        agentChoices = AgentChoiceStore(defaults: defaults)
         self.credentials = credentials
         serverURLString = defaults.string(forKey: Self.serverKey) ?? APIClient.localDefaultURL.absoluteString
         appearance = AppearancePreference(rawValue: defaults.string(forKey: Self.appearanceKey) ?? "") ?? .system

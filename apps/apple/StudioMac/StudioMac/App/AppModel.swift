@@ -43,6 +43,8 @@ final class AppModel {
     /// Brand for a new chat and the posts screen.
     var currentBrandId: EntityID?
     var searchPresented = false
+    /// Settings open as an in-window sheet, not a separate window.
+    var settingsPresented = false
     /// The last sidebar navigation came from the keyboard (do not steal focus).
     private(set) var navigatedByKeyboard = false
 

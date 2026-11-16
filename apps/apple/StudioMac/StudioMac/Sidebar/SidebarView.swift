@@ -133,6 +133,7 @@ private struct ConversationRow: View {
 
 /// `● Burak  ⚙` with the appearance switch one click away.
 private struct UserRow: View {
+    @Environment(AppModel.self) private var app
     @Environment(AppSettings.self) private var settings
 
     var body: some View {
@@ -146,7 +147,7 @@ private struct UserRow: View {
                     }
                 }
                 Divider()
-                SettingsLink { Text("Ayarlar…") }
+                Button("Ayarlar…") { app.settingsPresented = true }
             } label: {
                 HStack(spacing: 10) {
                     Circle().fill(Theme.accent).frame(width: 20, height: 20)
@@ -159,7 +160,7 @@ private struct UserRow: View {
             .fixedSize()
             .help("Görünüm ve ayarlar")
             Spacer()
-            SettingsLink {
+            Button { app.settingsPresented = true } label: {
                 Image(systemName: "gearshape")
                     .font(.system(size: 13))
             }

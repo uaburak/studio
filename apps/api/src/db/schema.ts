@@ -46,6 +46,7 @@ export const ENUMS = {
   messageRole: ["user", "assistant", "system"],
   messageStatus: ["streaming", "complete", "failed", "cancelled"],
   agentRunStatus: ["queued", "running", "completed", "failed", "cancelled"],
+  agentEffort: ["low", "medium", "high", "xhigh"],
   planStatus: ["draft", "proposed", "accepted", "rejected", "superseded"],
   planItemStatus: ["planned", "accepted", "skipped"],
   imageSlot: ["none", "user_upload", "ai_generate"],
@@ -467,7 +468,10 @@ export const agentRuns = sqliteTable(
     status: text("status", { enum: ENUMS.agentRunStatus }).notNull().default("queued"),
     /** Worker attempt that currently writes (0 until started). */
     attempt: integer("attempt").notNull().default(0),
+    /** Requested model (opus / sonnet / haiku) until the worker reports the one it used. */
     model: text("model"),
+    /** Requested reasoning effort (low / medium / high / xhigh); null = worker default. */
+    effort: text("effort", { enum: ENUMS.agentEffort }),
     usage: text("usage", { mode: "json" }).$type<Record<string, unknown>>(),
     error: text("error"),
     createdAt: createdAt(),

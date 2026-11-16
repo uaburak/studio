@@ -260,6 +260,7 @@ export function toAgentRun(r: AgentRunRow): AgentRun {
     status: r.status,
     attempt: r.attempt,
     model: r.model,
+    effort: r.effort ?? null,
     usage: (r.usage as RunUsage | null) ?? null,
     error: r.error,
     createdAt: iso(r.createdAt),

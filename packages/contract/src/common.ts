@@ -15,6 +15,14 @@ export type EntityId = z.infer<typeof EntityId>;
 export const Platform = z.enum(["instagram", "facebook", "linkedin"]).meta({ id: "Platform" });
 export type Platform = z.infer<typeof Platform>;
 
+/** Model family the user picked for a chat turn or a generation (the worker maps it to a model id). */
+export const AgentModel = z.enum(["opus", "sonnet", "haiku"]).meta({ id: "AgentModel" });
+export type AgentModel = z.infer<typeof AgentModel>;
+
+/** Reasoning effort the user picked for a chat turn or a generation. */
+export const AgentEffort = z.enum(["low", "medium", "high", "xhigh"]).meta({ id: "AgentEffort" });
+export type AgentEffort = z.infer<typeof AgentEffort>;
+
 // --- Errors ------------------------------------------------------------------
 
 /**

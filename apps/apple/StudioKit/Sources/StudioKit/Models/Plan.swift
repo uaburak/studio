@@ -142,10 +142,15 @@ public struct PlanReject: Encodable, Sendable, Equatable {
 public struct PlanGenerate: Encodable, Sendable, Equatable {
     public var itemIds: [EntityID]?
     public var instructions: String?
+    /// Copied into each `content.generate` job; nil = worker default.
+    public var model: AgentModel?
+    public var effort: AgentEffort?
 
-    public init(itemIds: [EntityID]? = nil, instructions: String? = nil) {
+    public init(itemIds: [EntityID]? = nil, instructions: String? = nil, model: AgentModel? = nil, effort: AgentEffort? = nil) {
         self.itemIds = itemIds
         self.instructions = instructions
+        self.model = model?.sendable
+        self.effort = effort?.sendable
     }
 }
 

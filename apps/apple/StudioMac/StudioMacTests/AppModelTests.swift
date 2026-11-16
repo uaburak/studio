@@ -116,6 +116,58 @@ struct AppModelTests {
         #expect(app.conversations.first { $0.id == id }?.brandId == SampleData.mtm)
     }
 
+    @Test func modelAndEffortPersistPerConversationAndDefaultToTheLastUsed() async throws {
+        let (app, _) = await makeApp()
+        let store = app.settings.agentChoices
+        #expect(store.last == .fallback)
+
+        let first = app.conversationModel(SampleData.hasatConversation)
+        await waitUntil { first.state != nil }
+        #expect(first.agentChoice == .fallback)
+        first.agentChoice.model = .haiku
+        first.agentChoice.effort = .xhigh
+        #expect(store.choice(for: SampleData.hasatConversation) == AgentChoice(model: .haiku, effort: .xhigh))
+        #expect(store.last == AgentChoice(model: .haiku, effort: .xhigh))
+
+        // The turn carries the choice to the server.
+        first.composer.text = "kısa tut"
+        await first.send()
+        #expect(first.error == nil)
+        await waitUntil { first.activeRun != nil }
+        #expect(first.activeRun?.requestedModel == .haiku)
+        #expect(first.activeRun?.effort == .xhigh)
+
+        // Another conversation starts from the last used choice and keeps its own.
+        let second = app.conversationModel(SampleData.kasimConversation)
+        #expect(second.agentChoice == AgentChoice(model: .haiku, effort: .xhigh))
+        second.agentChoice.model = .sonnet
+        #expect(store.choice(for: SampleData.hasatConversation).model == .haiku)
+        #expect(store.choice(for: SampleData.kasimConversation).model == .sonnet)
+
+        // A new chat sends the last used choice and remembers it for the new conversation.
+        app.newChat.composer.text = "Aralık planını çıkar"
+        await app.newChat.send()
+        guard case .conversation(let id) = app.route else {
+            Issue.record("expected to open the new conversation")
+            return
+        }
+        #expect(store.choice(for: id) == AgentChoice(model: .sonnet, effort: .xhigh))
+        let created = app.conversationModel(id)
+        await waitUntil { created.activeRun != nil }
+        #expect(created.activeRun?.requestedModel == .sonnet)
+    }
+
+    @Test func usageTextAndColours() {
+        #expect(UsageIndicator.percentText(42.4) == "%42")
+        #expect(UsagePopover.title(.fiveHour) == "5 saatlik")
+        #expect(UsagePopover.title(.weekly) == "Haftalık")
+        #expect(UsagePopover.usedText(UsageWindow(kind: .weekly, usedPercent: 91, limited: false)) == "%91 kullanıldı")
+        #expect(UsagePopover.usedText(UsageWindow(kind: .weekly, limited: true)) == "Sınıra ulaşıldı")
+        #expect(UsagePopover.usedText(UsageWindow(kind: .other)) == "—")
+        #expect(AgentEffort.knownCases.map(\.displayName) == ["Düşük", "Orta", "Yüksek", "Çok yüksek"])
+        #expect(AgentModel.knownCases.map(\.displayName) == ["Opus", "Sonnet", "Haiku"])
+    }
+
     @Test func postsCountsAndApproveAll() async throws {
         let (app, _) = await makeApp()
         app.posts.month = MonthKey(year: 2026, month: 11)

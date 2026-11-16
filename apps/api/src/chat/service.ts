@@ -1,4 +1,6 @@
 import {
+  type AgentEffort,
+  AgentModel,
   type AgentRun,
   type AttachmentPart,
   aliasBaseFor,
@@ -547,8 +549,15 @@ async function buildPart(
   }
 }
 
+type TurnChoice = { model?: AgentModel | undefined; effort?: AgentEffort | undefined };
+
 /** Insert a queued agent run and its chat.turn job; returns the run row (not yet written). */
-function startTurn(change: Change, conv: ConversationRow, triggerMessageId: string): AgentRunRow {
+function startTurn(
+  change: Change,
+  conv: ConversationRow,
+  triggerMessageId: string,
+  choice: TurnChoice = {},
+): AgentRunRow {
   const { db, now } = change;
   const runId = newId();
   const jobId = newId();
@@ -573,7 +582,8 @@ function startTurn(change: Change, conv: ConversationRow, triggerMessageId: stri
     jobId,
     status: "queued",
     attempt: 0,
-    model: null,
+    model: choice.model ?? null,
+    effort: choice.effort ?? null,
     usage: null,
     error: null,
     createdAt: now,
@@ -953,7 +963,7 @@ async function sendUserMessage(
   change.add(db.insert(messages).values(message));
   book.flush(change);
   change.emit(conversationId, { type: "message.created", message: messageRowView(message) });
-  const run = startTurn(change, conv, message.id);
+  const run = startTurn(change, conv, message.id, { model: input.model, effort: input.effort });
 
   const title = conv.title === "" && input.text ? deriveTitle(input.text) : conv.title;
   if (title !== conv.title) {
@@ -1017,7 +1027,15 @@ async function answerQuestion(
   // The asking run (or any other active run) reads the answer itself; otherwise the answer starts a turn.
   let run: AgentRunRow | null = null;
   if (!(await activeRunOf(db, conversationId))) {
-    run = startTurn(change, conv, msg.id);
+    // Keep the asking run's model / effort choice for the turn the answer starts.
+    const asking = msg.runId
+      ? await db.query.agentRuns.findFirst({ where: eq(agentRuns.id, msg.runId) })
+      : undefined;
+    const model = AgentModel.safeParse(asking?.model);
+    run = startTurn(change, conv, msg.id, {
+      model: model.success ? model.data : undefined,
+      effort: asking?.effort ?? undefined,
+    });
     change.emit(conversationId, {
       type: "conversation.updated",
       conversation: convView(conv, run.id),
@@ -1620,6 +1638,8 @@ async function generatePlan(
       ...(plan.conversationId ? { conversationId: plan.conversationId } : {}),
       ...(profile ? { brandProfileVersion: profile.version } : {}),
       ...(input.instructions ? { instructions: input.instructions } : {}),
+      ...(input.model ? { model: input.model } : {}),
+      ...(input.effort ? { effort: input.effort } : {}),
     });
     const job: JobRow = {
       id: newId(),

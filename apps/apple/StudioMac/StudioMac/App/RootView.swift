@@ -30,6 +30,9 @@ struct RootView: View {
                 SearchPalette()
             }
         }
+        .sheet(isPresented: $app.settingsPresented) {
+            SettingsSheet()
+        }
         .overlay(alignment: .top) {
             if let banner = app.banner {
                 InlineError(message: banner) { app.banner = nil }
@@ -128,7 +131,7 @@ struct MoreMenu: View {
             }
             Divider()
             Button("Verileri yenile") { Task { await app.load() } }
-            SettingsLink { Text("Ayarlar…") }
+            Button("Ayarlar…") { app.settingsPresented = true }
         } label: {
             Label("Diğer", systemImage: "ellipsis")
         }

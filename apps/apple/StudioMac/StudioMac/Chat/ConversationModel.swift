@@ -21,11 +21,16 @@ final class ConversationModel {
     var busyQuestions: Set<String> = []
     /// Alias id whose image is being previewed (mention click).
     var previewAliasId: EntityID?
+    /// Model and effort for the next turn and for plan generation; remembered per conversation.
+    var agentChoice: AgentChoice {
+        didSet { if agentChoice != oldValue { app.settings.agentChoices.save(agentChoice, for: id) } }
+    }
     private var task: Task<Void, Never>?
 
     init(id: EntityID, app: AppModel) {
         self.id = id
         self.app = app
+        agentChoice = app.settings.agentChoices.choice(for: id)
         configureComposer()
     }
 
@@ -34,6 +39,7 @@ final class ConversationModel {
         self.id = id
         self.app = app
         self.state = state
+        agentChoice = app.settings.agentChoices.choice(for: id)
         live = .live
         configureComposer()
         composer.updateConversationAliases(state.aliases)
@@ -96,9 +102,12 @@ final class ConversationModel {
         }
         isSending = true
         defer { isSending = false }
-        let message = composer.makeMessage()
+        var message = composer.makeMessage()
+        message.model = agentChoice.model
+        message.effort = agentChoice.effort
         do {
             _ = try await app.conversationService.send(message, to: id)
+            app.settings.agentChoices.save(agentChoice, for: id)
             composer.reset()
             error = nil
         } catch {
@@ -125,7 +134,7 @@ final class ConversationModel {
         busyPlans.insert(plan.id)
         defer { busyPlans.remove(plan.id) }
         do {
-            _ = try await app.conversationService.acceptAndGenerate(plan)
+            _ = try await app.conversationService.acceptAndGenerate(plan, model: agentChoice.model, effort: agentChoice.effort)
             await app.posts.load()
         } catch {
             self.error = AppModel.describe(error)
@@ -225,10 +234,15 @@ final class NewChatModel {
         guard let app, composer.canSend, !isCreating else { return }
         isCreating = true
         defer { isCreating = false }
-        let message = composer.makeMessage()
+        // A new chat starts with the last used model / effort and keeps it.
+        let choice = app.settings.agentChoices.last
+        var message = composer.makeMessage()
+        message.model = choice.model
+        message.effort = choice.effort
         let title = String(message.text.trimmingCharacters(in: .whitespacesAndNewlines).prefix(60))
         do {
             let conversation = try await app.conversationService.createConversation(brandId: app.currentBrandId, title: title.isEmpty ? nil : title)
+            app.settings.agentChoices.save(choice, for: conversation.id)
             app.conversationChanged(conversation)
             _ = try await app.conversationService.send(message, to: conversation.id)
             composer.reset()

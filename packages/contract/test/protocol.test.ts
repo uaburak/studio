@@ -57,6 +57,17 @@ const samples: ProtocolMessage[] = [
   { type: "job.result", jobId: "job_1", status: "failed", error: "429", retryable: true },
   { type: "job.release", jobId: "job_1", attempt: 1, reason: "shutdown" },
   { type: "worker.drain" },
+  // M2: subscription usage
+  {
+    type: "worker.usage",
+    windows: [
+      { kind: "five_hour", usedPercent: 42.5, resetsAt: now, limited: false },
+      { kind: "weekly", usedPercent: 100, limited: true },
+      { kind: "other", limited: false },
+    ],
+    source: "claude-cli",
+    observedAt: now,
+  },
   { type: "job.cancel", jobId: "job_1", reason: "cancelled by user" },
   { type: "job.result.ack", jobId: "job_1" },
 ];
@@ -175,6 +186,17 @@ describe("job stream frames", () => {
     { type: "jobs.snapshot", jobs: [job], presence },
     { type: "job.updated", job: { ...job, status: "running", cancelRequestedAt: now } },
     { type: "presence", presence: { ...presence, online: false, lastSeenAt: null, workers: [] } },
+    {
+      type: "presence",
+      presence: {
+        ...presence,
+        usage: {
+          windows: [{ kind: "five_hour", usedPercent: 12, resetsAt: now, limited: false }],
+          source: "claude-cli",
+          observedAt: now,
+        },
+      },
+    },
     { type: "pong", ts: 3 },
   ];
   for (const frame of frames) {
@@ -185,6 +207,23 @@ describe("job stream frames", () => {
       });
     });
   }
+
+  it("rejects malformed usage reports", () => {
+    const bad = [
+      { windows: [{ kind: "daily", limited: false }], source: "x", observedAt: now },
+      {
+        windows: [{ kind: "weekly", usedPercent: 120, limited: false }],
+        source: "x",
+        observedAt: now,
+      },
+      { windows: [{ kind: "weekly" }], source: "x", observedAt: now },
+      { windows: [], source: "x", observedAt: "yesterday" },
+      { windows: [], observedAt: now },
+    ];
+    for (const body of bad) {
+      expect(decodeMessage(JSON.stringify({ type: "worker.usage", ...body })).ok).toBe(false);
+    }
+  });
 
   it("rejects worker frames and junk on the client stream", () => {
     expect(decodeJobStreamMessage(JSON.stringify({ type: "job.dispatch", job })).ok).toBe(false);

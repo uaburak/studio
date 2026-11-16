@@ -23,8 +23,9 @@ public protocol ConversationService: Sendable {
     func aliases(conversationId: EntityID) async throws -> [ConversationAlias]
     /// Rename a sent attachment's alias. 409 when the name is (or was) used in the conversation.
     func renameAlias(conversationId: EntityID, aliasId: EntityID, to name: String) async throws -> ConversationAlias
-    /// Accept the plan at the revision the user saw, then queue generation for its items.
-    func acceptAndGenerate(_ plan: Plan) async throws -> Plan
+    /// Accept the plan at the revision the user saw, then queue generation for its items
+    /// with the given model / effort (nil = worker default).
+    func acceptAndGenerate(_ plan: Plan, model: AgentModel?, effort: AgentEffort?) async throws -> Plan
     func rejectPlan(_ planId: EntityID, reason: String?) async throws -> Plan
     /// Upload an image the user attaches to a message.
     func uploadImage(_ file: UploadFile, brandId: EntityID, progress: @escaping @Sendable (Double) -> Void) async throws -> Asset
@@ -56,6 +57,18 @@ public protocol StudioDataService: Sendable {
     func cancelJob(_ id: EntityID) async throws -> Job
 }
 
+extension ConversationService {
+    /// Accept and generate with the worker's default model and effort.
+    public func acceptAndGenerate(_ plan: Plan) async throws -> Plan {
+        try await acceptAndGenerate(plan, model: nil, effort: nil)
+    }
+}
+
+extension OpenEnum {
+    /// nil for `unknown`, so a value the server would refuse is never sent.
+    var sendable: Self? { self == Self.unknown ? nil : self }
+}
+
 // MARK: - Wire format of user messages
 
 /// The one place that knows how a user message goes on the wire
@@ -72,6 +85,8 @@ public enum MessageWire {
         var text: String?
         var attachments: [Attachment]?
         var clientMessageId: String
+        var model: AgentModel?
+        var effort: AgentEffort?
     }
 
     static func body(for message: OutgoingMessage) -> Body {
@@ -79,7 +94,9 @@ public enum MessageWire {
         return Body(
             text: text.isEmpty ? nil : text,
             attachments: message.attachments.isEmpty ? nil : message.attachments.map { Attachment(assetId: $0.assetId, alias: $0.alias) },
-            clientMessageId: message.clientMessageId)
+            clientMessageId: message.clientMessageId,
+            model: message.model?.sendable,
+            effort: message.effort?.sendable)
     }
 
     /// The JSON body, for tests.
@@ -140,9 +157,9 @@ public struct RemoteConversationService: ConversationService {
         try await client.renameAlias(conversationId: conversationId, aliasId: aliasId, to: name)
     }
 
-    public func acceptAndGenerate(_ plan: Plan) async throws -> Plan {
+    public func acceptAndGenerate(_ plan: Plan, model: AgentModel?, effort: AgentEffort?) async throws -> Plan {
         let accepted = try await client.acceptPlan(plan.id, PlanAccept(revision: plan.revision))
-        return try await client.generatePlan(accepted.id).plan
+        return try await client.generatePlan(accepted.id, PlanGenerate(model: model, effort: effort)).plan
     }
 
     public func rejectPlan(_ planId: EntityID, reason: String?) async throws -> Plan {

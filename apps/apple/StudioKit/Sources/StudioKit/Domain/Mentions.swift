@@ -317,10 +317,18 @@ public struct OutgoingMessage: Sendable, Equatable {
     public var attachments: [OutgoingAttachment]
     /// Idempotency key; keep it when retrying the same send.
     public var clientMessageId: String
+    /// Model / effort for the turn; nil = worker default.
+    public var model: AgentModel?
+    public var effort: AgentEffort?
 
-    public init(text: String, attachments: [OutgoingAttachment] = [], clientMessageId: String = UUID().uuidString) {
+    public init(
+        text: String, attachments: [OutgoingAttachment] = [], clientMessageId: String = UUID().uuidString,
+        model: AgentModel? = nil, effort: AgentEffort? = nil
+    ) {
         self.text = text
         self.attachments = attachments
         self.clientMessageId = clientMessageId
+        self.model = model
+        self.effort = effort
     }
 }

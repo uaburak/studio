@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  type AgentRun,
+  AgentRun,
   applyConversationStreamMessage,
   ChatTurnPayload,
   ContentGeneratePayload,
@@ -20,6 +20,7 @@ import {
   type Message,
   MessagePart,
   monthPeriod,
+  PlanGenerate,
   PlanItemInput,
   PlanProposalPut,
   parseContentGenerateJob,
@@ -248,6 +249,42 @@ describe("plans", () => {
       brandProfileVersion: 3,
     });
     expect(full.planItem?.itemId).toBe("i1");
+    const chosen = ContentGeneratePayload.parse({ ...legacy, model: "haiku", effort: "low" });
+    expect(chosen).toMatchObject({ model: "haiku", effort: "low" });
+    expect(ContentGeneratePayload.safeParse({ ...legacy, model: "gpt" }).success).toBe(false);
+  });
+
+  it("carries the model and effort choice on messages, runs and plan generation", () => {
+    const msg = UserMessageCreate.parse({ text: "selam", model: "opus", effort: "xhigh" });
+    expect(msg).toMatchObject({ model: "opus", effort: "xhigh" });
+    expect(UserMessageCreate.parse({ text: "selam" })).not.toHaveProperty("model");
+    expect(UserMessageCreate.safeParse({ text: "selam", effort: "max" }).success).toBe(false);
+    expect(PlanGenerate.parse({ model: "sonnet", effort: "medium" })).toEqual({
+      model: "sonnet",
+      effort: "medium",
+    });
+    expect(PlanGenerate.safeParse({ model: "Opus" }).success).toBe(false);
+    const run = {
+      id: "r1",
+      conversationId: "c1",
+      triggerMessageId: "m1",
+      jobId: null,
+      status: "queued",
+      attempt: 0,
+      model: "opus",
+      effort: "high",
+      usage: null,
+      error: null,
+      createdAt: "2026-11-16T10:00:00.000Z",
+      updatedAt: "2026-11-16T10:00:00.000Z",
+      startedAt: null,
+      finishedAt: null,
+    };
+    expect(AgentRun.parse(run)).toEqual(run);
+    const { effort: _e, ...older } = run;
+    expect(AgentRun.parse({ ...older, model: null })).not.toHaveProperty("effort");
+    expect(AgentRun.parse({ ...run, effort: null }).effort).toBeNull();
+    expect(AgentRun.safeParse({ ...run, effort: "max" }).success).toBe(false);
   });
 });
 
