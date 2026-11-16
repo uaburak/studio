@@ -51,10 +51,15 @@ class ThemedView: NSView {
 final class GlassContainerView: NSView {
     let glassView = NSGlassEffectView()
     let contentContainer = NSView()
+    /// Border drawn over the glass when "Increase contrast" is on (never hit-tested).
+    private let contrastBorder = PassthroughBorderView()
 
     var cornerRadius: CGFloat {
         get { glassView.cornerRadius }
-        set { glassView.cornerRadius = newValue }
+        set {
+            glassView.cornerRadius = newValue
+            contrastBorder.cornerRadius = newValue
+        }
     }
 
     var tint: NSColor? = Theme.floatingGlassTint {
@@ -76,37 +81,65 @@ final class GlassContainerView: NSView {
         glassView.contentView = contentContainer
 
         addSubview(glassView)
+        contrastBorder.translatesAutoresizingMaskIntoConstraints = false
+        contrastBorder.cornerRadius = cornerRadius
+        contrastBorder.borderColor = Theme.border
+        contrastBorder.borderWidth = 1
+        addSubview(contrastBorder)
         NSLayoutConstraint.activate([
             glassView.leadingAnchor.constraint(equalTo: leadingAnchor),
             glassView.trailingAnchor.constraint(equalTo: trailingAnchor),
             glassView.topAnchor.constraint(equalTo: topAnchor),
             glassView.bottomAnchor.constraint(equalTo: bottomAnchor),
+            contrastBorder.leadingAnchor.constraint(equalTo: leadingAnchor),
+            contrastBorder.trailingAnchor.constraint(equalTo: trailingAnchor),
+            contrastBorder.topAnchor.constraint(equalTo: topAnchor),
+            contrastBorder.bottomAnchor.constraint(equalTo: bottomAnchor),
             contentContainer.leadingAnchor.constraint(equalTo: glassView.leadingAnchor),
             contentContainer.trailingAnchor.constraint(equalTo: glassView.trailingAnchor),
             contentContainer.topAnchor.constraint(equalTo: glassView.topAnchor),
             contentContainer.bottomAnchor.constraint(equalTo: glassView.bottomAnchor),
         ])
         applyTint()
+        // Selector-based: removed automatically when the view goes away.
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self, selector: #selector(displayOptionsChanged),
+            name: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification, object: nil
+        )
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
+
+    @objc private func displayOptionsChanged() { applyTint() }
 
     override func viewDidChangeEffectiveAppearance() {
         super.viewDidChangeEffectiveAppearance()
         applyTint()
     }
 
+    /// The tint, made opaque when the system asks to reduce transparency.
+    static func effectiveTint(_ tint: NSColor?, reduceTransparency: Bool, fallback: NSColor = Theme.canvas) -> NSColor? {
+        guard reduceTransparency else { return tint }
+        return (tint ?? fallback).withAlphaComponent(1)
+    }
+
     private func applyTint() {
-        guard let tint else {
+        contrastBorder.isHidden = !Theme.increaseContrast
+        guard let effective = Self.effectiveTint(tint, reduceTransparency: Theme.reduceTransparency) else {
             glassView.tintColor = nil
             return
         }
-        var resolved = tint
+        var resolved = effective
         effectiveAppearance.performAsCurrentDrawingAppearance {
-            resolved = tint.usingColorSpace(.sRGB) ?? tint
+            resolved = effective.usingColorSpace(.sRGB) ?? effective
         }
         glassView.tintColor = resolved
     }
+}
+
+/// A border-only overlay that never takes mouse events.
+private final class PassthroughBorderView: ThemedView {
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }
 
 /// Wraps `NSGlassEffectContainerView` so nearby `NSGlassEffectView` descendants merge smoothly.
@@ -155,6 +188,7 @@ final class PillButton: NSControl {
     var title: String {
         didSet {
             label.stringValue = title
+            setAccessibilityLabel(title)
             invalidateIntrinsicContentSize()
         }
     }
@@ -264,14 +298,29 @@ final class PillButton: NSControl {
             if next.type == .leftMouseUp {
                 self.pressed = false
                 stop.pointee = true
-                if inside {
-                    if let action = self.action {
-                        NSApp.sendAction(action, to: self.target, from: self)
-                    }
-                    self.onAction?()
-                }
+                if inside { self.fire() }
             }
         }
+    }
+
+    private func fire() {
+        if let action { NSApp.sendAction(action, to: target, from: self) }
+        onAction?()
+    }
+
+    // Keyboard navigation (Full Keyboard Access) and VoiceOver press.
+    override var acceptsFirstResponder: Bool { KeyboardFocus.accepts(isEnabled: isEnabled) }
+    override var focusRingMaskBounds: NSRect { bounds }
+    override func drawFocusRingMask() {
+        NSBezierPath(roundedRect: bounds, xRadius: bounds.height / 2, yRadius: bounds.height / 2).fill()
+    }
+    override func keyDown(with event: NSEvent) {
+        if isEnabled, KeyboardFocus.isActivation(event) { fire() } else { super.keyDown(with: event) }
+    }
+    override func accessibilityPerformPress() -> Bool {
+        guard isEnabled else { return false }
+        fire()
+        return true
     }
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
@@ -326,7 +375,22 @@ final class PillButton: NSControl {
 /// 26x26 circular hoverable icon button with an SF Symbol `NSImage`.
 final class GlyphButton: NSControl {
     var symbolName: String {
-        didSet { updateImage() }
+        didSet {
+            updateImage()
+            if labelIsAutomatic && (toolTip ?? "").isEmpty { setAutomaticLabel(Self.defaultLabel(for: symbolName)) }
+        }
+    }
+    /// VoiceOver label: set explicitly, else from the tooltip, else from the symbol.
+    private var labelIsAutomatic = true
+    override var toolTip: String? {
+        didSet {
+            guard labelIsAutomatic else { return }
+            if let tip = toolTip, !tip.isEmpty {
+                setAutomaticLabel(Self.spokenLabel(fromToolTip: tip))
+            } else {
+                setAutomaticLabel(Self.defaultLabel(for: symbolName))
+            }
+        }
     }
     var pointSize: CGFloat {
         didSet { updateImage() }
@@ -389,11 +453,76 @@ final class GlyphButton: NSControl {
         ])
 
         setAccessibilityRole(.button)
+        setAutomaticLabel(Self.defaultLabel(for: symbol))
         updateImage()
         refreshStyle()
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
+
+    override func setAccessibilityLabel(_ accessibilityLabel: String?) {
+        labelIsAutomatic = false
+        super.setAccessibilityLabel(accessibilityLabel)
+    }
+
+    private func setAutomaticLabel(_ label: String?) {
+        super.setAccessibilityLabel(label)
+    }
+
+    /// "Ayarlar (⌘,)" -> "Ayarlar": the shortcut in parentheses is not spoken.
+    static func spokenLabel(fromToolTip tip: String) -> String {
+        var text = tip
+        if let open = text.lastIndex(of: "("), text.hasSuffix(")") {
+            let inner = text[text.index(after: open)..<text.index(before: text.endIndex)]
+            if inner.contains(where: { "⌘⇧⌥⌃↩⎋⌫".contains($0) }) {
+                text = String(text[..<open])
+            }
+        }
+        return text.trimmingCharacters(in: .whitespaces)
+    }
+
+    /// A Turkish fallback name for the SF Symbols used by icon-only buttons.
+    static func defaultLabel(for symbol: String) -> String? {
+        switch symbol {
+        case "xmark", "xmark.circle", "xmark.circle.fill": "Kapat"
+        case "plus", "plus.circle": "Ekle"
+        case "minus", "minus.circle": "Kaldır"
+        case "chevron.left": "Önceki"
+        case "chevron.right": "Sonraki"
+        case "gearshape": "Ayarlar"
+        case "ellipsis", "ellipsis.circle": "Diğer seçenekler"
+        case "mic", "mic.fill": "Dikte"
+        case "return", "arrow.up", "arrow.up.circle.fill": "Gönder"
+        case "stop.fill", "stop.circle.fill": "Durdur"
+        case "arrow.clockwise": "Yeniden dene"
+        case "square.and.arrow.up": "Dışa aktar"
+        case "eye": "Gizle"
+        case "eye.slash": "Göster"
+        case "play.fill": "Oynat"
+        case "pause.fill": "Duraklat"
+        case "magnifyingglass": "Ara"
+        case "trash": "Sil"
+        default: nil
+        }
+    }
+
+    private func fire() {
+        if let action { NSApp.sendAction(action, to: target, from: self) }
+        onAction?()
+    }
+
+    // Keyboard navigation (Full Keyboard Access) and VoiceOver press.
+    override var acceptsFirstResponder: Bool { KeyboardFocus.accepts(isEnabled: isEnabled) }
+    override var focusRingMaskBounds: NSRect { bounds }
+    override func drawFocusRingMask() { NSBezierPath(ovalIn: bounds).fill() }
+    override func keyDown(with event: NSEvent) {
+        if isEnabled, KeyboardFocus.isActivation(event) { fire() } else { super.keyDown(with: event) }
+    }
+    override func accessibilityPerformPress() -> Bool {
+        guard isEnabled else { return false }
+        fire()
+        return true
+    }
 
     private func updateImage() {
         let config = NSImage.SymbolConfiguration(pointSize: pointSize, weight: symbolWeight)
@@ -421,12 +550,7 @@ final class GlyphButton: NSControl {
             if next.type == .leftMouseUp {
                 self.pressed = false
                 stop.pointee = true
-                if inside {
-                    if let action = self.action {
-                        NSApp.sendAction(action, to: self.target, from: self)
-                    }
-                    self.onAction?()
-                }
+                if inside { self.fire() }
             }
         }
     }
@@ -554,12 +678,71 @@ final class CardContainerView: ThemedView {
     required init?(coder: NSCoder) { fatalError("not used") }
 }
 
+// MARK: - Keyboard focus for custom controls
+
+enum KeyboardFocus {
+    /// Custom buttons join the key-view loop like `NSButton`: only with Full Keyboard Access,
+    /// and never by a mouse click (a click must not steal the composer's focus).
+    @MainActor static func accepts(isEnabled: Bool) -> Bool {
+        guard isEnabled, NSApp?.isFullKeyboardAccessEnabled == true else { return false }
+        let type = NSApp?.currentEvent?.type
+        return type != .leftMouseDown && type != .rightMouseDown
+    }
+
+    /// Space or Return presses a focused control.
+    static func isActivation(_ event: NSEvent) -> Bool {
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        guard flags.subtracting([.numericPad, .function]).isEmpty else { return false }
+        return event.keyCode == 49 || event.keyCode == 36 || event.keyCode == 76
+    }
+}
+
+// MARK: - TapControl
+
+/// Base for text-like clickable controls (links, "Tümünü göster", clickable rows):
+/// a VoiceOver button that presses like a click, joins the key-view loop with Full
+/// Keyboard Access and activates with space / return. Subclasses override `performTap()`.
+class TapControl: NSControl {
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        setAccessibilityElement(true)
+        setAccessibilityRole(.button)
+    }
+
+    required init?(coder: NSCoder) { fatalError("not used") }
+
+    func performTap() {}
+
+    override var acceptsFirstResponder: Bool { KeyboardFocus.accepts(isEnabled: isEnabled) }
+    override var focusRingMaskBounds: NSRect { bounds }
+    override func drawFocusRingMask() { NSBezierPath(roundedRect: bounds, xRadius: 6, yRadius: 6).fill() }
+    override func keyDown(with event: NSEvent) {
+        if isEnabled, KeyboardFocus.isActivation(event) { performTap() } else { super.keyDown(with: event) }
+    }
+    override func accessibilityPerformPress() -> Bool {
+        guard isEnabled else { return false }
+        performTap()
+        return true
+    }
+}
+
 // MARK: - InlineErrorBannerView
 
-/// Rounded 14pt neutral banner for inline errors with optional dismiss button.
+/// One action on a banner ("Yeniden dene", "Ayarlar…").
+struct BannerAction {
+    var title: String
+    var primary: Bool = false
+    var handler: () -> Void
+}
+
+/// Rounded neutral banner for inline errors: message, optional actions (retry) and dismiss.
+/// The one error presentation used across the app; VoiceOver announces new messages.
 final class InlineErrorBannerView: ThemedView {
     private let textField = NSTextField(wrappingLabelWithString: "")
     private let dismissButton = GlyphButton(symbol: "xmark", size: 9, weight: .semibold, diameter: 22)
+    private let actionsStack = NSStackView()
+    private let icon = NSImageView()
+    private let spinner = NSProgressIndicator()
     var onDismiss: (() -> Void)? {
         didSet {
             dismissButton.isHidden = onDismiss == nil
@@ -567,9 +750,34 @@ final class InlineErrorBannerView: ThemedView {
         }
     }
 
+    /// Shows a "Yeniden dene" pill (nil hides it). Replaces `actions`.
+    var onRetry: (() -> Void)? {
+        didSet { actions = onRetry.map { [BannerAction(title: "Yeniden dene", handler: $0)] } ?? [] }
+    }
+
+    var actions: [BannerAction] = [] {
+        didSet { rebuildActions() }
+    }
+
+    /// A spinner instead of the warning icon (e.g. "Mac sunucusu başlatılıyor…").
+    var isBusy = false {
+        didSet {
+            icon.isHidden = isBusy
+            spinner.isHidden = !isBusy
+            if isBusy { spinner.startAnimation(nil) } else { spinner.stopAnimation(nil) }
+        }
+    }
+
     var message: String = "" {
         didSet {
             textField.stringValue = message
+            setAccessibilityLabel(message)
+            if message != oldValue, !message.isEmpty {
+                NSAccessibility.post(
+                    element: NSApp as Any, notification: .announcementRequested,
+                    userInfo: [.announcement: message, .priority: NSAccessibilityPriorityLevel.high.rawValue]
+                )
+            }
         }
     }
 
@@ -579,14 +787,23 @@ final class InlineErrorBannerView: ThemedView {
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
         backgroundColor = Theme.fill
-        cornerRadius = 14
+        cornerRadius = Theme.bannerRadius
+        setAccessibilityElement(true)
+        setAccessibilityRole(.group)
+        setAccessibilityLabel(message)
 
-        let icon = NSImageView()
         let config = NSImage.SymbolConfiguration(pointSize: 12, weight: .regular)
         icon.image = NSImage(systemSymbolName: "exclamationmark.circle", accessibilityDescription: nil)?.withSymbolConfiguration(config)
         icon.contentTintColor = Theme.textSecondary
         icon.translatesAutoresizingMaskIntoConstraints = false
         icon.setContentHuggingPriority(.required, for: .horizontal)
+
+        spinner.style = .spinning
+        spinner.controlSize = .small
+        spinner.isDisplayedWhenStopped = false
+        spinner.isHidden = true
+        spinner.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([spinner.widthAnchor.constraint(equalToConstant: 14), spinner.heightAnchor.constraint(equalToConstant: 14)])
 
         textField.stringValue = message
         textField.font = Theme.captionFont
@@ -597,8 +814,15 @@ final class InlineErrorBannerView: ThemedView {
         dismissButton.isHidden = onDismiss == nil
         dismissButton.onAction = onDismiss
         dismissButton.setAccessibilityLabel("Kapat")
+        dismissButton.toolTip = "Kapat"
 
-        let row = NSStackView(views: [icon, textField, dismissButton])
+        actionsStack.orientation = .horizontal
+        actionsStack.alignment = .centerY
+        actionsStack.spacing = Theme.Spacing.xs
+        actionsStack.setContentHuggingPriority(.required, for: .horizontal)
+        actionsStack.isHidden = true
+
+        let row = NSStackView(views: [icon, spinner, textField, actionsStack, dismissButton])
         row.orientation = .horizontal
         row.alignment = .centerY
         row.spacing = 8
@@ -614,6 +838,22 @@ final class InlineErrorBannerView: ThemedView {
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
+
+    /// Titles of the action pills shown now (tests).
+    var actionTitles: [String] { actions.map(\.title) }
+
+    private func rebuildActions() {
+        actionsStack.arrangedSubviews.forEach {
+            actionsStack.removeArrangedSubview($0)
+            $0.removeFromSuperview()
+        }
+        for action in actions {
+            let handler = action.handler
+            let button = PillButton(title: action.title, kind: action.primary ? .primary : .secondary, height: 22) { handler() }
+            actionsStack.addArrangedSubview(button)
+        }
+        actionsStack.isHidden = actions.isEmpty
+    }
 }
 
 // MARK: - MacStatusControlView

@@ -1,247 +1,186 @@
 import AppKit
 import StudioKit
 
-/// Pure AppKit Settings → "Mac sunucusu": supervises local API + LAN gateway + worker (`LocalHost`).
-final class MacServerSectionView: NSView, NSTextFieldDelegate {
+/// Settings → "Mac sunucusu": the local API + LAN gateway + worker (`LocalHost`), remote
+/// access (Cloudflare Tunnel), logs, and — for when the app does not run its own
+/// server — the external server address and its Cloudflare Access key.
+final class MacServerSectionView: SettingsPaneView, NSTextFieldDelegate {
     private unowned let app: AppModel
     private unowned let settings: AppSettings
-    private let host: LocalHost
+    private let host: LocalHost?
+    private let external: ExternalServerRows
 
-    private var hostToggle: NSButton!
-    private let detailsStack = NSStackView()
-    private let disabledNote = NSTextField.styledLabel(
-        "Kapalı: uygulama aşağıdaki Sunucu adresine bağlanır (elle başlatılan API).",
-        font: Theme.smallFont,
-        color: Theme.textSecondary,
-        wraps: true
-    )
-
-    private let statusDot = StatusDotView(size: 8)
-    private let statusLabel = NSTextField(labelWithString: "")
+    private var hostToggle: NSSwitch!
+    private var statusRow: SettingsRowView!
     private var restartButton: PillButton!
-    private let phasesLabel = NSTextField(wrappingLabelWithString: "")
-    private var lanToggle: NSButton!
-    private let lanNoteLabel = NSTextField(wrappingLabelWithString: "")
-    private var remoteToggle: NSButton!
-    private let remoteHostnameField = NSTextField()
-    private let tunnelTokenField = NSSecureTextField()
-    private var saveTunnelBtn: PillButton!
-    private var clearTunnelBtn: PillButton!
-    private let remoteNoteLabel = NSTextField(wrappingLabelWithString: "")
-    private let repoField = NSTextField()
+    private var lanToggle: NSSwitch!
+    private var lanRow: SettingsRowView!
+    private var repoRow: SettingsRowView!
+    private var remoteToggle: NSSwitch!
+    private var remoteRow: SettingsRowView!
+    private var tunnelRow: SettingsRowView!
+    private var errorRow: SettingsRowView!
+    private var logsRow: SettingsRowView!
+    private var forgetTunnelRow: SettingsRowView!
+    private var hostOnlyBlocks: [SettingsBlock] = []
+    private let remoteHostnameField = SettingsControls.field(AppSettings.defaultRemoteHostname, width: nil)
+    private let tunnelTokenField = SettingsControls.field("CLOUDFLARE_TUNNEL_TOKEN", secure: true, width: nil)
+    private let repoField = SettingsControls.field("Depo klasörü", width: nil)
     private let errorScroll = NSScrollView()
     private let errorTextView = NSTextView()
 
     private var busy = false
     private var observation: ObservationToken?
 
-    init(app: AppModel, settings: AppSettings, host: LocalHost) {
+    init(app: AppModel, settings: AppSettings, host: LocalHost?) {
         self.app = app
         self.settings = settings
         self.host = host
-        super.init(frame: .zero)
-        translatesAutoresizingMaskIntoConstraints = false
+        self.external = ExternalServerRows(app: app, settings: settings)
+        super.init(section: .macServer)
 
-        let group = SettingsGroupCardView(title: "Mac sunucusu")
-        addSubview(group)
-        NSLayoutConstraint.activate([
-            group.leadingAnchor.constraint(equalTo: leadingAnchor),
-            group.trailingAnchor.constraint(equalTo: trailingAnchor),
-            group.topAnchor.constraint(equalTo: topAnchor),
-            group.bottomAnchor.constraint(equalTo: bottomAnchor),
-        ])
-
-        hostToggle = NSButton(checkboxWithTitle: "API ve worker'ı bu uygulama çalıştırsın", target: self, action: #selector(toggleHostEnabled))
-        group.stack.addArrangedSubview(hostToggle)
-
-        detailsStack.orientation = .vertical
-        detailsStack.alignment = .leading
-        detailsStack.spacing = 8
-        detailsStack.translatesAutoresizingMaskIntoConstraints = false
-
-        statusLabel.font = Theme.smallFont
-        statusLabel.textColor = Theme.textPrimary
-        statusLabel.lineBreakMode = .byTruncatingTail
-        let statusSpacer = NSView()
-        statusSpacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        restartButton = PillButton(title: "Yeniden başlat", kind: .secondary, height: 24) { [weak self] in
-            guard let self else { return }
-            Task { await self.restartHost() }
+        if let host {
+            buildHostRows(host)
+        } else {
+            addNote(app.isSample
+                ? "Örnek verilerle açıldı (-StudioSampleData YES): sunucu ayarları bu oturumda kullanılmıyor."
+                : "Bu oturumda Studio sunucusu yok; uygulama aşağıdaki adrese bağlanır.")
         }
-        let statusRow = NSStackView(views: [statusDot, statusLabel, statusSpacer, restartButton])
-        statusRow.orientation = .horizontal
-        statusRow.alignment = .centerY
-        statusRow.spacing = 8
-        detailsStack.addArrangedSubview(statusRow)
-        statusRow.widthAnchor.constraint(equalTo: detailsStack.widthAnchor).isActive = true
 
-        phasesLabel.font = Theme.smallFont
-        phasesLabel.textColor = Theme.textSecondary
-        detailsStack.addArrangedSubview(phasesLabel)
-        phasesLabel.widthAnchor.constraint(equalTo: detailsStack.widthAnchor).isActive = true
+        addSubheader("Harici sunucu")
+        add(external.serverRow())
+        add(external.accessRow())
 
-        lanToggle = NSButton(checkboxWithTitle: "Yerel ağdan erişim", target: self, action: #selector(toggleLanEnabled))
-        detailsStack.addArrangedSubview(lanToggle)
-
-        lanNoteLabel.font = Theme.smallFont
-        lanNoteLabel.textColor = Theme.textSecondary
-        detailsStack.addArrangedSubview(lanNoteLabel)
-        lanNoteLabel.widthAnchor.constraint(equalTo: detailsStack.widthAnchor).isActive = true
-
-        let remoteDivider = HairlineView()
-        detailsStack.addArrangedSubview(remoteDivider)
-        remoteDivider.widthAnchor.constraint(equalTo: detailsStack.widthAnchor).isActive = true
-
-        remoteToggle = NSButton(
-            checkboxWithTitle: "Uzaktan erişim tüneli (Cloudflare Tunnel · L3)",
-            target: self,
-            action: #selector(toggleRemoteEnabled)
-        )
-        detailsStack.addArrangedSubview(remoteToggle)
-
-        remoteHostnameField.stringValue = settings.remoteHostname
-        remoteHostnameField.placeholderString = AppSettings.defaultRemoteHostname
-        remoteHostnameField.bezelStyle = .roundedBezel
-        remoteHostnameField.delegate = self
-        detailsStack.addArrangedSubview(remoteHostnameField)
-        remoteHostnameField.widthAnchor.constraint(equalTo: detailsStack.widthAnchor).isActive = true
-
-        tunnelTokenField.placeholderString = "CLOUDFLARE_TUNNEL_TOKEN (Anahtar Zinciri'nde saklanır)"
-        tunnelTokenField.bezelStyle = .roundedBezel
-        tunnelTokenField.delegate = self
-        detailsStack.addArrangedSubview(tunnelTokenField)
-        tunnelTokenField.widthAnchor.constraint(equalTo: detailsStack.widthAnchor).isActive = true
-
-        saveTunnelBtn = PillButton(title: "Tüneli kaydet ve uygula", kind: .secondary, height: 24) { [weak self] in
-            self?.saveTunnelSettings()
+        // Destructive actions last, each in its own row.
+        if host != nil {
+            let forget = PillButton(title: "Sil", kind: .outline, height: 26) { [weak self] in self?.clearTunnelToken() }
+            forgetTunnelRow = addRow(SettingsCatalog.forgetTunnel, accessory: forget)
         }
-        clearTunnelBtn = PillButton(title: "Tünel anahtarını sil", kind: .secondary, height: 24) { [weak self] in
-            self?.clearTunnelToken()
-        }
-        let tunnelBtns = NSStackView(views: [saveTunnelBtn, clearTunnelBtn])
-        tunnelBtns.orientation = .horizontal
-        tunnelBtns.spacing = 8
-        detailsStack.addArrangedSubview(tunnelBtns)
+        add(external.makeForgetRow())
 
-        remoteNoteLabel.font = Theme.smallFont
-        remoteNoteLabel.textColor = Theme.textSecondary
-        detailsStack.addArrangedSubview(remoteNoteLabel)
-        remoteNoteLabel.widthAnchor.constraint(equalTo: detailsStack.widthAnchor).isActive = true
-
-        repoField.stringValue = settings.repoPath
-        repoField.placeholderString = "Depo klasörü"
-        repoField.bezelStyle = .roundedBezel
-        repoField.delegate = self
-        detailsStack.addArrangedSubview(repoField)
-        repoField.widthAnchor.constraint(equalTo: detailsStack.widthAnchor).isActive = true
-
-        let repoNote = NSTextField.styledLabel(
-            "API ve worker bu klasördeki kaynaklardan çalışır (pnpm install yapılmış olmalı). Uygulamanın içine paketlenmesi sonraki adım. Veriler: \(host.stateDirectory.path)",
-            font: Theme.smallFont,
-            color: Theme.textSecondary,
-            wraps: true
-        )
-        detailsStack.addArrangedSubview(repoNote)
-        repoNote.widthAnchor.constraint(equalTo: detailsStack.widthAnchor).isActive = true
-
-        errorScroll.drawsBackground = true
-        errorScroll.backgroundColor = Theme.canvas
-        errorScroll.borderType = .bezelBorder
-        errorScroll.hasVerticalScroller = true
-        errorScroll.translatesAutoresizingMaskIntoConstraints = false
-        errorScroll.heightAnchor.constraint(equalToConstant: 120).isActive = true
-        errorTextView.isEditable = false
-        errorTextView.isSelectable = true
-        errorTextView.drawsBackground = false
-        errorTextView.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
-        errorTextView.textColor = Theme.textPrimary
-        errorTextView.isVerticallyResizable = true
-        errorTextView.autoresizingMask = [.width]
-        errorScroll.documentView = errorTextView
-        detailsStack.addArrangedSubview(errorScroll)
-        errorScroll.widthAnchor.constraint(equalTo: detailsStack.widthAnchor).isActive = true
-
-        let openLogsBtn = PillButton(title: "Kayıt klasörünü aç", kind: .secondary, height: 24) { [weak host] in
-            guard let host else { return }
-            NSWorkspace.shared.open(host.logsDirectory)
-        }
-        detailsStack.addArrangedSubview(openLogsBtn)
-
-        group.addFullWidth(detailsStack)
-        group.addFullWidth(disabledNote)
-
-        observation = observe { [weak self] in
-            self?.render()
+        if host != nil {
+            observation = observe { [weak self] in self?.render() }
         }
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
 
+    private func buildHostRows(_ host: LocalHost) {
+        hostToggle = SettingsControls.toggle(target: self, action: #selector(toggleHostEnabled))
+        hostToggle.setAccessibilityLabel(SettingsCatalog.hostEnabled.title)
+        addRow(SettingsCatalog.hostEnabled, accessory: hostToggle)
+
+        restartButton = PillButton(title: "Yeniden başlat", kind: .secondary, height: 26) { [weak self] in
+            guard let self else { return }
+            Task { await self.restartHost() }
+        }
+        statusRow = addRow(SettingsCatalog.hostStatus, accessory: restartButton)
+
+        lanToggle = SettingsControls.toggle(target: self, action: #selector(toggleLanEnabled))
+        lanToggle.setAccessibilityLabel(SettingsCatalog.lan.title)
+        lanRow = addRow(SettingsCatalog.lan, accessory: lanToggle)
+
+        repoField.stringValue = settings.repoPath
+        repoField.delegate = self
+        let saveRepo = PillButton(title: "Kaydet", kind: .secondary, height: 26) { [weak self] in self?.saveRepo() }
+        repoRow = addRow(SettingsCatalog.repo, footer: SettingsControls.formFooter(fields: [repoField], buttons: [saveRepo]))
+
+        let remoteHeader = addSubheader("Uzaktan erişim")
+        remoteToggle = SettingsControls.toggle(target: self, action: #selector(toggleRemoteEnabled))
+        remoteToggle.setAccessibilityLabel(SettingsCatalog.remote.title)
+        remoteRow = addRow(SettingsCatalog.remote, accessory: remoteToggle)
+
+        remoteHostnameField.stringValue = settings.remoteHostname
+        remoteHostnameField.delegate = self
+        tunnelTokenField.delegate = self
+        let saveTunnel = PillButton(title: "Kaydet ve uygula", kind: .secondary, height: 26) { [weak self] in self?.saveTunnelSettings() }
+        tunnelRow = addRow(SettingsCatalog.tunnel, footer: SettingsControls.formFooter(fields: [remoteHostnameField, tunnelTokenField], buttons: [saveTunnel]))
+
+        let logsHeader = addSubheader("Kayıtlar")
+        errorScroll.drawsBackground = true
+        errorScroll.backgroundColor = Theme.fill
+        errorScroll.borderType = .noBorder
+        errorScroll.hasVerticalScroller = true
+        errorScroll.applyMinimalScroller()
+        errorScroll.wantsLayer = true
+        errorScroll.layer?.cornerRadius = 8
+        errorScroll.translatesAutoresizingMaskIntoConstraints = false
+        errorScroll.heightAnchor.constraint(equalToConstant: 120).isActive = true
+        errorTextView.isEditable = false
+        errorTextView.isSelectable = true
+        errorTextView.drawsBackground = false
+        errorTextView.textContainerInset = NSSize(width: 6, height: 6)
+        errorTextView.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
+        errorTextView.textColor = Theme.textPrimary
+        errorTextView.isVerticallyResizable = true
+        errorTextView.autoresizingMask = [.width]
+        errorScroll.documentView = errorTextView
+        errorRow = addRow(SettingsCatalog.errorLog, footer: errorScroll)
+
+        let openLogs = PillButton(title: "Aç", kind: .secondary, height: 26) { [weak host] in
+            guard let host else { return }
+            NSWorkspace.shared.open(host.logsDirectory)
+        }
+        logsRow = addRow(SettingsCatalog.logsFolder, detail: "\(SettingsCatalog.logsFolder.detail) \(host.logsDirectory.path)", accessory: openLogs)
+
+        // Everything but the main switch hides while the app does not run its own server.
+        hostOnlyBlocks = [statusRow, lanRow, repoRow, remoteHeader, remoteRow, tunnelRow, logsHeader, logsRow]
+    }
+
     private func render() {
+        guard let host else { return }
         let enabled = settings.hostEnabled
         hostToggle.state = enabled ? .on : .off
-        detailsStack.isHidden = !enabled
-        disabledNote.isHidden = enabled
+        hostOnlyBlocks.forEach { $0.isAvailable = enabled }
+
+        let hasSavedTunnelToken = (try? settings.tunnelTokens.load()) != nil
+        forgetTunnelRow?.isAvailable = enabled && hasSavedTunnelToken
+
+        let log = host.errorLog
+        errorRow.isAvailable = enabled && !log.isEmpty
+        if errorTextView.string != log { errorTextView.string = log }
         guard enabled else { return }
 
+        var status: String
         switch host.status {
-        case .running:
-            statusDot.color = .systemGreen
-            statusLabel.stringValue = "Çalışıyor · \(host.apiURL?.absoluteString ?? "")"
-        case .attached:
-            statusDot.color = .systemGreen
-            statusLabel.stringValue = "Bu Mac'te zaten çalışan Studio sunucusuna bağlandı · \(host.apiURL?.absoluteString ?? "")"
-        case .starting(let step):
-            statusDot.color = .systemOrange
-            statusLabel.stringValue = "Başlatılıyor: \(step)…"
-        case .error(let msg):
-            statusDot.color = .systemRed
-            statusLabel.stringValue = "Hata: \(msg)"
-        case .stopped:
-            statusDot.color = Theme.textTertiary
-            statusLabel.stringValue = "Durdu"
+        case .running: status = "Çalışıyor · \(host.apiURL?.absoluteString ?? "")"
+        case .attached: status = "Bu Mac'te zaten çalışan Studio sunucusuna bağlandı · \(host.apiURL?.absoluteString ?? "")"
+        case .starting(let step): status = "Başlatılıyor: \(step)…"
+        case .error(let msg): status = "Hata: \(msg)"
+        case .stopped: status = "Durdu."
         }
-
-        restartButton.showsSpinner = busy
-        restartButton.isEnabled = !busy
-
+        if case .error = host.status { statusRow.detailColor = Theme.accent } else { statusRow.detailColor = Theme.textSecondary }
         let phaseSummary = LocalHost.Service.allCases.compactMap { service in
             host.phases[service].map { "\(service.label): \(Self.describe($0))" }
         }.joined(separator: " · ")
-        phasesLabel.stringValue = phaseSummary
-        phasesLabel.isHidden = phaseSummary.isEmpty
+        if !phaseSummary.isEmpty { status += "\n\(phaseSummary)" }
+        statusRow.detail = status
+        restartButton.showsSpinner = busy
+        restartButton.isEnabled = !busy
 
         lanToggle.state = settings.lanEnabled ? .on : .off
         if settings.lanEnabled {
             let urls = host.lanURLs
-            lanNoteLabel.stringValue = urls.isEmpty
+            lanRow.detail = urls.isEmpty
                 ? "Telefonlar aynı ağda Bonjour ile bulur (_studio._tcp); eşleştirme gerekir."
                 : "Telefonlar: \(urls.joined(separator: ", ")) · Bonjour ile bulunur; eşleştirme gerekir."
         } else {
-            lanNoteLabel.stringValue = "Kapalı: API yalnızca bu Mac'ten (127.0.0.1) erişilebilir."
+            lanRow.detail = "Kapalı: API yalnızca bu Mac'ten (127.0.0.1) erişilebilir."
         }
 
         remoteToggle.state = settings.remoteControlEnabled ? .on : .off
-        let hasSavedTunnelToken = (try? settings.tunnelTokens.load()) != nil
-        clearTunnelBtn.isHidden = !hasSavedTunnelToken
         let cleanHost = LocalHost.normalizedHostname(settings.remoteHostname)
         if settings.remoteControlEnabled {
             let phaseText = host.phases[.tunnel].map { "Durum: \(Self.describe($0)). " } ?? ""
             if let note = host.tunnelNote, !note.isEmpty {
-                remoteNoteLabel.stringValue = phaseText + note
+                remoteRow.detail = phaseText + note
             } else if hasSavedTunnelToken {
-                remoteNoteLabel.stringValue = phaseText + "Anahtar kayıtlı · https://\(cleanHost) üzerinden eşleşmiş telefonlar ev dışından bağlanabilir."
+                remoteRow.detail = phaseText + "Anahtar kayıtlı · eşleşmiş telefonlar ev dışından https://\(cleanHost) ile bağlanır."
             } else {
-                remoteNoteLabel.stringValue = "Kurulum: `brew install cloudflared` kurun ve Cloudflare Zero Trust → Tunnels ekranından aldığınız CLOUDFLARE_TUNNEL_TOKEN değerini yukarıya kaydedin."
+                remoteRow.detail = "Kurulum: `brew install cloudflared`, sonra Cloudflare Zero Trust → Tunnels'tan aldığın CLOUDFLARE_TUNNEL_TOKEN'ı aşağıya kaydet."
             }
         } else {
-            remoteNoteLabel.stringValue = "Kapalı: ev dışından iPhone bağlantısı için https://\(cleanHost) Cloudflare Tunnel yönlendirmesi açılır."
-        }
-
-        let log = host.errorLog
-        errorScroll.isHidden = log.isEmpty
-        if errorTextView.string != log {
-            errorTextView.string = log
+            remoteRow.detail = "Kapalı. Açınca ev dışındaki iPhone https://\(cleanHost) üzerinden Cloudflare Tunnel ile bağlanır."
         }
     }
 
@@ -296,11 +235,12 @@ final class MacServerSectionView: NSView, NSTextFieldDelegate {
     }
 
     func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
-        if control === repoField && commandSelector == #selector(NSResponder.insertNewline(_:)) {
+        guard commandSelector == #selector(NSResponder.insertNewline(_:)) else { return false }
+        if control === repoField {
             saveRepo()
             return true
         }
-        if (control === remoteHostnameField || control === tunnelTokenField) && commandSelector == #selector(NSResponder.insertNewline(_:)) {
+        if control === remoteHostnameField || control === tunnelTokenField {
             saveTunnelSettings()
             return true
         }
@@ -315,6 +255,7 @@ final class MacServerSectionView: NSView, NSTextFieldDelegate {
     }
 
     private func restartHost() async {
+        guard let host else { return }
         busy = true
         render()
         defer { busy = false; render() }
@@ -325,6 +266,7 @@ final class MacServerSectionView: NSView, NSTextFieldDelegate {
     }
 
     private func applyHost(enabled: Bool) async {
+        guard let host else { return }
         busy = true
         render()
         defer { busy = false; render() }
@@ -342,10 +284,13 @@ final class MacServerSectionView: NSView, NSTextFieldDelegate {
 
 // MARK: - Settings → "Cihazlar"
 
-final class DevicesSectionView: NSView {
-    private let host: LocalHost
+/// Paired iPhones as rows (remove) and the 6-digit pairing code.
+final class DevicesSectionView: SettingsPaneView {
+    private let host: LocalHost?
 
-    private let contentStack = NSStackView()
+    private let pairList = SettingsGroupBlock()
+    private let deviceList = SettingsGroupBlock()
+    private let messageNote = SettingsNoteView("")
     private var devices: [PairedDevice] = []
     private var code: PairingCode?
     private var message: String?
@@ -353,31 +298,24 @@ final class DevicesSectionView: NSView {
     private var pollTask: Task<Void, Never>?
     private var observation: ObservationToken?
 
-    init(host: LocalHost) {
+    init(host: LocalHost?) {
         self.host = host
-        super.init(frame: .zero)
-        translatesAutoresizingMaskIntoConstraints = false
+        super.init(section: .devices)
+        add(pairList)
+        addSubheader("Eşleşmiş cihazlar")
+        add(deviceList)
+        add(messageNote)
+        messageNote.isAvailable = false
 
-        let group = SettingsGroupCardView(title: "Cihazlar")
-        addSubview(group)
-        NSLayoutConstraint.activate([
-            group.leadingAnchor.constraint(equalTo: leadingAnchor),
-            group.trailingAnchor.constraint(equalTo: trailingAnchor),
-            group.topAnchor.constraint(equalTo: topAnchor),
-            group.bottomAnchor.constraint(equalTo: bottomAnchor),
-        ])
-
-        contentStack.orientation = .vertical
-        contentStack.alignment = .leading
-        contentStack.spacing = 8
-        contentStack.translatesAutoresizingMaskIntoConstraints = false
-        group.addFullWidth(contentStack)
-
-        observation = observe { [weak self] in
-            _ = self?.host.status
-            _ = self?.host.apiPort
-            self?.restartPolling()
-            self?.render()
+        if let host {
+            observation = observe { [weak self] in
+                _ = host.status
+                _ = host.apiPort
+                self?.restartPolling()
+                self?.render()
+            }
+        } else {
+            render()
         }
     }
 
@@ -387,8 +325,13 @@ final class DevicesSectionView: NSView {
         pollTask?.cancel()
     }
 
+    override func willClose() {
+        pollTask?.cancel()
+        pollTask = nil
+    }
+
     private var client: APIClient? {
-        guard host.isUp, let url = host.apiURL else { return nil }
+        guard let host, host.isUp, let url = host.apiURL else { return nil }
         return APIClient(baseURL: url)
     }
 
@@ -407,45 +350,19 @@ final class DevicesSectionView: NSView {
     }
 
     private func render() {
-        contentStack.arrangedSubviews.forEach {
-            contentStack.removeArrangedSubview($0)
-            $0.removeFromSuperview()
-        }
-
         guard let api = client else {
-            let note = NSTextField.styledLabel("Cihaz eşleştirmek için Mac sunucusu çalışıyor olmalı.", font: Theme.smallFont, color: Theme.textSecondary, wraps: true)
-            contentStack.addArrangedSubview(note)
-            note.widthAnchor.constraint(equalTo: contentStack.widthAnchor).isActive = true
+            let text = host == nil
+                ? "Cihaz eşleştirme yalnızca Studio sunucusu bu Mac'te çalışırken kullanılabilir."
+                : "Cihaz eşleştirmek için Mac sunucusu çalışıyor olmalı."
+            pairList.setBlocks([SettingsNoteView(text)])
+            deviceList.setBlocks([])
+            deviceList.isAvailable = false
+            messageNote.isAvailable = false
+            hideDevicesHeader(true)
             return
         }
-
-        let active = devices.filter { !$0.isRevoked }
-        if active.isEmpty {
-            contentStack.addArrangedSubview(NSTextField.styledLabel("Eşleşmiş cihaz yok.", font: Theme.smallFont, color: Theme.textSecondary))
-        } else {
-            for device in active {
-                let nameLabel = NSTextField.styledLabel(device.name, font: Theme.rowFont, color: Theme.textPrimary)
-                let seen = device.lastSeenAt.map { "son görülme \($0.formatted(.relative(presentation: .named)))" } ?? "henüz bağlanmadı"
-                let detailText = "eşleşme \(device.createdAt.formatted(date: .abbreviated, time: .shortened)) · \(seen)"
-                let subLabel = NSTextField.styledLabel(detailText, font: Theme.smallFont, color: Theme.textSecondary)
-                let infoStack = NSStackView(views: [nameLabel, subLabel])
-                infoStack.orientation = .vertical
-                infoStack.alignment = .leading
-                infoStack.spacing = 2
-
-                let spacer = NSView()
-                spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
-                let revokeBtn = PillButton(title: "Kaldır", kind: .secondary, height: 22) { [weak self] in
-                    guard let self else { return }
-                    Task { await self.revoke(device, api: api) }
-                }
-                let row = NSStackView(views: [infoStack, spacer, revokeBtn])
-                row.orientation = .horizontal
-                row.alignment = .centerY
-                contentStack.addArrangedSubview(row)
-                row.widthAnchor.constraint(equalTo: contentStack.widthAnchor).isActive = true
-            }
-        }
+        hideDevicesHeader(false)
+        deviceList.isAvailable = true
 
         if let code, code.expiresAt > now {
             let formatted = code.code.count == 6 ? "\(code.code.prefix(3)) \(code.code.suffix(3))" : code.code
@@ -453,32 +370,53 @@ final class DevicesSectionView: NSView {
             codeLabel.font = NSFont.monospacedSystemFont(ofSize: 28, weight: .semibold)
             codeLabel.textColor = Theme.textPrimary
             codeLabel.isSelectable = true
-            contentStack.addArrangedSubview(codeLabel)
-
             let secs = max(0, Int(code.expiresAt.timeIntervalSince(now).rounded()))
-            contentStack.addArrangedSubview(NSTextField.styledLabel(
-                "Telefonda bu kodu gir · tek kullanımlık · \(secs) sn geçerli",
-                font: Theme.smallFont,
-                color: Theme.textSecondary
-            ))
-            let closeCodeBtn = PillButton(title: "Kodu kapat", kind: .secondary, height: 24) { [weak self] in
+            let close = PillButton(title: "Kodu kapat", kind: .secondary, height: 26) { [weak self] in
                 self?.code = nil
                 self?.render()
             }
-            contentStack.addArrangedSubview(closeCodeBtn)
+            let row = SettingsRowView(
+                title: "Eşleştirme kodu",
+                detail: "Telefonda bu kodu gir · tek kullanımlık · \(secs) sn geçerli",
+                accessory: close,
+                footer: codeLabel,
+                keywords: SettingsCatalog.pairPhone.searchText
+            )
+            pairList.setBlocks([row])
         } else {
-            let addPhoneBtn = PillButton(title: "Telefon ekle", kind: .secondary, height: 24) { [weak self] in
+            let add = PillButton(title: "Kod oluştur", kind: .secondary, height: 26) { [weak self] in
                 guard let self else { return }
                 Task { await self.createCode(api: api) }
             }
-            contentStack.addArrangedSubview(addPhoneBtn)
+            pairList.setBlocks([SettingsRowView(item: SettingsCatalog.pairPhone, accessory: add)])
+        }
+
+        let active = devices.filter { !$0.isRevoked }
+        if active.isEmpty {
+            deviceList.setBlocks([SettingsNoteView("Eşleşmiş cihaz yok.")])
+        } else {
+            deviceList.setBlocks(active.map { device in
+                let seen = device.lastSeenAt.map { "son görülme \($0.formatted(.relative(presentation: .named)))" } ?? "henüz bağlanmadı"
+                let detail = "Eşleşme \(device.createdAt.formatted(date: .abbreviated, time: .shortened)) · \(seen)"
+                let remove = PillButton(title: "Kaldır", kind: .outline, height: 26) { [weak self] in
+                    guard let self else { return }
+                    Task { await self.revoke(device, api: api) }
+                }
+                return SettingsRowView(title: device.name, detail: detail, accessory: remove, keywords: "cihaz telefon iphone")
+            })
         }
 
         if let message, !message.isEmpty {
-            let msgLabel = NSTextField.styledLabel(message, font: Theme.smallFont, color: Theme.textSecondary, wraps: true)
-            contentStack.addArrangedSubview(msgLabel)
-            msgLabel.widthAnchor.constraint(equalTo: contentStack.widthAnchor).isActive = true
+            messageNote.text = message
+            messageNote.isAvailable = true
+        } else {
+            messageNote.isAvailable = false
         }
+        refresh()
+    }
+
+    private func hideDevicesHeader(_ hidden: Bool) {
+        blocks.compactMap { $0 as? SettingsSubheaderView }.forEach { $0.isAvailable = !hidden }
     }
 
     private func loadDevices(_ api: APIClient) async {

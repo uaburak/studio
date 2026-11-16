@@ -8,7 +8,8 @@ const ConfigSchema = z.object({
   /** Shared secret for the hub (must equal WORKER_TOKEN on the API side). */
   STUDIO_WORKER_TOKEN: z.string().min(1).optional(),
   STUDIO_WORKER_ID: z.string().min(1).max(128).optional(),
-  STUDIO_CONCURRENCY: z.coerce.number().int().min(1).max(16).default(1),
+  // Default 3: a chat turn holds one slot while the post/reel jobs it starts run in the others.
+  STUDIO_CONCURRENCY: z.coerce.number().int().min(1).max(16).default(3),
   STUDIO_HEARTBEAT_INTERVAL_S: z.coerce.number().positive().default(15),
   STUDIO_SHUTDOWN_TIMEOUT_S: z.coerce.number().positive().default(10),
   STUDIO_STATE_DIR: z.string().min(1).optional(),

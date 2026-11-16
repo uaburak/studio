@@ -242,6 +242,12 @@ public struct Schedule: Codable, Sendable, Hashable, Identifiable {
     public var scheduledAt: Date
     public var status: ScheduleStatus
     public var permalink: String?
+    /// Who publishes it (P3): `cloud` once the order reached the cloud publisher, `local` = this Mac.
+    public var delivery: ScheduleDelivery?
+    /// When the order and its media reached the cloud publisher; nil = not (or no longer) there.
+    public var cloudSyncedAt: Date?
+    /// Last publishing error (Turkish), e.g. why the cloud refused the order or Meta's reason.
+    public var lastError: String?
     public var cancelledAt: Date?
     public var createdAt: Date
     public var updatedAt: Date
@@ -249,8 +255,12 @@ public struct Schedule: Codable, Sendable, Hashable, Identifiable {
     public init(
         id: EntityID, contentId: EntityID, brandId: EntityID, platform: Platform, socialAccountId: EntityID,
         versionId: EntityID, contentHash: String, scheduledAt: Date, status: ScheduleStatus,
-        permalink: String? = nil, cancelledAt: Date? = nil, createdAt: Date, updatedAt: Date
+        permalink: String? = nil, delivery: ScheduleDelivery? = nil, cloudSyncedAt: Date? = nil, lastError: String? = nil,
+        cancelledAt: Date? = nil, createdAt: Date, updatedAt: Date
     ) {
+        self.delivery = delivery
+        self.cloudSyncedAt = cloudSyncedAt
+        self.lastError = lastError
         self.id = id
         self.contentId = contentId
         self.brandId = brandId
@@ -265,6 +275,12 @@ public struct Schedule: Codable, Sendable, Hashable, Identifiable {
         self.createdAt = createdAt
         self.updatedAt = updatedAt
     }
+}
+
+/// `ScheduleDelivery` in schedule.ts.
+public enum ScheduleDelivery: String, OpenEnum {
+    case local, cloud
+    case unknown
 }
 
 public enum PublishLogStatus: String, OpenEnum {

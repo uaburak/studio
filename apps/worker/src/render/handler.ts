@@ -573,18 +573,38 @@ export async function executeContentRender(
   );
 
   if (content.type === "reel" || payload.format === "mp4") {
-    const reelOut = await renderExistingReelVersion({
-      deps,
-      renderer: deps.renderer(),
-      ...(deps.reelSeams ? { seams: deps.reelSeams } : {}),
-      jobId: options.jobId ?? `render-${Date.now()}`,
-      brandId,
-      content,
-      version: targetVersion,
-      signal,
-      progress,
-    });
-    return reelOut as ContentRenderOutput;
+    // Reels: re-render the video from its spec (edits in `reel`), never the cover slide.
+    if (payload.format === "mp4" || payload.reel !== undefined || payload.force) {
+      const reelOut = await renderExistingReelVersion({
+        deps,
+        renderer: deps.renderer(),
+        ...(deps.reelSeams ? { seams: deps.reelSeams } : {}),
+        jobId: options.jobId ?? `render-${Date.now()}`,
+        brandId,
+        content,
+        version: targetVersion,
+        patch: payload.reel,
+        note: payload.note,
+        signal,
+        progress,
+      });
+      return reelOut as ContentRenderOutput;
+    }
+    if (payload.format === "jpeg") {
+      // The cover is rendered with the video; nothing to measure on a reel.
+      progress(1, "Tamamlandı");
+      return {
+        contentId: content.id,
+        version: targetVersion.version,
+        versionId: targetVersion.id,
+        contentHash: targetVersion.contentHash,
+        renderedAssetIds: targetVersion.slides.map((s) => s.renderedAssetId),
+        unchanged: true,
+      } as unknown as ContentRenderOutput;
+    }
+    throw new Error(
+      "Reels için PNG/PDF dışa aktarımı yok; videoyu (MP4) ya da kapak görselini dışa aktarın.",
+    );
   }
 
   progress(0.12, "Marka varlıkları hazırlanıyor");

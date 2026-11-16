@@ -142,7 +142,8 @@ final class InfoPanelViewController: NSViewController {
         section.setCustomSpacing(8, after: header)
 
         if let brand = app.brand(brandId) {
-            let profileBtn = AccentTextButton(title: "Marka Profili…") { [weak app] _ in
+            // Neutral: orange is for actions that wait on the owner (Bağla).
+            let profileBtn = AccentTextButton(title: "Marka Profili…", color: Theme.textSecondary) { [weak app] _ in
                 app?.brandProfileTarget = BrandProfileTarget(brandId: brand.id)
             }
             let brandRow = InfoRowView(symbol: "circle.fill", symbolColor: Theme.textSecondary, title: brand.name, trailing: profileBtn)
@@ -294,6 +295,7 @@ final class InfoPanelViewController: NSViewController {
                 self.showFinishedJobs.toggle()
                 self.rebuild()
             }
+            toggle.setAccessibilityLabel("\(finished.count) iş bitti, \(showFinishedJobs ? "gizle" : "göster")")
             let toggleRow = InfoRowView(symbol: "diamond", symbolColor: Theme.textSecondary, title: "\(finished.count) iş bitti", trailing: chevron)
             toggle.setChild(toggleRow)
             section.addArrangedSubview(toggle)
@@ -400,14 +402,15 @@ private final class ActiveJobRowView: NSView {
     }
 }
 
-private final class AccentTextButton: NSControl {
+private final class AccentTextButton: TapControl {
     private let onClick: (NSView) -> Void
 
-    init(title: String, onClick: @escaping (NSView) -> Void) {
+    init(title: String, color: NSColor = Theme.accent, onClick: @escaping (NSView) -> Void) {
         self.onClick = onClick
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
-        let lbl = NSTextField.styledLabel(title, font: NSFont.systemFont(ofSize: 11, weight: .semibold), color: Theme.accent)
+        setAccessibilityLabel(title)
+        let lbl = NSTextField.styledLabel(title, font: NSFont.systemFont(ofSize: 11, weight: .semibold), color: color)
         lbl.translatesAutoresizingMaskIntoConstraints = false
         addSubview(lbl)
         NSLayoutConstraint.activate([
@@ -423,15 +426,18 @@ private final class AccentTextButton: NSControl {
     override func mouseDown(with event: NSEvent) {
         onClick(self)
     }
+
+    override func performTap() { onClick(self) }
 }
 
-private final class PlainTextActionView: NSControl {
+private final class PlainTextActionView: TapControl {
     private let onClick: () -> Void
 
     init(title: String, font: NSFont, color: NSColor, onClick: @escaping () -> Void) {
         self.onClick = onClick
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
+        setAccessibilityLabel(title)
         let lbl = NSTextField.styledLabel(title, font: font, color: color)
         lbl.translatesAutoresizingMaskIntoConstraints = false
         addSubview(lbl)
@@ -448,9 +454,11 @@ private final class PlainTextActionView: NSControl {
     override func mouseDown(with event: NSEvent) {
         onClick()
     }
+
+    override func performTap() { onClick() }
 }
 
-private final class ClickableContainerView: NSControl {
+private final class ClickableContainerView: TapControl {
     private let onClick: () -> Void
 
     init(onClick: @escaping () -> Void) {
@@ -458,6 +466,8 @@ private final class ClickableContainerView: NSControl {
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
     }
+
+    override func performTap() { onClick() }
 
     required init?(coder: NSCoder) { fatalError("not used") }
 

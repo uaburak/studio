@@ -99,8 +99,9 @@ final class OnboardingModel {
     }
 
     /// From the Help menu: resume where it stopped (or start over after completion).
-    func reopen() {
+    func reopen(at target: OnboardingStep? = nil) {
         if isCompleted || step == .done { step = .welcome }
+        if let target { step = target }
         claudeError = nil
         brandError = nil
         app?.onboardingPresented = true
@@ -212,7 +213,7 @@ final class OnboardingModel {
                     // The CLI finished without signing in (closed browser, error).
                     if sawSigningIn {
                         self.isSigningIn = false
-                        self.claudeError = self.claude?.detail ?? "Giriş tamamlanmadı. Tekrar dene."
+                        self.claudeError = self.claude?.detail ?? "Giriş tamamlanmadı. Yeniden dene."
                         return
                     }
                 default:
@@ -221,7 +222,7 @@ final class OnboardingModel {
             }
             if !Task.isCancelled, self.isSigningIn {
                 self.isSigningIn = false
-                self.claudeError = "Giriş 10 dakika içinde tamamlanmadı. Tekrar dene."
+                self.claudeError = "Giriş 10 dakika içinde tamamlanmadı. Yeniden dene."
             }
         }
     }

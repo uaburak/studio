@@ -9,6 +9,8 @@ public enum RenderFormat: String, Sendable, Hashable, CaseIterable {
     /// One multi-page PDF (`pdfAssetId`).
     case pdf
     case both
+    /// Reels: re-render the video from its spec (with `reel` edits).
+    case mp4
 }
 
 /// Payload of a `content.render` job (`ContentRenderPayload` in packages/contract/src/job.ts).
@@ -26,10 +28,13 @@ public struct ContentRenderRequest: Sendable, Hashable {
     public var force: Bool
     /// Note stored on the new version (edits only).
     public var note: String?
+    /// Reels: edits to the version's `ReelSpec` (see `ReelDraft.patch`).
+    public var reel: JSONObject?
 
     public init(
         version: Int? = nil, format: RenderFormat = .jpeg, patches: [DesignPatch] = [],
-        slotAssignments: [String: EntityID] = [:], slides: [Int]? = nil, force: Bool = false, note: String? = nil
+        slotAssignments: [String: EntityID] = [:], slides: [Int]? = nil, force: Bool = false, note: String? = nil,
+        reel: JSONObject? = nil
     ) {
         self.version = version
         self.format = format
@@ -38,6 +43,7 @@ public struct ContentRenderRequest: Sendable, Hashable {
         self.slides = slides
         self.force = force
         self.note = note
+        self.reel = reel
     }
 
     public var payload: JSONObject {
@@ -48,6 +54,7 @@ public struct ContentRenderRequest: Sendable, Hashable {
         if let slides { payload["slides"] = .array(slides.map { .number(Double($0)) }) }
         if force { payload["force"] = .bool(true) }
         if let note, !note.isEmpty { payload["note"] = .string(String(note.prefix(2000))) }
+        if let reel, !reel.isEmpty { payload["reel"] = .object(reel) }
         return payload
     }
 }
@@ -61,6 +68,9 @@ public struct ContentRenderOutput: Sendable, Hashable {
     public var pdfAssetId: EntityID?
     /// The edits changed nothing; no new version was stored.
     public var unchanged: Bool
+    /// Reels: the new video and cover.
+    public var videoAssetId: EntityID?
+    public var coverAssetId: EntityID?
 
     public init(_ output: JSONObject?) {
         let o = output ?? [:]
@@ -70,6 +80,8 @@ public struct ContentRenderOutput: Sendable, Hashable {
         pngAssetIds = o["pngAssetIds"]?.arrayValue?.map(\.stringValue) ?? []
         pdfAssetId = o["pdfAssetId"]?.stringValue
         unchanged = o["unchanged"]?.boolValue ?? false
+        videoAssetId = o["videoAssetId"]?.stringValue
+        coverAssetId = o["coverAssetId"]?.stringValue
     }
 }
 

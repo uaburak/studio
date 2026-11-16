@@ -23,6 +23,8 @@ final class DetailPanelView: ThemedView, NSTextFieldDelegate {
     private let tabs: TabPillsView
     private let postTab: PostTabView
     private let editTab: EditTabView
+    /// Reels replace the layer editor with their own (texts, scenes, timings).
+    private let reelEditor: ReelEditorView
     private let versionsTab: VersionsTabView
     private let statusLine = StatusLineView()
     private let errorBanner = InlineErrorBannerView()
@@ -39,6 +41,7 @@ final class DetailPanelView: ThemedView, NSTextFieldDelegate {
         self.tabs = TabPillsView(titles: PostDetailModel.Tab.allCases.map(\.label))
         self.postTab = PostTabView(model: model)
         self.editTab = EditTabView(model: model, pickImage: actions.pickImage, editTextInline: actions.editTextInline)
+        self.reelEditor = ReelEditorView(model: model)
         self.versionsTab = VersionsTabView(model: model)
         super.init(frame: .zero)
         backgroundColor = Theme.canvas
@@ -91,14 +94,14 @@ final class DetailPanelView: ThemedView, NSTextFieldDelegate {
         let doc = FlippedDocumentView()
         doc.translatesAutoresizingMaskIntoConstraints = false
         scroll.documentView = doc
-        let body = NSStackView(views: [postTab, editTab, versionsTab])
+        let body = NSStackView(views: [postTab, editTab, reelEditor, versionsTab])
         body.orientation = .vertical
         body.alignment = .leading
         body.spacing = 0
         body.detachesHiddenViews = true
         body.translatesAutoresizingMaskIntoConstraints = false
         doc.addSubview(body)
-        for view in [postTab, editTab, versionsTab] {
+        for view in [postTab, editTab, reelEditor, versionsTab] {
             view.widthAnchor.constraint(equalTo: body.widthAnchor).isActive = true
         }
         NSLayoutConstraint.activate([
@@ -117,6 +120,7 @@ final class DetailPanelView: ThemedView, NSTextFieldDelegate {
         }
         errorBanner.isHidden = true
         errorBanner.onDismiss = { [weak self] in self?.model.error = nil }
+        errorBanner.onRetry = { [weak self] in Task { await self?.model.reloadVersionsAndContent() } }
 
         // "Neyi değiştireyim?"
         let instructionWrapper = ThemedView()
@@ -188,7 +192,8 @@ final class DetailPanelView: ThemedView, NSTextFieldDelegate {
         handleLabel.stringValue = model.handle.isEmpty ? (model.app.brand(model.content.brandId)?.name ?? "") : model.handle
         tabs.select(model.tab.rawValue)
         postTab.isHidden = model.tab != .post
-        editTab.isHidden = model.tab != .edit
+        editTab.isHidden = model.tab != .edit || model.isReel
+        reelEditor.isHidden = model.tab != .edit || !model.isReel
         versionsTab.isHidden = model.tab != .versions
         exportButton.isEnabled = model.activeVersion != nil && !model.isExporting
         exportButton.showsSpinner = model.isExporting
@@ -211,7 +216,7 @@ final class DetailPanelView: ThemedView, NSTextFieldDelegate {
             instructionField.stringValue = model.instruction
         }
         let revising: Bool = if case .revising = model.activity { true } else { false }
-        instructionField.isEnabled = !revising && model.content.type != .reel
+        instructionField.isEnabled = !revising
         instructionField.placeholderString = revising ? "AI düzenliyor…" : (model.isViewingCurrentVersion ? "Neyi değiştireyim?" : "Eski sürüm: önce geri yükle")
         sendInstructionButton.showsSpinner = revising
         sendInstructionButton.isEnabled = !model.instruction.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !model.activity.changesVersion && model.isViewingCurrentVersion
@@ -259,6 +264,13 @@ final class DetailPanelView: ThemedView, NSTextFieldDelegate {
     }
 
     private func toggleSchedulePopover() {
+        // P3: the shared schedule sheet (platform rules, local time, publish now, cloud/Mac mode).
+        if let presenter = window?.contentViewController {
+            ScheduleSheetController.present(from: presenter, app: model.app, request: ScheduleSheetRequest(
+                brandId: model.content.brandId, contentId: model.content.id,
+                date: model.scheduleDate, accountIds: model.scheduleAccounts.sorted()))
+            return
+        }
         if let pop = activeSchedulePopover, pop.isShown {
             pop.close()
             model.schedulePresented = false

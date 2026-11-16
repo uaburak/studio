@@ -293,9 +293,9 @@ private final class UsageIndicatorControlView: NSControl {
         }
         let popover = NSPopover()
         popover.behavior = .transient
-        popover.contentViewController = UsagePopoverViewController(app: app, presence: getPresence()) { [weak popover, weak self] in
+        popover.contentViewController = UsagePopoverViewController(app: app, presence: getPresence()) { [weak popover, weak self] section in
             popover?.close()
-            self?.app.settingsPresented = true
+            self?.app.openSettings(section)
         }
         popover.show(relativeTo: bounds, of: self, preferredEdge: .minY)
         activePopover = popover
@@ -348,9 +348,9 @@ private final class UsageRingView: NSView {
 private final class UsagePopoverViewController: NSViewController {
     private unowned let app: AppModel
     private let presence: WorkerPresence?
-    private let onOpenSettings: () -> Void
+    private let onOpenSettings: (SettingsSection) -> Void
 
-    init(app: AppModel, presence: WorkerPresence?, onOpenSettings: @escaping () -> Void) {
+    init(app: AppModel, presence: WorkerPresence?, onOpenSettings: @escaping (SettingsSection) -> Void) {
         self.app = app
         self.presence = presence
         self.onOpenSettings = onOpenSettings
@@ -449,8 +449,9 @@ private final class UsagePopoverViewController: NSViewController {
         }
 
         let settingsBtnTitle = needsSignIn ? "Claude ile giriş yap (Ayarlar)…" : "Ayarları aç…"
+        let settingsTarget: SettingsSection = needsSignIn ? .ai : .usage
         let settingsBtn = PillButton(title: settingsBtnTitle, kind: needsSignIn ? .primary : .secondary, height: 24) { [weak self] in
-            self?.onOpenSettings()
+            self?.onOpenSettings(settingsTarget)
         }
         stack.addArrangedSubview(settingsBtn)
 

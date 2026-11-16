@@ -5,10 +5,12 @@ import {
   WorkerDueSchedules,
   WorkerDueSchedulesQuery,
   WorkerScheduleCredentials,
+  WorkerScheduleDelivery,
   WorkerScheduleOutcome,
 } from "@studio/contract";
-import { and, asc, eq, lte, ne, type SQL } from "drizzle-orm";
+import { and, asc, eq, gte, isNotNull, lte, ne, type SQL } from "drizzle-orm";
 import type { BatchItem } from "drizzle-orm/batch";
+import { z } from "zod";
 import { createDb, type Db } from "../db/client.ts";
 import { toContent, toSchedule, toSocialAccount, toVersion } from "../db/mappers.ts";
 import {
@@ -23,10 +25,9 @@ import {
 import { ApiProblem, invalidTransition, notFound } from "../lib/errors.ts";
 import { newId } from "../lib/ids.ts";
 import { createRouter, errors, IdParams, json, jsonBody } from "../lib/router.ts";
-import { decryptAccountToken } from "../lib/token-vault.ts";
 import { requireWorkerToken } from "../middleware/worker-auth.ts";
 import { approvalMatchesCurrent, loadContent } from "./contents.ts";
-import { loadSocialAccountWithToken } from "./social-accounts.ts";
+import { loadSocialAccountWithToken, readAccountToken } from "./social-accounts.ts";
 
 const tags = ["Worker schedules"];
 const security = [{ workerToken: [] }];
@@ -135,9 +136,7 @@ workerScheduleRoutes
         .where(eq(contentVersionSlides.versionId, versionRow.id))
         .orderBy(asc(contentVersionSlides.position));
 
-      const accessToken = token
-        ? await decryptAccountToken(c.env, account.id, token.ciphertext, token.iv)
-        : null;
+      const accessToken = token ? await readAccountToken(db, c.env, token) : null;
 
       return c.json(
         {
@@ -208,6 +207,11 @@ workerScheduleRoutes
           .set({
             status: input.status,
             ...(input.permalink !== undefined ? { permalink: input.permalink } : {}),
+            ...(input.status === "failed"
+              ? { lastError: input.error ?? "Yayın başarısız oldu." }
+              : input.status === "published"
+                ? { lastError: null }
+                : {}),
             updatedAt: now,
           })
           .where(eq(schedules.id, id)),
@@ -263,5 +267,78 @@ workerScheduleRoutes
 
       await db.batch(stmts as Batch);
       return c.json(toSchedule(await requireSchedule(db, id)), 200);
+    },
+  )
+  .openapi(
+    createRoute({
+      method: "post",
+      path: "/api/worker/schedules/{id}/delivery",
+      tags,
+      security,
+      summary: "Record who publishes a schedule (cloud push result, or local)",
+      request: { params: IdParams, body: jsonBody(WorkerScheduleDelivery) },
+      responses: {
+        200: json(Schedule, "Updated schedule."),
+        400: errors[400],
+        401: unauthorized,
+        404: errors[404],
+      },
+    }),
+    async (c) => {
+      const { id } = c.req.valid("param");
+      const input = c.req.valid("json");
+      const db = createDb(c.env.DB);
+      await requireSchedule(db, id);
+      await db
+        .update(schedules)
+        .set({
+          delivery: input.delivery,
+          ...(input.cloudSyncedAt !== undefined
+            ? { cloudSyncedAt: input.cloudSyncedAt ? new Date(input.cloudSyncedAt) : null }
+            : {}),
+          ...(input.error !== undefined ? { lastError: input.error } : {}),
+          updatedAt: new Date(),
+        })
+        .where(eq(schedules.id, id));
+      return c.json(toSchedule(await requireSchedule(db, id)), 200);
+    },
+  )
+  .openapi(
+    createRoute({
+      method: "get",
+      path: "/api/worker/schedules/cancelled",
+      tags,
+      security,
+      summary: "Cancelled schedules whose order is still at the cloud publisher",
+      description:
+        "`delivery = cloud` and `cloudSyncedAt` set: the worker cancels the order there and " +
+        "reports `cloudSyncedAt: null`.",
+      request: {
+        query: z.object({
+          since: z.string().datetime({ offset: true }).optional(),
+          limit: z.coerce.number().int().min(1).max(200).default(100),
+        }),
+      },
+      responses: {
+        200: json(WorkerDueSchedules, "Schedules to cancel at the cloud."),
+        400: errors[400],
+        401: unauthorized,
+      },
+    }),
+    async (c) => {
+      const q = c.req.valid("query");
+      const where: SQL[] = [
+        eq(schedules.status, "cancelled"),
+        eq(schedules.delivery, "cloud"),
+        isNotNull(schedules.cloudSyncedAt),
+      ];
+      if (q.since) where.push(gte(schedules.updatedAt, new Date(q.since)));
+      const rows = await createDb(c.env.DB)
+        .select()
+        .from(schedules)
+        .where(and(...where))
+        .orderBy(asc(schedules.updatedAt))
+        .limit(q.limit);
+      return c.json({ items: rows.map(toSchedule) }, 200);
     },
   );

@@ -14,6 +14,17 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate {
     private static let titleMenuId = NSToolbarItem.Identifier("studio.titleMenu")
     private static let inspectorId = NSToolbarItem.Identifier("studio.inspector")
     private static let moreMenuId = NSToolbarItem.Identifier("studio.moreMenu")
+    static let frameAutosaveName = "StudioMainWindow"
+
+    /// A saved frame from a screen that is gone (or a smaller one) is pulled back on screen.
+    static func clamped(_ frame: NSRect, to visible: NSRect, minSize: NSSize) -> NSRect {
+        var out = frame
+        out.size.width = max(minSize.width, min(out.width, visible.width))
+        out.size.height = max(minSize.height, min(out.height, visible.height))
+        out.origin.x = min(max(out.minX, visible.minX), visible.maxX - out.width)
+        out.origin.y = min(max(out.minY, visible.minY), visible.maxY - out.height)
+        return out
+    }
 
     private var backButton: NSButton?
     private var forwardButton: NSButton?
@@ -41,7 +52,16 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate {
         window.contentViewController = rootViewController
         window.setContentSize(NSSize(width: 1440, height: 900))
         window.center()
+        window.collectionBehavior.insert(.fullScreenPrimary)
+        window.tabbingMode = .disallowed
+        // Size and position survive relaunches (first launch: centred 1440x900).
+        window.setFrameUsingName(Self.frameAutosaveName)
+        window.setFrameAutosaveName(Self.frameAutosaveName)
+        if let screen = window.screen ?? NSScreen.main {
+            window.setFrame(Self.clamped(window.frame, to: screen.visibleFrame, minSize: window.minSize), display: false)
+        }
 
+        window.isReleasedWhenClosed = false // closing hides it; Studio keeps running (see applicationShouldTerminateAfterLastWindowClosed)
         super.init(window: window)
 
         let toolbar = NSToolbar(identifier: "studio.main.toolbar")
@@ -109,8 +129,11 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate {
             forwardItem.view = forward
             self.forwardButton = forward
 
+            backItem.label = "Geri"
+            forwardItem.label = "İleri"
             let group = NSToolbarItemGroup(itemIdentifier: Self.navGroupId)
             group.subitems = [backItem, forwardItem]
+            group.label = "Gezinme"
             return group
 
         case Self.titleMenuId:
@@ -118,7 +141,8 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate {
             let control = ToolbarTitleMenuControl(title: app.title) { [weak self] in
                 self?.makeTitleMenu() ?? NSMenu()
             }
-            control.toolTip = "Marka ve görünüm seçenekleri"
+            control.toolTip = "Marka ve ekran seçenekleri"
+            item.label = "Başlık"
             item.view = control
             if #available(macOS 26.0, *) {
                 item.isBordered = false
@@ -131,15 +155,17 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate {
             let btn = NSButton(image: NSImage(systemSymbolName: "sidebar.right", accessibilityDescription: "Sağ panel")!, target: self, action: #selector(toggleInspector))
             btn.bezelStyle = .toolbar
             btn.toolTip = app.inspectorPresented ? "Sağ paneli gizle (⌥⌘I)" : "Sağ paneli göster (⌥⌘I)"
+            item.label = "Sağ panel"
             item.view = btn
             self.inspectorButton = btn
             return item
 
         case Self.moreMenuId:
             let item = NSToolbarItem(itemIdentifier: Self.moreMenuId)
-            let btn = ToolbarMenuIconControl(symbol: "ellipsis", help: "Diğer") { [weak self] in
+            let btn = ToolbarMenuIconControl(symbol: "ellipsis", help: "Diğer seçenekler") { [weak self] in
                 self?.makeMoreMenu() ?? NSMenu()
             }
+            item.label = "Diğer"
             item.view = btn
             return item
 
@@ -332,7 +358,7 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate {
     }
 
     @objc private func openSettings() {
-        app.settingsPresented = true
+        app.openSettings()
     }
 }
 
@@ -342,6 +368,7 @@ private final class ToolbarTitleMenuControl: NSControl {
     var titleText: String {
         didSet {
             label.stringValue = titleText
+            setAccessibilityLabel("\(titleText): marka ve ekran seçenekleri")
             invalidateIntrinsicContentSize()
         }
     }
@@ -354,6 +381,9 @@ private final class ToolbarTitleMenuControl: NSControl {
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
 
+        setAccessibilityElement(true)
+        setAccessibilityRole(.popUpButton)
+        setAccessibilityLabel("\(title): marka ve ekran seçenekleri")
         label.stringValue = title
         label.font = Theme.titleFont
         label.textColor = Theme.textPrimary
@@ -388,6 +418,13 @@ private final class ToolbarTitleMenuControl: NSControl {
         let menu = buildMenu()
         menu.popUp(positioning: nil, at: NSPoint(x: 0, y: -4), in: self)
     }
+
+    override func accessibilityPerformPress() -> Bool {
+        buildMenu().popUp(positioning: nil, at: NSPoint(x: 0, y: -4), in: self)
+        return true
+    }
+
+    override func accessibilityPerformShowMenu() -> Bool { accessibilityPerformPress() }
 }
 
 private final class ToolbarMenuIconControl: NSControl {
@@ -398,6 +435,9 @@ private final class ToolbarMenuIconControl: NSControl {
         super.init(frame: NSRect(x: 0, y: 0, width: 32, height: 28))
         translatesAutoresizingMaskIntoConstraints = false
         toolTip = help
+        setAccessibilityElement(true)
+        setAccessibilityRole(.popUpButton)
+        setAccessibilityLabel(help)
 
         let icon = NSImageView()
         icon.image = NSImage(systemSymbolName: symbol, accessibilityDescription: help)?
@@ -420,6 +460,13 @@ private final class ToolbarMenuIconControl: NSControl {
         let menu = buildMenu()
         menu.popUp(positioning: nil, at: NSPoint(x: 0, y: -4), in: self)
     }
+
+    override func accessibilityPerformPress() -> Bool {
+        buildMenu().popUp(positioning: nil, at: NSPoint(x: 0, y: -4), in: self)
+        return true
+    }
+
+    override func accessibilityPerformShowMenu() -> Bool { accessibilityPerformPress() }
 }
 
 // MARK: - RootViewController & MainSplitViewController & DetailContainerViewController
@@ -431,9 +478,14 @@ final class RootViewController: NSViewController {
     let splitController: MainSplitViewController
 
     private let topBanner = InlineErrorBannerView()
+    /// Server / API / worker / Claude problems: one honest banner with the fixing action.
+    private let connectionBanner = InlineErrorBannerView()
+    private var renderedIssue: ConnectionIssue?
     private let searchOverlay: SearchPaletteOverlayView
     private var postDetailOverlay: PostDetailOverlayView?
     private weak var activeSettingsSheet: SettingsSheetViewController?
+    /// Dims the window under the settings panel.
+    private let settingsBackdrop = ThemedView()
     private weak var activeNewBrandSheet: NewBrandSheetController?
     private weak var activeBrandSettingsSheet: BrandSettingsSheetController?
     private weak var activeOnboardingSheet: OnboardingSheetController?
@@ -466,7 +518,19 @@ final class RootViewController: NSViewController {
 
         topBanner.isHidden = true
         topBanner.onDismiss = { [weak app] in app?.banner = nil }
-        root.addSubview(topBanner)
+        connectionBanner.isHidden = true
+        connectionBanner.onDismiss = { [weak app] in app?.dismissedIssue = app?.connectionIssue }
+        let bannerStack = NSStackView(views: [connectionBanner, topBanner])
+        bannerStack.orientation = .vertical
+        bannerStack.alignment = .centerX
+        bannerStack.spacing = Theme.Spacing.s
+        bannerStack.translatesAutoresizingMaskIntoConstraints = false
+        root.addSubview(bannerStack)
+
+        settingsBackdrop.backgroundColor = Theme.Settings.backdrop
+        settingsBackdrop.isHidden = true
+        settingsBackdrop.translatesAutoresizingMaskIntoConstraints = false
+        root.addSubview(settingsBackdrop)
 
         NSLayoutConstraint.activate([
             splitController.view.leadingAnchor.constraint(equalTo: root.leadingAnchor),
@@ -479,9 +543,16 @@ final class RootViewController: NSViewController {
             searchOverlay.topAnchor.constraint(equalTo: root.topAnchor),
             searchOverlay.bottomAnchor.constraint(equalTo: root.bottomAnchor),
 
-            topBanner.centerXAnchor.constraint(equalTo: root.centerXAnchor),
-            topBanner.topAnchor.constraint(equalTo: root.safeAreaLayoutGuide.topAnchor, constant: 8),
+            settingsBackdrop.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+            settingsBackdrop.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            settingsBackdrop.topAnchor.constraint(equalTo: root.topAnchor),
+            settingsBackdrop.bottomAnchor.constraint(equalTo: root.bottomAnchor),
+
+            bannerStack.centerXAnchor.constraint(equalTo: root.centerXAnchor),
+            bannerStack.topAnchor.constraint(equalTo: root.safeAreaLayoutGuide.topAnchor, constant: 8),
+            bannerStack.leadingAnchor.constraint(greaterThanOrEqualTo: root.leadingAnchor, constant: 16),
             topBanner.widthAnchor.constraint(lessThanOrEqualToConstant: 420),
+            connectionBanner.widthAnchor.constraint(lessThanOrEqualToConstant: 560),
         ])
 
         self.view = root
@@ -507,6 +578,7 @@ final class RootViewController: NSViewController {
         } else {
             topBanner.isHidden = true
         }
+        syncConnectionBanner(app.visibleConnectionIssue)
 
         // Search palette
         let wasSearchHidden = searchOverlay.isHidden
@@ -538,9 +610,10 @@ final class RootViewController: NSViewController {
         }
 
         // Settings sheet
+        settingsBackdrop.isHidden = !app.settingsPresented
         if app.settingsPresented {
             if activeSettingsSheet == nil, view.window != nil {
-                let sheet = SettingsSheetViewController(app: app, settings: settings, host: host) { [weak self] in
+                let sheet = SettingsSheetViewController(app: app, settings: settings, host: host, parentSize: view.bounds.size) { [weak self] in
                     self?.app.settingsPresented = false
                 }
                 activeSettingsSheet = sheet
@@ -621,6 +694,32 @@ final class RootViewController: NSViewController {
         } else if let sheet = activeAIGeneratorSheet {
             dismiss(sheet)
             activeAIGeneratorSheet = nil
+        }
+    }
+}
+
+extension RootViewController {
+    fileprivate func syncConnectionBanner(_ issue: ConnectionIssue?) {
+        guard issue != renderedIssue else { return }
+        renderedIssue = issue
+        guard let issue else {
+            connectionBanner.isHidden = true
+            return
+        }
+        connectionBanner.message = issue.message
+        connectionBanner.isBusy = issue.isBusy
+        connectionBanner.actions = issue.actions.map { action in
+            BannerAction(title: Self.title(for: action)) { [weak app] in app?.perform(action) }
+        }
+        connectionBanner.isHidden = false
+    }
+
+    static func title(for action: ConnectionIssue.Action) -> String {
+        switch action {
+        case .retry: "Yeniden dene"
+        case .restartHost: "Yeniden başlat"
+        case .openSettings: "Ayarlar…"
+        case .signInClaude: "Giriş yap"
         }
     }
 }

@@ -256,6 +256,9 @@ importers:
       '@studio/contract':
         specifier: workspace:*
         version: link:../../packages/contract
+      '@studio/publishers':
+        specifier: workspace:*
+        version: link:../../packages/publishers
       drizzle-orm:
         specifier: 'catalog:'
         version: 0.45.4

@@ -17,6 +17,7 @@ import { deviceRoutes } from "./routes/devices.ts";
 import { hubRoutes } from "./routes/hub.ts";
 import { createJob, hubStub, jobRoutes } from "./routes/jobs.ts";
 import { agentRunRoutes, planRoutes } from "./routes/plans.ts";
+import { publishingRoutes } from "./routes/publishing.ts";
 import { scheduleRoutes } from "./routes/schedules.ts";
 import { socialAccountRoutes } from "./routes/social-accounts.ts";
 import { workerRunRoutes } from "./routes/worker-runs.ts";
@@ -77,6 +78,7 @@ app.route("/", assetRoutes);
 app.route("/", contentRoutes);
 app.route("/", jobRoutes);
 app.route("/", scheduleRoutes);
+app.route("/", publishingRoutes); // /api/publishing/*, /api/publish-logs, /api/worker/publishing/* (P3)
 app.route("/", hubRoutes); // /api/hub (worker WebSocket), /api/workers/presence
 
 // --- Chat (A2): conversations, agent runs, plans, the worker's turn API -------------

@@ -15,8 +15,22 @@
 	</array>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>Sohbete ve post görsel yuvalarına fotoğraf eklemek için fotoğraf arşivine erişilir.</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>Post görsellerini Fotoğraflar'a kaydetmek için fotoğraf arşivine ekleme izni gerekir.</string>
 	<key>NSCameraUsageDescription</key>
-	<string>Post görsel yuvalarını doğrudan kamerayla doldurmak için kameraya erişilir.</string>
+	<string>Sohbete ve post görsel yuvalarına kamerayla çektiğin fotoğrafı eklemek için kameraya erişilir.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Sohbette mesajını sesle yazdırmak (dikte) için mikrofon kullanılır.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Söylediklerini sohbet kutusuna yazıya çevirmek için konuşma tanıma kullanılır; destekleniyorsa iPhone'da işlenir.</string>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>fetch</string>
+	</array>
+	<key>BGTaskSchedulerPermittedIdentifiers</key>
+	<array>
+		<string>net.burakkoc.studio.ios.refresh</string>
+	</array>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

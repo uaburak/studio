@@ -43,20 +43,32 @@ final class AppModel {
     var conversations: [Conversation] = []
     var jobBoard = JobBoard()
     var loadError: String?
+    /// The typed error behind `loadError` (drives the connection banner).
+    private(set) var loadAPIError: StudioAPIError?
     var isLoading = false
 
     // Navigation
-    private(set) var route: Route = .newChat
+    private(set) var route: Route = .newChat {
+        didSet { persistSession() }
+    }
     private var back: [Route] = []
     private var forward: [Route] = []
-    var sidebarPresented = true
-    var inspectorPresented = true
+    var sidebarPresented = true {
+        didSet { persistSession() }
+    }
+    var inspectorPresented = true {
+        didSet { persistSession() }
+    }
     var expandedBrands: Set<EntityID> = []
     /// Brand for a new chat and the posts screen.
-    var currentBrandId: EntityID?
+    var currentBrandId: EntityID? {
+        didSet { persistSession() }
+    }
     var searchPresented = false
     /// Settings open as an in-window sheet, not a separate window.
     var settingsPresented = false
+    /// Section the settings sheet shows next (deep link); the sheet consumes it.
+    var settingsRequestedSection: SettingsSection?
     var newBrandPresented = false
     /// Older entry point (inspector): opens the brand settings on the profile or kit tab.
     var brandProfileTarget: BrandProfileTarget? {
@@ -83,10 +95,21 @@ final class AppModel {
     let newChat: NewChatModel
     let posts: PostsModel
     let calendar: CalendarModel
+    /// Publishing path, publish log feed and notifications (P3).
+    let publishing: PublishingModel
     let media: MediaModel
     let images: ImageStore
     var detail: PostDetailModel?
     var banner: String?
+    /// Global search over brands, conversations and every brand's posts.
+    let search: SearchModel
+    /// The embedded Mac server, when this app runs it (nil: remote server or sample data).
+    weak var host: LocalHost?
+    /// The connection banner the owner closed; it comes back when the issue changes.
+    var dismissedIssue: ConnectionIssue?
+    private let sessionStore: SessionStore
+    /// Off until the saved session was restored, so loading does not overwrite it.
+    private var sessionTracking = false
 
     private var feedTask: Task<Void, Never>?
     let pendingImages = PendingSlotImageStore()
@@ -110,17 +133,28 @@ final class AppModel {
             isSample = false
         }
         images = ImageStore()
+        search = SearchModel()
+        // Sample data keeps its own session so a demo run does not move the real app's screen.
+        let sampleSession = (conversationService.map { $0 is SampleBackend } ?? false) || (conversationService == nil && settings.useSampleData)
+        sessionStore = SessionStore(defaults: settings.defaults, key: sampleSession ? SessionStore.key + ".sample" : SessionStore.key)
         onboarding = OnboardingModel(defaults: settings.defaults)
         newChat = NewChatModel()
         posts = PostsModel()
         calendar = CalendarModel()
+        publishing = PublishingModel(defaults: settings.defaults)
         media = MediaModel()
         images.app = self
+        search.app = self
         onboarding.app = self
         newChat.app = self
         posts.app = self
         calendar.app = self
+        publishing.app = self
         media.app = self
+        if let saved = sessionStore.load() {
+            sidebarPresented = saved.sidebarPresented
+            inspectorPresented = saved.inspectorPresented
+        }
     }
 
     /// Rebuild the services after the server address or access key changed.
@@ -132,6 +166,7 @@ final class AppModel {
         conversationModels.values.forEach { $0.stop() }
         conversationModels = [:]
         images.clear()
+        search.invalidate()
         if reload { Task { await load() } }
     }
 
@@ -148,14 +183,17 @@ final class AppModel {
             self.accounts = try await accounts
             self.conversations = try await conversations
             loadError = nil
+            loadAPIError = nil
             if currentBrandId == nil || !self.brands.contains(where: { $0.id == currentBrandId }) {
                 currentBrandId = self.conversations.first?.brandId ?? self.brands.first?.id
             }
             if expandedBrands.isEmpty, let brand = currentBrandId { expandedBrands = [brand] }
         } catch {
             loadError = Self.describe(error)
+            loadAPIError = StudioAPIError.from(error)
         }
         startJobFeed()
+        publishing.start()
         await refreshArchivedBrands()
         await onboarding.appDidLoad()
     }
@@ -241,6 +279,7 @@ final class AppModel {
                 guard let self else { return }
                 self.jobBoard.apply(event)
                 if case .message(.jobUpdated(let job)) = event {
+                    self.publishing.jobChanged(job)
                     if job.type == .contentGenerate || job.type == .contentRender {
                         self.posts.jobChanged(job)
                         if self.detail?.content.id == job.contentId, job.status.isTerminal {
@@ -431,6 +470,147 @@ final class AppModel {
 
     func show(error: any Error) {
         banner = Self.describe(error)
+    }
+
+    /// Persisting is on (after `restoreSession`); exposed for tests.
+    var isTrackingSession: Bool { sessionTracking }
+
+    // MARK: Session (window state restoration)
+
+    var sessionSnapshot: SessionSnapshot {
+        SessionSnapshot(route: route, brandId: currentBrandId, sidebarPresented: sidebarPresented, inspectorPresented: inspectorPresented)
+    }
+
+    private func persistSession() {
+        guard sessionTracking else { return }
+        sessionStore.save(sessionSnapshot)
+    }
+
+    /// After the first load: reopen the brand and screen the app showed last time (a missing
+    /// conversation or brand falls back gracefully), then keep saving changes.
+    func restoreSession() {
+        defer { sessionTracking = true }
+        // The owner may already have moved while the server was starting: their choice wins.
+        guard let saved = sessionStore.load(), route == .newChat, back.isEmpty else { return }
+        if let brand = saved.brand(existing: brands.map(\.id)) {
+            currentBrandId = brand
+            expandedBrands.insert(brand)
+            newChat.updatePlaceholder()
+        }
+        let restored = saved.route(existingConversations: Set(conversations.map(\.id)))
+        guard restored != route else { return }
+        // Not a navigation: the history starts empty.
+        route = restored
+        if case .conversation(let id) = restored, let brand = conversations.first(where: { $0.id == id })?.brandId {
+            currentBrandId = brand
+            expandedBrands.insert(brand)
+        }
+    }
+
+    // MARK: Connection & server status
+
+    /// The most important problem with the Mac server right now (nil: all good or unknown).
+    var connectionIssue: ConnectionIssue? {
+        ConnectionIssue.evaluate(isSample: isSample, hostStatus: host?.status, loadError: loadAPIError, presence: presence)
+    }
+
+    /// The issue the banner shows (the owner can close it until it changes).
+    var visibleConnectionIssue: ConnectionIssue? {
+        guard let issue = connectionIssue, issue != dismissedIssue else { return nil }
+        return issue
+    }
+
+    var serverStatus: ServerStatusSummary {
+        ServerStatusSummary.make(isSample: isSample, issue: connectionIssue, presence: presence)
+    }
+
+    func perform(_ action: ConnectionIssue.Action) {
+        switch action {
+        case .retry:
+            dismissedIssue = nil
+            Task { await load() }
+        case .restartHost:
+            guard let host else { return }
+            Task {
+                await host.restart()
+                if let url = host.apiURL { settings.hostAPIURL = url }
+                reconnect()
+            }
+        case .openSettings:
+            openSettings(connectionIssue?.settingsSection)
+        case .signInClaude:
+            onboarding.reopen(at: .claude)
+        }
+    }
+
+    /// Opens the settings sheet on `section` (nil: the last section shown). Works while it is open too.
+    func openSettings(_ section: SettingsSection? = nil) {
+        settingsRequestedSection = section
+        settingsPresented = true
+    }
+
+    // MARK: Brand switching (⌘1…⌘9, title menu)
+
+    /// A new chat with attached images is tied to its brand: switching would orphan them.
+    func canSwitchBrand(to id: EntityID) -> Bool {
+        guard id != currentBrandId else { return true }
+        if route == .newChat, !newChat.composer.drafts.isEmpty { return false }
+        return true
+    }
+
+    /// `index` is 0-based in sidebar order (the order the Marka menu lists).
+    @discardableResult
+    func switchToBrand(at index: Int) -> Bool {
+        let list = brandMenuOrder
+        guard list.indices.contains(index) else { return false }
+        return switchToBrand(list[index].id)
+    }
+
+    /// Select the brand; a conversation of another brand gives way to a new chat in this one.
+    @discardableResult
+    func switchToBrand(_ id: EntityID) -> Bool {
+        guard brands.contains(where: { $0.id == id }), canSwitchBrand(to: id) else { return false }
+        selectBrand(id)
+        if case .conversation(let conversationId) = route,
+           conversations.first(where: { $0.id == conversationId })?.brandId != id {
+            startNewChat()
+        }
+        return true
+    }
+
+    /// Stable order for ⌘1…⌘9: alphabetical, so shortcuts do not move with activity.
+    var brandMenuOrder: [Brand] {
+        brands.sorted {
+            $0.name.compare($1.name, options: [.caseInsensitive, .diacriticInsensitive], range: nil, locale: TurkishFormat.locale) == .orderedAscending
+        }
+    }
+
+    // MARK: Search & refresh
+
+    /// Open a post from anywhere (search, notifications): switch to its brand and the posts screen.
+    func openPost(contentId: EntityID, brandId: EntityID) async {
+        if brandId != currentBrandId { selectBrand(brandId) }
+        navigate(to: .posts)
+        if posts.loadedBrandId != brandId || posts.card(contentId) == nil {
+            await posts.load()
+        }
+        guard let card = posts.card(contentId) else {
+            banner = "Post bulunamadı; silinmiş ya da başka bir markaya taşınmış olabilir."
+            return
+        }
+        detail = PostDetailModel(app: self, card: card, sourceFrame: .zero)
+    }
+
+    /// ⌘R: reload what the current screen shows (and the sidebar).
+    func reloadCurrentScreen() async {
+        search.invalidate()
+        switch route {
+        case .posts: await posts.load()
+        case .calendar: await calendar.load()
+        case .media: await media.load()
+        case .newChat, .conversation: break
+        }
+        await load()
     }
 }
 

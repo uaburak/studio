@@ -281,6 +281,11 @@ final class MediaViewController: NSViewController {
 
         errorBanner.isHidden = true
         errorBanner.onDismiss = { [weak self] in self?.model.error = nil }
+        errorBanner.onRetry = { [weak self] in
+            guard let self else { return }
+            self.model.error = nil
+            Task { await self.model.load() }
+        }
 
         emptyView.orientation = .vertical
         emptyView.alignment = .centerX
@@ -380,7 +385,11 @@ final class MediaViewController: NSViewController {
         }
 
         let visible = model.visibleAssets
-        let showEmpty = visible.isEmpty && !model.isLoading
+        let showEmpty = visible.isEmpty && !model.isLoading && model.error == nil
+        if visible.isEmpty && model.isLoading && model.uploadProgress == nil && model.activeAIJob == nil {
+            statusRow.isHidden = false
+            statusLabel.stringValue = "Medya yükleniyor…"
+        }
         emptyView.isHidden = !showEmpty
         gridView.isHidden = showEmpty
         if visible != renderedAssetIds {
@@ -567,7 +576,7 @@ private final class MediaAssetCardView: NSView {
             let icon = NSImageView()
             icon.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)?
                 .withSymbolConfiguration(.init(pointSize: 32, weight: .regular))
-            icon.contentTintColor = asset.kind == .video ? Theme.accent : Theme.textSecondary
+            icon.contentTintColor = Theme.textSecondary
             icon.translatesAutoresizingMaskIntoConstraints = false
             thumbBox.addSubview(icon)
             NSLayoutConstraint.activate([

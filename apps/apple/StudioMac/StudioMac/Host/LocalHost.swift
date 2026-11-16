@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import Security
 import StudioKit
 
 /// What the host needs from Settings.
@@ -100,7 +101,7 @@ final class LocalHost {
         let task = Task { await performStart() }
         startTask = task
         await task.value
-        startTask = nil
+        if startTask == task { startTask = nil }
     }
 
     func restart() async {
@@ -109,7 +110,13 @@ final class LocalHost {
     }
 
     /// Stop the children: tunnel & worker first, then gateway and API.
+    /// A start still in progress is cancelled first (its migration child is terminated).
     func stop() async {
+        if let task = startTask {
+            startTask = nil
+            task.cancel()
+            await task.value
+        }
         attachMonitor?.cancel()
         attachMonitor = nil
         advertiser.stop()
@@ -123,7 +130,13 @@ final class LocalHost {
     }
 
     /// Children are running under this app (so quitting must stop them).
-    var ownsChildren: Bool { supervisors.values.contains { $0.isActive } }
+    var ownsChildren: Bool { startTask != nil || supervisors.values.contains { $0.isActive } }
+
+    /// How long a one-shot `d1 migrations apply` may take.
+    var migrationTimeout: Duration = .seconds(120)
+    /// When the "grant access" hint appears, and when waiting for the grant gives up.
+    var repoAccessNotice: Duration = .seconds(2)
+    var repoAccessLimit: Duration = .seconds(30 * 60)
 
     private func performStart() async {
         errorLog = ""
@@ -171,6 +184,23 @@ final class LocalHost {
             return fail("Depo klasörü eksik ya da `pnpm install` yapılmamış: \(required.path) yok. Ayarlar → Mac sunucusu → Depo klasörü.")
         }
 
+        // Privacy protection: the children count as this app, and without a Desktop/Documents
+        // grant their first `open()` in the repo blocks while macOS waits for the owner (the
+        // migration then hung with an empty log). Read one repo file here first and say so.
+        let probe = apiDir.appending(path: "package.json")
+        let access = await RepoAccess.check(
+            read: RepoAccess.openForReading(probe), noticeAfter: repoAccessNotice, limit: repoAccessLimit,
+            onWaiting: { [weak self] in
+                guard let self, !Task.isCancelled else { return }
+                self.status = .starting(RepoAccess.waitingMessage(repo: repo))
+            })
+        switch access {
+        case .readable: break
+        case .cancelled: return
+        case .denied, .stillWaiting: return fail(RepoAccess.failureMessage(access, repo: repo, probe: probe))
+        }
+        if Task.isCancelled { return }
+
         // Off the main thread: after a rebuild (ad-hoc signature) macOS may ask for the login
         // keychain password before handing the item over; the UI must not freeze meanwhile.
         status = .starting("Anahtar Zinciri bekleniyor (izin penceresi açıldıysa onayla)")
@@ -178,6 +208,9 @@ final class LocalHost {
             do { return (try WorkerTokenKeychain.loadOrCreate(), nil) } catch { return (nil, error.localizedDescription) }
         }.value
         guard let token = loaded.token else { return fail(loaded.error ?? "Anahtar Zinciri okunamadı.") }
+        // Token vault key (P3): per install, 0600 file next to the worker token, API env only.
+        let vaultKey: String
+        do { vaultKey = try VaultKeyFile.loadOrCreate() } catch { return fail("Token kasası anahtarı oluşturulamadı: \(error.localizedDescription)") }
 
         // 3. Ports: the preferred ones when free (a hand-started `wrangler dev` may hold them).
         guard let api = HostEnvironment.isPortFree(config.preferredAPIPort, address: "127.0.0.1") && HostEnvironment.isPortFree(config.preferredAPIPort, address: "0.0.0.0")
@@ -203,6 +236,7 @@ final class LocalHost {
         let base = HostEnvironment.baseEnvironment(path: path)
         var wranglerEnv = base
         wranglerEnv["WORKER_TOKEN"] = token
+        wranglerEnv["TOKEN_ENCRYPTION_KEY"] = vaultKey
         wranglerEnv["STUDIO_INSTANCE_ID"] = instance
         wranglerEnv["WRANGLER_SEND_METRICS"] = "false"
         wranglerEnv["NO_COLOR"] = "1"
@@ -215,22 +249,17 @@ final class LocalHost {
             name: "migrate", executable: node,
             arguments: [wrangler.path, "d1", "migrations", "apply", "DB", "--local"] + persist,
             environment: wranglerEnv.merging(["CI": "1"]) { $1 }, workingDirectory: apiDir, logFile: logFile("migrate"))
-        do {
-            let process = try launcher.launch(migrate)
-            // A hung migration must not block startup forever (seen once on a first run).
-            let watchdog = Task {
-                try await Task.sleep(for: .seconds(120))
-                await process.terminate(grace: .seconds(3))
-            }
-            let code = await process.waitForExit()
-            let timedOut = watchdog.isCancelled == false && code == 143
-            watchdog.cancel()
-            guard code == 0 else {
-                return fail(timedOut ? "Migration 120 sn içinde bitmedi." : "Migration başarısız (çıkış kodu \(code)).", log: "migrate")
-            }
-        } catch {
-            return fail(error.localizedDescription, log: "migrate")
+        let process: any RunningProcess
+        do { process = try launcher.launch(migrate) } catch { return fail(error.localizedDescription, log: "migrate") }
+        // A hung migration must not block startup forever; it fails with an explanation.
+        switch await OneShotRun.wait(for: process, timeout: migrationTimeout) {
+        case .exited(0): break
+        case .exited(let code): return fail("Veritabanı güncellemesi başarısız (çıkış kodu \(code)).", log: "migrate")
+        case .timedOut:
+            return fail(Self.migrationTimeoutMessage(seconds: migrationTimeout.components.seconds, repo: repo), log: "migrate")
+        case .cancelled: return
         }
+        if Task.isCancelled { return }
 
         // 5. API, then wait for it to answer.
         status = .starting("API başlatılıyor")
@@ -246,9 +275,10 @@ final class LocalHost {
             if case .failed(let message) = phases[.api] { return fail(message, log: "api") }
             if await health(port: api)?.instance == instance { ready = true; break }
             try? await Task.sleep(for: .milliseconds(500))
-            if status == .stopped { return }
+            if status == .stopped || Task.isCancelled { return }
         }
         guard ready else { return fail("API 120 sn içinde yanıt vermedi.", log: "api") }
+        if Task.isCancelled { return }
 
         // 6. LAN gateway + Bonjour.
         if let lan {
@@ -329,6 +359,14 @@ final class LocalHost {
 
         status = .running
         onAPIURLChange?(apiURL)
+    }
+
+    static func migrationTimeoutMessage(seconds: Int64, repo: URL) -> String {
+        var message = "Veritabanı güncellemesi (wrangler d1 migrations) \(seconds) sn içinde bitmedi ve durduruldu."
+        if RepoAccess.protectedFolder(containing: repo) != nil {
+            message += " Depo korumalı bir klasörde; macOS erişim izni bekliyor olabilir: \(RepoAccess.settingsHint(for: repo))."
+        }
+        return message + " Ayrıntı: migrate.log."
     }
 
     static func normalizedHostname(_ raw: String) -> String {
@@ -427,4 +465,30 @@ final class LocalHost {
 @MainActor
 enum ActiveHost {
     static weak var current: LocalHost?
+}
+
+/// The token vault's per-install key (`TOKEN_ENCRYPTION_KEY`, P3): 32 random bytes in
+/// base64, generated on first run into a 0600 file in Studio's Application Support folder
+/// (same pattern and reasoning as the worker token) and handed to the API only through its
+/// environment. Losing it makes stored social tokens unreadable (accounts are reconnected).
+enum VaultKeyFile {
+    static func loadOrCreate(directory: URL = HostEnvironment.stateDirectory) throws -> String {
+        let fm = FileManager.default
+        let file = directory.appending(path: "vault-key")
+        if let data = fm.contents(atPath: file.path),
+           let key = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
+           key.count >= 32 {
+            return key
+        }
+        var bytes = [UInt8](repeating: 0, count: 32)
+        guard SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes) == errSecSuccess else {
+            throw WorkerTokenKeychain.KeychainFailure(status: errSecAllocate)
+        }
+        let key = Data(bytes).base64EncodedString()
+        try fm.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        guard fm.createFile(atPath: file.path, contents: Data(key.utf8), attributes: [.posixPermissions: 0o600]) else {
+            throw WorkerTokenKeychain.KeychainFailure(status: errSecIO)
+        }
+        return key
+    }
 }

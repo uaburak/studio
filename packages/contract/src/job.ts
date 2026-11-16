@@ -9,6 +9,7 @@ import {
   pageOf,
   Timestamp,
 } from "./common.ts";
+import { ReelSpecPatch } from "./reel.ts";
 
 export const JobId = z.string().min(1).max(128);
 export type JobId = z.infer<typeof JobId>;
@@ -195,6 +196,11 @@ export const ContentRenderPayload = z
     force: z.boolean().optional(),
     /** Note stored on the new version (edits only). */
     note: z.string().max(2_000).optional(),
+    /**
+     * Reels: edits to the version's `ReelSpec` (texts, timings, duration). The video is
+     * re-rendered without AI and stored as a new `manual_edit` version.
+     */
+    reel: ReelSpecPatch.optional(),
   })
   .meta({ id: "ContentRenderPayload" });
 export type ContentRenderPayload = z.infer<typeof ContentRenderPayload>;

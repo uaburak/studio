@@ -105,6 +105,18 @@ export const MetaDiscoveredPage = z
   .meta({ id: "MetaDiscoveredPage" });
 export type MetaDiscoveredPage = z.infer<typeof MetaDiscoveredPage>;
 
+/** Which discovered Page (and its linked Instagram account) to connect to the brand. */
+export const MetaPageSelection = z
+  .object({
+    pageId: z.string().trim().min(1).max(128),
+    /** Connect the Facebook Page itself. */
+    facebook: z.boolean().default(true),
+    /** Connect the Page's linked Instagram professional account (when it has one). */
+    instagram: z.boolean().default(true),
+  })
+  .meta({ id: "MetaPageSelection" });
+export type MetaPageSelection = z.input<typeof MetaPageSelection>;
+
 export const MetaDiscoverInput = z
   .object({
     brandId: EntityId,
@@ -112,6 +124,16 @@ export const MetaDiscoverInput = z
     appId: z.string().optional(),
     appSecret: z.string().optional(),
     autoConnect: z.boolean().default(true),
+    /**
+     * Connect only these Pages / Instagram accounts (when `autoConnect`). Omitted =
+     * every Page the user can publish to (the old behaviour).
+     */
+    selections: z.array(MetaPageSelection).max(100).optional(),
+    /**
+     * Expiry of `userAccessToken` when the caller already exchanged it (see
+     * `POST /api/social-accounts/meta/exchange`); recorded on Instagram accounts.
+     */
+    userTokenExpiresAt: Timestamp.nullable().optional(),
   })
   .meta({ id: "MetaDiscoverInput" });
 export type MetaDiscoverInput = z.input<typeof MetaDiscoverInput>;
@@ -134,3 +156,82 @@ export const LinkedInConnectInput = z
   })
   .meta({ id: "LinkedInConnectInput" });
 export type LinkedInConnectInput = z.input<typeof LinkedInConnectInput>;
+
+// --- OAuth code exchange (Mac connect flow) -----------------------------------
+
+/**
+ * Facebook Login result handed over by the Mac (loopback redirect). Either the
+ * authorization `code` (needs `appSecret`) or an implicit-flow `accessToken`.
+ * The API exchanges it for a long-lived user token when `appSecret` is given.
+ */
+export const MetaExchangeInput = z
+  .object({
+    appId: z.string().trim().min(1).max(64),
+    appSecret: z.string().trim().min(1).max(256).optional(),
+    code: z.string().trim().min(1).max(4096).optional(),
+    redirectUri: z.string().url().max(2000).optional(),
+    accessToken: z.string().trim().min(8).max(4096).optional(),
+  })
+  .refine(
+    (v) => v.code !== undefined || v.accessToken !== undefined,
+    "code or accessToken is required",
+  )
+  .refine(
+    (v) => v.code === undefined || (v.appSecret !== undefined && v.redirectUri !== undefined),
+    {
+      message: "exchanging a code needs appSecret and redirectUri",
+      path: ["code"],
+    },
+  )
+  .meta({ id: "MetaExchangeInput" });
+export type MetaExchangeInput = z.input<typeof MetaExchangeInput>;
+
+export const MetaExchangeResult = z
+  .object({
+    /** The user token to pass to `meta/discover` (kept in memory by the Mac only). */
+    userAccessToken: z.string(),
+    expiresAt: Timestamp.nullable(),
+    /** True when exchanged for a ~60-day token (an App Secret was given). */
+    longLived: z.boolean(),
+    grantedScopes: z.array(z.string()),
+    missingScopes: z.array(z.string()),
+    pages: z.array(MetaDiscoveredPage),
+  })
+  .meta({ id: "MetaExchangeResult" });
+export type MetaExchangeResult = z.infer<typeof MetaExchangeResult>;
+
+/** LinkedIn authorization-code exchange: the API swaps the code, reads the member and vaults the token. */
+export const LinkedInOAuthInput = z
+  .object({
+    brandId: EntityId,
+    clientId: z.string().trim().min(1).max(128),
+    clientSecret: z.string().trim().min(1).max(256),
+    code: z.string().trim().min(1).max(4096),
+    redirectUri: z.string().url().max(2000),
+  })
+  .meta({ id: "LinkedInOAuthInput" });
+export type LinkedInOAuthInput = z.input<typeof LinkedInOAuthInput>;
+
+/**
+ * Body of `POST /api/social-accounts/{id}/check`. With `live` the API asks the
+ * platform (Meta `debug_token`, LinkedIn `userinfo`); the App ID/secret come
+ * from the Mac's Keychain and are never stored by the API.
+ */
+export const SocialAccountCheckInput = z
+  .object({
+    live: z.boolean().default(false),
+    appId: z.string().trim().min(1).max(64).optional(),
+    appSecret: z.string().trim().min(1).max(256).optional(),
+  })
+  .meta({ id: "SocialAccountCheckInput" });
+export type SocialAccountCheckInput = z.input<typeof SocialAccountCheckInput>;
+
+/** Token health in words the owner can act on (shown per account). */
+export const TOKEN_HEALTH_HINTS: Record<TokenHealthStatus, string> = {
+  valid: "Bağlantı sağlıklı.",
+  expiring_soon: "Erişim anahtarı yakında doluyor; hesabı yeniden bağlayın.",
+  invalid: "Erişim anahtarı geçersiz ya da süresi doldu; hesabı yeniden bağlayın.",
+  missing_scopes:
+    "Yayın için gereken izinlerden bazıları verilmemiş; yeniden bağlarken tüm izinleri onaylayın.",
+  unchecked: "Henüz denetlenmedi.",
+};

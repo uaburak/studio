@@ -1,0 +1,9 @@
+{
+  "status": "ok",
+  "service": "studio-api",
+  "version": "0.0.0",
+  "time": "2026-11-16T10:06:30.968Z",
+  "checks": {
+    "db": "ok"
+  }
+}

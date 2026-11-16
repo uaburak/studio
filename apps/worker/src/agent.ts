@@ -23,8 +23,8 @@ const AgentEnv = z.object({
   STUDIO_CLAUDE_MODEL: z.string().min(1).default("opus"),
   STUDIO_CLAUDE_EFFORT_CHAT: z.enum(["low", "medium", "high", "xhigh", "max"]).optional(),
   STUDIO_CLAUDE_EFFORT_DESIGN: z.enum(["low", "medium", "high", "xhigh", "max"]).optional(),
-  /** Claude calls at the same time across all jobs (default 1). */
-  STUDIO_CLAUDE_CONCURRENCY: z.coerce.number().int().min(1).max(4).default(1),
+  /** Claude calls at the same time across all jobs (default 2: a chat turn plus the generation it starts). */
+  STUDIO_CLAUDE_CONCURRENCY: z.coerce.number().int().min(1).max(4).default(2),
   STUDIO_CLAUDE_TIMEOUT_S: z.coerce.number().int().min(30).max(3600).default(900),
   /** Separate Claude login for the worker (`CLAUDE_CONFIG_DIR=<dir> claude auth login`). */
   STUDIO_CLAUDE_CONFIG_DIR: z.string().min(1).optional(),

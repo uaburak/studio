@@ -18,6 +18,9 @@ export const ACTIVE_SCHEDULE_STATUSES = [
   "publishing",
 ] as const satisfies ScheduleStatus[];
 
+export const ScheduleDelivery = z.enum(["local", "cloud"]).meta({ id: "ScheduleDelivery" });
+export type ScheduleDelivery = z.infer<typeof ScheduleDelivery>;
+
 export const Schedule = z
   .object({
     id: EntityId,
@@ -35,6 +38,15 @@ export const Schedule = z
     scheduledAt: Timestamp,
     status: ScheduleStatus,
     permalink: z.string().nullable().optional(),
+    /**
+     * Who will publish it: `cloud` once the order reached the cloud publisher
+     * (`cloudSyncedAt`), `local` when the Mac worker publishes it itself (the
+     * Mac must be on at that time). `null`: not decided yet.
+     */
+    delivery: ScheduleDelivery.nullable().optional(),
+    cloudSyncedAt: Timestamp.nullable().optional(),
+    /** Last error of the publishing path (failed outcome, cloud push error), Turkish. */
+    lastError: z.string().nullable().optional(),
     cancelledAt: Timestamp.nullable(),
     createdAt: Timestamp,
     updatedAt: Timestamp,
@@ -53,6 +65,14 @@ export const ScheduleCreate = z
   })
   .meta({ id: "ScheduleCreate" });
 export type ScheduleCreate = z.input<typeof ScheduleCreate>;
+
+/** Move a pending schedule (calendar drag). Must stay in the future. */
+export const ScheduleUpdate = z
+  .object({
+    scheduledAt: Timestamp,
+  })
+  .meta({ id: "ScheduleUpdate" });
+export type ScheduleUpdate = z.input<typeof ScheduleUpdate>;
 
 /** Ordered by `scheduledAt` ascending (calendar order). */
 export const ScheduleListQuery = PageQuery.extend({
@@ -139,3 +159,14 @@ export const WorkerScheduleOutcome = z
   })
   .meta({ id: "WorkerScheduleOutcome" });
 export type WorkerScheduleOutcome = z.input<typeof WorkerScheduleOutcome>;
+
+export const WorkerScheduleDelivery = z
+  .object({
+    delivery: ScheduleDelivery,
+    /** Set when the order (with all media) reached the cloud publisher. */
+    cloudSyncedAt: Timestamp.nullable().optional(),
+    /** Push/sync error (Turkish), `null` clears it. */
+    error: z.string().max(4000).nullable().optional(),
+  })
+  .meta({ id: "WorkerScheduleDelivery" });
+export type WorkerScheduleDelivery = z.input<typeof WorkerScheduleDelivery>;

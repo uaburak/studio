@@ -107,15 +107,24 @@ final class PostDetailModel {
     var notice: String?
 
     // Reels
-    var showReelVideo: Bool
+    /// The player is shown (else the cover with a play button).
+    var showReelVideo = false
+    /// The displayed version's MP4, downloaded to the cache (nil while loading).
     private(set) var videoPreviewURL: URL?
+    private(set) var isLoadingVideo = false
+    private(set) var videoError: String?
+    private var loadedVideoAssetId: EntityID?
+    /// The reel editor's working copy of the displayed version's spec.
+    private(set) var reelDraft: ReelDraft?
+    private var reelDraftVersionId: EntityID?
+    /// The running reel re-render (cancellable from the stage).
+    private(set) var reelRenderJobId: EntityID?
 
     init(app: AppModel, card: PostCard, sourceFrame: CGRect) {
         self.app = app
         self.card = card
         self.sourceFrame = sourceFrame
         self.displayedVersion = card.version
-        self.showReelVideo = card.content.type == .reel
         let parts = CaptionParts(caption: card.content.caption)
         captionDraft = parts.body
         hashtagsDraft = parts.hashtags.joined(separator: " ")
@@ -188,7 +197,7 @@ final class PostDetailModel {
 
     /// Why the design cannot be edited right now (nil = it can).
     var editBlocker: String? {
-        if content.type == .reel { return "Reels düzenleme henüz bu ekranda yok." }
+        if content.type == .reel { return "Reels metinleri ve süreleri Düzenle sekmesindeki Reels düzenleyicisinden değişir." }
         if content.status.isLocked { return "Yayındaki post düzenlenemez." }
         guard activeVersion != nil else { return "Henüz bir tasarım sürümü yok." }
         if !isViewingCurrentVersion { return "Eski bir sürümü görüntülüyorsun; düzenlemek için önce geri yükle." }
@@ -240,9 +249,7 @@ final class PostDetailModel {
                 displayedVersion = version
             }
         }
-        if content.type == .reel {
-            await resolveVideoPreviewIfAvailable()
-        }
+        ensureReelState()
         ensureLayouts()
     }
 
@@ -657,7 +664,7 @@ final class PostDetailModel {
     }
 
     func cancelRevision() async {
-        guard let id = revisionJobId else { return }
+        guard let id = revisionJobId ?? reelRenderJobId else { return }
         _ = try? await app.dataService.cancelJob(id)
     }
 
@@ -710,6 +717,10 @@ final class PostDetailModel {
 
     /// Approve first when needed, then one schedule per selected account.
     func schedule() async {
+        if let issue = reelScheduleIssues.first {
+            error = issue
+            return
+        }
         isScheduling = true
         defer { isScheduling = false }
         do {
@@ -792,8 +803,12 @@ final class PostDetailModel {
         return "\(base).\(format.fileExtension)"
     }
 
-    /// JPEGs of every slide in a cache folder, for the share sheet.
+    /// JPEGs of every slide in a cache folder, for the share sheet (a reel shares its MP4).
     func shareableFiles() async -> [URL] {
+        if isReel {
+            guard let url = await reelVideoFile() else { return [] }
+            return [url]
+        }
         let folder = Self.shareFolder.appendingPathComponent("\(content.id)-v\(activeVersion?.version ?? 0)")
         try? FileManager.default.removeItem(at: folder)
         return await export(.jpeg, slides: nil, to: folder)
@@ -846,17 +861,176 @@ final class PostDetailModel {
 
     // MARK: - Reels
 
-    private func resolveVideoPreviewIfAvailable() async {
-        guard let videos = try? await app.dataService.assets(brandId: content.brandId, kind: .video),
-              let firstVideo = videos.first else { return }
-        if !app.isSample, let url = try? app.settings.makeClient().assetContentURL(firstVideo.id) {
-            videoPreviewURL = url
+    var isReel: Bool { content.type == .reel }
+
+    /// Video, cover, duration and spec of the displayed reel version.
+    var reelInfo: ReelVersionInfo? {
+        guard isReel, let version = activeVersion else { return nil }
+        return ReelVersionInfo(version: version)
+    }
+
+    /// Duration problems on the platforms the post is scheduled for (Instagram 3 s–15 min,
+    /// Facebook Reels at most 90 s).
+    var reelPlatformIssues: [String] {
+        guard let ms = reelInfo?.durationMs else { return [] }
+        return ReelLimits.issues(durationMs: ms, platforms: content.targetPlatforms)
+    }
+
+    /// Duration problems on the accounts picked in the schedule popover.
+    var reelScheduleIssues: [String] {
+        guard isReel, let ms = reelInfo?.durationMs else { return [] }
+        let platforms = schedulableAccounts.filter { scheduleAccounts.contains($0.id) }.map(\.platform)
+        return ReelLimits.issues(durationMs: ms, platforms: platforms)
+    }
+
+    /// Keep the draft and the video in step with the displayed version (idempotent; the
+    /// stage calls it on every change).
+    func ensureReelState() {
+        guard isReel, let version = activeVersion else { return }
+        if reelDraftVersionId != version.id {
+            reelDraftVersionId = version.id
+            reelDraft = reelInfo?.spec.map(ReelDraft.init)
+        }
+        let videoId = reelInfo?.videoAssetId
+        if videoId != loadedVideoAssetId {
+            loadedVideoAssetId = videoId
+            videoPreviewURL = nil
+            videoError = nil
+            if let videoId { Task { await loadReelVideo(videoId) } }
+        }
+    }
+
+    func updateReelDraft(_ change: (inout ReelDraft) -> Void) {
+        guard var draft = reelDraft else { return }
+        change(&draft)
+        reelDraft = draft
+    }
+
+    func discardReelDraft() {
+        reelDraft = reelInfo?.spec.map(ReelDraft.init)
+    }
+
+    /// Why the reel cannot be edited now (nil = it can).
+    var reelEditBlocker: String? {
+        guard isReel else { return nil }
+        if content.status.isLocked { return "Yayındaki Reels düzenlenemez." }
+        guard let info = reelInfo else { return "Henüz bir video yok." }
+        if info.spec == nil { return "Bu Reels eski biçimde kaydedilmiş; \"Neyi değiştireyim?\" ile yeni bir sürüm iste." }
+        if !isViewingCurrentVersion { return "Eski bir sürümü görüntülüyorsun; düzenlemek için önce geri yükle." }
+        if case .revising = activity { return "AI düzenlemesi sürüyor." }
+        if activity == .restoring { return "Sürüm geri yükleniyor." }
+        if case .rendering = activity { return "Video yeniden oluşturuluyor." }
+        return nil
+    }
+
+    /// Re-render the video with the editor's changes (`content.render`, no AI): a new
+    /// `manual_edit` version, undoable like any other edit.
+    func rerenderReel() async {
+        if let blocker = reelEditBlocker {
+            error = blocker
             return
         }
-        if let bytes = try? await app.dataService.imageData(assetId: firstVideo.id) {
-            let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent("studio-reel-\(firstVideo.id).mp4")
-            try? bytes.write(to: tempURL)
-            videoPreviewURL = tempURL
+        guard let draft = reelDraft, let base = activeVersion?.version else { return }
+        if let problem = draft.problems.first {
+            error = problem
+            return
+        }
+        guard let patch = draft.patch else { return }
+        activity = .rendering("Video yeniden oluşturuluyor")
+        error = nil
+        showReelVideo = false
+        let service = app.dataService
+        do {
+            let job = try await service.render(contentId: content.id, .reel(version: base, patch: patch))
+            reelRenderJobId = job.id
+            let done = try await service.waitForJob(job.id, timeout: .seconds(1200), interval: .seconds(1)) { job in
+                Task { @MainActor in
+                    guard case .rendering = self.activity else { return }
+                    let message = job.status == .queued
+                        ? (self.app.isOnline ? "Sırada" : "Mac'teki işçiyi bekliyor")
+                        : (job.progressMessage ?? "Video yeniden oluşturuluyor")
+                    self.activity = .rendering(message)
+                }
+            }
+            let output = ContentRenderOutput(done.output)
+            if let number = output.version, number != base {
+                await adopt(versionNumber: number)
+                registerUndo(from: base, to: number, name: "Reels düzenlemesi")
+                notice = "Video v\(number) olarak kaydedildi."
+            }
+        } catch {
+            self.error = "Video: \(AppModel.describe(error))"
+        }
+        reelRenderJobId = nil
+        activity = .idle
+    }
+
+    private static var reelCacheFolder: URL {
+        FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].appendingPathComponent("Studio/Reels", isDirectory: true)
+    }
+
+    private func loadReelVideo(_ assetId: EntityID) async {
+        let url = Self.reelCacheFolder.appendingPathComponent("\(assetId).mp4")
+        if FileManager.default.fileExists(atPath: url.path) {
+            if loadedVideoAssetId == assetId { videoPreviewURL = url }
+            return
+        }
+        isLoadingVideo = true
+        defer { isLoadingVideo = false }
+        do {
+            let data = try await app.dataService.imageData(assetId: assetId)
+            try FileManager.default.createDirectory(at: Self.reelCacheFolder, withIntermediateDirectories: true)
+            try data.write(to: url, options: .atomic)
+            if loadedVideoAssetId == assetId { videoPreviewURL = url }
+        } catch {
+            if loadedVideoAssetId == assetId { videoError = "Video indirilemedi: \(AppModel.describe(error))" }
+        }
+    }
+
+    /// The displayed reel's MP4 on disk (downloads it when needed).
+    func reelVideoFile() async -> URL? {
+        ensureReelState()
+        if let url = videoPreviewURL { return url }
+        guard let id = reelInfo?.videoAssetId else {
+            error = "Bu sürümde video yok."
+            return nil
+        }
+        await loadReelVideo(id)
+        if videoPreviewURL == nil, error == nil { error = videoError ?? "Video indirilemedi." }
+        return videoPreviewURL
+    }
+
+    func suggestedReelFilename(cover: Bool) -> String {
+        let base = PostExporter.baseName(title: content.title, version: activeVersion?.version ?? 1)
+        return cover ? "\(base)-kapak.jpg" : "\(base).mp4"
+    }
+
+    /// Save the MP4 (or the cover JPEG) to `url`.
+    @discardableResult
+    func exportReel(cover: Bool, to url: URL) async -> URL? {
+        isExporting = true
+        exportMessage = cover ? "Kapak hazırlanıyor" : "Video hazırlanıyor"
+        defer { isExporting = false }
+        do {
+            if FileManager.default.fileExists(atPath: url.path) { try FileManager.default.removeItem(at: url) }
+            if cover {
+                guard let id = reelInfo?.coverAssetId else { throw StudioAPIError.server(status: 404, code: .notFound, message: "Kapak görseli yok.", issues: []) }
+                try await app.dataService.imageData(assetId: id).write(to: url, options: .atomic)
+            } else {
+                guard let file = await reelVideoFile() else {
+                    exportMessage = nil
+                    return nil
+                }
+                try FileManager.default.copyItem(at: file, to: url)
+            }
+            lastExportURLs = [url]
+            exportMessage = "\(url.lastPathComponent) kaydedildi"
+            error = nil
+            return url
+        } catch {
+            exportMessage = nil
+            self.error = "Dışa aktarma: \(AppModel.describe(error))"
+            return nil
         }
     }
 }

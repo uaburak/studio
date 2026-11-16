@@ -3,6 +3,7 @@ import AVFoundation
 import AVKit
 import Quartz
 import StudioKit
+import UniformTypeIdentifiers
 
 /// Card geometry for a container size: the post is 4:5 on the left, details on the right.
 struct DetailLayout {
@@ -46,6 +47,12 @@ final class PostDetailOverlayView: NSView, NSUserInterfaceValidations {
     private var videoToggle: PillButton!
     private var playerView: AVPlayerView?
     private var videoKey: String?
+    private var loopObserver: NSObjectProtocol?
+    /// Reels: play button over the cover, and "0:12 · Hareketli grafik".
+    private let playBadge = ThemedView()
+    private var playButton: GlyphButton!
+    private let reelChip = ThemedView()
+    private let reelChipLabel = NSTextField(labelWithString: "")
     private var observation: ObservationToken?
     private var didAnimateIn = false
     private var isClosing = false
@@ -139,11 +146,36 @@ final class PostDetailOverlayView: NSView, NSUserInterfaceValidations {
         oldVersionBar.addSubview(oldRow)
         stage.addSubview(oldVersionBar)
 
-        videoToggle = PillButton(title: "Kapak görseli", kind: .secondary, height: 26) { [weak self] in
+        videoToggle = PillButton(title: "Kapak", kind: .secondary, height: 26) { [weak self] in
             self?.model.showReelVideo.toggle()
         }
+        videoToggle.appearance = NSAppearance(named: .darkAqua)
         videoToggle.isHidden = true
+        videoToggle.translatesAutoresizingMaskIntoConstraints = false
         stage.addSubview(videoToggle)
+
+        playBadge.backgroundColor = NSColor.black.withAlphaComponent(0.55)
+        playBadge.cornerRadius = 32
+        playBadge.translatesAutoresizingMaskIntoConstraints = false
+        playButton = GlyphButton(symbol: "play.fill", size: 22, weight: .bold, diameter: 64) { [weak self] in
+            self?.model.showReelVideo = true
+        }
+        playButton.appearance = NSAppearance(named: .darkAqua)
+        playButton.toolTip = "Videoyu oynat"
+        playButton.setAccessibilityLabel("Videoyu oynat")
+        playBadge.addSubview(playButton)
+        playBadge.isHidden = true
+        stage.addSubview(playBadge)
+
+        reelChip.backgroundColor = NSColor.black.withAlphaComponent(0.6)
+        reelChip.cornerRadius = 11
+        reelChip.translatesAutoresizingMaskIntoConstraints = false
+        reelChipLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .semibold)
+        reelChipLabel.textColor = .white
+        reelChipLabel.translatesAutoresizingMaskIntoConstraints = false
+        reelChip.addSubview(reelChipLabel)
+        reelChip.isHidden = true
+        stage.addSubview(reelChip)
 
         NSLayoutConstraint.activate([
             pager.heightAnchor.constraint(equalToConstant: 28),
@@ -165,6 +197,20 @@ final class PostDetailOverlayView: NSView, NSUserInterfaceValidations {
 
             videoToggle.topAnchor.constraint(equalTo: stage.topAnchor, constant: 14),
             videoToggle.trailingAnchor.constraint(equalTo: stage.trailingAnchor, constant: -14),
+
+            playBadge.widthAnchor.constraint(equalToConstant: 64),
+            playBadge.heightAnchor.constraint(equalToConstant: 64),
+            playBadge.centerXAnchor.constraint(equalTo: stage.centerXAnchor),
+            playBadge.centerYAnchor.constraint(equalTo: stage.centerYAnchor),
+            playButton.centerXAnchor.constraint(equalTo: playBadge.centerXAnchor),
+            playButton.centerYAnchor.constraint(equalTo: playBadge.centerYAnchor),
+
+            reelChip.heightAnchor.constraint(equalToConstant: 22),
+            reelChip.leadingAnchor.constraint(equalTo: stage.leadingAnchor, constant: 14),
+            reelChip.bottomAnchor.constraint(equalTo: stage.bottomAnchor, constant: -14),
+            reelChipLabel.leadingAnchor.constraint(equalTo: reelChip.leadingAnchor, constant: 9),
+            reelChipLabel.trailingAnchor.constraint(equalTo: reelChip.trailingAnchor, constant: -9),
+            reelChipLabel.centerYAnchor.constraint(equalTo: reelChip.centerYAnchor),
         ])
 
         panel = DetailPanelView(model: model, actions: .init(
@@ -256,6 +302,8 @@ final class PostDetailOverlayView: NSView, NSUserInterfaceValidations {
         guard !isClosing else { return }
         isClosing = true
         playerView?.player?.pause()
+        if let loopObserver { NotificationCenter.default.removeObserver(loopObserver) }
+        loopObserver = nil
         model.schedulePresented = false
         PostQuickLook.shared.closeIfShowing()
         let target = DetailLayout(container: bounds.size)
@@ -311,7 +359,11 @@ final class PostDetailOverlayView: NSView, NSUserInterfaceValidations {
         let busy = model.activity
         activityPill.isHidden = !busy.isBusy || showsVideo
         if busy.isBusy {
-            let cancellable: Bool = if case .revising = busy { model.revisionJobId != nil } else { false }
+            let cancellable: Bool = switch busy {
+            case .revising: model.revisionJobId != nil
+            case .rendering: model.reelRenderJobId != nil
+            default: false
+            }
             activityPill.show(busy.message, cancellable: cancellable)
         }
 
@@ -320,42 +372,67 @@ final class PostDetailOverlayView: NSView, NSUserInterfaceValidations {
         restoreButton.isEnabled = !busy.changesVersion && !model.content.status.isLocked
         restoreButton.showsSpinner = busy == .restoring
 
-        videoToggle.isHidden = !model.hasVideoCapability
-        videoToggle.title = model.showReelVideo ? "Kapak görseli" : "Videoyu oynat"
+        model.ensureReelState()
+        let reel = model.isReel ? model.reelInfo : nil
+        videoToggle.isHidden = !showsVideo
+        videoToggle.title = "Kapak"
+        videoToggle.toolTip = "Videoyu durdur, kapağı göster"
+        let canPlay = reel?.hasVideo == true && !busy.changesVersion
+        playBadge.isHidden = !model.isReel || showsVideo || !canPlay
+        playButton.isEnabled = model.videoPreviewURL != nil
+        playButton.showsSpinner = model.isLoadingVideo
+        playButton.toolTip = model.videoError ?? (model.videoPreviewURL == nil ? "Video indiriliyor…" : "Videoyu oynat")
+        if let reel, let ms = reel.durationMs, !showsVideo {
+            reelChip.isHidden = false
+            reelChipLabel.stringValue = [TurkishFormat.clock(ms: ms), reel.recipe?.label].compactMap { $0 }.joined(separator: " · ")
+        } else {
+            reelChip.isHidden = true
+        }
+        if model.showReelVideo, !canPlay { model.showReelVideo = false }
         syncVideo()
     }
 
-    private var showsVideo: Bool { model.showReelVideo && model.hasVideoCapability }
+    private var showsVideo: Bool { model.showReelVideo && model.hasVideoCapability && model.videoPreviewURL != nil }
 
     private func syncVideo() {
-        let key = showsVideo ? (model.videoPreviewURL?.absoluteString ?? "empty") : nil
+        let key = showsVideo ? model.videoPreviewURL?.absoluteString : nil
         guard key != videoKey else { return }
         videoKey = key
         playerView?.player?.pause()
         playerView?.removeFromSuperview()
         playerView = nil
+        if let loopObserver { NotificationCenter.default.removeObserver(loopObserver) }
+        loopObserver = nil
         canvas.isHidden = key != nil
-        guard key != nil else { return }
+        guard key != nil, let url = model.videoPreviewURL else { return }
         let pv = AVPlayerView()
         pv.controlsStyle = .floating
         pv.videoGravity = .resizeAspect
-        if let url = model.videoPreviewURL { pv.player = AVPlayer(url: url) }
+        pv.showsFullScreenToggleButton = true
+        let player = AVPlayer(url: url)
+        // Reels loop.
+        player.actionAtItemEnd = .none
+        loopObserver = NotificationCenter.default.addObserver(
+            forName: AVPlayerItem.didPlayToEndTimeNotification, object: player.currentItem, queue: .main
+        ) { [weak player] _ in
+            player?.seek(to: .zero)
+            player?.play()
+        }
+        pv.player = player
         pv.frame = stage.bounds
         pv.autoresizingMask = [.width, .height]
-        stage.addSubview(pv, positioned: .above, relativeTo: canvas)
+        stage.addSubview(pv, positioned: .below, relativeTo: videoToggle)
         playerView = pv
-        if model.videoPreviewURL == nil {
-            let hint = NSTextField.styledLabel("Reels videosu render edilince burada oynatılır.", font: Theme.smallFont, color: NSColor.white.withAlphaComponent(0.7))
-            hint.frame = CGRect(x: 0, y: stage.bounds.midY - 10, width: stage.bounds.width, height: 20)
-            hint.alignment = .center
-            hint.autoresizingMask = [.width, .minYMargin, .maxYMargin]
-            pv.addSubview(hint)
-        }
+        player.play()
     }
 
     // MARK: Actions
 
     private func presentExportMenu(from anchor: NSView) {
+        if model.isReel {
+            presentReelExportMenu(from: anchor)
+            return
+        }
         let reason: String? = model.activeVersion == nil ? "Dışa aktarılacak bir sürüm yok." : (model.isExporting ? "Dışa aktarma sürüyor." : nil)
         let menu = PostFileExport.menu(
             target: self, action: #selector(exportChosen(_:)), slideCount: model.slides.count,
@@ -366,6 +443,46 @@ final class PostDetailOverlayView: NSView, NSUserInterfaceValidations {
         menu.addItem(share)
         menu.addItem(ClosureMenuItem(title: "Açıklamayı kopyala") { [weak self] in self?.model.copyCaption() })
         menu.popUp(positioning: nil, at: NSPoint(x: 0, y: anchor.bounds.height + 4), in: anchor)
+    }
+
+    /// Reels: the MP4, the cover, share, copy caption.
+    private func presentReelExportMenu(from anchor: NSView) {
+        let info = model.reelInfo
+        let reason: String? = info?.hasVideo != true ? "Bu sürümde video yok." : (model.isExporting ? "Dışa aktarma sürüyor." : nil)
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+        let video = ClosureMenuItem(title: "MP4 video") { [weak self] in self?.saveReel(cover: false) }
+        video.isEnabled = reason == nil
+        video.toolTip = reason
+        menu.addItem(video)
+        let cover = ClosureMenuItem(title: "Kapak görseli (JPEG)") { [weak self] in self?.saveReel(cover: true) }
+        cover.isEnabled = info?.coverAssetId != nil && !model.isExporting
+        menu.addItem(cover)
+        menu.addItem(.separator())
+        let share = ClosureMenuItem(title: "Paylaş…") { [weak self] in self?.share(from: anchor) }
+        share.isEnabled = reason == nil
+        menu.addItem(share)
+        menu.addItem(ClosureMenuItem(title: "Açıklamayı kopyala") { [weak self] in self?.model.copyCaption() })
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: anchor.bounds.height + 4), in: anchor)
+    }
+
+    private func saveReel(cover: Bool) {
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = model.suggestedReelFilename(cover: cover)
+        panel.allowedContentTypes = cover ? [.jpeg] : [.mpeg4Movie]
+        panel.canCreateDirectories = true
+        let run: (URL) -> Void = { [weak self] url in
+            guard let self else { return }
+            Task { await self.model.exportReel(cover: cover, to: url) }
+        }
+        if let window {
+            panel.beginSheetModal(for: window) { response in
+                guard response == .OK, let url = panel.url else { return }
+                MainActor.assumeIsolated { run(url) }
+            }
+        } else if panel.runModal() == .OK, let url = panel.url {
+            run(url)
+        }
     }
 
     @objc private func exportChosen(_ sender: NSMenuItem) {

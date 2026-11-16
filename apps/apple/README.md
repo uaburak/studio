@@ -15,7 +15,7 @@ Swift 6 dil modu (tam katı eşzamanlılık), üçüncü taraf bağımlılık yo
 | `.../Services` | `ConversationService` ve `StudioDataService` protokolleri; gerçek API uygulamaları (`RemoteConversationService`, `RemoteStudioDataService`); mesajın tel biçimi tek yerde (`MessageWire`) |
 | `.../Sample` | `SampleBackend`: bellekte, taslaklarla aynı Türkçe örnek veri (önizleme, test ve ekran görüntüsü için). |
 | `StudioMac/` | macOS masaüstü uygulaması (%100 AppKit). Yerel API + Worker + Cloudflare Tunnel (`cloudflared`) gözetmeni içerir. |
-| `StudioIOS/` | iPhone/iPad uzaktan kumanda uygulaması (%100 UIKit). Sohbet, Postlar, Takvim ve Ayarlar (kod ile eşleştirme + uzaktan tünel bağlantısı). |
+| `StudioIOS/` | iPhone/iPad uzaktan kumanda uygulaması (%100 UIKit). Kök ekran sohbet; çekmeceden Postlar, Takvim, Markalar, Mac durumu ve Ayarlar (kod ile eşleştirme + uzaktan tünel bağlantısı). |
 | `scripts/` | `generate-project.sh` (macOS), `generate-ios-project.sh` (iOS), yerel API'ye örnek veri, fixture yakalama, ekran görüntüsü betikleri |
 
 ## Proje üretimi ve derleme
@@ -45,16 +45,18 @@ xcodebuild -project apps/apple/StudioIOS/StudioIOS.xcodeproj -scheme StudioIOS -
 - **Sohbet**: Canlı akış, araç adımları, yetki onay kartı (`consent`), soru kartı, plan kartı ("Onayla ve üret"), ekli görseller ve `@takma-ad` tamamlama.
 - **Postlar**: ‹ › ile ay gezintisi, durum filtresi (Tümü / Hazır / Görsel bekliyor / Onaylandı / Zamanlandı / Yayınlandı), render edilmiş 4:5 kartlar, kartta "Render ediliyor" rozeti, klavye seçimi ve sağ tık menüsü (Aç, Hızlı bakış, Dışa aktar, Açıklamayı kopyala, Çoğalt, Sil…), yükleniyor / boş / hata durumları, hazır postlar için yüzen onay çubuğu.
 - **Açık post ve editör**: karttan büyüyerek açılır; solda render edilmiş slayt ve renderer'ın ölçtüğü katman kutuları (tıkla seç, sürükle taşı, köşeden boyutlandır, çift tıkla metni düzenle, görseli yuvaya/görsel katmanına bırak), sağda **Post | Düzenle | Sürümler**. Her değişiklik design-kit yaması olarak `content.render` işine gider, yeni `manual_edit` sürümü render edilince görüntü değişir ("Render ediliyor"). Geri al/yinele sürümleri geri yükler. "Neyi değiştireyim?" bu sürümü AI ile düzeltir (`content.generate` + `baseVersion`). Açıklama ve etiketlerde platform karakter sayaçları; sürüm listesi ve "Bu sürümü geri yükle"; hash ile onay; zamanlama. Dışa aktarma: JPEG / PNG (bu slayt ya da tümü), PDF, Finder'da göster, paylaşma menüsü, açıklamayı kopyala; çoğaltma ve onaylı silme. Ortak mantık `StudioKit`'te (`DesignPatch`, `SlideCanvasGeometry`, `PostExporter`, `CaptionLimits`).
-- **Takvim (`⇧⌘K`)**: Aylık 7 sütunlu ızgara (`Pzt..Paz`), durum noktaları (`Zamanlandı`, `Yayınlandı`, `Onaylandı`, `Hata`), seçili gün/ay listesi, yayın bağlantısı açma ve bekleyen zamanlamayı iptal etme.
+- **Takvim (`⇧⌘K`)**: Ay · Hafta (saat satırlı) · Yayın günlüğü. Bekleyen zamanlamalar sürüklenerek başka güne (saat korunur) ya da haftada başka saate taşınır (`PATCH /api/schedules/{id}`). Her satır durumu söyler: Zamanlandı (Mac açık olmalı) / Buluta gönderiliyor / Bulutta / Yayınlanıyor / Yayınlandı (bağlantı) / Hata (neden + **Yeniden dene**). "Zamanla" (ya da güne çift tık) ortak **zamanlama sayfasını** açar: onaylı post, hesaplar, yerel saat, platform kuralları (ön denetim, Türkçe), "Şimdi yayınla" (onaylı). Açık posttaki "Zamanla" da aynı sayfayı açar.
 - **Medya Kütüphanesi (`⇧⌘M`)**: Tür filtreleri (`Tümü`, `Görseller`, `Videolar`, `Belgeler (PDF)`), sürükle-bırak yükleme ve **"AI Görsel Üret"** sayfası (oran, 1K/2K çözünürlük, referans ürün fotoğrafı ve **"Ürün etiketini bozmadan koru"**).
 - **İlk açılış (`Start/Onboarding*`)**: marka yoksa ya da Claude girişi yoksa açılır: Hoş geldin → Claude hesabı (`POST /api/workers/claude/login` ile `claude auth login --claudeai`, durum yoklanır) → Mac sunucusu (durum, worker, yerel ağ, telefon eşleştirme yönlendirmesi) → ilk marka (ad, kısa ad, dil, Instagram) → Hazır. Geçilebilir, kaldığı adımı hatırlar (`studio.onboarding.*`), tamamlanınca kendiliğinden açılmaz; Yardım → Başlangıç rehberi.
 - **Marka ayarları (`Brands/`, ⇧⌘B; kenar çubuğunda marka başlığına sağ tık)**: Genel (ad, kısa ad, dil, onaylı arşivle / geri yükle) · Marka kiti (3–12 örnek post, açık/koyu zemin logoları, font + lisans notu, renk seçicili palet, notlar; kendiliğinden kaydedilir) ve **Profili çıkar** (`brand.analyze`, ilerleme ve hata görünür, yeniden açılınca çalışan iş izlenir) · Profil (sürüm geçmişi, token tablosu, DESIGN.md, VOICE.md, gerçekler/izinli sayılar, taslak kaydet, onayla, eski sürümü geçerli yap) · Hesaplar (platform başına hesap adı ve durumu; bağlama bu ekranda henüz yok). Yeni marka: ⇧⌘N. Kenar çubuğunda marka başlığına tıklamak markayı seçer (yeni sohbet, postlar, takvim, medya onu izler). Arşivlenmiş markalar Ayarlar → Markalar'da.
-- **Sosyal hesap bağlama**: `AccountConnectSheetController` (Meta sayfa/IG keşfi, doğrudan jeton kasası, LinkedIn OAuth bağlantısı, jeton sağlık kontrolü) sağ paneldeki hesap satırından açılır.
+- **Hesaplar (Ayarlar → Hesaplar; sağ paneldeki hesap satırı)**: sahibin kendi Meta uygulaması (App ID; App Secret Anahtar Zinciri'nde) ile Facebook Login tarayıcıda açılır, yönlendirme `http://localhost:8793/meta/callback` (Mac'te tek seferlik dinleyici) ile döner; Sayfalar ve bağlı Instagram hesapları listelenir, marka için seçilenler bağlanır. LinkedIn aynı şekilde (Client ID/Secret, `http://localhost:8793/linkedin/callback`, 60 gün). Hesap başına sağlık (süre, geçersiz, eksik izin), Denetle (canlı), Yeniden bağla, Bağlantıyı kes. Uygulama girilmemişse ekran neyin nerede oluşturulacağını adım adım yazar. "Gelişmiş" altında elle token girme.
+- **Yayın (Ayarlar → Yayın)**: bulut yayıncı adresi + `PUBLISHER_TOKEN` (denenir, API kasasına ve Anahtar Zinciri'ne yazılır); yoksa yayını Mac yapar. Son eşitleme ve hatası. Bildirimler anahtarı.
+- **Bildirimler (`Notifications/`)**: yayınlandı / yayınlanamadı (tıklayınca gönderi açılır), post üretimi / AI görsel / marka profili bitti-başarısız, süresi dolmak üzere ya da geçersiz hesap. İzin ilk zamanlamada istenir; aynı olay iki kez gönderilmez. Uygulama öne gelince worker'dan bulut eşitlemesi istenir (`POST /api/publishing/sync`).
 - **Yerel Sunucu & Uzaktan Erişim (Ayarlar → Bu Mac)**: gömülü API + Worker süreç gözetimi, 6 haneli telefon eşleştirme kodu üretimi ve `cloudflared` tünel yönetimi (`social.burakkoc.net`).
 
 ### `StudioIOS` (UIKit)
-- **4 Sekmeli `UITabBarController`**: `Sohbet`, `Postlar`, `Takvim`, `Ayarlar`.
-- **Sohbet**: Marka seçici, sohbet listesi, canlı ajan akışı, plan/soru/izin kartları, `PHPickerViewController` ile fotoğraf ekleme.
+- **Kök ekran sohbet (Claude uygulaması düzeni, sekme çubuğu yok)**: `StudioRootViewController` sohbeti tam ekran gösterir; sol üstteki cam düğme ya da soldan kaydırma **çekmeceyi** açar (sohbet sağa kayar, kararır, köşeleri yuvarlanır; dokununca/kaydırınca kapanır). Çekmece (`DrawerViewController`): serif "Studio" başlığı, sohbet arama, Postlar (onay bekleyen sayısı), Takvim, Markalar, Mac durumu, "Geçmiş" (seçili markanın sohbetleri; kaydırarak arşivle/adlandır), altta avatar (Ayarlar) ve "Yeni sohbet". Sayfalar sohbetin üstüne geri düğmeli tam sayfa olarak açılır; bildirim ve bağlantılar `IOSRoute` ile buraya düşer.
+- **Sohbet**: boş sohbette Studio'nun turuncu işareti ve saate göre serif selamlama (ad: Ayarlar → Karşılama ya da eşleşmiş Mac'in adı), sağ üstte marka/model menüsü; sohbette yeni sohbet + "…" (marka, model, düşünme, kullanım, görseller, adlandır, paylaş, arşivle). Asistan yanıtları New York serif, başlıklar kalın serif, listeler asılı girintili; kullanıcı mesajı sağda gri balon; araç adımları katlanır satır; onay/soru/plan kartları. Yanıtın altında kopyala, sesli oku (Türkçe ses) ve paylaş. Yüzen cam besteci: + (Fotoğraflar, Kamera, Dosyalar, Pano), Türkçe dikte (mikrofon), birincil düğme (yazı varken gönder, yanıt sürerken durdur, boşken basılı tutup konuş). En alta git düğmesi.
 - **Postlar & Post Detayı**: Filtreli `UICollectionView` ızgarası, tam hash doğrulamalı onaylama, slayt geçişi, açıklama/etiket düzenleme, `UIDatePicker` ile zamanlama ve revizyon isteme.
 - **Takvim**: Aylık ızgara + zamanlanmış post listesi, yayın bağlantısı ve iptal aksiyonu.
 - **Ayarlar & Eşleştirme**: Mac'teki 6 haneli kod ile eşleştirme (`PairingSheetViewController`), Anahtar Zinciri Bearer jetonu, Uzaktan Kumanda (`https://social.burakkoc.net`) anahtarı ve görünüm seçimi.
@@ -85,6 +87,8 @@ Veriler ve üretim Mac'te. `StudioMac` açılınca (`studio.host.enabled`, varsa
   `node` ve `claude` oradan bulunur. Depo yolu Ayarlar → Mac sunucusu → "Depo klasörü" (varsayılan: uygulamanın derlendiği
   depo, yoksa `~/Desktop/Burak/Code/Studio`); orada `pnpm install` yapılmış olmalı. **Node, wrangler ve worker'ın uygulama
   paketine gömülmesi sonraki adım.**
+- **TOKEN_ENCRYPTION_KEY (P3):** token kasası anahtarı; ilk açılışta 32 rastgele bayt üretilip `vault-key` dosyasına (0600) yazılır,
+  API'ye yalnızca ortam değişkeniyle verilir. Silinirse kayıtlı hesap token'ları çözülemez (hesaplar yeniden bağlanır).
 - **WORKER_TOKEN:** ilk açılışta rastgele üretilir, Anahtar Zinciri'nde (`net.burakkoc.studio` / `local-worker-token`)
   saklanır, iki alt sürece yalnızca ortam değişkeniyle verilir (wrangler'a `--env-file` ile boş bir dosya gösterilir ki
   `apps/api/.dev.vars` okunmasın). Depoya ya da diske yazılmaz.
@@ -119,8 +123,18 @@ etme, durdurma; gerçek `posix_spawn` ile günlük yakalama ve SIGTERM'i yok say
 
 ## Kısayollar (`StudioMac`)
 
-⌘N yeni sohbet · ⇧⌘N yeni marka · ⇧⌘B marka ayarları (içinde ⌘1–⌘4 sekmeler) · ⌘K ara · ⌃⌘S kenar çubuğu · ⌥⌘I sağ panel · ⌘[ / ⌘] geri / ileri · ⇧⌘P postlar · ⇧⌘K takvim · ⇧⌘M medya ·
-⇧⌘L görünüm (Sistem → Açık → Koyu) · ⌘↩ açık postu onayla · composer'da ↩ gönder, ⇧↩ yeni satır, `@` takma ad öner.
+Menüler: Studio · Dosya · Düzen · Görüntü · Git · Marka · Pencere · Yardım (hepsi `validateMenuItem` ile; bir sayfa açıkken
+pencereye dokunan komutlar kapalı). ⌘N yeni sohbet · ⌘F (ya da ⌘K) ara: markalar, sohbetler, tüm markaların postları (başlık +
+açıklama metni, istemci tarafında) · ⌘, ayarlar · ⌘R yenile · ⌘1…⌘9 markaya geç (alfabetik; Marka menüsü) · ⇧⌘N yeni marka ·
+⇧⌘B marka ayarları (içinde ⌘1–⌘4 sekmeler) · ⌃⌘S kenar çubuğu · ⌥⌘I sağ panel · ⌘[ / ⌘] geri / ileri · ⇧⌘P postlar ·
+⇧⌘K takvim · ⇧⌘M medya · ⇧⌘L görünüm (Sistem → Açık → Koyu) · ⌃⌘F tam ekran · ⌘W kapat · ⇧⌘/ kısayol listesi ·
+⌘↩ açık postu onayla · composer'da ↩ gönder, ⇧↩ yeni satır, `@` takma ad öner, ⌘V görseli ek olarak yapıştırır.
+
+Pencere boyutu/konumu (`StudioMainWindow`), son ekran (sohbet / postlar / takvim / medya), seçili marka ve panellerin
+açık/kapalı durumu (`studio.session`) yeniden açılışta geri gelir; arşivlenmiş sohbet yeni sohbete düşer. Sunucu, API, worker
+ve Claude sorunları pencerenin üstünde tek bir şeritte, düzeltme düğmesiyle (Yeniden dene / Yeniden başlat / Ayarlar /
+Giriş yap) görünür; kenar çubuğunun altında Mac sunucusunun durumu yazar. Cam yüzeyler "Saydamlığı azalt" açıkken opak,
+"Karşıtlığı artır" açıkken kenarlıklıdır; simge düğmelerinin VoiceOver adları ve Tam Klavye Erişimi desteği vardır.
 
 Postlar ve editör: oklar kart seçer, ↩ açar, boşluk Hızlı Bakış, ⌫ siler (onaylı), ⌘D çoğaltır, ⌘E dışa aktarır. Açık postta
 esc seçimi kaldırır / kapatır, ← → slayt değiştirir ya da seçili katmanı 1 px (⇧ 10 px) kaydırır, ⇥ sonraki katman, ↩ metni

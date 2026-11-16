@@ -30,6 +30,7 @@ final class BrandSettingsSheetController: NSViewController {
     private weak var shownTab: NSView?
     private var observation: ObservationToken?
     private var closing = false
+    private var pendingConnect: Platform?
 
     init(app: AppModel, target: BrandSettingsTarget, onDone: @escaping () -> Void) {
         model = BrandSettingsModel(app: app, brandId: target.brandId, tab: target.tab)
@@ -162,7 +163,8 @@ final class BrandSettingsSheetController: NSViewController {
             case .general: BrandGeneralTabView(model: model)
             case .kit: BrandKitTabView(model: model)
             case .profile: BrandProfileTabView(model: model)
-            case .accounts: BrandAccountsTabView(model: model)
+            case .accounts:
+                BrandAccountsTabView(model: model) { [weak self] platform in self?.requestClose(then: platform) }
             }
             tabViews[tab] = next
         }
@@ -180,6 +182,12 @@ final class BrandSettingsSheetController: NSViewController {
     }
 
     /// Save the kit, then ask about unsaved profile edits before closing.
+    /// Close (asking about an unsaved profile draft first), then open the account sheet.
+    private func requestClose(then connect: Platform) {
+        pendingConnect = connect
+        requestClose()
+    }
+
     private func requestClose() {
         guard !closing else { return }
         view.window?.makeFirstResponder(nil) // commit the field being edited
@@ -229,6 +237,9 @@ final class BrandSettingsSheetController: NSViewController {
         model.stop()
         onDone()
         if presentingViewController != nil { dismiss(nil) }
+        if let platform = pendingConnect {
+            model.app.accountConnectTarget = AccountConnectTarget(brandId: model.brandId, platform: platform)
+        }
     }
 }
 
@@ -372,11 +383,13 @@ final class BrandAccountsTabView: NSView {
     private var removeButtons: [Platform: PillButton] = [:]
     private var handlers: [FieldHandler] = []
     private var observation: ObservationToken?
+    private let onConnect: (Platform) -> Void
 
     static let platforms: [Platform] = [.instagram, .facebook, .linkedin]
 
-    init(model: BrandSettingsModel) {
+    init(model: BrandSettingsModel, onConnect: @escaping (Platform) -> Void) {
         self.model = model
+        self.onConnect = onConnect
         super.init(frame: .zero)
         let (scroll, stack) = BrandUI.scrollingStack()
         addSubview(scroll)
@@ -418,12 +431,19 @@ final class BrandAccountsTabView: NSView {
         errorBanner.onDismiss = { [weak model] in model?.accountsError = nil }
         BrandUI.addFull(errorBanner, to: stack)
 
-        let connect = PillButton(title: "Hesabı bağla", kind: .secondary, height: 28)
-        connect.isEnabled = false
-        connect.toolTip = "Henüz bu ekrandan bağlanamıyor"
-        let connectNote = BrandUI.note("Hesap bağlama (Meta ve LinkedIn girişi, şifreli anahtar kasası) bu ekranda henüz yok; yayın ve hesap bağlama adımıyla birlikte gelecek. Şimdilik hesap adlarını kaydedebilirsin.")
+        // Connecting runs in the account sheet (Facebook Login / LinkedIn OAuth, token vault):
+        // this sheet closes and that one opens for the same brand.
+        let connectMeta = PillButton(title: "Instagram / Facebook bağla…", kind: .secondary, height: 28) { [weak self] in
+            self?.openConnect(.instagram)
+        }
+        connectMeta.toolTip = "Facebook Login ile Sayfaları ve bağlı Instagram hesaplarını bağla"
+        let connectLinkedIn = PillButton(title: "LinkedIn bağla…", kind: .secondary, height: 28) { [weak self] in
+            self?.openConnect(.linkedin)
+        }
+        connectLinkedIn.toolTip = "LinkedIn girişiyle sayfa ya da profil bağla"
+        let connectNote = BrandUI.note("Bağlama, sağlık denetimi ve yeniden bağlama hesap sayfasında yapılır (Ayarlar → Hesaplar ile aynı akış). Burada yalnızca hesap adlarını kaydedebilirsin.")
         let (connectCard, connectStack) = BrandUI.card(spacing: 8)
-        connectStack.addArrangedSubview(connect)
+        connectStack.addArrangedSubview(BrandUI.hstack([connectMeta, connectLinkedIn], spacing: 8))
         BrandUI.addFull(connectNote, to: connectStack)
         BrandUI.addFull(connectCard, to: stack)
 
@@ -481,6 +501,10 @@ final class BrandAccountsTabView: NSView {
 
     private func commit(_ value: String, _ platform: Platform) {
         Task { await model.saveHandle(value, for: platform) }
+    }
+
+    private func openConnect(_ platform: Platform) {
+        onConnect(platform)
     }
 
     private func removeTapped(_ platform: Platform) {

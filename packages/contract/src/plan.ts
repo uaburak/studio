@@ -10,6 +10,7 @@ import {
 } from "./common.ts";
 import { ContentType } from "./content.ts";
 import { Job, JobStatus } from "./job.ts";
+import { ReelGenerateOptions } from "./reel.ts";
 
 /*
  * Content plans (task A2). The chat agent proposes a plan for a period
@@ -322,6 +323,8 @@ export const ContentGeneratePayload = z
     model: AgentModel.optional(),
     /** Reasoning effort the user picked; absent = the worker's default. */
     effort: AgentEffort.optional(),
+    /** Reel options (recipe, footage, audio, length, a ready spec); reels only. */
+    reel: ReelGenerateOptions.optional(),
   })
   .meta({ id: "ContentGeneratePayload" });
 export type ContentGeneratePayload = z.infer<typeof ContentGeneratePayload>;

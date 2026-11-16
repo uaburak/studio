@@ -249,6 +249,52 @@ STUDIO_E2E_API=http://127.0.0.1:8797 STUDIO_WORKER_TOKEN=<test token> STUDIO_E2E
   STUDIO_E2E_OUT=$S/out pnpm --filter @studio/worker exec tsx scripts/e2e-agent.ts
 ```
 
+## Reels (P6): `content.generate` (tür `reel`) ve `content.render` (`format: "mp4"`)
+
+Bir Reels = bir `ReelSpec` (`packages/contract/src/reel.ts`) + 1080×1920 MP4 + kapak JPEG. Sürüm tek slayt
+saklar: `<main data-artboard>` üzerinde `data-video-asset-id`, `data-cover-asset-id`, `data-duration-ms`,
+`data-reel-recipe` ve `data-reel-spec-b64` (spec'in base64 JSON'u); slaytın görseli kapaktır. İçerik hash'i
+spec'i ve video kimliğini kapsar, yani onay tam olarak o videoya verilir.
+
+| Tarif             | Ne yapar                                                                                                                                         |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `motion_graphics` | Marka renkleri/fontlarıyla (brand.css) sahne sahne kinetik tipografi, isteğe bağlı ürün görseli, kapanış kartı (logo + CTA). Süre = sahneler (+1,8 sn kapanış). |
+| `footage_edit`    | Kullanıcının çekimi (ffmpeg ile 1080×1920'ye kırpılır, kendi sesiyle) üzerine kanca rozeti, zamanlı metin katmanları ve konuşmadan kelime altyazısı (saydam PNG kareler). |
+| `narration`       | Türkçe seslendirme (macOS `say` "Yelda"; `ELEVENLABS_API_KEY` varsa ElevenLabs) + kelime senkron altyazı; isteğe bağlı müzik altta %16.             |
+
+Akış: medya (çekim/ses/görsel) → çekimse konuşma dökümü → senaryo (Claude/Gemini; yoksa şablon, notta
+yazılır; `reel.spec` verilirse AI yok) → seslendirme → kompozisyon HTML'i → Chromium kareleri (`window.__seek`)
+**doğrudan ffmpeg'e akar** (bellekte tutulmaz) → kapak videodan alınır → MP4 + kapak (+ ses kaydı) varlık olarak
+yüklenir → `reel` sürümü (`generated` / `manual_edit` / `ai_edit`). İlerleme adımları Türkçe; iptal Chromium
+döngüsünü ve ffmpeg'i hemen durdurur, sürüm yazılmaz.
+
+- **Düzenleme (AI yok):** `content.render` `{format: "mp4", reel: ReelSpecPatch}`: kanca, sahneler (metin+süre),
+  metin katmanları (metin+başlangıç+bitiş), seslendirme metni (değişirse ses yeniden üretilir), kapanış, altyazı
+  aç/kapa, çekim süresi. Reels'te `jpeg` render'ı hiçbir şey yapmaz; PNG/PDF açık bir hatayla reddedilir.
+- **"Neyi değiştireyim?":** `baseVersion` + `instructions` ile `content.generate`: model mevcut planı yalnızca
+  istenen yerde değiştirir; medya, çekim dökümü ve (metin değişmediyse) ses korunur.
+- **Sohbet:** `generate_reel` aracı (tarif, `@video` / `@görsel` / `@ses`, süre, platformlar) ya da reel plan kalemi.
+- **Platform sınırları:** Instagram Reels 3 sn–15 dk, Facebook Reels ≤ 90 sn (API), LinkedIn video ≤ 30 dk;
+  Studio en fazla 90 sn render eder ve hedef platformlara göre kırpar; sorun varsa sürüm notunda yazar
+  (`reelDurationIssues`). Dosya boyutu 50 MiB varlık sınırının altında kalsın diye bit hızı süreye göre düşer.
+- **Biçim (bake-off 15/15):** H.264 High, yuv420p, 30 fps, 2 sn kapalı GOP (her anahtar kare IDR),
+  bt709/tv, AAC 48 kHz stereo, `+faststart+negative_cts_offsets`, edit list yok, `-threads 1` (tekrarlanabilir).
+
+**Araçlar.** `ffmpeg`: `STUDIO_FFMPEG_BIN` → `PATH` (Mac uygulaması login shell PATH'ini verir) →
+`/opt/homebrew/bin`, `/usr/local/bin`, `~/.local/bin`, `~/.studio/bin` → deponun sabitlenmiş `ffmpeg-static`
+6.0'ı (`spikes/video-bakeoff/tools`, yalnız geliştirme yedeği). Yoksa iş Türkçe hatayla biter:
+`brew install ffmpeg`. Konuşma dökümü: `whisper-cli` (Homebrew `whisper-cpp`) + ggml modeli
+(`STUDIO_WHISPER_MODEL` ya da `~/.studio/models/ggml-*.bin`); yoksa `GEMINI_API_KEY`; ikisi de yoksa video yine
+üretilir ve sürüm notu nedenini ve kurulumu söyler.
+
+Uçtan uca (özel API, AI ve ücretli API yok; her tarif için bir MP4 + düzenleme + iptal, 15 nokta denetimi):
+
+```sh
+STUDIO_E2E_API=http://127.0.0.1:8806 STUDIO_WORKER_TOKEN=<test token> STUDIO_E2E_STATE=$S/worker \
+  pnpm --filter @studio/worker exec tsx scripts/e2e-reels.ts      # çıktılar docs/e2e/reels/
+python3 scripts/verify-reels.py <mp4> --duration <sn>               # FFMPEG/FFPROBE ortamda
+```
+
 ## İşin yaşam döngüsü (worker tarafı)
 
 ```
@@ -334,3 +380,13 @@ denemeleri, bekleme sırasında iptal); öz sınama ve önbelleği; duyurulan t�
 turu (akış sırası, plan, soru, markasız konuşma, sınırda bekleme parçası, hata, iptal, model/efor seçimi);
 görsel seçimi; plan dönüşümü; `content.generate` (sahte renderer ile akış, düzeltme geçişi, aynı işin
 tekrarında sürümün yeniden kullanılması, Reels reddi) ve Chromium varsa gerçek render.
+
+## Zamanlı yayın (P3)
+
+`src/publish/`: `poller.ts` 5 sn'de bir API'den bulut yayıncı ayarını okur (`/api/worker/publishing/config`); 30 sn'de bir
+ve uygulama eşitleme istediğinde (`POST /api/publishing/sync`) tur atar. Bulut modunda bekleyen zamanlamaları sipariş
+olarak gönderir (medya yüklenir, Instagram için PNG → JPEG çevrilir), taşınanları yeniden gönderir, iptal edilenleri
+bulutta iptal eder, durumu geri çeker ve her turu raporlar; zamanlamaya `delivery`/`cloudSyncedAt`/`lastError` yazar.
+Bulut yoksa vakti gelen zamanlamayı kendisi yayınlar (`delivery: local`). `schedule.publish` işi (Şimdi yayınla) bulut
+varken her zaman buluta gider. Canlı kontrol (FakeGraph, özel API, Meta'ya gerçek çağrı yok): `scripts/e2e-publish.ts`
+(başındaki yorumdaki komutlar).

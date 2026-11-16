@@ -1,0 +1,20 @@
+{
+  "error": {
+    "code": "validation_error",
+    "message": "invalid request json",
+    "issues": [
+      {
+        "path": "brandId",
+        "message": "Invalid input: expected string, received undefined"
+      },
+      {
+        "path": "type",
+        "message": "Invalid option: expected one of \"post\"|\"carousel\"|\"story\"|\"reel\""
+      },
+      {
+        "path": "title",
+        "message": "Invalid input: expected string, received undefined"
+      }
+    ]
+  }
+}

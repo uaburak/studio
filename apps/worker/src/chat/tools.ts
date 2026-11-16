@@ -329,6 +329,39 @@ export const STUDIO_TOOLS: readonly StudioToolDefinition[] = [
     },
   },
   {
+    name: "generate_reel",
+    description:
+      "Reels (1080×1920 dikey MP4 + kapak) üretimini başlatır (`content.generate`, tür reel; video burada yapılmaz). Tarifler: `motion_graphics` (marka renk ve fontlarıyla hareketli tipografi), `footage_edit` (kullanıcının @video çekimi üzerine kanca, metin katmanları ve konuşmadan altyazı), `narration` (Türkçe seslendirme + kelime senkron altyazı). Kabul edilmiş bir reel plan kalemi (`planItemId`) ya da brief ver. Video bu tur bittikten sonra Mac'te render edilir (1-3 dk): `wait_jobs` ile bekleme, kullanıcıya Reels'in Postlar'da hazırlandığını söyle. Değişiklik için `revise_post`.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        planItemId: { type: "string", description: "Kabul edilmiş reel plan kaleminin id'si." },
+        brief: { type: "string", description: "Plan kalemi yoksa: videonun ana mesajı." },
+        title: { type: "string", description: "Kısa başlık." },
+        recipe: {
+          type: "string",
+          enum: ["motion_graphics", "footage_edit", "narration"],
+          description: "Boşsa brief ve medyadan seçilir (video verilirse footage_edit).",
+        },
+        clipAlias: { type: "string", description: "Çekim kurgusu için @video takma adı." },
+        imageAlias: {
+          type: "string",
+          description: "Videoda kullanılacak @görsel (ürün fotoğrafı vb.).",
+        },
+        audioAlias: { type: "string", description: "Müzik ya da hazır ses kaydı (@ses)." },
+        durationSec: {
+          type: "number",
+          description: "Hedef süre (3-90 sn; Facebook Reels en fazla 90 sn).",
+        },
+        platforms: {
+          type: "array",
+          items: { type: "string", enum: ["instagram", "facebook", "linkedin"] },
+        },
+        instructions: { type: "string", description: "Bu üretim için ek talimat." },
+      },
+    },
+  },
+  {
     name: "revise_post",
     description:
       "Var olan bir postu verilen talimatla yeniden üretir (güncel sürümden başlayan `content.generate` işi kuyruğa alınır). Bitmesini `wait_jobs` ile bekle.",
@@ -662,6 +695,21 @@ const GeneratePostInput = z
   })
   .refine((v) => Boolean(v.planItemId || v.brief), "planItemId ya da brief gerekli");
 
+const GenerateReelInput = z
+  .object({
+    planItemId: z.string().trim().min(1).optional(),
+    brief: trimmed(20_000).optional(),
+    title: trimmed(200).optional(),
+    recipe: z.enum(["motion_graphics", "footage_edit", "narration"]).optional(),
+    clipAlias: z.string().trim().min(1).optional(),
+    imageAlias: z.string().trim().min(1).optional(),
+    audioAlias: z.string().trim().min(1).optional(),
+    durationSec: z.coerce.number().min(3).max(90).optional(),
+    platforms: z.array(Platform).min(1).max(3).optional(),
+    instructions: z.string().max(4_000).optional(),
+  })
+  .refine((v) => Boolean(v.planItemId || v.brief), "planItemId ya da brief gerekli");
+
 const WaitJobsInput = z.object({
   jobIds: z.array(z.string().trim().min(1)).min(1).max(30),
   timeoutSec: z.coerce.number().int().min(1).max(900).default(300),
@@ -914,6 +962,14 @@ export class StudioToolExecutor {
           "Post üretimi başlatılıyor…",
           "Post üretimi kuyruğa alındı",
           () => this.generatePost(args),
+        );
+      case "generate_reel":
+        return this.runSafe(
+          stepId,
+          name,
+          "Reels üretimi başlatılıyor…",
+          "Reels üretimi kuyruğa alındı",
+          () => this.generateReel(args),
         );
       case "wait_jobs":
         return this.runSafe(stepId, name, "Üretim bekleniyor…", "Üretim bitti", () =>
@@ -1563,6 +1619,87 @@ export class StudioToolExecutor {
     return {
       data: { ok: true, contentId: content.id, jobIds: [job.id] },
       summary: `${title} · 1 iş`,
+    };
+  }
+
+  private async generateReel(args: Record<string, unknown>) {
+    const parsed = GenerateReelInput.safeParse(args);
+    if (!parsed.success) {
+      throw new Error(`Geçersiz Reels isteği: ${z.prettifyError(parsed.error).slice(0, 300)}`);
+    }
+    const input = parsed.data;
+    const recipeWords = {
+      motion_graphics: "Reels tarifi: hareketli grafik (motion_graphics).",
+      footage_edit: "Reels tarifi: çekim kurgusu (footage).",
+      narration: "Reels tarifi: seslendirmeli anlatım (narration).",
+    } as const;
+    if (input.planItemId) {
+      // The plan path creates the job; the recipe travels in the instructions.
+      return this.generatePost({
+        planItemId: input.planItemId,
+        instructions: [input.recipe ? recipeWords[input.recipe] : "", input.instructions ?? ""]
+          .filter(Boolean)
+          .join(" "),
+      });
+    }
+    const brandId = this.brandId;
+    if (!brandId) throw new Error("Konuşmanın markası yok; önce set_conversation_brand kullan.");
+    const clipAssetId = input.clipAlias
+      ? await this.resolveAliasToAssetId(input.clipAlias)
+      : undefined;
+    const heroAssetId = input.imageAlias
+      ? await this.resolveAliasToAssetId(input.imageAlias)
+      : undefined;
+    const audioAssetId = input.audioAlias
+      ? await this.resolveAliasToAssetId(input.audioAlias)
+      : undefined;
+    const brief = input.brief ?? "";
+    const title = input.title || brief.split("\n")[0]?.slice(0, 80) || "Yeni Reels";
+    const platforms = input.platforms ?? ["instagram"];
+    const content = await this.options.api.client.contents.create(
+      { brandId, type: "reel", title, brief, targetPlatforms: platforms },
+      { signal: this.options.signal },
+    );
+    const payload: ContentGeneratePayload = {
+      brandId,
+      contentId: content.id,
+      title,
+      brief,
+      type: "reel",
+      targetPlatforms: platforms,
+      conversationId: this.options.conversationId,
+      ...(input.instructions ? { instructions: input.instructions } : {}),
+      reel: {
+        ...(input.recipe ? { recipe: input.recipe } : {}),
+        ...(clipAssetId ? { clipAssetId } : {}),
+        ...(heroAssetId ? { heroAssetId } : {}),
+        ...(audioAssetId ? { audioAssetId } : {}),
+        ...(input.durationSec ? { durationSec: input.durationSec } : {}),
+      },
+      ...this.generationPayloadExtras(),
+    };
+    const job = await this.options.api.client.jobs.create(
+      { type: "content.generate", brandId, contentId: content.id, payload },
+      { signal: this.options.signal },
+    );
+    await this.options.writer
+      .setPart({
+        type: "content_ref",
+        contentId: content.id,
+        version: null,
+        note: "Reels üretiliyor",
+      })
+      .catch((error: unknown) => {
+        if (error instanceof RunClosedError) throw error;
+      });
+    return {
+      data: {
+        ok: true,
+        contentId: content.id,
+        jobIds: [job.id],
+        recipe: input.recipe ?? "otomatik",
+      },
+      summary: `${title} · Reels · 1 iş`,
     };
   }
 

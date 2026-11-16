@@ -55,7 +55,52 @@ enum Theme {
     static let columnMinMargin: CGFloat = 84
     static let cardRadius: CGFloat = 20
     static let panelRadius: CGFloat = 24
+    /// Inline banners (errors, connection status) and grouped settings cards.
+    static let bannerRadius: CGFloat = 14
+    /// Selectable rows inside lists and palettes.
+    static let rowRadius: CGFloat = 16
     static let composerHeight: CGFloat = 46
+
+    /// Spacing scale used by new and polished screens (4-pt grid).
+    enum Spacing {
+        static let xxs: CGFloat = 4
+        static let xs: CGFloat = 6
+        static let s: CGFloat = 8
+        static let m: CGFloat = 12
+        static let l: CGFloat = 16
+        static let xl: CGFloat = 24
+    }
+
+    /// Settings sheet (Claude-desktop layout): sidebar of sections, rows of
+    /// title + grey description on the left and the control on the right.
+    enum Settings {
+        static let sidebarWidth: CGFloat = 216
+        static let headerHeight: CGFloat = 52
+        /// Content column inset from the sidebar hairline and the panel edge.
+        static let contentInset: CGFloat = 28
+        /// Above and below every row's text.
+        static let rowVerticalPadding: CGFloat = 14
+        static let sidebarRowHeight: CGFloat = 30
+        static let sidebarRowRadius: CGFloat = 8
+        /// Text fields and pop-ups on the right of a row.
+        static let controlWidth: CGFloat = 240
+        /// Selected sidebar row (subtle grey, never the accent).
+        static let selectionFill = Theme.fillStrong
+        static let hoverFill = Theme.fill
+        /// Dims the window behind the settings panel.
+        static let backdrop = NSColor(light: 0x000000, dark: 0x000000, alpha: 0.18)
+        static var titleFont: NSFont { NSFont.systemFont(ofSize: 15, weight: .semibold) }
+        static var rowTitleFont: NSFont { NSFont.systemFont(ofSize: 13) }
+        static var rowDetailFont: NSFont { NSFont.systemFont(ofSize: 12) }
+        static var subheaderFont: NSFont { NSFont.systemFont(ofSize: 12, weight: .semibold) }
+    }
+
+    // MARK: Accessibility
+
+    /// System "Reduce transparency": glass becomes an opaque surface.
+    @MainActor static var reduceTransparency: Bool { NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency }
+    /// System "Increase contrast": floating surfaces get a visible border.
+    @MainActor static var increaseContrast: Bool { NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast }
 
     // MARK: Type (SF, system sizes from the drafts)
 

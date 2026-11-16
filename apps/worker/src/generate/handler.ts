@@ -76,18 +76,14 @@ async function runContentGenerate(
 
   const health = deps.health();
   const geminiReady = hasGeminiApiKey(settings);
-  if ((health.state === "unauthenticated" || health.state === "error") && !geminiReady) {
+  // Reels plan with AI when they can and fall back to a template (or render a given spec).
+  if (
+    payload.type !== "reel" &&
+    (health.state === "unauthenticated" || health.state === "error") &&
+    !geminiReady
+  ) {
     throw new Error(health.message);
   }
-
-  const route = resolveStructuredRoute({
-    requestedModel,
-    requestedEffort,
-    defaultEffort: settings.effortDesign,
-    defaultGeminiAlias: "gemini-flash",
-    settings,
-    claudeHealth: health,
-  });
 
   try {
     ctx.progress(0.02, "Hazırlanıyor");
@@ -117,16 +113,23 @@ async function runContentGenerate(
 
     if (contentType === "reel") {
       const media = await resolveMedia(deps, payload, signal);
-      const explicitClipId =
-        typeof ctx.job.payload.videoClipAssetId === "string"
-          ? ctx.job.payload.videoClipAssetId
-          : media.videoAssetId;
-      const explicitAudioId =
-        typeof ctx.job.payload.audioAssetId === "string"
-          ? ctx.job.payload.audioAssetId
-          : media.audioAssetId;
-      const heroFile = media.files[0] ?? null;
-
+      const legacy = ctx.job.payload;
+      const reel = payload.reel ?? {};
+      const options = {
+        ...reel,
+        ...(reel.recipe === undefined && typeof legacy.recipe === "string"
+          ? { recipe: legacy.recipe as NonNullable<typeof reel.recipe> }
+          : {}),
+        clipAssetId:
+          reel.clipAssetId ??
+          (typeof legacy.videoClipAssetId === "string" ? legacy.videoClipAssetId : undefined) ??
+          media.videoAssetId,
+        audioAssetId:
+          reel.audioAssetId ??
+          (typeof legacy.audioAssetId === "string" ? legacy.audioAssetId : undefined) ??
+          media.audioAssetId,
+      };
+      const heroFile = media.files[0];
       return await generateAndRenderReel({
         deps,
         renderer: deps.renderer(),
@@ -137,17 +140,31 @@ async function runContentGenerate(
         title: payload.title ?? content.title,
         brief: payload.brief || content.brief,
         instructions: payload.instructions ?? null,
+        ...(payload.targetPlatforms?.length ? { platforms: payload.targetPlatforms } : {}),
         requestedModel,
         requestedEffort,
-        explicitRecipe: ctx.job.payload.recipe,
-        videoClipAssetId: explicitClipId,
-        audioAssetId: explicitAudioId,
-        heroImage: heroFile ? { path: heroFile.path, bytes: heroFile.bytes } : null,
+        options: Object.fromEntries(
+          Object.entries(options).filter(([, v]) => v !== undefined),
+        ) as typeof options,
+        baseVersion: payload.baseVersion,
+        heroAssetId: heroFile ? assetIdFromMediaPath(heroFile.path) : undefined,
         brandProfileVersion: payload.brandProfileVersion,
         signal,
         progress: (v, m) => ctx.progress(v, m),
       });
     }
+
+    if ((health.state === "unauthenticated" || health.state === "error") && !geminiReady) {
+      throw new Error(health.message);
+    }
+    const route = resolveStructuredRoute({
+      requestedModel,
+      requestedEffort,
+      defaultEffort: settings.effortDesign,
+      defaultGeminiAlias: "gemini-flash",
+      settings,
+      claudeHealth: health,
+    });
 
     ctx.progress(0.05, "Marka profili okunuyor");
     const brand = await loadBrandContext({
@@ -544,6 +561,12 @@ async function resolveMedia(
     }
   }
   return { files, videoAssetId, audioAssetId, unresolved };
+}
+
+/** `/media/<assetId>.<ext>` → asset id. */
+function assetIdFromMediaPath(mediaPath: string): string | undefined {
+  const name = mediaPath.split("/").pop() ?? "";
+  return decodeURIComponent(name.replace(/\.[a-z0-9]+$/i, "")) || undefined;
 }
 
 function slug(text: string): string {

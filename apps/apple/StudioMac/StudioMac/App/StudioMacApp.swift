@@ -29,6 +29,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         self.model = AppModel(settings: s)
         self.host = LocalHost(configuration: { s.hostConfiguration })
 
+        // One window, no tabs: keeps "Sekme Çubuğunu Göster" out of the Görüntü menu.
+        NSWindow.allowsAutomaticWindowTabbing = false
         buildMainMenu()
         s.applyAppearance()
 
@@ -69,6 +71,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             guard let self else { return }
             if self.settings.hostEnabled && !self.settings.useSampleData {
                 ActiveHost.current = self.host
+                self.model.host = self.host
                 self.host.onAPIURLChange = { [weak self] url in
                     guard let self, self.settings.hostAPIURL != url else { return }
                     self.settings.hostAPIURL = url
@@ -79,6 +82,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
                 self.model.reconnect(reload: false)
             }
             await self.model.load()
+            self.model.restoreSession()
             self.model.applyLaunchRoute()
         }
     }
@@ -93,8 +97,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         return .terminateLater
     }
 
+    /// Closing the window keeps Studio running: the Mac server must stay up for the
+    /// iPhone and for scheduled posts. Quit (⌘Q) stops it; the Dock icon reopens the window.
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
-        !SnapshotMode.isActive
+        false
+    }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if !flag { mainWindow?.makeKeyAndOrderFront(nil) }
+        return true
     }
 
     private func didShowMainWindow() {
@@ -110,197 +121,306 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
 
     // MARK: - Main Menu Bar (Turkish)
 
+    /// Test seam: wire a model without launching the window.
+    func attach(model: AppModel, settings: AppSettings) {
+        self.model = model
+        self.settings = settings
+    }
+
     private func buildMainMenu() {
+        NSApp.mainMenu = makeMainMenu()
+        NSApp.servicesMenu = servicesMenu
+    }
+
+    private var servicesMenu: NSMenu?
+    private weak var brandMenu: NSMenu?
+    private var brandMenuSignature: [String] = []
+
+    private func item(_ title: String, _ action: Selector, _ key: String = "", _ modifiers: NSEvent.ModifierFlags = .command, target: AnyObject? = nil) -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: action, keyEquivalent: key)
+        item.keyEquivalentModifierMask = modifiers
+        item.target = target
+        return item
+    }
+
+    /// The whole menu bar: Studio, Dosya, Düzen, Görüntü, Git, Marka, Pencere, Yardım.
+    func makeMainMenu() -> NSMenu {
         let mainMenu = NSMenu()
+        appearanceItems = [:]
 
         // 1. Studio
-        let appMenuItem = NSMenuItem()
         let appMenu = NSMenu(title: "Studio")
-        appMenu.addItem(withTitle: "Studio Hakkında", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
+        appMenu.addItem(item("Studio Hakkında", #selector(NSApplication.orderFrontStandardAboutPanel(_:))))
         appMenu.addItem(.separator())
-        let settingsItem = NSMenuItem(title: "Ayarlar…", action: #selector(openSettings), keyEquivalent: ",")
-        settingsItem.target = self
-        appMenu.addItem(settingsItem)
+        appMenu.addItem(item("Ayarlar…", #selector(openSettings), ",", target: self))
         appMenu.addItem(.separator())
-        appMenu.addItem(withTitle: "Studio'yu Gizle", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
-        let hideOthers = NSMenuItem(title: "Diğerlerini Gizle", action: #selector(NSApplication.hideOtherApplications(_:)), keyEquivalent: "h")
-        hideOthers.keyEquivalentModifierMask = [.command, .option]
-        appMenu.addItem(hideOthers)
-        appMenu.addItem(withTitle: "Tümünü Göster", action: #selector(NSApplication.unhideAllApplications(_:)), keyEquivalent: "")
+        let services = NSMenu(title: "Hizmetler")
+        let servicesItem = NSMenuItem(title: "Hizmetler", action: nil, keyEquivalent: "")
+        servicesItem.submenu = services
+        servicesMenu = services
+        appMenu.addItem(servicesItem)
         appMenu.addItem(.separator())
-        appMenu.addItem(withTitle: "Studio'dan Çık", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
-        appMenuItem.submenu = appMenu
-        mainMenu.addItem(appMenuItem)
+        appMenu.addItem(item("Studio'yu Gizle", #selector(NSApplication.hide(_:)), "h"))
+        appMenu.addItem(item("Diğerlerini Gizle", #selector(NSApplication.hideOtherApplications(_:)), "h", [.command, .option]))
+        appMenu.addItem(item("Tümünü Göster", #selector(NSApplication.unhideAllApplications(_:))))
+        appMenu.addItem(.separator())
+        appMenu.addItem(item("Studio'dan Çık", #selector(NSApplication.terminate(_:)), "q"))
+        add(appMenu, to: mainMenu)
 
         // 2. Dosya
-        let fileMenuItem = NSMenuItem()
         let fileMenu = NSMenu(title: "Dosya")
-        let newChat = NSMenuItem(title: "Yeni sohbet", action: #selector(startNewChat), keyEquivalent: "n")
-        newChat.target = self
-        fileMenu.addItem(newChat)
-        let search = NSMenuItem(title: "Ara…", action: #selector(openSearch), keyEquivalent: "k")
-        search.target = self
-        fileMenu.addItem(search)
+        fileMenu.addItem(item("Yeni Sohbet", #selector(startNewChat), "n", target: self))
         fileMenu.addItem(.separator())
-        let newBrand = NSMenuItem(title: "Yeni marka…", action: #selector(openNewBrandMenu), keyEquivalent: "n")
-        newBrand.keyEquivalentModifierMask = [.command, .shift]
-        newBrand.target = self
-        fileMenu.addItem(newBrand)
-        let brandSettings = NSMenuItem(title: "Marka ayarları…", action: #selector(openBrandSettingsMenu), keyEquivalent: "b")
-        brandSettings.keyEquivalentModifierMask = [.command, .shift]
-        brandSettings.target = self
-        fileMenu.addItem(brandSettings)
-        fileMenu.addItem(.separator())
-        fileMenu.addItem(withTitle: "Kapat", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
-        fileMenuItem.submenu = fileMenu
-        mainMenu.addItem(fileMenuItem)
+        fileMenu.addItem(item("Kapat", #selector(NSWindow.performClose(_:)), "w"))
+        add(fileMenu, to: mainMenu)
 
-        // 3. Düzen (standard responder chain selectors so NSTextView / NSTextField shortcuts work!)
-        let editMenuItem = NSMenuItem()
+        // 3. Düzen: standard responder-chain selectors, so text views, the composer
+        // (images paste as attachments) and the post editor (version undo) all work.
         let editMenu = NSMenu(title: "Düzen")
-        editMenu.addItem(withTitle: "Geri Al", action: Selector(("undo:")), keyEquivalent: "z")
-        let redo = NSMenuItem(title: "Yinele", action: Selector(("redo:")), keyEquivalent: "Z")
-        redo.keyEquivalentModifierMask = [.command, .shift]
-        editMenu.addItem(redo)
+        editMenu.addItem(item("Geri Al", Selector(("undo:")), "z"))
+        editMenu.addItem(item("Yinele", Selector(("redo:")), "z", [.command, .shift]))
         editMenu.addItem(.separator())
-        editMenu.addItem(withTitle: "Kes", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
-        editMenu.addItem(withTitle: "Kopyala", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
-        editMenu.addItem(withTitle: "Yapıştır", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
-        editMenu.addItem(withTitle: "Tümünü Seç", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
-        editMenuItem.submenu = editMenu
-        mainMenu.addItem(editMenuItem)
+        editMenu.addItem(item("Kes", #selector(NSText.cut(_:)), "x"))
+        editMenu.addItem(item("Kopyala", #selector(NSText.copy(_:)), "c"))
+        editMenu.addItem(item("Yapıştır", #selector(NSText.paste(_:)), "v"))
+        editMenu.addItem(item("Yapıştır ve Stili Eşleştir", #selector(NSTextView.pasteAsPlainText(_:)), "v", [.command, .option, .shift]))
+        editMenu.addItem(item("Sil", #selector(NSText.delete(_:))))
+        editMenu.addItem(item("Tümünü Seç", #selector(NSText.selectAll(_:)), "a"))
+        editMenu.addItem(.separator())
+        editMenu.addItem(item("Bul…", #selector(openSearch), "f", target: self))
+        // ⌘K opens the same palette (Claude-style); hidden but active.
+        let altSearch = item("Ara…", #selector(openSearch), "k", target: self)
+        altSearch.isHidden = true
+        altSearch.allowsKeyEquivalentWhenHidden = true
+        editMenu.addItem(altSearch)
+        add(editMenu, to: mainMenu)
 
-        // 4. Görünüm
-        let viewMenuItem = NSMenuItem()
-        let viewMenu = NSMenu(title: "Görünüm")
-        let sidebarToggle = NSMenuItem(title: "Kenar çubuğunu aç/kapat", action: #selector(toggleSidebarMenu), keyEquivalent: "s")
-        sidebarToggle.keyEquivalentModifierMask = [.command, .control]
-        sidebarToggle.target = self
-        viewMenu.addItem(sidebarToggle)
-
-        let inspectorToggle = NSMenuItem(title: "Sağ paneli gizle", action: #selector(toggleInspectorMenu), keyEquivalent: "i")
-        inspectorToggle.keyEquivalentModifierMask = [.command, .option]
-        inspectorToggle.target = self
+        // 4. Görüntü
+        let viewMenu = NSMenu(title: "Görüntü")
+        viewMenu.addItem(item("Kenar Çubuğunu Gizle", #selector(toggleSidebarMenu), "s", [.command, .control], target: self))
+        let inspectorToggle = item("Sağ Paneli Gizle", #selector(toggleInspectorMenu), "i", [.command, .option], target: self)
         viewMenu.addItem(inspectorToggle)
-        self.inspectorMenuItem = inspectorToggle
-
+        inspectorMenuItem = inspectorToggle
         viewMenu.addItem(.separator())
         let appearanceSubItem = NSMenuItem(title: "Görünüm", action: nil, keyEquivalent: "")
         let appearanceSubMenu = NSMenu(title: "Görünüm")
         for pref in AppearancePreference.allCases {
-            let item = NSMenuItem(title: pref.label, action: #selector(pickAppearanceMenu(_:)), keyEquivalent: "")
-            item.target = self
-            item.representedObject = pref.rawValue
-            appearanceItems[pref] = item
-            appearanceSubMenu.addItem(item)
+            let entry = item(pref.label, #selector(pickAppearanceMenu(_:)), target: self)
+            entry.representedObject = pref.rawValue
+            appearanceItems[pref] = entry
+            appearanceSubMenu.addItem(entry)
         }
+        appearanceSubMenu.addItem(.separator())
+        appearanceSubMenu.addItem(item("Sıradaki Görünüm", #selector(cycleAppearanceMenu), "l", [.command, .shift], target: self))
         appearanceSubItem.submenu = appearanceSubMenu
         viewMenu.addItem(appearanceSubItem)
-
-        let cycleAppearance = NSMenuItem(title: "Görünümü değiştir", action: #selector(cycleAppearanceMenu), keyEquivalent: "l")
-        cycleAppearance.keyEquivalentModifierMask = [.command, .shift]
-        cycleAppearance.target = self
-        viewMenu.addItem(cycleAppearance)
-
         viewMenu.addItem(.separator())
-        let fullScreen = NSMenuItem(title: "Tam Ekran", action: #selector(NSWindow.toggleFullScreen(_:)), keyEquivalent: "f")
-        fullScreen.keyEquivalentModifierMask = [.command, .control]
-        viewMenu.addItem(fullScreen)
-        viewMenuItem.submenu = viewMenu
-        mainMenu.addItem(viewMenuItem)
+        viewMenu.addItem(item("Yenile", #selector(reloadMenu), "r", target: self))
+        viewMenu.addItem(.separator())
+        viewMenu.addItem(item("Tam Ekrana Geç", #selector(NSWindow.toggleFullScreen(_:)), "f", [.command, .control]))
+        add(viewMenu, to: mainMenu)
 
         // 5. Git
-        let goMenuItem = NSMenuItem()
         let goMenu = NSMenu(title: "Git")
-        let back = NSMenuItem(title: "Geri", action: #selector(goBackMenu), keyEquivalent: "[")
-        back.target = self
-        goMenu.addItem(back)
-        let forward = NSMenuItem(title: "İleri", action: #selector(goForwardMenu), keyEquivalent: "]")
-        forward.target = self
-        goMenu.addItem(forward)
+        goMenu.addItem(item("Geri", #selector(goBackMenu), "[", target: self))
+        goMenu.addItem(item("İleri", #selector(goForwardMenu), "]", target: self))
         goMenu.addItem(.separator())
-        let posts = NSMenuItem(title: "Postlar", action: #selector(openPostsMenu), keyEquivalent: "p")
-        posts.keyEquivalentModifierMask = [.command, .shift]
-        posts.target = self
-        goMenu.addItem(posts)
-        let calendar = NSMenuItem(title: "Takvim", action: #selector(openCalendarMenu), keyEquivalent: "k")
-        calendar.keyEquivalentModifierMask = [.command, .shift]
-        calendar.target = self
-        goMenu.addItem(calendar)
-        let media = NSMenuItem(title: "Medya", action: #selector(openMediaMenu), keyEquivalent: "m")
-        media.keyEquivalentModifierMask = [.command, .shift]
-        media.target = self
-        goMenu.addItem(media)
-        goMenuItem.submenu = goMenu
-        mainMenu.addItem(goMenuItem)
+        goMenu.addItem(item("Postlar", #selector(openPostsMenu), "p", [.command, .shift], target: self))
+        goMenu.addItem(item("Takvim", #selector(openCalendarMenu), "k", [.command, .shift], target: self))
+        goMenu.addItem(item("Medya", #selector(openMediaMenu), "m", [.command, .shift], target: self))
+        add(goMenu, to: mainMenu)
 
-        // 6. Pencere
-        let windowMenuItem = NSMenuItem()
+        // 6. Marka (brand list with ⌘1…⌘9 is filled by syncBrandMenu)
+        let brands = NSMenu(title: "Marka")
+        brands.autoenablesItems = true
+        add(brands, to: mainMenu)
+        brandMenu = brands
+        brandMenuSignature = []
+        syncBrandMenu()
+
+        // 7. Pencere
         let windowMenu = NSMenu(title: "Pencere")
-        windowMenu.addItem(withTitle: "Küçült", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
-        windowMenu.addItem(withTitle: "Büyüt", action: #selector(NSWindow.performZoom(_:)), keyEquivalent: "")
+        windowMenu.addItem(item("Küçült", #selector(NSWindow.performMiniaturize(_:)), "m"))
+        windowMenu.addItem(item("Büyüt", #selector(NSWindow.performZoom(_:))))
         windowMenu.addItem(.separator())
-        windowMenu.addItem(withTitle: "Tümünü Öne Getir", action: #selector(NSApplication.arrangeInFront(_:)), keyEquivalent: "")
-        windowMenuItem.submenu = windowMenu
-        mainMenu.addItem(windowMenuItem)
-        NSApp.windowsMenu = windowMenu
+        windowMenu.addItem(item("Studio Penceresi", #selector(showMainWindowMenu), "0", target: self))
+        windowMenu.addItem(.separator())
+        windowMenu.addItem(item("Tümünü Öne Getir", #selector(NSApplication.arrangeInFront(_:))))
+        add(windowMenu, to: mainMenu)
+        NSApp?.windowsMenu = windowMenu
 
-        // 7. Yardım
-        let helpMenuItem = NSMenuItem()
+        // 8. Yardım
         let helpMenu = NSMenu(title: "Yardım")
-        let onboarding = NSMenuItem(title: "Başlangıç rehberi…", action: #selector(openOnboardingMenu), keyEquivalent: "")
-        onboarding.target = self
-        helpMenu.addItem(onboarding)
-        helpMenuItem.submenu = helpMenu
-        mainMenu.addItem(helpMenuItem)
-        NSApp.helpMenu = helpMenu
+        helpMenu.addItem(item("Klavye Kısayolları", #selector(showShortcutsMenu), "/", [.command, .shift], target: self))
+        helpMenu.addItem(item("Başlangıç Rehberi…", #selector(openOnboardingMenu), target: self))
+        helpMenu.addItem(.separator())
+        helpMenu.addItem(item("Sunucu Günlüklerini Göster", #selector(revealLogsMenu), target: self))
+        add(helpMenu, to: mainMenu)
+        NSApp?.helpMenu = helpMenu
 
-        NSApp.mainMenu = mainMenu
+        return mainMenu
+    }
+
+    private func add(_ menu: NSMenu, to bar: NSMenu) {
+        let holder = NSMenuItem(title: menu.title, action: nil, keyEquivalent: "")
+        holder.submenu = menu
+        bar.addItem(holder)
+    }
+
+    /// Rebuilds the Marka menu when the brands change (titles, order, current brand).
+    func syncBrandMenu() {
+        guard let menu = brandMenu, let model else { return }
+        let ordered = model.brandMenuOrder
+        let signature = ordered.map { "\($0.id)|\($0.name)" } + [model.currentBrandId ?? "-"]
+        guard signature != brandMenuSignature else { return }
+        brandMenuSignature = signature
+        menu.removeAllItems()
+        if ordered.isEmpty {
+            let empty = NSMenuItem(title: "Henüz marka yok", action: nil, keyEquivalent: "")
+            empty.isEnabled = false
+            menu.addItem(empty)
+        }
+        for (index, brand) in ordered.enumerated() {
+            let entry = item(brand.name, #selector(selectBrandMenu(_:)), index < 9 ? String(index + 1) : "", target: self)
+            entry.tag = index
+            entry.state = brand.id == model.currentBrandId ? .on : .off
+            menu.addItem(entry)
+        }
+        menu.addItem(.separator())
+        menu.addItem(item("Yeni Marka…", #selector(openNewBrandMenu), "n", [.command, .shift], target: self))
+        menu.addItem(item("Marka Ayarları…", #selector(openBrandSettingsMenu), "b", [.command, .shift], target: self))
+        menu.addItem(item("Marka Kiti…", #selector(openBrandKitMenu), target: self))
+        menu.addItem(item("Marka Profili…", #selector(openBrandProfileMenu), target: self))
     }
 
     private func syncMenus() {
-        inspectorMenuItem?.title = model.inspectorPresented ? "Sağ paneli gizle" : "Sağ paneli göster"
+        inspectorMenuItem?.title = model.inspectorPresented ? "Sağ Paneli Gizle" : "Sağ Paneli Göster"
         for (pref, item) in appearanceItems {
             item.state = settings.appearance == pref ? .on : .off
+        }
+        syncBrandMenu()
+    }
+
+    // MARK: Validation
+
+    private var mainWindow: NSWindow? { mainWindowController?.window }
+
+    func menuState() -> MenuState {
+        guard let model else { return MenuState(hasWindow: false) }
+        let ordered = model.brandMenuOrder.map(\.id)
+        let window = mainWindow
+        return MenuState(
+            canGoBack: model.canGoBack,
+            canGoForward: model.canGoForward,
+            brandIds: ordered,
+            currentBrandId: model.currentBrandId,
+            switchableBrandIds: Set(ordered.filter { model.canSwitchBrand(to: $0) }),
+            sheetOpen: window?.attachedSheet != nil,
+            hasWindow: window != nil || assumeWindowForTesting,
+            isSample: model.isSample,
+            isLoading: model.isLoading,
+            hasHostLogs: model.host != nil
+        )
+    }
+
+    /// Tests run without the window; menus still validate against the model.
+    var assumeWindowForTesting = false
+
+    static func command(for menuItem: NSMenuItem) -> MenuCommand? {
+        switch menuItem.action {
+        case #selector(startNewChat): .newChat
+        case #selector(openSearch): .search
+        case #selector(openSettings): .settings
+        case #selector(openNewBrandMenu): .newBrand
+        case #selector(openBrandSettingsMenu): .brandSettings
+        case #selector(openBrandKitMenu): .brandKit
+        case #selector(openBrandProfileMenu): .brandProfile
+        case #selector(selectBrandMenu(_:)): .selectBrand(menuItem.tag)
+        case #selector(goBackMenu): .back
+        case #selector(goForwardMenu): .forward
+        case #selector(openPostsMenu): .posts
+        case #selector(openCalendarMenu): .calendar
+        case #selector(openMediaMenu): .media
+        case #selector(toggleSidebarMenu): .toggleSidebar
+        case #selector(toggleInspectorMenu): .toggleInspector
+        case #selector(pickAppearanceMenu(_:)), #selector(cycleAppearanceMenu): .appearance
+        case #selector(reloadMenu): .reload
+        case #selector(openOnboardingMenu): .onboarding
+        case #selector(showShortcutsMenu): .shortcuts
+        case #selector(revealLogsMenu): .revealLogs
+        default: nil
         }
     }
 
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
-        switch menuItem.action {
-        case #selector(goBackMenu): return model?.canGoBack ?? false
-        case #selector(goForwardMenu): return model?.canGoForward ?? false
-        case #selector(openBrandSettingsMenu): return model?.currentBrandId != nil
-        case #selector(openOnboardingMenu): return model?.isSample == false
-        default: return true
-        }
+        guard let command = Self.command(for: menuItem) else { return true }
+        return MenuValidator.isEnabled(command, in: menuState())
     }
 
     // MARK: Menu Actions
 
-    @objc private func openSettings() { model.settingsPresented = true }
-    @objc private func startNewChat() { model.startNewChat() }
-    @objc private func openSearch() { model.searchPresented = true }
-    @objc private func toggleSidebarMenu() { model.toggleSidebar() }
-    @objc private func toggleInspectorMenu() { model.toggleInspector() }
-    @objc private func goBackMenu() { model.goBack() }
-    @objc private func goForwardMenu() { model.goForward() }
-    @objc private func openPostsMenu() { model.navigate(to: .posts) }
-    @objc private func openCalendarMenu() { model.navigate(to: .calendar) }
-    @objc private func openMediaMenu() { model.navigate(to: .media) }
-    @objc private func openNewBrandMenu() { model.newBrandPresented = true }
-    @objc private func openOnboardingMenu() { model.onboarding.reopen() }
+    @objc func openSettings() { model.openSettings() }
+    @objc func startNewChat() { model.startNewChat() }
+    @objc func openSearch() { model.searchPresented = true }
+    @objc func toggleSidebarMenu() { model.toggleSidebar() }
+    @objc func toggleInspectorMenu() { model.toggleInspector() }
+    @objc func goBackMenu() { model.goBack() }
+    @objc func goForwardMenu() { model.goForward() }
+    @objc func openPostsMenu() { model.navigate(to: .posts) }
+    @objc func openCalendarMenu() { model.navigate(to: .calendar) }
+    @objc func openMediaMenu() { model.navigate(to: .media) }
+    @objc func openNewBrandMenu() { model.newBrandPresented = true }
+    @objc func openOnboardingMenu() { model.onboarding.reopen() }
+    @objc func reloadMenu() { Task { await model.reloadCurrentScreen() } }
 
-    @objc private func openBrandSettingsMenu() {
+    @objc func selectBrandMenu(_ sender: NSMenuItem) {
+        if !model.switchToBrand(at: sender.tag) { NSSound.beep() }
+    }
+
+    @objc func openBrandSettingsMenu() {
         guard let id = model.currentBrandId else { return }
         model.openBrandSettings(id)
     }
 
-    @objc private func pickAppearanceMenu(_ sender: NSMenuItem) {
+    @objc func openBrandKitMenu() {
+        guard let id = model.currentBrandId else { return }
+        model.openBrandSettings(id, tab: .kit)
+    }
+
+    @objc func openBrandProfileMenu() {
+        guard let id = model.currentBrandId else { return }
+        model.openBrandSettings(id, tab: .profile)
+    }
+
+    @objc func pickAppearanceMenu(_ sender: NSMenuItem) {
         guard let raw = sender.representedObject as? String, let pref = AppearancePreference(rawValue: raw) else { return }
         settings.appearance = pref
     }
 
-    @objc private func cycleAppearanceMenu() {
+    @objc func cycleAppearanceMenu() {
         settings.appearance = settings.appearance.next
+    }
+
+    @objc func showMainWindowMenu() {
+        mainWindow?.makeKeyAndOrderFront(nil)
+    }
+
+    @objc func showShortcutsMenu() {
+        let alert = NSAlert()
+        alert.messageText = "Klavye kısayolları"
+        alert.informativeText = ShortcutGuide.text
+        alert.addButton(withTitle: "Tamam")
+        if let window = mainWindow, window.attachedSheet == nil {
+            alert.beginSheetModal(for: window)
+        } else {
+            alert.runModal()
+        }
+    }
+
+    @objc func revealLogsMenu() {
+        guard let host = model.host else { return }
+        let logs = host.logsDirectory
+        try? FileManager.default.createDirectory(at: logs, withIntermediateDirectories: true)
+        NSWorkspace.shared.activateFileViewerSelecting([logs])
     }
 }

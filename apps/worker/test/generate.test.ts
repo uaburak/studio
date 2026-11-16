@@ -614,10 +614,9 @@ describe("content.generate handler (fake renderer)", () => {
           { status: 200, headers: { "content-type": "application/json" } },
         ),
       reelSeams: {
-        frameCapturer: async () => ({
-          frames: [coverPng, coverPng],
-          coverPng,
-        }),
+        frameCapturer: async function* () {
+          yield coverPng;
+        },
         ffmpeg: async () => ({
           stdout: new TextEncoder().encode("FAKE_MP4"),
           stderr: "",

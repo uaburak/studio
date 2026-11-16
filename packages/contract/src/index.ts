@@ -15,5 +15,7 @@ export * from "./health.ts";
 export * from "./job.ts";
 export * from "./plan.ts";
 export * from "./protocol.ts";
+export * from "./publishing.ts";
+export * from "./reel.ts";
 export * from "./schedule.ts";
 export * from "./social-account.ts";

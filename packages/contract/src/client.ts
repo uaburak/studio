@@ -89,22 +89,40 @@ import {
 } from "./plan.ts";
 import { decodeJobStreamMessage, type JobStreamMessage } from "./protocol.ts";
 import {
+  type PublishingCloudPut,
+  PublishingStatus,
+  PublishLogFeed,
+  type PublishLogFeedQuery,
+  type PublishNowInput,
+  PublishNowResult,
+  SchedulePreflight,
+  type SchedulePreflightInput,
+  WorkerPublishingConfig,
+  type WorkerPublishingSyncReport,
+} from "./publishing.ts";
+import {
   PublishLogList,
   type PublishLogListQuery,
   Schedule,
   type ScheduleCreate,
   ScheduleList,
   type ScheduleListQuery,
+  type ScheduleUpdate,
   WorkerDueSchedules,
   type WorkerDueSchedulesQuery,
   WorkerScheduleCredentials,
+  type WorkerScheduleDelivery,
   type WorkerScheduleOutcome,
 } from "./schedule.ts";
 import {
   type LinkedInConnectInput,
+  type LinkedInOAuthInput,
   type MetaDiscoverInput,
   MetaDiscoverResult,
+  type MetaExchangeInput,
+  MetaExchangeResult,
   SocialAccount,
+  type SocialAccountCheckInput,
   type SocialAccountCreate,
   SocialAccountList,
   type SocialAccountListQuery,
@@ -426,9 +444,22 @@ export function createApiClient(options: ApiClientOptions = {}) {
           json: input,
           init,
         }),
-      checkToken: (id: string, init?: RequestInit) =>
+      checkToken: (id: string, input?: SocialAccountCheckInput, init?: RequestInit) =>
         call(SocialAccount, `/api/social-accounts/${enc(id)}/check`, {
           method: "POST",
+          ...(input ? { json: input } : {}),
+          init,
+        }),
+      exchangeMeta: (input: MetaExchangeInput, init?: RequestInit) =>
+        call(MetaExchangeResult, "/api/social-accounts/meta/exchange", {
+          method: "POST",
+          json: input,
+          init,
+        }),
+      linkedInOAuth: (input: LinkedInOAuthInput, init?: RequestInit) =>
+        call(SocialAccount, "/api/social-accounts/linkedin/oauth", {
+          method: "POST",
+          json: input,
           init,
         }),
       discoverMeta: (input: MetaDiscoverInput, init?: RequestInit) =>
@@ -606,8 +637,34 @@ export function createApiClient(options: ApiClientOptions = {}) {
         call(Schedule, "/api/schedules", { method: "POST", json: input, init }),
       cancel: (id: string, init?: RequestInit) =>
         call(Schedule, `/api/schedules/${enc(id)}/cancel`, { method: "POST", init }),
+      /** Move a pending schedule (calendar drag). */
+      update: (id: string, input: ScheduleUpdate, init?: RequestInit) =>
+        call(Schedule, `/api/schedules/${enc(id)}`, { method: "PATCH", json: input, init }),
       logs: (id: string, query?: PublishLogListQuery, init?: RequestInit) =>
         call(PublishLogList, `/api/schedules/${enc(id)}/logs`, { query: q(query), init }),
+      /** Platform rules for the content on each account, before scheduling. */
+      preflight: (input: SchedulePreflightInput, init?: RequestInit) =>
+        call(SchedulePreflight, "/api/schedules/preflight", { method: "POST", json: input, init }),
+      publishNow: (input: PublishNowInput, init?: RequestInit) =>
+        call(PublishNowResult, "/api/schedules/publish-now", {
+          method: "POST",
+          json: input,
+          init,
+        }),
+    },
+
+    publishing: {
+      status: (init?: RequestInit) => call(PublishingStatus, "/api/publishing/status", { init }),
+      setCloud: (input: PublishingCloudPut, init?: RequestInit) =>
+        call(PublishingStatus, "/api/publishing/cloud", { method: "PUT", json: input, init }),
+      clearCloud: (init?: RequestInit) =>
+        call(PublishingStatus, "/api/publishing/cloud", { method: "DELETE", init }),
+      /** Ask the worker to push and pull cloud orders now (app focus). */
+      requestSync: (init?: RequestInit) =>
+        call(PublishingStatus, "/api/publishing/sync", { method: "POST", init }),
+      /** Publish attempts with schedule, title and account (log screen, notifications). */
+      logs: (query?: PublishLogFeedQuery, init?: RequestInit) =>
+        call(PublishLogFeed, "/api/publish-logs", { query: q(query), init }),
     },
 
     conversations: {
@@ -784,6 +841,27 @@ export function createApiClient(options: ApiClientOptions = {}) {
         call(WorkerScheduleCredentials, `/api/worker/schedules/${enc(id)}/credentials`, { init }),
       outcome: (id: string, input: WorkerScheduleOutcome, init?: RequestInit) =>
         call(Schedule, `/api/worker/schedules/${enc(id)}/outcome`, {
+          method: "POST",
+          json: input,
+          init,
+        }),
+      /** Record who publishes the schedule (cloud push result or local). */
+      delivery: (id: string, input: WorkerScheduleDelivery, init?: RequestInit) =>
+        call(Schedule, `/api/worker/schedules/${enc(id)}/delivery`, {
+          method: "POST",
+          json: input,
+          init,
+        }),
+      /** Schedules that were sent to the cloud and later cancelled (cancel the orders). */
+      cancelled: (query?: { since?: string; limit?: number }, init?: RequestInit) =>
+        call(WorkerDueSchedules, "/api/worker/schedules/cancelled", { query: q(query), init }),
+    },
+
+    workerPublishing: {
+      config: (init?: RequestInit) =>
+        call(WorkerPublishingConfig, "/api/worker/publishing/config", { init }),
+      report: (input: WorkerPublishingSyncReport, init?: RequestInit) =>
+        call(WorkerPublishingConfig, "/api/worker/publishing/report", {
           method: "POST",
           json: input,
           init,

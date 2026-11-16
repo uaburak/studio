@@ -71,6 +71,13 @@
       "when": 1794857943996,
       "tag": "0009_slide_layouts",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "6",
+      "when": 1794860917929,
+      "tag": "0010_publishing",
+      "breakpoints": true
     }
   ]
 }

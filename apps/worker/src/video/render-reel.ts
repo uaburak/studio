@@ -1,45 +1,69 @@
 /**
- * End-to-end Reels Video Engine (`PLAN.md` §7):
- * - Plans & builds 1080x1920 animated HTML compositions (`motion_graphics`, `footage_edit`, `narration`),
- * - Steps frames at 30 fps in Playwright Chromium (`window.__seek(t)`),
- * - Captures sRGB JPEG cover at `t = 0.5s`,
- * - Pipes frames + audio into `ffmpeg` with verified Reels normalization flags,
- * - Uploads both `.mp4` (`kind: "video"`) and cover `.jpg` (`kind: "image"`) and stores the `ContentVersion`.
+ * Reels engine (P6). One job = one MP4:
+ *   media (clip / audio / hero) → transcript (footage) → plan (AI, or a given/edited spec)
+ *   → voice-over (narration) → composition HTML → Chromium frames streamed into ffmpeg
+ *   (Reels flags, 15/15 checks) → cover JPEG from the encoded video → upload MP4 + cover
+ *   (+ voice) → content version with the `ReelSpec`.
+ *
+ * `content.generate` (type reel) plans with Claude/Gemini; `content.render` with a `reel`
+ * patch re-renders an existing spec without any AI call.
  */
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
-import type { Content, ContentVersion } from "@studio/contract";
+import {
+  type Content,
+  type ContentVersion,
+  clampReelDurationMs,
+  maxReelDurationMs,
+  type Platform,
+  type ReelGenerateOptions,
+  type ReelRecipe,
+  ReelSpec,
+  type ReelSpecPatch,
+  reelDurationIssues,
+} from "@studio/contract";
 import {
   type AssetResolver,
   CHROMIUM_ARGS,
   combineResolvers,
-  createMemoryResolver,
-  pngToSrgbJpeg,
   Renderer,
   VIRTUAL_ORIGIN,
 } from "@studio/design-kit/render";
 import { type Browser, chromium } from "playwright-core";
+import sharp from "sharp";
 import type { AgentDeps } from "../agent.ts";
 import type { StudioApi } from "../api.ts";
-import { callStructuredAi, getGeminiApiKey, resolveStructuredRoute } from "../gemini/json-call.ts";
+import {
+  callStructuredAi,
+  getGeminiApiKey,
+  hasGeminiApiKey,
+  resolveStructuredRoute,
+} from "../gemini/json-call.ts";
 import { type BrandContext, loadBrandContext } from "../generate/brand.ts";
 import {
   createNodeFfmpegRunner,
+  encodeReel,
+  extractFrameJpeg,
+  FFMPEG_MISSING_MESSAGE,
   type FfmpegRunner,
-  muxFramesToReelsMp4,
+  probeMedia,
   resolveFfmpegBin,
 } from "./ffmpeg.ts";
 import {
-  buildFallbackReelPlan,
+  type BuiltComposition,
+  buildFallbackPlan,
   buildFootageEditHtml,
   buildMotionGraphicsHtml,
   buildNarrationHtml,
   buildReelVersionSlideHtml,
   extractReelVersionAssets,
   inferReelRecipe,
+  normalizeSpec,
+  planToSpec,
   REEL_PLAN_JSON_SCHEMA,
   type ReelPlan,
   ReelPlanSchema,
-  type ReelRecipe,
 } from "./recipes.ts";
 import {
   type ClipTranscriber,
@@ -47,6 +71,8 @@ import {
   type TranscriptionResult,
 } from "./transcribe.ts";
 import { type SayCommandRunner, selectTtsProvider, type TtsProvider } from "./tts.ts";
+
+// --- frame capture ----------------------------------------------------------------------
 
 export interface ReelFrameCaptureRequest {
   html: string;
@@ -60,19 +86,10 @@ export interface ReelFrameCaptureRequest {
   onFrameProgress?: (frame: number, totalFrames: number) => void;
 }
 
-export interface ReelFrameCaptureResult {
-  frames: Uint8Array[];
-  coverPng: Uint8Array;
-}
+/** Frames (JPEG, or PNG with alpha when `transparent`) in order, produced lazily. */
+export type ReelFrameCapturer = (request: ReelFrameCaptureRequest) => AsyncIterable<Uint8Array>;
 
-export type ReelFrameCapturer = (
-  request: ReelFrameCaptureRequest,
-) => Promise<ReelFrameCaptureResult>;
-
-/**
- * Resolver that serves `/api/assets/<id>/content` and `/media/<id>[.<ext>]` directly
- * from `StudioApi` (cached in memory per render pass).
- */
+/** Serves `/api/assets/<id>/content` and `/media/<id>[.<ext>]` from the API (cached per pass). */
 export function createApiAssetPathResolver(api: StudioApi, signal?: AbortSignal): AssetResolver {
   const cache = new Map<string, Promise<{ body: Uint8Array; contentType: string } | null>>();
   const fetchAsset = (assetId: string) => {
@@ -86,13 +103,10 @@ export function createApiAssetPathResolver(api: StudioApi, signal?: AbortSignal)
     }
     return p;
   };
-
   return {
     async resolve(urlPath) {
       const apiMatch = /^\/api\/assets\/([^/]+)\/content$/.exec(urlPath);
-      if (apiMatch?.[1]) {
-        return fetchAsset(decodeURIComponent(apiMatch[1]));
-      }
+      if (apiMatch?.[1]) return fetchAsset(decodeURIComponent(apiMatch[1]));
       if (urlPath.startsWith("/media/")) {
         const name = decodeURIComponent(urlPath.slice("/media/".length));
         const bareId = name.replace(/\.[a-z0-9]+$/i, "");
@@ -106,16 +120,15 @@ export function createApiAssetPathResolver(api: StudioApi, signal?: AbortSignal)
 export function createPlaywrightReelFrameCapturer(
   getBrowser?: () => Promise<Browser>,
 ): ReelFrameCapturer {
-  return async (req) => {
-    let ownedBrowser: Browser | null = null;
+  return async function* capture(req) {
+    let owned: Browser | null = null;
     let browser: Browser;
     if (getBrowser) {
       browser = await getBrowser();
     } else {
-      ownedBrowser = await chromium.launch({ headless: true, args: [...CHROMIUM_ARGS] });
-      browser = ownedBrowser;
+      owned = await chromium.launch({ headless: true, args: [...CHROMIUM_ARGS] });
+      browser = owned;
     }
-
     const context = await browser.newContext({
       viewport: { width: req.width, height: req.height },
       deviceScaleFactor: 1,
@@ -126,34 +139,24 @@ export function createPlaywrightReelFrameCapturer(
       serviceWorkers: "block",
       acceptDownloads: false,
     });
-
     try {
-      const docUrl = `${VIRTUAL_ORIGIN}/__studio/reel.html`;
       await context.route("**/*", async (route) => {
-        const raw = route.request().url();
         let url: URL;
         try {
-          url = new URL(raw);
+          url = new URL(route.request().url());
         } catch {
           return route.abort("blockedbyclient");
         }
-        if (url.origin !== VIRTUAL_ORIGIN) {
-          return route.abort("blockedbyclient");
-        }
+        if (url.origin !== VIRTUAL_ORIGIN) return route.abort("blockedbyclient");
         if (url.pathname === "/__studio/reel.html") {
           return route.fulfill({
             status: 200,
             body: req.html,
-            headers: {
-              "content-type": "text/html; charset=utf-8",
-              "cache-control": "no-store",
-            },
+            headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" },
           });
         }
         const resolved = await req.resolver.resolve(url.pathname);
-        if (!resolved) {
-          return route.fulfill({ status: 404, body: "not found" });
-        }
+        if (!resolved) return route.fulfill({ status: 404, body: "not found" });
         return route.fulfill({
           status: 200,
           body: Buffer.from(
@@ -164,94 +167,37 @@ export function createPlaywrightReelFrameCapturer(
           headers: { "content-type": resolved.contentType, "cache-control": "no-store" },
         });
       });
-
       const page = await context.newPage();
-      await page.goto(docUrl, { waitUntil: "load", timeout: 30_000 });
+      await page.goto(`${VIRTUAL_ORIGIN}/__studio/reel.html`, {
+        waitUntil: "load",
+        timeout: 30_000,
+      });
       await page.evaluate(
         "(async () => { await document.fonts.ready; await Promise.all(Array.from(document.images).map((img) => (img.complete ? null : img.decode().catch(() => null)))); })()",
       );
-
-      const totalFrames = Math.max(1, Math.round((req.durationMs / 1000) * req.fps));
-      const coverFrameIdx = Math.min(totalFrames - 1, Math.round(0.5 * req.fps));
-      const frames: Uint8Array[] = [];
-      let coverPng: Uint8Array | null = null;
-
-      for (let f = 0; f < totalFrames; f++) {
+      // Fit text once fonts are in (the composition fitted with fallback metrics at load).
+      await page.evaluate("window.__refit && window.__refit()");
+      const total = Math.max(1, Math.round((req.durationMs / 1000) * req.fps));
+      const clip = { x: 0, y: 0, width: req.width, height: req.height };
+      for (let f = 0; f < total; f++) {
         req.signal.throwIfAborted();
-        const t = f / req.fps;
-        await page.evaluate((sec) => {
-          const w = window as unknown as { __seek?: (n: number) => void };
-          w.__seek?.(sec);
-        }, t);
-
-        if (req.transparent) {
-          const png = new Uint8Array(
-            await page.screenshot({
-              type: "png",
-              omitBackground: true,
-              clip: { x: 0, y: 0, width: req.width, height: req.height },
-              scale: "css",
-              caret: "hide",
-            }),
-          );
-          frames.push(png);
-          if (f === coverFrameIdx) {
-            coverPng = new Uint8Array(
-              await page.screenshot({
-                type: "png",
-                omitBackground: false,
-                clip: { x: 0, y: 0, width: req.width, height: req.height },
-                scale: "css",
-                caret: "hide",
-              }),
-            );
-          }
-        } else {
-          const jpeg = new Uint8Array(
-            await page.screenshot({
-              type: "jpeg",
-              quality: 92,
-              clip: { x: 0, y: 0, width: req.width, height: req.height },
-              scale: "css",
-              caret: "hide",
-            }),
-          );
-          frames.push(jpeg);
-          if (f === coverFrameIdx) {
-            coverPng = new Uint8Array(
-              await page.screenshot({
-                type: "png",
-                clip: { x: 0, y: 0, width: req.width, height: req.height },
-                scale: "css",
-                caret: "hide",
-              }),
-            );
-          }
-        }
-
-        if (f % 15 === 0 || f === totalFrames - 1) {
-          req.onFrameProgress?.(f + 1, totalFrames);
-        }
+        await page.evaluate((s) => {
+          (window as unknown as { __seek?: (n: number) => void }).__seek?.(s);
+        }, f / req.fps);
+        const shot = req.transparent
+          ? await page.screenshot({ type: "png", omitBackground: true, clip, caret: "hide" })
+          : await page.screenshot({ type: "jpeg", quality: 90, clip, caret: "hide" });
+        yield new Uint8Array(shot.buffer, shot.byteOffset, shot.byteLength);
+        if (f % 15 === 0 || f === total - 1) req.onFrameProgress?.(f + 1, total);
       }
-
-      if (!coverPng) {
-        coverPng = new Uint8Array(
-          await page.screenshot({
-            type: "png",
-            clip: { x: 0, y: 0, width: req.width, height: req.height },
-            scale: "css",
-            caret: "hide",
-          }),
-        );
-      }
-
-      return { frames, coverPng };
     } finally {
       await context.close().catch(() => undefined);
-      if (ownedBrowser) await ownedBrowser.close().catch(() => undefined);
+      if (owned) await owned.close().catch(() => undefined);
     }
   };
 }
+
+// --- engine -----------------------------------------------------------------------------
 
 export interface ReelEngineTestSeams {
   ffmpeg?: FfmpegRunner;
@@ -259,6 +205,18 @@ export interface ReelEngineTestSeams {
   ttsProvider?: TtsProvider;
   transcriber?: ClipTranscriber;
   sayExec?: SayCommandRunner;
+}
+
+type Progress = (value: number, message: string) => void;
+
+export function resolveReelFfmpeg(deps: AgentDeps, seams?: ReelEngineTestSeams): FfmpegRunner {
+  if (seams?.ffmpeg) return seams.ffmpeg;
+  const bin = resolveFfmpegBin({
+    ...deps.settings.parentEnv,
+    ...(deps.settings.ffmpegBin ? { STUDIO_FFMPEG_BIN: deps.settings.ffmpegBin } : {}),
+  });
+  if (!bin) throw new Error(FFMPEG_MISSING_MESSAGE);
+  return createNodeFfmpegRunner(bin);
 }
 
 function slug(text: string): string {
@@ -273,19 +231,553 @@ function slug(text: string): string {
   );
 }
 
-function resolveFfmpegOrThrow(deps: AgentDeps, seams?: ReelEngineTestSeams): FfmpegRunner {
-  if (seams?.ffmpeg) return seams.ffmpeg;
-  const bin = resolveFfmpegBin({
-    ...deps.settings.parentEnv,
-    ...(deps.settings.ffmpegBin ? { STUDIO_FFMPEG_BIN: deps.settings.ffmpegBin } : {}),
+const MEDIA_MAX_BYTES = 55 * 1024 * 1024;
+
+function extFor(mime: string, fallback: string): string {
+  const m = mime.split(";")[0]?.trim().toLowerCase();
+  return (
+    {
+      "video/mp4": ".mp4",
+      "video/quicktime": ".mov",
+      "audio/mpeg": ".mp3",
+      "audio/mp4": ".m4a",
+      "audio/x-m4a": ".m4a",
+      "audio/aac": ".aac",
+      "audio/wav": ".wav",
+      "image/jpeg": ".jpg",
+      "image/png": ".png",
+      "image/webp": ".webp",
+    }[m ?? ""] ?? fallback
+  );
+}
+
+interface EngineContext {
+  deps: AgentDeps;
+  seams: ReelEngineTestSeams | undefined;
+  renderer: unknown;
+  ffmpeg: FfmpegRunner;
+  brand: BrandContext;
+  workDir: string;
+  signal: AbortSignal;
+  progress: Progress;
+  /** Notes for the version note / job output (Turkish). */
+  warnings: string[];
+}
+
+async function downloadTo(
+  ctx: EngineContext,
+  assetId: string,
+  name: string,
+  fallbackExt: string,
+): Promise<{ path: string; mimeType: string }> {
+  const { bytes, contentType } = await ctx.deps.api.downloadAsset(assetId, {
+    maxBytes: MEDIA_MAX_BYTES,
+    signal: ctx.signal,
   });
-  if (!bin) {
+  const file = path.join(ctx.workDir, `${name}${extFor(contentType, fallbackExt)}`);
+  await writeFile(file, bytes);
+  return { path: file, mimeType: contentType };
+}
+
+interface ClipInfo {
+  path: string;
+  mimeType: string;
+  durationMs: number;
+  hasAudio: boolean;
+}
+
+async function loadClip(ctx: EngineContext, assetId: string): Promise<ClipInfo> {
+  const file = await downloadTo(ctx, assetId, "clip", ".mp4");
+  const probe = await probeMedia(ctx.ffmpeg, file.path, ctx.signal);
+  if (!probe.hasVideo || !probe.durationMs) {
+    throw new Error("Seçilen çekim okunamadı: dosyada video akışı yok ya da süresi okunamıyor.");
+  }
+  return { ...file, durationMs: probe.durationMs, hasAudio: probe.hasAudio };
+}
+
+async function transcribeClip(
+  ctx: EngineContext,
+  clip: ClipInfo,
+  startMs: number,
+  durationMs: number,
+): Promise<TranscriptionResult> {
+  if (!clip.hasAudio) {
+    return {
+      language: "tr",
+      text: "",
+      segments: [],
+      words: [],
+      provider: "none",
+      note: "Çekimde ses yok; altyazılar senaryodan.",
+    };
+  }
+  ctx.progress(0.12, "Çekimdeki konuşma yazıya dökülüyor");
+  const transcriber =
+    ctx.seams?.transcriber ??
+    createDefaultClipTranscriber({
+      ffmpeg: ctx.ffmpeg,
+      ...(ctx.deps.settings.whisperBin ? { whisperBin: ctx.deps.settings.whisperBin } : {}),
+      geminiApiKey: getGeminiApiKey(ctx.deps.settings),
+      geminiModelId: ctx.deps.settings.geminiModels["gemini-flash"],
+      ...(ctx.deps.geminiFetch ? { fetch: ctx.deps.geminiFetch } : {}),
+      env: ctx.deps.settings.parentEnv,
+    });
+  const result = await transcriber({
+    path: clip.path,
+    mimeType: clip.mimeType,
+    language: ctx.brand.brand.defaultLanguage,
+    startMs,
+    durationMs,
+    signal: ctx.signal,
+  });
+  if (result.note) ctx.warnings.push(result.note);
+  return result;
+}
+
+/** Voice-over file for the spec (reuses `voiceAssetId`, else synthesises and marks it new). */
+async function ensureVoice(
+  ctx: EngineContext,
+  spec: ReelSpec,
+): Promise<{ path: string; spec: ReelSpec; newVoice: boolean; provider: string | null }> {
+  if (spec.voiceAssetId && spec.words.length > 0) {
+    try {
+      const file = await downloadTo(ctx, spec.voiceAssetId, "voice", ".m4a");
+      return { path: file.path, spec, newVoice: false, provider: null };
+    } catch (error) {
+      ctx.signal.throwIfAborted();
+      ctx.deps.logger.warn(`voice asset unavailable, re-synthesising: ${(error as Error).message}`);
+    }
+  }
+  const script = spec.narrationScript.trim();
+  if (!script) throw new Error("Seslendirmeli Reels için seslendirme metni boş.");
+  const tts =
+    ctx.seams?.ttsProvider ??
+    selectTtsProvider({
+      elevenLabsApiKey:
+        ctx.deps.settings.parentEnv.ELEVENLABS_API_KEY ?? ctx.deps.settings.elevenLabsApiKey,
+      elevenLabsVoiceId: ctx.deps.settings.elevenLabsVoiceId,
+      ffmpeg: ctx.ffmpeg,
+      ...(ctx.deps.geminiFetch ? { fetch: ctx.deps.geminiFetch } : {}),
+      ...(ctx.seams?.sayExec ? { sayExec: ctx.seams.sayExec } : {}),
+    });
+  if (!tts) {
     throw new Error(
-      "Reels video üretimi için Mac'te `ffmpeg` bulunamadı: Homebrew ile `brew install ffmpeg` kurun ya da STUDIO_FFMPEG_BIN tanımlayın.",
+      "Seslendirme yapılamıyor: bu Mac'te macOS `say` yok ve ELEVENLABS_API_KEY tanımlı değil.",
     );
   }
-  return createNodeFfmpegRunner(bin);
+  ctx.progress(
+    0.34,
+    tts.name === "elevenlabs"
+      ? "Seslendirme üretiliyor (ElevenLabs)"
+      : "Seslendirme üretiliyor (macOS)",
+  );
+  const voiceDir = await mkdtemp(path.join(ctx.workDir, "voice-"));
+  const res = await tts.synthesize({
+    text: script,
+    voice: spec.voice,
+    language: ctx.brand.brand.defaultLanguage,
+    workDir: voiceDir,
+    signal: ctx.signal,
+  });
+  const words = res.words
+    .filter((w) => w.word.trim())
+    .map((w) => ({
+      word: w.word.slice(0, 60),
+      startMs: Math.max(0, w.startMs),
+      endMs: Math.max(w.startMs + 40, w.endMs),
+    }));
+  return {
+    path: res.audioPath,
+    spec: { ...spec, words, durationMs: res.durationMs + 700, voiceAssetId: null },
+    newVoice: true,
+    provider: res.provider,
+  };
 }
+
+function compositionFor(ctx: EngineContext, spec: ReelSpec, overClip: boolean): BuiltComposition {
+  const hero = spec.heroAssetId
+    ? `/media/${encodeURIComponent(spec.heroAssetId)}.jpg`
+    : (ctx.brand.images[0]?.path ?? null);
+  if (spec.recipe === "narration")
+    return buildNarrationHtml({ brand: ctx.brand, spec, heroImagePath: hero });
+  if (spec.recipe === "footage_edit") {
+    return buildFootageEditHtml({ brand: ctx.brand, spec, overClip, stillImagePath: hero });
+  }
+  return buildMotionGraphicsHtml({ brand: ctx.brand, spec, heroImagePath: hero });
+}
+
+function defaultCoverMs(spec: ReelSpec): number {
+  if (spec.coverAtMs !== null) return spec.coverAtMs;
+  if (spec.recipe === "motion_graphics") {
+    const first = spec.scenes[0]?.durationMs ?? 2000;
+    return Math.max(300, Math.min(first - 150, 1500));
+  }
+  return Math.min(spec.durationMs - 100, 1200);
+}
+
+interface RenderedReel {
+  spec: ReelSpec;
+  mp4: Uint8Array;
+  cover: Uint8Array;
+  /** Newly synthesised voice track to upload (narration). */
+  voice: Uint8Array | null;
+  voiceProvider: string | null;
+  transcriptProvider: string | null;
+  frameCount: number;
+}
+
+/**
+ * Render a spec to MP4 + cover. Footage is downloaded and probed (duration clamped to the
+ * clip), narration gets its voice-over, then frames stream from Chromium into ffmpeg.
+ */
+async function renderSpec(
+  ctx: EngineContext,
+  input: {
+    spec: ReelSpec;
+    platforms: readonly Platform[];
+    clip?: ClipInfo | null;
+    transcript?: TranscriptionResult | null;
+  },
+): Promise<RenderedReel> {
+  const maxMs = maxReelDurationMs(input.platforms);
+  let spec = normalizeSpec(input.spec, maxMs);
+  let clip = input.clip ?? null;
+  let transcriptProvider: string | null = input.transcript?.provider ?? null;
+
+  if (spec.recipe === "footage_edit") {
+    if (!spec.clipAssetId && !clip) {
+      ctx.warnings.push("Çekim verilmedi: arka planda marka görseli kullanıldı.");
+    }
+    if (spec.clipAssetId && !clip) {
+      ctx.progress(0.08, "Çekim indiriliyor");
+      clip = await loadClip(ctx, spec.clipAssetId);
+    }
+    if (clip) {
+      const available = clip.durationMs - spec.clipStartMs;
+      if (available < 3000) {
+        throw new Error(
+          `Çekim çok kısa: ${spec.clipStartMs ? "seçilen başlangıçtan sonra " : ""}${(Math.max(0, available) / 1000).toFixed(1)} sn kalıyor, Reels en az 3 sn olmalı.`,
+        );
+      }
+      spec = normalizeSpec({ ...spec, durationMs: Math.min(spec.durationMs, available) }, maxMs);
+      if (spec.captions && spec.words.length === 0 && !input.transcript) {
+        const t = await transcribeClip(ctx, clip, spec.clipStartMs, spec.durationMs);
+        transcriptProvider = t.provider;
+        spec = normalizeSpec({ ...spec, words: t.words }, maxMs);
+      }
+    }
+  }
+
+  let audio: { path: string } | { fromClip: true } | null = null;
+  let music: { path: string; volume: number } | null = null;
+  let voice: Uint8Array | null = null;
+  let voiceProvider: string | null = null;
+  if (spec.recipe === "narration") {
+    const v = await ensureVoice(ctx, spec);
+    if (v.spec.durationMs > maxMs) {
+      ctx.warnings.push(
+        `Seslendirme ${(v.spec.durationMs / 1000).toFixed(1)} sn sürdü; video ${(maxMs / 1000).toFixed(0)} sn'de kesildi. Metni kısaltın.`,
+      );
+    }
+    spec = normalizeSpec(v.spec, maxMs);
+    audio = { path: v.path };
+    if (v.newVoice) {
+      voice = new Uint8Array(await readFile(v.path));
+      voiceProvider = v.provider;
+    }
+    if (spec.audioAssetId) {
+      ctx.progress(0.36, "Müzik indiriliyor");
+      music = {
+        path: (await downloadTo(ctx, spec.audioAssetId, "music", ".m4a")).path,
+        volume: 0.16,
+      };
+    }
+  } else if (spec.audioAssetId) {
+    ctx.progress(0.36, "Ses kanalı indiriliyor");
+    audio = { path: (await downloadTo(ctx, spec.audioAssetId, "music", ".m4a")).path };
+  } else if (clip?.hasAudio) {
+    audio = { fromClip: true };
+  }
+
+  const built = compositionFor(ctx, spec, Boolean(clip));
+  const resolver = combineResolvers(
+    ctx.brand.resolver,
+    createApiAssetPathResolver(ctx.deps.api, ctx.signal),
+  );
+  const rendererInst = ctx.renderer instanceof Renderer ? ctx.renderer : undefined;
+  const capturer =
+    ctx.seams?.frameCapturer ??
+    createPlaywrightReelFrameCapturer(rendererInst ? () => rendererInst.browser() : undefined);
+
+  const outPath = path.join(ctx.workDir, "reel.mp4");
+  let frameCount = 0;
+  ctx.progress(0.4, "Kareler render ediliyor");
+  await encodeReel({
+    frames: capturer({
+      html: built.html,
+      width: 1080,
+      height: 1920,
+      fps: 30,
+      durationMs: built.durationMs,
+      transparent: built.transparent,
+      resolver,
+      signal: ctx.signal,
+      onFrameProgress: (done, total) => {
+        frameCount = done;
+        ctx.progress(0.4 + (done / total) * 0.44, `Kareler render ediliyor (${done}/${total})`);
+      },
+    }),
+    frameFormat: built.transparent ? "png" : "jpeg",
+    durationMs: built.durationMs,
+    outPath,
+    clip: clip ? { path: clip.path, startMs: spec.clipStartMs, loop: false } : null,
+    audio,
+    music,
+    ffmpeg: ctx.ffmpeg,
+    signal: ctx.signal,
+  });
+
+  ctx.progress(0.86, "Kapak karesi alınıyor");
+  const coverRaw = path.join(ctx.workDir, "cover-raw.jpg");
+  await extractFrameJpeg({
+    ffmpeg: ctx.ffmpeg,
+    videoPath: outPath,
+    atMs: defaultCoverMs(spec),
+    outPath: coverRaw,
+    signal: ctx.signal,
+  });
+  let cover: Uint8Array;
+  let mp4: Uint8Array;
+  try {
+    mp4 = new Uint8Array(await readFile(outPath));
+    cover = new Uint8Array(
+      await sharp(await readFile(coverRaw))
+        .toColorspace("srgb")
+        .jpeg({ quality: 90, mozjpeg: true })
+        .toBuffer(),
+    );
+  } catch (error) {
+    if (ctx.seams?.ffmpeg) {
+      // Fake ffmpeg in unit tests writes nothing.
+      mp4 = new TextEncoder().encode("FAKE_MP4");
+      cover = new TextEncoder().encode("FAKE_JPEG");
+    } else {
+      throw error;
+    }
+  }
+  return { spec, mp4, cover, voice, voiceProvider, transcriptProvider, frameCount };
+}
+
+async function withEngine<T>(
+  deps: AgentDeps,
+  options: {
+    seams: ReelEngineTestSeams | undefined;
+    renderer: unknown;
+    brandId: string;
+    brandProfileVersion?: number | undefined;
+    signal: AbortSignal;
+    progress: Progress;
+  },
+  fn: (ctx: EngineContext) => Promise<T>,
+): Promise<T> {
+  const ffmpeg = resolveReelFfmpeg(deps, options.seams);
+  options.progress(0.04, "Marka profili okunuyor");
+  const brand = await loadBrandContext({
+    api: deps.api,
+    brandId: options.brandId,
+    profileVersion: options.brandProfileVersion,
+    cacheDir: path.join(deps.stateDir, "cache", "assets"),
+    signal: options.signal,
+  });
+  const workDir = await mkdtemp(path.join(tmpdir(), "studio-reel-"));
+  try {
+    return await fn({
+      deps,
+      seams: options.seams,
+      renderer: options.renderer,
+      ffmpeg,
+      brand,
+      workDir,
+      signal: options.signal,
+      progress: options.progress,
+      warnings: [],
+    });
+  } finally {
+    await rm(workDir, { recursive: true, force: true }).catch(() => undefined);
+  }
+}
+
+/** Upload MP4, cover (and a new voice track); store the reel version. */
+async function storeReel(
+  ctx: EngineContext,
+  input: {
+    content: Content;
+    jobId: string;
+    rendered: RenderedReel;
+    origin: "generated" | "manual_edit" | "ai_edit";
+    note: string;
+  },
+) {
+  const { deps, signal } = ctx;
+  const init = { signal };
+  const r = input.rendered;
+  ctx.progress(0.9, "Video ve kapak yükleniyor");
+  const base = slug(input.content.title || ctx.brand.brand.name);
+  let spec = r.spec;
+  if (r.voice) {
+    const voiceAsset = await deps.api.client.assets.upload(
+      {
+        brandId: input.content.brandId,
+        kind: "audio",
+        source: "generated",
+        durationMs: spec.durationMs,
+        file: new Blob([r.voice.slice()], { type: "audio/mp4" }),
+        filename: `${base}-seslendirme.m4a`,
+      },
+      init,
+    );
+    spec = { ...spec, voiceAssetId: voiceAsset.id };
+  }
+  const video = await deps.api.client.assets.upload(
+    {
+      brandId: input.content.brandId,
+      kind: "video",
+      source: "generated",
+      width: 1080,
+      height: 1920,
+      durationMs: spec.durationMs,
+      file: new Blob([r.mp4.slice()], { type: "video/mp4" }),
+      filename: `${base}.mp4`,
+    },
+    init,
+  );
+  const cover = await deps.api.client.assets.upload(
+    {
+      brandId: input.content.brandId,
+      kind: "image",
+      source: "generated",
+      width: 1080,
+      height: 1920,
+      file: new Blob([r.cover.slice()], { type: "image/jpeg" }),
+      filename: `${base}-kapak.jpg`,
+    },
+    init,
+  );
+  ctx.progress(0.96, "Sürüm kaydediliyor");
+  const html = buildReelVersionSlideHtml({
+    spec,
+    videoAssetId: video.id,
+    coverAssetId: cover.id,
+    language: ctx.brand.brand.defaultLanguage,
+  });
+  const version = await deps.api.client.contents.versions.create(
+    input.content.id,
+    {
+      origin: input.origin,
+      slides: [{ html, width: 1080, height: 1920 }],
+      note: input.note.slice(0, 2000),
+      jobId: input.jobId,
+      renderedAssetIds: [cover.id],
+    },
+    init,
+  );
+  if (version.version && input.content.status === "draft" && input.origin === "generated") {
+    await deps.api.client.contents
+      .transition(input.content.id, "in_review", init)
+      .catch(() => undefined);
+  }
+  return { version, videoAssetId: video.id, coverAssetId: cover.id, spec };
+}
+
+function reelNote(
+  head: string,
+  ctx: EngineContext,
+  spec: ReelSpec,
+  platforms: readonly Platform[],
+  extra: string[] = [],
+): string {
+  const issues = reelDurationIssues(spec.durationMs, platforms).map((i) => i.message);
+  return [
+    `${head} (${recipeLabel(spec.recipe)}, ${(spec.durationMs / 1000).toFixed(1)} sn, ${ctx.brand.label}).`,
+    ...extra,
+    ...ctx.warnings,
+    ...issues,
+  ]
+    .filter(Boolean)
+    .join(" ");
+}
+
+export function recipeLabel(recipe: ReelRecipe): string {
+  return recipe === "motion_graphics"
+    ? "hareketli grafik"
+    : recipe === "footage_edit"
+      ? "çekim kurgusu"
+      : "seslendirmeli";
+}
+
+// --- planning -----------------------------------------------------------------------------
+
+function plannerSystem(brand: BrandContext, recipe: ReelRecipe, targetSec: number): string {
+  const guide =
+    recipe === "motion_graphics"
+      ? `Hareketli grafik: 3-5 sahne, ilk sahnenin headline'ı kanca ile aynı fikri taşır; her sahne 1,8-3,5 sn; toplam ~${targetSec} sn. narrationScript ve overlays boş.`
+      : recipe === "narration"
+        ? `Seslendirmeli: narrationScript doğal, akıcı Türkçe; ~${Math.round(targetSec * 2.3)} kelime (saniyede ~2,3 kelime, toplam ~${targetSec} sn). 2-4 sahne headline'ı görsel alanda sırayla görünür. overlays boş.`
+        : `Çekim kurgusu: kullanıcının çekimi arka planda oynar. overlays: çekimin süresi içinde (0-${targetSec * 1000} ms) 2-5 kısa metin katmanı (en fazla 9 kelime), konuşma dökümü varsa onunla uyumlu; ilk 2,4 sn kanca içindir, overlays 2400 ms'den sonra başlar. scenes boş olabilir.`;
+  return `Sen Studio'nun Reels yönetmeni ve Türkçe metin yazarısın.
+Marka: ${brand.brand.name} (dil: ${brand.brand.defaultLanguage}).
+Ses tonu (VOICE): ${brand.voice.slice(0, 2000)}
+Tasarım kuralları: ${brand.designRules.slice(0, 1200)}
+İzinli rakamlar (FACTS.allowedNumbers): ${JSON.stringify(brand.allowedNumbers)}
+Kurallar:
+- Yalnızca izinli rakamları ve marka gerçeklerini kullan; iddia uydurma.
+- 1080x1920 dikey video; ekranda kısa, güçlü, okunur cümleler.
+- ${guide}
+- durationSec alanına toplam süreyi yaz.`;
+}
+
+async function callPlanner(
+  deps: AgentDeps,
+  input: {
+    label: string;
+    system: string;
+    prompt: string;
+    requestedModel?: string | undefined;
+    requestedEffort?: string | undefined;
+    signal: AbortSignal;
+  },
+): Promise<{ plan: ReelPlan; provider: "claude" | "gemini"; model: string | null }> {
+  const route = resolveStructuredRoute({
+    requestedModel: input.requestedModel,
+    requestedEffort: input.requestedEffort,
+    defaultEffort: deps.settings.effortDesign ?? "low",
+    defaultGeminiAlias: "gemini-flash",
+    settings: deps.settings,
+    claudeHealth: deps.health(),
+  });
+  const res = await callStructuredAi({
+    label: input.label,
+    system: input.system,
+    content: [{ type: "text", text: input.prompt }],
+    schema: REEL_PLAN_JSON_SCHEMA,
+    route,
+    gate: deps.gate,
+    settings: deps.settings,
+    timeoutMs: deps.settings.claudeTimeoutMs,
+    signal: input.signal,
+    ...(deps.geminiFetch ? { geminiFetch: deps.geminiFetch } : {}),
+  });
+  const parsed = ReelPlanSchema.safeParse(res.output);
+  if (!parsed.success) throw new Error("Model geçerli bir Reels planı döndürmedi.");
+  return { plan: parsed.data, provider: res.provider, model: res.model };
+}
+
+function aiAvailable(deps: AgentDeps): boolean {
+  const h = deps.health().state;
+  return h === "ok" || h === "limited" || hasGeminiApiKey(deps.settings);
+}
+
+// --- jobs ---------------------------------------------------------------------------------
 
 export interface GenerateReelInput {
   deps: AgentDeps;
@@ -297,15 +789,17 @@ export interface GenerateReelInput {
   title: string;
   brief: string;
   instructions?: string | null;
+  platforms?: readonly Platform[];
   requestedModel?: string | undefined;
   requestedEffort?: string | undefined;
-  explicitRecipe?: unknown;
-  videoClipAssetId?: string | undefined;
-  audioAssetId?: string | undefined;
-  heroImage?: { path: string; bytes: Uint8Array } | null;
+  options?: ReelGenerateOptions;
+  /** "Neyi değiştireyim?": revise this version's spec with `instructions`. */
+  baseVersion?: number | undefined;
+  /** Image named with @alias in the brief (uploaded asset id). */
+  heroAssetId?: string | undefined;
   brandProfileVersion?: number | undefined;
   signal: AbortSignal;
-  progress: (value: number, message: string) => void;
+  progress: Progress;
 }
 
 export interface GenerateReelOutput extends Record<string, unknown> {
@@ -318,336 +812,326 @@ export interface GenerateReelOutput extends Record<string, unknown> {
   videoAssetId: string;
   coverAssetId: string;
   renderedAssetIds: string[];
-  provider: "claude" | "gemini" | "template";
+  provider: "claude" | "gemini" | "template" | "spec";
   model: string | null;
+  warnings: string[];
 }
 
 export async function generateAndRenderReel(input: GenerateReelInput): Promise<GenerateReelOutput> {
   const { deps, signal } = input;
-  const init = { signal };
-  const ffmpeg = resolveFfmpegOrThrow(deps, input.seams);
+  const platforms: readonly Platform[] = input.platforms?.length
+    ? input.platforms
+    : input.content.targetPlatforms.length
+      ? input.content.targetPlatforms
+      : ["instagram"];
+  const opts = input.options ?? {};
 
-  input.progress(0.06, "Marka profili okunuyor");
-  const brand = await loadBrandContext({
-    api: deps.api,
-    brandId: input.brandId,
-    profileVersion: input.brandProfileVersion,
-    cacheDir: path.join(deps.stateDir, "cache", "assets"),
-    signal,
-  });
-
-  // Check if a video clip asset was supplied or exists on the brand for `footage_edit`
-  let clipBytes: { bytes: Uint8Array; mimeType: string } | null = null;
-  if (input.videoClipAssetId) {
-    const dl = await deps.api.downloadAsset(input.videoClipAssetId, {
-      maxBytes: 55 * 1024 * 1024,
+  return withEngine(
+    deps,
+    {
+      seams: input.seams,
+      renderer: input.renderer,
+      brandId: input.brandId,
+      brandProfileVersion: input.brandProfileVersion,
       signal,
-    });
-    clipBytes = { bytes: dl.bytes, mimeType: dl.contentType };
-  }
+      progress: input.progress,
+    },
+    async (ctx) => {
+      const instruction = input.instructions?.trim() ?? "";
 
-  let customAudio: { bytes: Uint8Array; mimeType: string; durationMs?: number | null } | undefined;
-  if (input.audioAssetId) {
-    const assetMeta = await deps.api.client.assets.get(input.audioAssetId, init).catch(() => null);
-    const dl = await deps.api.downloadAsset(input.audioAssetId, {
-      maxBytes: 55 * 1024 * 1024,
-      signal,
-    });
-    customAudio = {
-      bytes: dl.bytes,
-      mimeType: dl.contentType,
-      durationMs: assetMeta?.durationMs ?? null,
-    };
-  }
+      // "Neyi değiştireyim?" on an existing reel.
+      if (input.baseVersion !== undefined && instruction) {
+        const base = await deps.api.client.contents.versions.get(
+          input.content.id,
+          input.baseVersion,
+          { signal },
+        );
+        const baseSpec = extractReelVersionAssets(base).spec;
+        if (!baseSpec) {
+          throw new Error("Bu Reels sürümü düzenlenebilir bilgi taşımıyor; yeniden üretin.");
+        }
+        if (!aiAvailable(deps)) {
+          throw new Error(
+            '"Neyi değiştireyim?" için Claude ya da Gemini gerekiyor. Metinleri ve süreleri Reels düzenleyicisinden elle değiştirebilirsiniz.',
+          );
+        }
+        input.progress(0.2, "Değişiklik uygulanıyor");
+        const planned = await callPlanner(deps, {
+          label: `reel-edit-${input.content.id.slice(-8)}`,
+          system: plannerSystem(ctx.brand, baseSpec.recipe, Math.round(baseSpec.durationMs / 1000)),
+          prompt: [
+            "Mevcut Reels planı (JSON):",
+            JSON.stringify(specToPlan(baseSpec)),
+            `İstenen değişiklik: ${instruction}`,
+            "Yalnızca istenen değişikliği yap; geri kalan her şeyi (sıra, süreler, metinler) koru. Aynı şemada tam planı döndür.",
+          ].join("\n"),
+          requestedModel: input.requestedModel,
+          requestedEffort: input.requestedEffort,
+          signal,
+        });
+        const revised = planToSpec(planned.plan, baseSpec.recipe, {
+          clipAssetId: baseSpec.clipAssetId,
+          clipStartMs: baseSpec.clipStartMs,
+          audioAssetId: baseSpec.audioAssetId,
+          heroAssetId: baseSpec.heroAssetId,
+          voice: baseSpec.voice,
+          captions: baseSpec.captions,
+          coverAtMs: baseSpec.coverAtMs,
+        });
+        const sameScript = revised.narrationScript.trim() === baseSpec.narrationScript.trim();
+        const next: ReelSpec = {
+          ...revised,
+          // Footage keeps its transcript; narration keeps its voice when the script is unchanged.
+          words: baseSpec.recipe === "footage_edit" || sameScript ? baseSpec.words : [],
+          voiceAssetId: sameScript ? baseSpec.voiceAssetId : null,
+          durationMs:
+            baseSpec.recipe === "footage_edit"
+              ? clampReelDurationMs(revised.durationMs || baseSpec.durationMs, platforms)
+              : revised.durationMs,
+        };
+        const rendered = await renderSpec(ctx, { spec: next, platforms });
+        const stored = await storeReel(ctx, {
+          content: input.content,
+          jobId: input.jobId,
+          rendered,
+          origin: "ai_edit",
+          note: reelNote(
+            `AI düzenleme (s${base.version} üzerine): ${instruction.slice(0, 300)}`,
+            ctx,
+            rendered.spec,
+            platforms,
+          ),
+        });
+        if (planned.plan.caption && planned.plan.caption !== input.content.caption) {
+          await deps.api.client.contents
+            .update(
+              input.content.id,
+              { caption: planned.plan.caption.slice(0, 10_000) },
+              { signal },
+            )
+            .catch(() => undefined);
+        }
+        input.progress(1, "Tamamlandı");
+        return output(
+          input.content.id,
+          stored,
+          rendered,
+          planned.provider,
+          planned.model,
+          ctx.warnings,
+          input.baseVersion,
+        );
+      }
 
-  const recipe = inferReelRecipe({
-    explicitRecipe: input.explicitRecipe,
-    hasVideoClip: Boolean(clipBytes),
-    brief: input.brief,
-    instructions: input.instructions,
-  });
+      // A ready spec (tests, chat tool, duplicates): render as is.
+      if (opts.spec) {
+        const spec = ReelSpec.parse(opts.spec);
+        const rendered = await renderSpec(ctx, { spec, platforms });
+        const stored = await storeReel(ctx, {
+          content: input.content,
+          jobId: input.jobId,
+          rendered,
+          origin: "generated",
+          note: reelNote("Reels üretildi", ctx, rendered.spec, platforms),
+        });
+        input.progress(1, "Tamamlandı");
+        return output(input.content.id, stored, rendered, "spec", null, ctx.warnings);
+      }
 
-  let transcript: TranscriptionResult | null = null;
-  if (recipe === "footage_edit" && clipBytes) {
-    input.progress(0.14, "Klip yazıya dökülüyor");
-    const transcriber =
-      input.seams?.transcriber ??
-      createDefaultClipTranscriber({
-        whisperBin: deps.settings.whisperBin ?? null,
-        geminiApiKey: getGeminiApiKey(deps.settings),
-        geminiModelId: deps.settings.geminiModels["gemini-flash"],
-        ...(deps.geminiFetch ? { fetch: deps.geminiFetch } : {}),
+      const clipAssetId = opts.clipAssetId;
+      const recipe = inferReelRecipe({
+        explicitRecipe: opts.recipe,
+        hasVideoClip: Boolean(clipAssetId),
+        brief: input.brief,
+        instructions: instruction,
       });
-    transcript = await transcriber({
-      bytes: clipBytes.bytes,
-      mimeType: clipBytes.mimeType,
-      language: brand.brand.defaultLanguage,
-      signal,
-    });
-  }
+      if (recipe === "footage_edit" && !clipAssetId) {
+        ctx.warnings.push(
+          "Çekim kurgusu için video verilmedi; arka planda marka görseli kullanıldı.",
+        );
+      }
+      let clip: ClipInfo | null = null;
+      let transcript: TranscriptionResult | null = null;
+      let targetMs = clampReelDurationMs(
+        (opts.durationSec ?? (recipe === "narration" ? 15 : 9)) * 1000,
+        platforms,
+      );
+      if (recipe === "footage_edit" && clipAssetId) {
+        input.progress(0.08, "Çekim indiriliyor");
+        clip = await loadClip(ctx, clipAssetId);
+        targetMs = Math.min(
+          clampReelDurationMs(
+            (opts.durationSec ?? Math.min(clip.durationMs, 30_000) / 1000) * 1000,
+            platforms,
+          ),
+          clip.durationMs,
+        );
+        transcript = await transcribeClip(ctx, clip, 0, targetMs);
+      }
 
-  input.progress(0.22, `Reels senaryosu hazırlanıyor (${recipe})`);
-  let plan: ReelPlan;
-  let usedProvider: "claude" | "gemini" | "template" = "template";
-  let usedModel: string | null = null;
-
-  try {
-    const route = resolveStructuredRoute({
-      requestedModel: input.requestedModel,
-      requestedEffort: input.requestedEffort,
-      defaultEffort: deps.settings.effortDesign,
-      defaultGeminiAlias: "gemini-flash",
-      settings: deps.settings,
-      claudeHealth: deps.health(),
-    });
-    const system = `Sen Studio'nun Reels video yönetmeni ve Türkçe metin yazarısın.
-Marka: ${brand.brand.name} (dil: ${brand.brand.defaultLanguage}).
-Ses tonu (VOICE): ${brand.voice.slice(0, 2000)}
-Tasarım kuralları: ${brand.designRules.slice(0, 1500)}
-İzinli rakamlar (FACTS.allowedNumbers): ${JSON.stringify(brand.allowedNumbers)}
-Kurallar:
-- Yalnızca izinli rakamları ve marka gerçeklerini kullan; iddia uydurma.
-- Reels 1080x1920 dikey formatındadır, ilk 2 saniyede güçlü Türkçe kanca (hook) olmalı.
-- İstenen tarif (recipe): ${recipe}.
-- Süre (durationSec): 5 ile 8 saniye arası kompakt, yüksek tempolu akış.`;
-
-    const promptText = [
-      `Başlık: ${input.title}`,
-      `Tarif: ${recipe}`,
-      `Brief: ${input.brief || input.title}`,
-      input.instructions ? `Ek yönerge: ${input.instructions}` : "",
-      transcript?.text ? `Klip dökümü (transkript): ${transcript.text}` : "",
-      transcript?.segments.length
-        ? `Zaman damgalı kesitler: ${JSON.stringify(transcript.segments)}`
-        : "",
-      "JSON şemasına tam uyan Reels planını döndür.",
-    ]
-      .filter(Boolean)
-      .join("\n");
-
-    const aiRes = await callStructuredAi({
-      label: `reel-${input.content.id.slice(-8)}`,
-      system,
-      content: [{ type: "text", text: promptText }],
-      schema: REEL_PLAN_JSON_SCHEMA,
-      route,
-      gate: deps.gate,
-      settings: deps.settings,
-      timeoutMs: deps.settings.claudeTimeoutMs,
-      signal,
-      ...(deps.geminiFetch ? { geminiFetch: deps.geminiFetch } : {}),
-    });
-    const parsed = ReelPlanSchema.safeParse(aiRes.output);
-    plan = parsed.success
-      ? parsed.data
-      : buildFallbackReelPlan({
+      input.progress(0.2, "Reels senaryosu yazılıyor");
+      let plan: ReelPlan;
+      let provider: GenerateReelOutput["provider"] = "template";
+      let model: string | null = null;
+      const fallback = () =>
+        buildFallbackPlan({
           recipe,
           title: input.title,
           brief: input.brief,
-          brandName: brand.brand.name,
-          transcript,
+          brandName: ctx.brand.brand.name,
+          ...(transcript?.text ? { transcriptText: transcript.text } : {}),
+          durationSec: targetMs / 1000,
         });
-    usedProvider = aiRes.provider;
-    usedModel = aiRes.model;
-  } catch (err) {
-    signal.throwIfAborted();
-    deps.logger.warn(
-      `reel AI planning fell back to deterministic template: ${(err as Error).message}`,
-    );
-    plan = buildFallbackReelPlan({
-      recipe,
-      title: input.title,
-      brief: input.brief,
-      brandName: brand.brand.name,
-      transcript,
-    });
-  }
-
-  // Synthesize voiceover or prepare audio track
-  input.progress(
-    0.38,
-    recipe === "narration" ? "Seslendirme üretiliyor" : "Ses kanalı hazırlanıyor",
-  );
-  const tts =
-    input.seams?.ttsProvider ??
-    selectTtsProvider({
-      recipe,
-      elevenLabsApiKey:
-        deps.settings.parentEnv.ELEVENLABS_API_KEY ?? deps.settings.elevenLabsApiKey,
-      elevenLabsVoiceId: deps.settings.elevenLabsVoiceId,
-      customAudio,
-      ffmpeg,
-      ...(deps.geminiFetch ? { fetch: deps.geminiFetch } : {}),
-      ...(input.seams?.sayExec ? { sayExec: input.seams.sayExec } : {}),
-    });
-
-  const scriptText =
-    recipe === "narration"
-      ? plan.narrationScript.trim() ||
-        `${plan.hook}. ${plan.scenes.map((s) => s.headline).join(". ")}`
-      : "";
-  const ttsResult = await tts.synthesize({
-    text: scriptText,
-    language: brand.brand.defaultLanguage,
-    durationMs: Math.round(plan.durationSec * 1000),
-    signal,
-  });
-
-  // Build recipe HTML
-  const heroPath = input.heroImage?.path ?? brand.images[0]?.path ?? null;
-  const built =
-    recipe === "narration"
-      ? buildNarrationHtml({
-          brand,
-          plan,
-          words: ttsResult.words,
-          durationMs: ttsResult.durationMs,
-          heroImagePath: heroPath,
-        })
-      : recipe === "footage_edit"
-        ? buildFootageEditHtml({
-            brand,
-            plan,
-            hasBackgroundVideo: Boolean(clipBytes),
-            stillImagePath: heroPath,
-          })
-        : buildMotionGraphicsHtml({
-            brand,
-            plan,
-            heroImagePath: heroPath,
+      if (aiAvailable(deps)) {
+        try {
+          const planned = await callPlanner(deps, {
+            label: `reel-${input.content.id.slice(-8)}`,
+            system: plannerSystem(ctx.brand, recipe, Math.round(targetMs / 1000)),
+            prompt: [
+              `Başlık: ${input.title}`,
+              `Tarif: ${recipe}`,
+              `Brief: ${input.brief || input.title}`,
+              instruction ? `Ek yönerge: ${instruction}` : "",
+              clip ? `Çekimin kullanılacak süresi: ${(targetMs / 1000).toFixed(1)} sn` : "",
+              transcript?.segments.length
+                ? `Çekimdeki konuşma (zaman damgalı): ${JSON.stringify(transcript.segments.slice(0, 60))}`
+                : "",
+              "JSON şemasına tam uyan Reels planını döndür.",
+            ]
+              .filter(Boolean)
+              .join("\n"),
+            requestedModel: input.requestedModel,
+            requestedEffort: input.requestedEffort,
+            signal,
           });
+          plan = planned.plan;
+          provider = planned.provider;
+          model = planned.model;
+        } catch (error) {
+          signal.throwIfAborted();
+          deps.logger.warn(`reel planning failed, using the template: ${(error as Error).message}`);
+          ctx.warnings.push(
+            `AI senaryosu alınamadı (${(error as Error).message.slice(0, 160)}); basit şablon kullanıldı.`,
+          );
+          plan = fallback();
+        }
+      } else {
+        ctx.warnings.push("Claude/Gemini kullanılamadığı için basit şablon senaryo kullanıldı.");
+        plan = fallback();
+      }
 
-  const resolver = combineResolvers(
-    brand.resolver,
-    ...(input.heroImage
-      ? [createMemoryResolver({ [input.heroImage.path]: input.heroImage.bytes })]
-      : []),
-    createApiAssetPathResolver(deps.api, signal),
-  );
-
-  const rendererInst = input.renderer instanceof Renderer ? input.renderer : undefined;
-  const capturer =
-    input.seams?.frameCapturer ??
-    createPlaywrightReelFrameCapturer(rendererInst ? () => rendererInst.browser() : undefined);
-
-  input.progress(0.5, "Kareler render ediliyor (1080×1920 @ 30fps)");
-  const captured = await capturer({
-    html: built.html,
-    width: 1080,
-    height: 1920,
-    fps: 30,
-    durationMs: built.durationMs,
-    transparent: built.transparent,
-    resolver,
-    signal,
-    onFrameProgress: (done, total) => {
-      const ratio = 0.5 + (done / total) * 0.28;
-      input.progress(ratio, `Kareler render ediliyor (${done}/${total})`);
+      const spec = planToSpec(plan, recipe, {
+        clipAssetId: clipAssetId ?? null,
+        audioAssetId: opts.audioAssetId ?? null,
+        heroAssetId: opts.heroAssetId ?? input.heroAssetId ?? null,
+        voice: opts.voice ?? null,
+        words: transcript?.words ?? [],
+        ...(recipe === "footage_edit" ? { durationMs: targetMs } : {}),
+      });
+      const rendered = await renderSpec(ctx, { spec, platforms, clip, transcript });
+      const stored = await storeReel(ctx, {
+        content: input.content,
+        jobId: input.jobId,
+        rendered,
+        origin: "generated",
+        note: reelNote(
+          "Reels üretildi",
+          ctx,
+          rendered.spec,
+          platforms,
+          provider === "template"
+            ? []
+            : [`Senaryo: ${provider === "gemini" ? "Gemini" : "Claude"}.`],
+        ),
+      });
+      if (plan.caption && !input.content.caption) {
+        await deps.api.client.contents
+          .update(input.content.id, { caption: plan.caption.slice(0, 10_000) }, { signal })
+          .catch(() => undefined);
+      }
+      input.progress(1, "Tamamlandı");
+      return output(input.content.id, stored, rendered, provider, model, ctx.warnings);
     },
-  });
-
-  input.progress(0.8, "FFmpeg Reels normalleştirmesi çalışıyor");
-  const mp4Bytes = await muxFramesToReelsMp4({
-    frames: captured.frames,
-    frameFormat: built.transparent ? "png" : "jpeg",
-    fps: 30,
-    durationMs: built.durationMs,
-    audio:
-      ttsResult.audioBytes.byteLength > 0
-        ? { bytes: ttsResult.audioBytes, mimeType: ttsResult.mimeType }
-        : null,
-    backgroundVideo: clipBytes,
-    ffmpeg,
-    signal,
-  });
-
-  const coverJpeg = await pngToSrgbJpeg(captured.coverPng, 92);
-
-  input.progress(0.9, "Video ve kapak yükleniyor");
-  const fileBase = slug(input.title || brand.brand.name);
-  const videoAsset = await deps.api.client.assets.upload(
-    {
-      brandId: input.brandId,
-      kind: "video",
-      source: "generated",
-      width: 1080,
-      height: 1920,
-      durationMs: built.durationMs,
-      file: new Blob([mp4Bytes.slice()], { type: "video/mp4" }),
-      filename: `${fileBase}.mp4`,
-    },
-    init,
   );
-  const coverAsset = await deps.api.client.assets.upload(
-    {
-      brandId: input.brandId,
-      kind: "image",
-      source: "generated",
-      width: 1080,
-      height: 1920,
-      file: new Blob([coverJpeg.slice()], { type: "image/jpeg" }),
-      filename: `${fileBase}-cover.jpg`,
-    },
-    init,
-  );
+}
 
-  const slideHtml = buildReelVersionSlideHtml({
-    brand,
-    hook: plan.hook,
-    cta: plan.cta || brand.brand.name,
-    videoAssetId: videoAsset.id,
-    coverAssetId: coverAsset.id,
-    recipe,
-    durationMs: built.durationMs,
-    compositionHtml: built.html,
-  });
-
-  const note = `Reels üretildi (${recipe}, ${(built.durationMs / 1000).toFixed(1)} sn, ${brand.label}).`;
-
-  input.progress(0.96, "Sürüm kaydediliyor");
-  const version = await deps.api.client.contents.versions.create(
-    input.content.id,
-    {
-      origin: "generated",
-      slides: [{ html: slideHtml, width: 1080, height: 1920 }],
-      note: note.slice(0, 2000),
-      jobId: input.jobId,
-      renderedAssetIds: [coverAsset.id],
-    },
-    init,
-  );
-
-  if (plan.caption && plan.caption !== input.content.caption) {
-    await deps.api.client.contents
-      .update(input.content.id, { caption: plan.caption.slice(0, 10_000) }, init)
-      .catch(() => undefined);
-  }
-
-  if (input.content.status === "draft") {
-    await deps.api.client.contents
-      .transition(input.content.id, "in_review", init)
-      .catch(() => undefined);
-  }
-
-  input.progress(1, "Tamamlandı");
+function specToPlan(spec: ReelSpec): ReelPlan {
   return {
-    contentId: input.content.id,
-    version: version.version,
-    versionId: version.id,
-    contentHash: version.contentHash,
-    recipe,
-    durationMs: built.durationMs,
-    videoAssetId: videoAsset.id,
-    coverAssetId: coverAsset.id,
-    renderedAssetIds: [coverAsset.id],
-    provider: usedProvider,
-    model: usedModel,
+    hook: spec.hook || " ",
+    scenes: spec.scenes.map((s) => ({
+      eyebrow: s.eyebrow,
+      headline: s.headline,
+      subhead: s.subhead,
+      durationSec: s.durationMs / 1000,
+    })),
+    narrationScript: spec.narrationScript,
+    overlays: spec.overlays.map((o) => ({ startMs: o.startMs, endMs: o.endMs, caption: o.text })),
+    cta: spec.cta,
+    caption: "",
+    durationSec: spec.durationMs / 1000,
   };
 }
 
+function output(
+  contentId: string,
+  stored: Awaited<ReturnType<typeof storeReel>>,
+  rendered: RenderedReel,
+  provider: GenerateReelOutput["provider"],
+  model: string | null,
+  warnings: string[],
+  baseVersion?: number,
+): GenerateReelOutput {
+  return {
+    contentId,
+    ...(baseVersion !== undefined ? { baseVersion, revised: true } : {}),
+    version: stored.version.version,
+    versionId: stored.version.id,
+    contentHash: stored.version.contentHash,
+    recipe: stored.spec.recipe,
+    durationMs: stored.spec.durationMs,
+    videoAssetId: stored.videoAssetId,
+    coverAssetId: stored.coverAssetId,
+    renderedAssetIds: [stored.coverAssetId],
+    frames: rendered.frameCount,
+    bytes: rendered.mp4.byteLength,
+    voice: rendered.voiceProvider,
+    transcript: rendered.transcriptProvider,
+    provider,
+    model,
+    warnings,
+  };
+}
+
+/** Apply editor changes to a spec (arrays replace; a changed script drops the old voice). */
+export function applyReelPatch(spec: ReelSpec, patch: ReelSpecPatch): ReelSpec {
+  const next: ReelSpec = {
+    ...spec,
+    ...(patch.hook !== undefined ? { hook: patch.hook } : {}),
+    ...(patch.cta !== undefined ? { cta: patch.cta } : {}),
+    ...(patch.scenes !== undefined ? { scenes: patch.scenes } : {}),
+    ...(patch.overlays !== undefined ? { overlays: patch.overlays } : {}),
+    ...(patch.captions !== undefined ? { captions: patch.captions } : {}),
+    ...(patch.durationMs !== undefined ? { durationMs: patch.durationMs } : {}),
+    ...(patch.coverAtMs !== undefined ? { coverAtMs: patch.coverAtMs } : {}),
+    ...(patch.voice !== undefined ? { voice: patch.voice } : {}),
+  };
+  const scriptChanged =
+    patch.narrationScript !== undefined &&
+    patch.narrationScript.trim() !== spec.narrationScript.trim();
+  const voiceChanged = patch.voice !== undefined && patch.voice !== spec.voice;
+  if (scriptChanged || voiceChanged) {
+    next.narrationScript = patch.narrationScript ?? spec.narrationScript;
+    if (spec.recipe === "narration") {
+      next.words = [];
+      next.voiceAssetId = null;
+    }
+  }
+  return next;
+}
+
 /**
- * Re-render an existing Reel `ContentVersion` (used by `content.render` when
- * `content.type === "reel"` or `format === "mp4"`).
+ * `content.render` on a reel: re-render the version's spec (with `patch` applied) and store it
+ * as a new `manual_edit` version. No AI call.
  */
 export async function renderExistingReelVersion(input: {
   deps: AgentDeps;
@@ -657,131 +1141,78 @@ export async function renderExistingReelVersion(input: {
   brandId: string;
   content: Content;
   version: ContentVersion;
+  patch?: ReelSpecPatch | undefined;
+  note?: string | undefined;
   signal: AbortSignal;
-  progress: (value: number, message: string) => void;
+  progress: Progress;
 }): Promise<Record<string, unknown>> {
-  const extracted = extractReelVersionAssets(input.version);
-  if (!extracted.compositionHtml) {
-    // No stored composition yet: generate from the content's brief
-    return generateAndRenderReel({
-      deps: input.deps,
-      renderer: input.renderer,
+  const baseSpec = extractReelVersionAssets(input.version).spec;
+  if (!baseSpec) {
+    throw new Error(
+      'Bu Reels sürümü düzenlenebilir bilgi taşımıyor (eski biçim). "Neyi değiştireyim?" ya da yeniden üret ile yeni bir sürüm oluşturun.',
+    );
+  }
+  const platforms: readonly Platform[] = input.content.targetPlatforms.length
+    ? input.content.targetPlatforms
+    : ["instagram"];
+  const spec = input.patch ? applyReelPatch(baseSpec, input.patch) : baseSpec;
+  return withEngine(
+    input.deps,
+    {
       seams: input.seams,
-      jobId: input.jobId,
+      renderer: input.renderer,
       brandId: input.brandId,
-      content: input.content,
-      title: input.content.title,
-      brief: input.content.brief,
-      ...(extracted.recipe ? { explicitRecipe: extracted.recipe } : {}),
       signal: input.signal,
       progress: input.progress,
-    });
-  }
-
-  const ffmpeg = resolveFfmpegOrThrow(input.deps, input.seams);
-  const brand: BrandContext = await loadBrandContext({
-    api: input.deps.api,
-    brandId: input.brandId,
-    cacheDir: path.join(input.deps.stateDir, "cache", "assets"),
-    signal: input.signal,
-  });
-  const resolver = combineResolvers(
-    brand.resolver,
-    createApiAssetPathResolver(input.deps.api, input.signal),
-  );
-  const rendererInst = input.renderer instanceof Renderer ? input.renderer : undefined;
-  const capturer =
-    input.seams?.frameCapturer ??
-    createPlaywrightReelFrameCapturer(rendererInst ? () => rendererInst.browser() : undefined);
-
-  const durationMs = extracted.durationMs ?? 6000;
-  input.progress(0.3, "Reels kareleri yeniden render ediliyor");
-  const captured = await capturer({
-    html: extracted.compositionHtml,
-    width: 1080,
-    height: 1920,
-    fps: 30,
-    durationMs,
-    transparent: false,
-    resolver,
-    signal: input.signal,
-  });
-
-  input.progress(0.75, "FFmpeg ile MP4 oluşturuluyor");
-  const mp4Bytes = await muxFramesToReelsMp4({
-    frames: captured.frames,
-    frameFormat: "jpeg",
-    fps: 30,
-    durationMs,
-    ffmpeg,
-    signal: input.signal,
-  });
-  const coverJpeg = await pngToSrgbJpeg(captured.coverPng, 92);
-
-  const init = { signal: input.signal };
-  const fileBase = slug(input.content.title);
-  const videoAsset = await input.deps.api.client.assets.upload(
-    {
-      brandId: input.brandId,
-      kind: "video",
-      source: "generated",
-      width: 1080,
-      height: 1920,
-      durationMs,
-      file: new Blob([mp4Bytes.slice()], { type: "video/mp4" }),
-      filename: `${fileBase}-v${input.version.version}.mp4`,
     },
-    init,
-  );
-  const coverAsset = await input.deps.api.client.assets.upload(
-    {
-      brandId: input.brandId,
-      kind: "image",
-      source: "generated",
-      width: 1080,
-      height: 1920,
-      file: new Blob([coverJpeg.slice()], { type: "image/jpeg" }),
-      filename: `${fileBase}-v${input.version.version}-cover.jpg`,
+    async (ctx) => {
+      const rendered = await renderSpec(ctx, { spec, platforms });
+      const changes = input.patch ? describePatch(input.patch) : "yeniden render";
+      const stored = await storeReel(ctx, {
+        content: input.content,
+        jobId: input.jobId,
+        rendered,
+        origin: "manual_edit",
+        note:
+          input.note ??
+          reelNote(
+            `Reels düzenlendi (s${input.version.version} üzerine: ${changes})`,
+            ctx,
+            rendered.spec,
+            platforms,
+          ),
+      });
+      input.progress(1, "Tamamlandı");
+      return {
+        contentId: input.content.id,
+        baseVersion: input.version.version,
+        version: stored.version.version,
+        versionId: stored.version.id,
+        contentHash: stored.version.contentHash,
+        renderedAssetIds: [stored.coverAssetId],
+        videoAssetId: stored.videoAssetId,
+        coverAssetId: stored.coverAssetId,
+        durationMs: stored.spec.durationMs,
+        recipe: stored.spec.recipe,
+        frames: rendered.frameCount,
+        bytes: rendered.mp4.byteLength,
+        voice: rendered.voiceProvider,
+        warnings: ctx.warnings,
+      };
     },
-    init,
   );
+}
 
-  const slideHtml = buildReelVersionSlideHtml({
-    brand,
-    hook: input.content.title,
-    cta: brand.brand.name,
-    videoAssetId: videoAsset.id,
-    coverAssetId: coverAsset.id,
-    recipe: extracted.recipe ?? "motion_graphics",
-    durationMs,
-    compositionHtml: extracted.compositionHtml,
-  });
-
-  const newVer = await input.deps.api.client.contents.versions.create(
-    input.content.id,
-    {
-      origin: "manual_edit",
-      slides: [{ html: slideHtml, width: 1080, height: 1920 }],
-      note: `Reels MP4 yeniden dışa aktarıldı (sürüm ${input.version.version}).`,
-      jobId: input.jobId,
-      renderedAssetIds: [coverAsset.id],
-    },
-    init,
-  );
-
-  if (input.content.status === "draft") {
-    await input.deps.api.client.contents
-      .transition(input.content.id, "in_review", init)
-      .catch(() => undefined);
-  }
-
-  input.progress(1, "Tamamlandı");
-  return {
-    contentId: input.content.id,
-    version: newVer.version,
-    versionId: newVer.id,
-    renderedAssetIds: [coverAsset.id],
-    videoAssetId: videoAsset.id,
-    coverAssetId: coverAsset.id,
-  };
+function describePatch(patch: ReelSpecPatch): string {
+  const parts: string[] = [];
+  if (patch.hook !== undefined) parts.push("kanca");
+  if (patch.scenes !== undefined) parts.push("sahneler");
+  if (patch.overlays !== undefined) parts.push("metin katmanları");
+  if (patch.narrationScript !== undefined) parts.push("seslendirme metni");
+  if (patch.cta !== undefined) parts.push("kapanış");
+  if (patch.durationMs !== undefined) parts.push("süre");
+  if (patch.captions !== undefined) parts.push(patch.captions ? "altyazı açık" : "altyazı kapalı");
+  if (patch.coverAtMs !== undefined) parts.push("kapak karesi");
+  if (patch.voice !== undefined) parts.push("ses");
+  return parts.join(", ") || "yeniden render";
 }

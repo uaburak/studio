@@ -39,6 +39,8 @@ final class ChatViewController: NSViewController {
         var busyPlans: Set<EntityID>
         var busyQuestions: Set<String>
         var busyConsents: Set<String>
+        /// Still loading and the stream keeps failing: say so instead of spinning silently.
+        var connectionTrouble: Bool = false
     }
 
     init(model: ConversationModel) {
@@ -191,6 +193,16 @@ final class ChatViewController: NSViewController {
         }
     }
 
+    /// Two failed attempts in a row (or HTTP fallback) count as trouble.
+    static func isTroubled(_ live: LiveState) -> Bool {
+        switch live {
+        case .live: false
+        case .connecting(let attempt): attempt > 2
+        case .waiting(let failures, _): failures >= 2
+        case .polling: true
+        }
+    }
+
     private func syncMessages() {
         let key = MessageRenderKey(
             hasState: model.state != nil,
@@ -203,7 +215,8 @@ final class ChatViewController: NSViewController {
             expandedPlans: model.expandedPlans,
             busyPlans: model.busyPlans,
             busyQuestions: model.busyQuestions,
-            busyConsents: model.busyConsents
+            busyConsents: model.busyConsents,
+            connectionTrouble: model.state == nil && Self.isTroubled(model.live)
         )
         guard key != renderedSnapshotKey else { return }
         renderedSnapshotKey = key
@@ -218,8 +231,17 @@ final class ChatViewController: NSViewController {
             spinner.style = .spinning
             spinner.controlSize = .regular
             spinner.startAnimation(nil)
-            let holder = NSStackView(views: [spinner])
+            var views: [NSView] = [spinner]
+            if key.connectionTrouble {
+                let note = NSTextField.styledLabel(
+                    "Sohbete bağlanılamıyor; yeniden deneniyor. Mac sunucusu kapalı olabilir.",
+                    font: Theme.captionFont, color: Theme.textSecondary
+                )
+                views.append(note)
+            }
+            let holder = NSStackView(views: views)
             holder.orientation = .vertical
+            holder.spacing = Theme.Spacing.m
             holder.alignment = .centerX
             holder.edgeInsets = NSEdgeInsets(top: 80, left: 0, bottom: 0, right: 0)
             messageColumn.addArrangedSubview(holder)
@@ -686,13 +708,14 @@ private final class ContentRefRowControlView: NSControl {
     }
 }
 
-private final class UnderlinedLinkButton: NSControl {
+private final class UnderlinedLinkButton: TapControl {
     private let onTap: () -> Void
 
     init(title: String, onTap: @escaping () -> Void) {
         self.onTap = onTap
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
+        setAccessibilityLabel(title)
         let attr = NSAttributedString(string: title, attributes: [
             .font: Theme.captionFont,
             .foregroundColor: Theme.textSecondary,
@@ -714,6 +737,8 @@ private final class UnderlinedLinkButton: NSControl {
     override func mouseDown(with event: NSEvent) {
         onTap()
     }
+
+    override func performTap() { onTap() }
 }
 
 // MARK: - AliasPreviewSheetController

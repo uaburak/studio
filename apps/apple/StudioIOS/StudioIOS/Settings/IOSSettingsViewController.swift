@@ -1,79 +1,81 @@
 import StudioKit
 import UIKit
+import UserNotifications
 
-/// Ayarlar (`100% Pure UIKit`):
-/// - Live Bonjour Mac discovery (`StudioBrowser` over `_studio._tcp`)
-/// - Paired Mac status + 6-digit pairing (`PairingSheetViewController`)
-/// - Remote Control URL (`https://social.burakkoc.net`)
-/// - Claude & Gemini readiness from `WorkerPresence`
-/// - Sistem / Açık / Koyu appearance switch.
-final class IOSSettingsViewController: UIViewController {
+/// Ayarlar: the paired Mac (status, address, rediscovery, forget), pairing with Macs found
+/// on Wi-Fi, remote access, AI status and usage, brands, notifications, appearance, devices.
+final class IOSSettingsViewController: UITableViewController {
+    private enum Section: Int, CaseIterable {
+        case mac, pairing, remote, ai, brands, notifications, appearance, greeting, device, about
+
+        var title: String? {
+            switch self {
+            case .mac: "Bu Mac"
+            case .pairing: "Eşleştirme"
+            case .remote: "Uzaktan erişim"
+            case .ai: "Yapay zekâ"
+            case .brands: nil
+            case .notifications: "Bildirimler"
+            case .appearance: "Görünüm"
+            case .greeting: "Karşılama"
+            case .device: "Bu iPhone"
+            case .about: nil
+            }
+        }
+    }
+
+    private struct Row {
+        var title: String
+        var detail: String? = nil
+        var icon: String? = nil
+        var tint: UIColor? = nil
+        var destructive = false
+        var accessory: UITableViewCell.AccessoryType = .none
+        /// Trailing closure of rows without `toggle:`.
+        var action: (() -> Void)? = nil
+        var toggle: Bool? = nil
+        /// Trailing closure of rows with `toggle:`.
+        var onToggle: ((Bool) -> Void)? = nil
+        var custom: UIView? = nil
+    }
+
     private unowned let app: IOSAppModel
-
-    private let scrollView = UIScrollView()
-    private let contentStack = UIStackView()
-
-    private let pairedInfoLabel = UILabel.studio("", size: 14, lines: 0)
-    private let bonjourStack = UIStackView()
-    private let remoteSwitch = UISwitch()
-    private let remoteURLField = UITextField()
-    private let aiStatusLabel = UILabel.studio("", size: 13, color: IOSTheme.textSecondary, lines: 0)
-    private var appearanceSegment: UISegmentedControl!
-
-    private var discoveredMacs: [DiscoveredStudio] = []
+    private var discovered: [DiscoveredStudio] = []
     private var bonjourTask: Task<Void, Never>?
     private var observation: IOSObservationToken?
+    private var rows: [Section: [Row]] = [:]
 
     init(app: IOSAppModel) {
         self.app = app
-        super.init(nibName: nil, bundle: nil)
+        super.init(style: .insetGrouped)
         title = "Ayarlar"
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
 
-    deinit {
-        bonjourTask?.cancel()
-    }
+    deinit { bonjourTask?.cancel() }
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        view.backgroundColor = IOSTheme.groupedBackground
-
-        scrollView.translatesAutoresizingMaskIntoConstraints = false
-        scrollView.keyboardDismissMode = .interactive
-        contentStack.axis = .vertical
-        contentStack.spacing = 16
-        contentStack.translatesAutoresizingMaskIntoConstraints = false
-        scrollView.addSubview(contentStack)
-        view.addSubview(scrollView)
-
-        NSLayoutConstraint.activate([
-            scrollView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            scrollView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            scrollView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
-            scrollView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-
-            contentStack.leadingAnchor.constraint(equalTo: scrollView.contentLayoutGuide.leadingAnchor, constant: 16),
-            contentStack.trailingAnchor.constraint(equalTo: scrollView.contentLayoutGuide.trailingAnchor, constant: -16),
-            contentStack.topAnchor.constraint(equalTo: scrollView.contentLayoutGuide.topAnchor, constant: 16),
-            contentStack.bottomAnchor.constraint(equalTo: scrollView.contentLayoutGuide.bottomAnchor, constant: -32),
-            contentStack.widthAnchor.constraint(equalTo: scrollView.frameLayoutGuide.widthAnchor, constant: -32),
-        ])
-
-        buildPairingAndBonjourCard()
-        buildRemoteControlCard()
-        buildAIStatusCard()
-        buildAppearanceCard()
-
-        observation = observeIOS { [weak self] in
-            self?.render()
-        }
+        tableView.backgroundColor = IOSTheme.groupedBackground
+        tableView.register(UITableViewCell.self, forCellReuseIdentifier: "row")
+        let refresh = UIRefreshControl()
+        refresh.addAction(UIAction { [weak self, weak refresh] _ in
+            guard let self else { return }
+            Task {
+                await self.app.load()
+                await self.app.notifier.refreshAuthorization()
+                refresh?.endRefreshing()
+            }
+        }, for: .valueChanged)
+        refreshControl = refresh
+        observation = observeIOS { [weak self] in self?.rebuild() }
     }
 
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
-        startBonjourDiscovery()
+        startBonjour()
+        Task { await app.notifier.refreshAuthorization() }
     }
 
     override func viewWillDisappear(_ animated: Bool) {
@@ -82,212 +84,390 @@ final class IOSSettingsViewController: UIViewController {
         bonjourTask = nil
     }
 
-    private func buildPairingAndBonjourCard() {
-        let card = IOSCardView(padding: 16, spacing: 12)
-        card.stack.addArrangedSubview(UILabel.studio("Eşleşmiş Mac ve Yerel Ağ (Bonjour)", size: 16, weight: .bold))
-        card.stack.addArrangedSubview(pairedInfoLabel)
-
-        let manualPairBtn = UIButton.studioPill(title: "Eşleştirme Kodu Gir…", primary: true) { [weak self] in
-            self?.openPairingSheet(baseURL: nil, serverName: "Studio Mac")
-        }
-        let forgetBtn = UIButton.studioPill(title: "Eşleştirmeyi Unut") { [weak self] in
-            guard let self else { return }
-            try? self.app.settings.pairingClient.forget()
-            self.render()
-        }
-        let pairRow = UIStackView(arrangedSubviews: [manualPairBtn, forgetBtn, UIView()])
-        pairRow.axis = .horizontal
-        pairRow.spacing = 8
-        card.stack.addArrangedSubview(pairRow)
-
-        card.stack.addArrangedSubview(UILabel.studio("Aynı Wi-Fi Ağındaki Mac'ler (_studio._tcp)", size: 13, weight: .semibold, color: IOSTheme.textSecondary))
-        bonjourStack.axis = .vertical
-        bonjourStack.spacing = 8
-        card.stack.addArrangedSubview(bonjourStack)
-        contentStack.addArrangedSubview(card)
-    }
-
-    private func buildRemoteControlCard() {
-        let card = IOSCardView(padding: 16, spacing: 10)
-        card.stack.addArrangedSubview(UILabel.studio("Uzaktan Erişim (Cloudflare Tunnel · L3)", size: 16, weight: .bold))
-
-        remoteSwitch.onTintColor = IOSTheme.accent
-        remoteSwitch.addAction(UIAction { [weak self] _ in
-            guard let self else { return }
-            self.app.settings.useRemoteControlURL = self.remoteSwitch.isOn
-            self.app.reconnect()
-        }, for: .valueChanged)
-
-        let toggleRow = UIStackView(arrangedSubviews: [
-            UILabel.studio("Ev dışından uzaktan adresle bağlan", size: 14),
-            UIView(),
-            remoteSwitch,
-        ])
-        toggleRow.axis = .horizontal
-        toggleRow.alignment = .center
-        card.stack.addArrangedSubview(toggleRow)
-
-        remoteURLField.text = app.settings.remoteURLString
-        remoteURLField.placeholder = IOSAppSettings.defaultRemoteURLString
-        remoteURLField.keyboardType = .URL
-        remoteURLField.autocapitalizationType = .none
-        remoteURLField.autocorrectionType = .no
-        remoteURLField.font = UIFont.systemFont(ofSize: 14)
-        remoteURLField.textColor = IOSTheme.textPrimary
-        remoteURLField.backgroundColor = IOSTheme.fill
-        remoteURLField.layer.cornerRadius = 12
-        remoteURLField.leftView = UIView(frame: CGRect(x: 0, y: 0, width: 12, height: 1))
-        remoteURLField.leftViewMode = .always
-        remoteURLField.translatesAutoresizingMaskIntoConstraints = false
-        remoteURLField.heightAnchor.constraint(equalToConstant: 40).isActive = true
-        card.stack.addArrangedSubview(remoteURLField)
-
-        let saveRemoteBtn = UIButton.studioPill(title: "Uzaktan Adresi Kaydet") { [weak self] in
-            guard let self else { return }
-            self.app.settings.remoteURLString = self.remoteURLField.text ?? IOSAppSettings.defaultRemoteURLString
-            if self.app.settings.useRemoteControlURL {
-                self.app.reconnect()
-            }
-        }
-        let btnRow = UIStackView(arrangedSubviews: [saveRemoteBtn, UIView()])
-        btnRow.axis = .horizontal
-        card.stack.addArrangedSubview(btnRow)
-        contentStack.addArrangedSubview(card)
-    }
-
-    private func buildAIStatusCard() {
-        let card = IOSCardView(padding: 16, spacing: 10)
-        card.stack.addArrangedSubview(UILabel.studio("Yapay Zekâ Durumu (Claude & Gemini)", size: 16, weight: .bold))
-        card.stack.addArrangedSubview(aiStatusLabel)
-
-        let refreshAIBtn = UIButton.studioPill(title: "Durumu Yenile") { [weak self] in
-            guard let self else { return }
-            Task {
-                _ = try? await self.app.dataService.claudeRefresh()
-                _ = try? await self.app.dataService.geminiRefresh()
-                await self.app.load()
-            }
-        }
-        let row = UIStackView(arrangedSubviews: [refreshAIBtn, UIView()])
-        row.axis = .horizontal
-        card.stack.addArrangedSubview(row)
-        contentStack.addArrangedSubview(card)
-    }
-
-    private func buildAppearanceCard() {
-        let card = IOSCardView(padding: 16, spacing: 10)
-        card.stack.addArrangedSubview(UILabel.studio("Görünüm", size: 16, weight: .bold))
-
-        appearanceSegment = UISegmentedControl(items: IOSAppearancePreference.allCases.map(\.label))
-        appearanceSegment.addAction(UIAction { [weak self] _ in
-            guard let self else { return }
-            let idx = self.appearanceSegment.selectedSegmentIndex
-            if IOSAppearancePreference.allCases.indices.contains(idx) {
-                self.app.settings.appearance = IOSAppearancePreference.allCases[idx]
-            }
-        }, for: .valueChanged)
-        card.stack.addArrangedSubview(appearanceSegment)
-        contentStack.addArrangedSubview(card)
-    }
-
-    private func startBonjourDiscovery() {
+    private func startBonjour() {
+        guard !app.isSample else { return }
         bonjourTask?.cancel()
         let browser = StudioBrowser()
         bonjourTask = Task { @MainActor [weak self] in
             for await list in browser.results() {
                 guard let self, !Task.isCancelled else { return }
-                self.discoveredMacs = list
-                self.rebuildBonjourRows()
+                self.discovered = list
+                self.rebuild()
             }
         }
     }
 
-    private func rebuildBonjourRows() {
-        bonjourStack.arrangedSubviews.forEach {
-            bonjourStack.removeArrangedSubview($0)
-            $0.removeFromSuperview()
+    // MARK: Model -> rows
+
+    private func rebuild() {
+        let settings = app.settings
+        let presence = app.presence
+        let credential = settings.savedCredential
+        var rows: [Section: [Row]] = [:]
+
+        // Mac
+        var mac: [Row] = []
+        if app.isSample {
+            mac.append(Row(title: "Örnek veri", detail: "-StudioSampleData YES ile açıldı", icon: "testtube.2"))
+        } else if let credential {
+            let address = settings.useRemoteControlURL ? (settings.remoteURL?.absoluteString ?? "—") : credential.serverURL.absoluteString
+            mac.append(Row(title: credential.serverName, detail: address, icon: "laptopcomputer"))
+        } else {
+            mac.append(Row(title: "Eşleşmiş Mac yok", detail: "Aşağıdan aynı Wi-Fi'deki Mac'i seç", icon: "laptopcomputer.slash", tint: IOSTheme.accent))
         }
-        if discoveredMacs.isEmpty {
-            bonjourStack.addArrangedSubview(UILabel.studio("Yerel ağda Studio çalışan Mac aranıyor…", size: 13, color: IOSTheme.textTertiary))
-            return
-        }
-        for mac in discoveredMacs {
-            let connectBtn = UIButton.studioPill(title: "Eşleştir") { [weak self] in
+        let connection = app.connection
+        var connectionDetail = AssistantStatus.macLine(presence)
+        if case .unreachable(let message) = connection { connectionDetail = message }
+        mac.append(Row(title: connection.label, detail: connectionDetail, icon: "circle.fill", tint: connection == .online ? IOSTheme.accent : IOSTheme.textTertiary))
+        if credential != nil || app.isSample {
+            mac.append(Row(title: "Mac durumu ve işler", detail: jobsSummary(), icon: "list.bullet.rectangle", accessory: .disclosureIndicator) { [weak self] in
+                guard let self else { return }
+                self.navigationController?.pushViewController(JobsViewController(app: self.app), animated: true)
+            })
+            mac.append(Row(title: "Yeniden bağlan", icon: "arrow.clockwise") { [weak self] in
                 guard let self else { return }
                 Task {
-                    do {
-                        let url = try await StudioBrowser.resolve(mac)
-                        self.openPairingSheet(baseURL: url, serverName: mac.displayName)
-                    } catch {
-                        let alert = UIAlertController(
-                            title: "Mac'e ulaşılamadı",
-                            message: ((error as? StudioAPIError)?.errorDescription ?? error.localizedDescription)
-                                + "\n\nMac'te Studio açık ve Ayarlar → Mac sunucusu çalışıyor olmalı. Adresi elle de girebilirsin.",
-                            preferredStyle: .alert)
-                        alert.addAction(UIAlertAction(title: "Elle gir", style: .default) { _ in
-                            self.openPairingSheet(baseURL: mac.advertisedURLs.first, serverName: mac.displayName)
-                        })
-                        alert.addAction(UIAlertAction(title: "Vazgeç", style: .cancel))
-                        self.present(alert, animated: true)
-                    }
+                    if await self.app.rediscoverPairedMac() == false { self.app.reconnect() }
+                    Toast.show("Mac aranıyor…", in: self.view)
                 }
+            })
+        }
+        rows[.mac] = mac
+
+        // Pairing
+        var pairing: [Row] = []
+        for studio in discovered {
+            let isPaired = studio.displayName == credential?.serverName || studio.serviceName == credential?.serverName
+            pairing.append(Row(title: studio.displayName, detail: isPaired ? "Eşleşmiş" : "Eşleştirmek için dokun", icon: "wifi", accessory: isPaired ? .checkmark : .disclosureIndicator) { [weak self] in
+                self?.pair(with: studio)
+            })
+        }
+        if discovered.isEmpty && !app.isSample {
+            pairing.append(Row(title: "Aynı Wi-Fi'de Mac aranıyor…", detail: "Mac'te Studio açık ve Mac sunucusu çalışıyor olmalı", icon: "antenna.radiowaves.left.and.right"))
+        }
+        pairing.append(Row(title: "Adres ve kodu elle gir…", icon: "keyboard", accessory: .disclosureIndicator) { [weak self] in
+            self?.openPairingSheet(baseURL: nil, serverName: "Studio Mac")
+        })
+        if credential != nil {
+            pairing.append(Row(title: "Eşleştirmeyi kaldır", icon: "minus.circle", tint: IOSTheme.accent, destructive: true) { [weak self] in
+                guard let self else { return }
+                self.confirm("Eşleştirme kaldırılsın mı?", message: "Bu iPhone'daki anahtar silinir. Mac'te de Ayarlar → Cihazlar'dan kaldırabilirsin.", action: "Kaldır") {
+                    self.app.settings.forgetPairing()
+                    self.app.reconnect()
+                }
+            })
+        }
+        rows[.pairing] = pairing
+
+        // Remote
+        rows[.remote] = [
+            Row(title: "Ev dışından bağlan", detail: "Remote Control tüneli (Cloudflare)", icon: "globe", toggle: settings.useRemoteControlURL) { [weak self] on in
+                guard let self else { return }
+                self.app.settings.useRemoteControlURL = on
+                self.app.reconnect()
+            },
+            Row(title: "Uzak adres", detail: settings.remoteURLString, icon: "link", accessory: .disclosureIndicator) { [weak self] in
+                guard let self else { return }
+                self.prompt("Uzak adres", message: "Mac'teki Uzaktan Erişim adresi.", text: self.app.settings.remoteURLString, placeholder: IOSAppSettings.defaultRemoteURLString, keyboard: .URL) { text in
+                    let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                    self.app.settings.remoteURLString = trimmed.isEmpty ? IOSAppSettings.defaultRemoteURLString : trimmed
+                    if self.app.settings.remoteURL == nil { self.presentError("Geçerli bir https:// adresi gir.") }
+                    if self.app.settings.useRemoteControlURL { self.app.reconnect() }
+                }
+            },
+        ]
+
+        // AI
+        var ai: [Row] = [
+            Row(title: "Claude", detail: AssistantStatus.claudeLine(presence), icon: "sparkle"),
+            Row(title: "Gemini", detail: AssistantStatus.geminiLine(presence), icon: "sparkles"),
+        ]
+        for window in presence?.usage?.windows ?? [] {
+            let detail = AssistantStatus.usedText(window) + (window.resetsAt.map { " · sıfırlanma \(AssistantStatus.relative($0))" } ?? "")
+            ai.append(Row(title: "\(AssistantStatus.windowTitle(window.kind)) kullanım", detail: detail, icon: "gauge.with.dots.needle.50percent", tint: AssistantStatus.isWarning(window.effectivePercent) ? IOSTheme.accent : nil))
+        }
+        ai.append(Row(title: "Durumu yenile", icon: "arrow.clockwise") { [weak self] in
+            guard let self else { return }
+            Task {
+                _ = try? await self.app.dataService.claudeRefresh()
+                _ = try? await self.app.dataService.geminiRefresh()
+                Toast.show("Mac'ten durum istendi", in: self.view)
             }
-            let row = UIStackView(arrangedSubviews: [
-                IOSStatusDotView(color: IOSTheme.accent, size: 8),
-                UILabel.studio(mac.displayName, size: 14, weight: .medium),
-                UIView(),
-                connectBtn,
-            ])
-            row.axis = .horizontal
-            row.alignment = .center
-            row.spacing = 8
-            bonjourStack.addArrangedSubview(row)
+        })
+        rows[.ai] = ai
+
+        rows[.brands] = [Row(title: "Markalar", detail: app.currentBrand.map { "Seçili: \($0.name)" } ?? "\(app.brands.count) marka", icon: "building.2", accessory: .disclosureIndicator) { [weak self] in
+            guard let self else { return }
+            self.navigationController?.pushViewController(BrandsViewController(app: self.app), animated: true)
+        }]
+
+        // Notifications
+        var notifications: [Row] = []
+        let notifier = app.notifier
+        switch notifier.authorization {
+        case .denied:
+            notifications.append(Row(title: "Bildirimler kapalı", detail: "iOS Ayarlar → Studio → Bildirimler'den aç", icon: "bell.slash", tint: IOSTheme.accent, accessory: .disclosureIndicator) {
+                if let url = URL(string: UIApplication.openNotificationSettingsURLString) { UIApplication.shared.open(url) }
+            })
+        case .notDetermined:
+            notifications.append(Row(title: "Bildirimlere izin ver", detail: "Post hazır olunca ve onayın beklenince haber ver", icon: "bell.badge") {
+                Task { await notifier.requestAuthorization() }
+            })
+        default:
+            break
+        }
+        for category in ActivityNotice.Category.allCases {
+            notifications.append(Row(title: category.label, icon: Self.icon(category), toggle: settings.isNoticeEnabled(category)) { [weak self] on in
+                self?.app.settings.setNotice(category, enabled: on)
+            })
+        }
+        rows[.notifications] = notifications
+
+        // Appearance
+        let segmented = UISegmentedControl(items: IOSAppearancePreference.allCases.map(\.label))
+        segmented.selectedSegmentIndex = IOSAppearancePreference.allCases.firstIndex(of: settings.appearance) ?? 0
+        segmented.addAction(UIAction { [weak self, weak segmented] _ in
+            guard let self, let segmented else { return }
+            self.app.settings.appearance = IOSAppearancePreference.allCases[segmented.selectedSegmentIndex]
+            Haptics.selection()
+        }, for: .valueChanged)
+        rows[.appearance] = [Row(title: "", custom: segmented)]
+
+        // Greeting name (home screen, drawer avatar)
+        let typedName = settings.ownerName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let nameDetail = typedName.isEmpty
+            ? (settings.greetingName.map { "Mac'in adından: \($0)" } ?? "Ayarlanmadı")
+            : typedName
+        rows[.greeting] = [Row(title: "Adın", detail: nameDetail, icon: "person.crop.circle", accessory: .disclosureIndicator) { [weak self] in
+            guard let self else { return }
+            self.prompt("Adın", message: "Ana ekrandaki selamlamada kullanılır. Boş bırakırsan eşleşmiş Mac'in adından tahmin edilir.", text: self.app.settings.ownerName, placeholder: settings.greetingName ?? "Adın") { name in
+                self.app.settings.ownerName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+        }]
+
+        // Device
+        var device: [Row] = [Row(title: UIDevice.current.name, detail: credential.map { "Cihaz no: \($0.deviceId.suffix(8))" } ?? "Eşleşmedi", icon: "iphone")]
+        device.append(Row(title: "Diğer cihazlar", detail: "Mac → Ayarlar → Cihazlar'da listelenir ve kaldırılır", icon: "person.2"))
+        rows[.device] = device
+
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"
+        let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?"
+        rows[.about] = [Row(title: "Studio", detail: "Sürüm \(version) (\(build))", icon: "info.circle")]
+
+        self.rows = rows
+        tableView.reloadData()
+    }
+
+    private static func icon(_ category: ActivityNotice.Category) -> String {
+        switch category {
+        case .waiting: "hand.raised"
+        case .production: "square.grid.2x2"
+        case .publishing: "paperplane"
+        case .replies: "bubble.left"
+        }
+    }
+
+    private func jobsSummary() -> String {
+        let active = app.jobBoard.jobs.filter { $0.status.isActive }.count
+        let queue = app.presence?.queueLength ?? 0
+        if active == 0 { return queue > 0 ? "\(queue) iş sırada" : "Çalışan iş yok" }
+        return "\(active) iş sürüyor"
+    }
+
+    // MARK: Table
+
+    override func numberOfSections(in tableView: UITableView) -> Int { Section.allCases.count }
+
+    override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
+        rows[Section(rawValue: section)!]?.count ?? 0
+    }
+
+    override func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? {
+        Section(rawValue: section)?.title
+    }
+
+    override func tableView(_ tableView: UITableView, titleForFooterInSection section: Int) -> String? {
+        switch Section(rawValue: section)! {
+        case .pairing: "Mac'te Ayarlar → Cihazlar → Telefon ekle ile 6 haneli kod çıkar."
+        case .remote: "Açıkken istekler tünel adresine gider; eşleştirme anahtarı aynı kalır."
+        case .notifications: "Uygulama açıkken ve kısa süre arka plandayken anında; kapalıyken iOS'un izin verdiği aralıklarla gelir."
+        default: nil
+        }
+    }
+
+    override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
+        let cell = tableView.dequeueReusableCell(withIdentifier: "row", for: indexPath)
+        cell.backgroundColor = IOSTheme.elevated
+        cell.contentView.subviews.filter { $0.tag == 77 }.forEach { $0.removeFromSuperview() }
+        guard let row = rows[Section(rawValue: indexPath.section)!]?[indexPath.row] else { return cell }
+        cell.accessoryView = nil
+        cell.accessoryType = row.accessory
+        cell.selectionStyle = row.action == nil ? .none : .default
+        if let custom = row.custom {
+            cell.contentConfiguration = nil
+            custom.tag = 77
+            custom.translatesAutoresizingMaskIntoConstraints = false
+            cell.contentView.addSubview(custom)
+            custom.pin(to: cell.contentView, insets: UIEdgeInsets(top: 10, left: 16, bottom: 10, right: 16))
+            return cell
+        }
+        var content = UIListContentConfiguration.subtitleCell()
+        content.text = row.title
+        content.textProperties.color = row.destructive ? IOSTheme.accent : IOSTheme.textPrimary
+        content.secondaryText = row.detail
+        content.secondaryTextProperties.color = IOSTheme.textSecondary
+        content.secondaryTextProperties.numberOfLines = 3
+        if let icon = row.icon {
+            content.image = UIImage(systemName: icon, withConfiguration: UIImage.SymbolConfiguration(pointSize: icon == "circle.fill" ? 9 : 15))
+            content.imageProperties.tintColor = row.tint ?? IOSTheme.textSecondary
+            content.imageProperties.reservedLayoutSize = CGSize(width: 26, height: 26)
+        }
+        cell.contentConfiguration = content
+        if let toggle = row.toggle {
+            let toggleView = UISwitch()
+            toggleView.isOn = toggle
+            toggleView.onTintColor = IOSTheme.ink
+            let handler = row.onToggle
+            toggleView.addAction(UIAction { [weak toggleView] _ in handler?(toggleView?.isOn ?? false) }, for: .valueChanged)
+            cell.accessoryView = toggleView
+            cell.selectionStyle = .none
+        }
+        return cell
+    }
+
+    override func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
+        tableView.deselectRow(at: indexPath, animated: true)
+        rows[Section(rawValue: indexPath.section)!]?[indexPath.row].action?()
+    }
+
+    // MARK: Pairing
+
+    private func pair(with studio: DiscoveredStudio) {
+        Task {
+            do {
+                let url = try await StudioBrowser.resolve(studio)
+                openPairingSheet(baseURL: url, serverName: studio.displayName)
+            } catch {
+                let alert = UIAlertController(
+                    title: "Mac'e ulaşılamadı",
+                    message: IOSAppModel.describe(error) + "\n\nMac'te Studio açık ve Ayarlar → Mac sunucusu çalışıyor olmalı.",
+                    preferredStyle: .alert)
+                alert.addAction(UIAlertAction(title: "Adresi elle gir", style: .default) { _ in
+                    self.openPairingSheet(baseURL: studio.advertisedURLs.first, serverName: studio.displayName)
+                })
+                alert.addAction(UIAlertAction(title: "Vazgeç", style: .cancel))
+                present(alert, animated: true)
+            }
         }
     }
 
     private func openPairingSheet(baseURL: URL?, serverName: String) {
         let vc = PairingSheetViewController(app: app, baseURL: baseURL, serverName: serverName) { [weak self] in
-            self?.render()
+            self?.rebuild()
+            Toast.show("Mac ile eşleşildi", in: self?.view)
         }
-        let nav = UINavigationController(rootViewController: vc)
-        present(nav, animated: true)
+        presentSheet(vc, detents: [.large()])
+    }
+}
+
+/// Mac status: workers, queue and the latest jobs (cancel the running ones).
+final class JobsViewController: UITableViewController {
+    private unowned let app: IOSAppModel
+    private var observation: IOSObservationToken?
+    private var jobs: [Job] = []
+
+    init(app: IOSAppModel) {
+        self.app = app
+        super.init(style: .insetGrouped)
+        title = "Mac durumu"
     }
 
-    private func render() {
-        if app.isSample {
-            pairedInfoLabel.text = "Örnek veri kipi (-StudioSampleData YES) açık."
-        } else if let cred = app.settings.savedCredential {
-            pairedInfoLabel.text = "Bağlı Mac: \(cred.serverName)\nAdres: \(cred.serverURL.absoluteString)"
-        } else {
-            pairedInfoLabel.text = "Henüz eşleşmiş bir Mac yok. Aynı Wi-Fi'de aşağıdaki listeden seçin ya da Eşleştirme Kodu Gir'e dokunun."
-        }
+    required init?(coder: NSCoder) { fatalError("not used") }
 
-        remoteSwitch.isOn = app.settings.useRemoteControlURL
-        if !remoteURLField.isFirstResponder && remoteURLField.text != app.settings.remoteURLString {
-            remoteURLField.text = app.settings.remoteURLString
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        navigationItem.largeTitleDisplayMode = .never
+        tableView.backgroundColor = IOSTheme.groupedBackground
+        tableView.register(UITableViewCell.self, forCellReuseIdentifier: "job")
+        observation = observeIOS { [weak self] in
+            guard let self else { return }
+            self.jobs = self.app.jobBoard.jobs
+            _ = self.app.presence
+            self.tableView.reloadData()
         }
+    }
 
-        let claude = app.presence?.claude
-        let gemini = app.presence?.gemini
-        let claudeLine = switch claude?.status {
-        case .signedIn: "Claude Code: Giriş yapıldı (\(claude?.email ?? "aktif"))"
-        case .signedOut: "Claude Code: Giriş yapılmadı"
-        case .signingIn: "Claude Code: Giriş bekleniyor"
-        case .notInstalled: "Claude Code: Kurulu değil"
-        case .error: "Claude Code: Hata"
-        case .unknown, nil: app.isOnline ? "Claude Code: Okunuyor" : "Claude Code: Mac çevrimdışı"
-        }
-        let geminiLine = switch gemini?.status {
-        case .ready: "Gemini: Hazır (\(gemini?.defaultModel ?? "API/CLI"))"
-        case .notConfigured: "Gemini: Yapılandırılmadı"
-        case .error: "Gemini: Hata"
-        case .unknown, nil: app.isOnline ? "Gemini: Okunuyor" : "Gemini: Mac çevrimdışı"
-        }
-        aiStatusLabel.text = "\(claudeLine)\n\(geminiLine)"
+    override func numberOfSections(in tableView: UITableView) -> Int { 2 }
 
-        if let idx = IOSAppearancePreference.allCases.firstIndex(of: app.settings.appearance) {
-            appearanceSegment.selectedSegmentIndex = idx
+    override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
+        section == 0 ? 3 : max(1, jobs.count)
+    }
+
+    override func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? {
+        section == 0 ? "Mac" : "Son işler"
+    }
+
+    override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
+        let cell = tableView.dequeueReusableCell(withIdentifier: "job", for: indexPath)
+        cell.backgroundColor = IOSTheme.elevated
+        cell.selectionStyle = .none
+        var content = UIListContentConfiguration.valueCell()
+        let presence = app.presence
+        if indexPath.section == 0 {
+            switch indexPath.row {
+            case 0:
+                content.text = "Durum"
+                content.secondaryText = AssistantStatus.macLine(presence)
+            case 1:
+                content.text = "İşçi"
+                content.secondaryText = presence?.workers.first.map { "\($0.workerId) · \($0.workerVersion ?? "?")" } ?? "Bağlı değil"
+            default:
+                content.text = "Sıra"
+                content.secondaryText = "\(presence?.queueLength ?? 0) iş bekliyor"
+            }
+            cell.contentConfiguration = content
+            return cell
         }
-        rebuildBonjourRows()
+        guard jobs.indices.contains(indexPath.row) else {
+            content.text = "Henüz iş yok"
+            cell.contentConfiguration = content
+            return cell
+        }
+        let job = jobs[indexPath.row]
+        var sub = UIListContentConfiguration.subtitleCell()
+        sub.text = job.displayTitle
+        let status: String = switch job.status {
+        case .queued: "Sırada"
+        case .running: job.progressMessage ?? "Çalışıyor"
+        case .succeeded: "Bitti"
+        case .failed: "Hata: \(job.error ?? "")"
+        case .cancelled: "İptal"
+        case .unknown: job.status.rawValue
+        }
+        sub.secondaryText = "\(job.type.label) · \(status) · \(AssistantStatus.relative(job.updatedAt))"
+        sub.secondaryTextProperties.color = IOSTheme.textSecondary
+        sub.secondaryTextProperties.numberOfLines = 2
+        sub.image = UIImage(systemName: "circle.fill", withConfiguration: UIImage.SymbolConfiguration(pointSize: 8))
+        sub.imageProperties.tintColor = job.status.isActive ? IOSTheme.accent : (job.status == .failed ? IOSTheme.accent : IOSTheme.textTertiary)
+        cell.contentConfiguration = sub
+        return cell
+    }
+
+    override func tableView(_ tableView: UITableView, trailingSwipeActionsConfigurationForRowAt indexPath: IndexPath) -> UISwipeActionsConfiguration? {
+        guard indexPath.section == 1, jobs.indices.contains(indexPath.row), jobs[indexPath.row].status.isActive else { return nil }
+        let job = jobs[indexPath.row]
+        let cancel = UIContextualAction(style: .destructive, title: "İptal et") { [weak self] _, _, done in
+            guard let self else { return done(false) }
+            Task {
+                do {
+                    _ = try await self.app.dataService.cancelJob(job.id)
+                    done(true)
+                } catch {
+                    self.presentError(IOSAppModel.describe(error))
+                    done(false)
+                }
+            }
+        }
+        return UISwipeActionsConfiguration(actions: [cancel])
     }
 }

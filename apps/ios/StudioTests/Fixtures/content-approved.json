@@ -1,0 +1,24 @@
+{
+  "id": "01a1e3d2-9483-7000-9ec6-03dac7c76ca3",
+  "brandId": "01a1e3d2-9445-7000-be35-4dc48ed328bf",
+  "type": "carousel",
+  "title": "Hasat sezonu",
+  "brief": "İki slaytlık carousel: güçlü başlık, sonra bayilere çağrı.",
+  "status": "approved",
+  "targetPlatforms": [
+    "instagram"
+  ],
+  "caption": "",
+  "currentVersion": {
+    "id": "01a1e3d2-9509-7000-9c68-a6043a311895",
+    "version": 1,
+    "contentHash": "8580b92ac8a6aa759721bdcdab93437625732ab81846aa23b6590e8c3d7e2e22"
+  },
+  "approval": {
+    "versionId": "01a1e3d2-9509-7000-9c68-a6043a311895",
+    "contentHash": "8580b92ac8a6aa759721bdcdab93437625732ab81846aa23b6590e8c3d7e2e22",
+    "approvedAt": "2026-11-16T10:06:31.224Z"
+  },
+  "createdAt": "2026-11-16T10:06:31.043Z",
+  "updatedAt": "2026-11-16T10:06:31.224Z"
+}

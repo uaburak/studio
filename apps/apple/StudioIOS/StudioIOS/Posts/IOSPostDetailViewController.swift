@@ -1,651 +1,743 @@
-import AVFoundation
-import AVKit
-import Foundation
-import Observation
-import PhotosUI
 import StudioKit
 import UIKit
 
-/// Pure UIKit post detail model for `StudioIOS` (`PLAN.md` §9):
-/// - Multi-slide horizontal preview + Reels `AVPlayerViewController`
-/// - Quick `SlideLayers` text layer editor form (`patchLayersAndRender`)
-/// - Fill image slot from iPhone Photos / Camera (`fillSlotAndRender`)
-/// - Caption & `#etiketler` editing
-/// - Cryptographic hash **Onayla** + **Zamanla** (`UIDatePicker` + accounts).
-@MainActor
-@Observable
-final class IOSPostDetailModel {
-    unowned let app: IOSAppModel
-    private(set) var card: PostCard
-    var selectedSlideIndex = 0
+/// An opened post: zoomable slides, Post | Düzenle | Sürümler, "Neyi değiştireyim?",
+/// Zamanla and Onayla. Every design change becomes a new version on the Mac (PostEditSession).
+final class IOSPostDetailViewController: UIViewController {
+    enum DetailTab: Int, CaseIterable {
+        case post, edit, versions
+        var label: String {
+            switch self {
+            case .post: "Post"
+            case .edit: "Düzenle"
+            case .versions: "Sürümler"
+            }
+        }
+    }
 
-    var captionDraft: String
-    var hashtagsDraft: String
-    var originalLayers: [SlideLayer] = []
-    var editableLayers: [SlideLayer] = []
+    private unowned let app: IOSAppModel
+    let session: PostEditSession
+    private var detailTab: DetailTab = .post
+    private var nudgeStep: CGFloat = 10
 
-    var scheduleDate: Date
-    var selectedAccountIds: Set<EntityID> = []
-
-    private(set) var isBusy = false
-    var statusMessage: String?
-    var error: String?
-    private(set) var reelVideoURL: URL?
+    private let scroll = UIScrollView()
+    private let stack = UIStackView.v([], spacing: 14)
+    private let pager = SlidePagerView()
+    private let segmented = UISegmentedControl(items: DetailTab.allCases.map(\.label))
+    private let tabContent = UIStackView.v([], spacing: 12)
+    private let bottomBar = UIView()
+    private let instructionField = UITextField()
+    private var instructionSend: UIButton!
+    private var scheduleButton: UIButton!
+    private var approveButton: UIButton!
+    private var observation: IOSObservationToken?
+    private var tabSignature: Int?
+    private var navSignature: Int?
+    private var lastError: String?
+    private var lastNotice: String?
 
     init(app: IOSAppModel, card: PostCard) {
         self.app = app
-        self.card = card
-        let parts = CaptionParts(caption: card.content.caption)
-        self.captionDraft = parts.body
-        self.hashtagsDraft = parts.hashtags.joined(separator: " ")
-        self.scheduleDate = card.schedule?.scheduledAt ?? Date().addingTimeInterval(3600)
-        self.selectedAccountIds = Set(
-            app.accounts(of: card.content.brandId)
-                .filter { $0.status != .disabled && card.content.targetPlatforms.contains($0.platform) }
-                .map(\.id)
-        )
-        syncLayers()
-        if card.content.type == .reel {
-            Task { [weak self] in await self?.resolveReelVideo() }
-        }
-    }
-
-    var content: Content { card.content }
-    var slides: [Slide] { card.version?.slides ?? [] }
-    var canApprove: Bool { card.approvableHash != nil && !isBusy }
-    var hasLayerChanges: Bool { !SlideLayerScanner.diff(from: originalLayers, to: editableLayers).isEmpty }
-
-    var schedulableAccounts: [SocialAccount] {
-        app.accounts(of: content.brandId).filter { $0.status != .disabled && content.targetPlatforms.contains($0.platform) }
-    }
-
-    func selectSlide(_ index: Int) {
-        let clamped = max(0, min(index, max(0, slides.count - 1)))
-        guard clamped != selectedSlideIndex else { return }
-        selectedSlideIndex = clamped
-        syncLayers()
-    }
-
-    func syncLayers() {
-        guard slides.indices.contains(selectedSlideIndex) else {
-            originalLayers = []
-            editableLayers = []
-            return
-        }
-        let scanned = SlideLayerScanner.layers(inHTML: slides[selectedSlideIndex].html, slideIndex: selectedSlideIndex)
-        originalLayers = scanned
-        editableLayers = scanned
-    }
-
-    private func resolveReelVideo() async {
-        guard let videos = try? await app.dataService.assets(brandId: content.brandId, kind: .video),
-              let first = videos.first else { return }
-        if !app.isSample, let url = try? app.settings.makeClient().assetContentURL(first.id) {
-            reelVideoURL = url
-        } else if let data = try? await app.dataService.imageData(assetId: first.id) {
-            let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("ios-reel-\(first.id).mp4")
-            try? data.write(to: tmp)
-            reelVideoURL = tmp
-        }
-    }
-
-    func reloadFromBoard() async {
-        await app.posts.load()
-        if let fresh = app.posts.card(content.id) {
-            card = fresh
-            syncLayers()
-        }
-    }
-
-    func fillSlot(with image: UIImage) async {
-        guard !isBusy else { return }
-        isBusy = true
-        defer { isBusy = false }
-        do {
-            let imported = try IOSImageImport.from(image: image, filename: "yuva.jpg")
-            let asset = try await app.dataService.uploadImage(imported.file, brandId: content.brandId) { _ in }
-            app.images.seed(imported.thumbnail, for: asset.id)
-            let slotId = card.slots.first(where: \.isEmpty)?.layerId ?? card.slots.first?.layerId ?? "photo"
-            _ = try await app.dataService.fillSlotAndRender(contentId: content.id, slotId: slotId, assetId: asset.id)
-            await reloadFromBoard()
-            statusMessage = "Görsel yuvaya yerleştirildi."
-            error = nil
-        } catch {
-            self.error = IOSAppModel.describe(error)
-        }
-    }
-
-    func applyLayerEdits() async {
-        let patches = SlideLayerScanner.diff(from: originalLayers, to: editableLayers)
-        guard !patches.isEmpty, !isBusy else { return }
-        isBusy = true
-        defer { isBusy = false }
-        do {
-            let job = try await app.dataService.patchLayersAndRender(contentId: content.id, patches: patches)
-            await reloadFromBoard()
-            statusMessage = job.status == .succeeded
-                ? "Katmanlar güncellendi ve yeni sürüm hazırlandı."
-                : "Katman değişikliği Mac'te render kuyruğuna alındı."
-            error = nil
-        } catch {
-            self.error = IOSAppModel.describe(error)
-        }
-    }
-
-    func saveCaption() async {
-        let combined = CaptionParts(
-            body: captionDraft.trimmingCharacters(in: .whitespacesAndNewlines),
-            hashtags: CaptionParts.parseHashtags(hashtagsDraft)
-        ).caption
-        guard combined != content.caption, !isBusy else { return }
-        isBusy = true
-        defer { isBusy = false }
-        do {
-            _ = try await app.dataService.updateCaption(contentId: content.id, caption: combined)
-            await reloadFromBoard()
-            statusMessage = "Açıklama kaydedildi."
-            error = nil
-        } catch {
-            self.error = IOSAppModel.describe(error)
-        }
-    }
-
-    func approve() async {
-        guard let hash = card.approvableHash, !isBusy else { return }
-        isBusy = true
-        defer { isBusy = false }
-        do {
-            _ = try await app.dataService.approve(contentId: content.id, hash: hash)
-            await reloadFromBoard()
-            statusMessage = "Post kriptografik özetle onaylandı."
-            error = nil
-        } catch {
-            self.error = IOSAppModel.describe(error)
-        }
-    }
-
-    func schedulePost() async {
-        guard !selectedAccountIds.isEmpty, !isBusy else { return }
-        isBusy = true
-        defer { isBusy = false }
-        do {
-            if !content.status.isSchedulable {
-                guard let hash = card.approvableHash else {
-                    error = "Zamanlamak için önce sürüm onaylanmalı."
-                    return
-                }
-                _ = try await app.dataService.approve(contentId: content.id, hash: hash)
-            }
-            for accountId in selectedAccountIds {
-                _ = try await app.dataService.createSchedule(
-                    ScheduleCreate(contentId: content.id, socialAccountId: accountId, scheduledAt: scheduleDate)
-                )
-            }
-            await reloadFromBoard()
-            await app.calendar.load()
-            statusMessage = "Yayın zamanlandı."
-            error = nil
-        } catch {
-            self.error = IOSAppModel.describe(error)
-        }
-    }
-}
-
-// MARK: - IOSPostDetailViewController (100% Pure UIKit)
-
-final class IOSPostDetailViewController: UIViewController,
-    UIScrollViewDelegate,
-    PHPickerViewControllerDelegate,
-    UIImagePickerControllerDelegate,
-    UINavigationControllerDelegate
-{
-    let model: IOSPostDetailModel
-
-    private let mainScroll = UIScrollView()
-    private let mainStack = UIStackView()
-
-    // Slide paging / Reels video
-    private let slideScroll = UIScrollView()
-    private let slidesRow = UIStackView()
-    private let pageControl = UIPageControl()
-    private var playerController: AVPlayerViewController?
-
-    // Slot fill bar
-    private let slotCard = IOSCardView(padding: 14, spacing: 8)
-
-    // Quick text layer editor card
-    private let layersCard = IOSCardView(padding: 14, spacing: 10)
-    private let layersFormStack = UIStackView()
-    private var applyLayersButton: UIButton!
-    private var renderedLayersKey: [SlideLayer] = []
-
-    // Caption card
-    private let captionTextView = UITextView()
-    private let hashtagsField = UITextField()
-
-    // Schedule & Approve card
-    private let datePicker = UIDatePicker()
-    private let accountsStack = UIStackView()
-    private var approveButton: UIButton!
-    private var scheduleButton: UIButton!
-
-    private let feedbackLabel = UILabel.studio("", size: 13, color: IOSTheme.textSecondary, lines: 0)
-    private var observation: IOSObservationToken?
-
-    init(model: IOSPostDetailModel) {
-        self.model = model
+        self.session = app.posts.session(for: card)
         super.init(nibName: nil, bundle: nil)
-        title = model.content.title
+        hidesBottomBarWhenPushed = true
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        view.backgroundColor = IOSTheme.groupedBackground
+        view.backgroundColor = IOSTheme.canvas
+        navigationItem.largeTitleDisplayMode = .never
 
-        mainScroll.translatesAutoresizingMaskIntoConstraints = false
-        mainScroll.keyboardDismissMode = .interactive
-        mainStack.axis = .vertical
-        mainStack.spacing = 16
-        mainStack.translatesAutoresizingMaskIntoConstraints = false
-        mainScroll.addSubview(mainStack)
-        view.addSubview(mainScroll)
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+        scroll.keyboardDismissMode = .interactive
+        scroll.alwaysBounceVertical = true
+        view.addSubview(scroll)
+        scroll.addSubview(stack)
+
+        pager.onPageChange = { [weak self] index in self?.session.selectSlide(index) }
+        pager.onSelectLayer = { [weak self] id in
+            guard let self else { return }
+            self.session.selectedLayerId = id
+            if id != nil, self.detailTab != .edit { self.setTab(.edit) }
+        }
+        pager.onPlayVideo = { [weak self] id in
+            guard let self else { return }
+            ReelVideo.play(id, app: self.app, from: self)
+        }
+        stack.addArrangedSubview(pager)
+
+        segmented.selectedSegmentIndex = 0
+        segmented.addAction(UIAction { [weak self] _ in
+            guard let self, let tab = DetailTab(rawValue: self.segmented.selectedSegmentIndex) else { return }
+            self.setTab(tab)
+        }, for: .valueChanged)
+        let segmentedRow = UIStackView.h([segmented], spacing: 0)
+        segmentedRow.isLayoutMarginsRelativeArrangement = true
+        segmentedRow.directionalLayoutMargins = NSDirectionalEdgeInsets(top: 0, leading: IOSTheme.gutter, bottom: 0, trailing: IOSTheme.gutter)
+        stack.addArrangedSubview(segmentedRow)
+
+        tabContent.isLayoutMarginsRelativeArrangement = true
+        tabContent.directionalLayoutMargins = NSDirectionalEdgeInsets(top: 0, leading: IOSTheme.gutter, bottom: 24, trailing: IOSTheme.gutter)
+        stack.addArrangedSubview(tabContent)
+
+        buildBottomBar()
 
         NSLayoutConstraint.activate([
-            mainScroll.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            mainScroll.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            mainScroll.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
-            mainScroll.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-
-            mainStack.leadingAnchor.constraint(equalTo: mainScroll.contentLayoutGuide.leadingAnchor, constant: 16),
-            mainStack.trailingAnchor.constraint(equalTo: mainScroll.contentLayoutGuide.trailingAnchor, constant: -16),
-            mainStack.topAnchor.constraint(equalTo: mainScroll.contentLayoutGuide.topAnchor, constant: 14),
-            mainStack.bottomAnchor.constraint(equalTo: mainScroll.contentLayoutGuide.bottomAnchor, constant: -32),
-            mainStack.widthAnchor.constraint(equalTo: mainScroll.frameLayoutGuide.widthAnchor, constant: -32),
+            scroll.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            scroll.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            scroll.topAnchor.constraint(equalTo: view.topAnchor),
+            scroll.bottomAnchor.constraint(equalTo: bottomBar.topAnchor),
+            stack.leadingAnchor.constraint(equalTo: scroll.contentLayoutGuide.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: scroll.contentLayoutGuide.trailingAnchor),
+            stack.topAnchor.constraint(equalTo: scroll.contentLayoutGuide.topAnchor, constant: 8),
+            stack.bottomAnchor.constraint(equalTo: scroll.contentLayoutGuide.bottomAnchor),
+            stack.widthAnchor.constraint(equalTo: scroll.frameLayoutGuide.widthAnchor),
         ])
 
-        buildPreviewSection()
-        buildSlotSection()
-        buildQuickLayerEditorSection()
-        buildCaptionSection()
-        buildApproveAndScheduleSection()
-
-        feedbackLabel.isHidden = true
-        mainStack.addArrangedSubview(feedbackLabel)
-
-        observation = observeIOS { [weak self] in
-            self?.render()
-        }
+        observation = observeIOS { [weak self] in self?.render() }
+        Task { await session.load() }
     }
 
-    private func buildPreviewSection() {
-        if model.content.type == .reel {
-            let pvc = AVPlayerViewController()
-            addChild(pvc)
-            pvc.view.translatesAutoresizingMaskIntoConstraints = false
-            pvc.view.layer.cornerRadius = 18
-            pvc.view.clipsToBounds = true
-            pvc.view.heightAnchor.constraint(equalTo: pvc.view.widthAnchor, multiplier: 16.0 / 9.0).isActive = true
-            mainStack.addArrangedSubview(pvc.view)
-            pvc.didMove(toParent: self)
-            self.playerController = pvc
+    override func viewWillDisappear(_ animated: Bool) {
+        super.viewWillDisappear(animated)
+        if let layer = session.selectedLayerId { session.flushNudge(layer) }
+    }
+
+    private func setTab(_ tab: DetailTab) {
+        self.detailTab = tab
+        segmented.selectedSegmentIndex = tab.rawValue
+        tabSignature = nil
+        Haptics.selection()
+        render()
+    }
+
+    // MARK: Bottom bar
+
+    private func buildBottomBar() {
+        bottomBar.translatesAutoresizingMaskIntoConstraints = false
+        bottomBar.backgroundColor = IOSTheme.canvas
+        let hairline = UIView()
+        hairline.translatesAutoresizingMaskIntoConstraints = false
+        hairline.backgroundColor = IOSTheme.hairline
+        bottomBar.addSubview(hairline)
+
+        instructionField.placeholder = "Neyi değiştireyim?"
+        instructionField.font = IOSTheme.font(15)
+        instructionField.adjustsFontForContentSizeCategory = true
+        instructionField.returnKeyType = .send
+        instructionField.translatesAutoresizingMaskIntoConstraints = false
+        instructionField.addAction(UIAction { [weak self] _ in
+            guard let self else { return }
+            self.session.instruction = self.instructionField.text ?? ""
+        }, for: .editingChanged)
+        instructionField.addAction(UIAction { [weak self] _ in self?.sendInstruction() }, for: .editingDidEndOnExit)
+        instructionSend = UIButton.studioIcon("arrow.up.circle.fill", label: "Değişikliği iste", size: 24, tint: IOSTheme.textTertiary) { [weak self] in
+            guard let self else { return }
+            if self.session.revisionJobId != nil { Task { await self.session.cancelRevision() } } else { self.sendInstruction() }
         }
+        let fieldBox = UIView()
+        fieldBox.translatesAutoresizingMaskIntoConstraints = false
+        fieldBox.backgroundColor = IOSTheme.fill
+        fieldBox.layer.cornerRadius = 21
+        fieldBox.layer.cornerCurve = .continuous
+        let fieldRow = UIStackView.h([instructionField, instructionSend], spacing: 4)
+        fieldBox.addSubview(fieldRow)
+        fieldRow.pin(to: fieldBox, insets: UIEdgeInsets(top: 2, left: 16, bottom: 2, right: 4))
+        fieldBox.heightAnchor.constraint(greaterThanOrEqualToConstant: 42).isActive = true
 
-        slideScroll.isPagingEnabled = true
-        slideScroll.showsHorizontalScrollIndicator = false
-        slideScroll.delegate = self
-        slideScroll.layer.cornerRadius = 18
-        slideScroll.clipsToBounds = true
-        slideScroll.translatesAutoresizingMaskIntoConstraints = false
-        slideScroll.heightAnchor.constraint(equalTo: slideScroll.widthAnchor, multiplier: 5.0 / 4.0).isActive = true
-
-        slidesRow.axis = .horizontal
-        slidesRow.spacing = 0
-        slidesRow.translatesAutoresizingMaskIntoConstraints = false
-        slideScroll.addSubview(slidesRow)
+        scheduleButton = UIButton.studioPill(title: "Zamanla", kind: .secondary) { [weak self] in self?.presentSchedule() }
+        approveButton = UIButton.studioPill(title: "Onayla", kind: .primary) { [weak self] in self?.approve() }
+        let buttons = UIStackView.h([UIView.spacer(), scheduleButton, approveButton], spacing: 8)
+        let barStack = UIStackView.v([fieldBox, buttons], spacing: 10)
+        bottomBar.addSubview(barStack)
+        view.addSubview(bottomBar)
         NSLayoutConstraint.activate([
-            slidesRow.leadingAnchor.constraint(equalTo: slideScroll.contentLayoutGuide.leadingAnchor),
-            slidesRow.trailingAnchor.constraint(equalTo: slideScroll.contentLayoutGuide.trailingAnchor),
-            slidesRow.topAnchor.constraint(equalTo: slideScroll.contentLayoutGuide.topAnchor),
-            slidesRow.bottomAnchor.constraint(equalTo: slideScroll.contentLayoutGuide.bottomAnchor),
-            slidesRow.heightAnchor.constraint(equalTo: slideScroll.frameLayoutGuide.heightAnchor),
+            hairline.leadingAnchor.constraint(equalTo: bottomBar.leadingAnchor),
+            hairline.trailingAnchor.constraint(equalTo: bottomBar.trailingAnchor),
+            hairline.topAnchor.constraint(equalTo: bottomBar.topAnchor),
+            hairline.heightAnchor.constraint(equalToConstant: 1),
+            barStack.leadingAnchor.constraint(equalTo: bottomBar.leadingAnchor, constant: IOSTheme.gutter),
+            barStack.trailingAnchor.constraint(equalTo: bottomBar.trailingAnchor, constant: -IOSTheme.gutter),
+            barStack.topAnchor.constraint(equalTo: bottomBar.topAnchor, constant: 10),
+            barStack.bottomAnchor.constraint(equalTo: bottomBar.bottomAnchor, constant: -8),
+            bottomBar.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            bottomBar.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            bottomBar.bottomAnchor.constraint(equalTo: view.keyboardLayoutGuide.topAnchor),
         ])
-
-        pageControl.currentPageIndicatorTintColor = IOSTheme.accent
-        pageControl.pageIndicatorTintColor = IOSTheme.border
-        pageControl.addAction(UIAction { [weak self] _ in
-            guard let self else { return }
-            let page = self.pageControl.currentPage
-            self.model.selectSlide(page)
-            let offset = CGPoint(x: CGFloat(page) * self.slideScroll.bounds.width, y: 0)
-            self.slideScroll.setContentOffset(offset, animated: true)
-        }, for: .valueChanged)
-
-        mainStack.addArrangedSubview(slideScroll)
-        mainStack.addArrangedSubview(pageControl)
     }
 
-    private func buildSlotSection() {
-        slotCard.stack.addArrangedSubview(UILabel.studio("Görsel Yuvasını Doldur", size: 15, weight: .bold))
-        slotCard.stack.addArrangedSubview(UILabel.studio("iPhone arşivinden veya kameradan ürün fotoğrafı yükle; Mac yuvaya yerleştirip yeniden render eder.", size: 12, color: IOSTheme.textSecondary, lines: 0))
-
-        let photosBtn = UIButton.studioPill(title: "Fotoğraflardan Seç", primary: true) { [weak self] in
-            self?.pickFromPhotos()
-        }
-        let cameraBtn = UIButton.studioPill(title: "Kamera") { [weak self] in
-            self?.pickFromCamera()
-        }
-        let row = UIStackView(arrangedSubviews: [photosBtn, cameraBtn, UIView()])
-        row.axis = .horizontal
-        row.spacing = 8
-        slotCard.stack.addArrangedSubview(row)
-        mainStack.addArrangedSubview(slotCard)
-    }
-
-    private func buildQuickLayerEditorSection() {
-        layersCard.stack.addArrangedSubview(UILabel.studio("Hızlı Metin ve Katman Düzeltme", size: 15, weight: .bold))
-        layersCard.stack.addArrangedSubview(UILabel.studio("Değişiklikler Mac'te tasarım kurallarıyla yeniden render edilir.", size: 12, color: IOSTheme.textSecondary, lines: 0))
-
-        layersFormStack.axis = .vertical
-        layersFormStack.spacing = 10
-        layersCard.stack.addArrangedSubview(layersFormStack)
-
-        applyLayersButton = UIButton.studioPill(title: "Katmanları Kaydet ve Render Et", primary: true) { [weak self] in
-            guard let self else { return }
-            Task { await self.model.applyLayerEdits() }
-        }
-        layersCard.stack.addArrangedSubview(applyLayersButton)
-        mainStack.addArrangedSubview(layersCard)
-    }
-
-    private func buildCaptionSection() {
-        let card = IOSCardView(padding: 14, spacing: 10)
-        card.stack.addArrangedSubview(UILabel.studio("Açıklama ve Etiketler", size: 15, weight: .bold))
-
-        captionTextView.font = UIFont.systemFont(ofSize: 14)
-        captionTextView.textColor = IOSTheme.textPrimary
-        captionTextView.backgroundColor = IOSTheme.fill
-        captionTextView.layer.cornerRadius = 12
-        captionTextView.textContainerInset = UIEdgeInsets(top: 10, left: 8, bottom: 10, right: 8)
-        captionTextView.translatesAutoresizingMaskIntoConstraints = false
-        captionTextView.heightAnchor.constraint(equalToConstant: 100).isActive = true
-
-        hashtagsField.placeholder = "#etiketler"
-        hashtagsField.font = UIFont.systemFont(ofSize: 13)
-        hashtagsField.textColor = IOSTheme.textSecondary
-        hashtagsField.backgroundColor = IOSTheme.fill
-        hashtagsField.layer.cornerRadius = 12
-        hashtagsField.leftView = UIView(frame: CGRect(x: 0, y: 0, width: 10, height: 1))
-        hashtagsField.leftViewMode = .always
-        hashtagsField.translatesAutoresizingMaskIntoConstraints = false
-        hashtagsField.heightAnchor.constraint(equalToConstant: 36).isActive = true
-
-        let saveCapBtn = UIButton.studioPill(title: "Açıklamayı Kaydet") { [weak self] in
-            guard let self else { return }
-            self.model.captionDraft = self.captionTextView.text ?? ""
-            self.model.hashtagsDraft = self.hashtagsField.text ?? ""
-            Task { await self.model.saveCaption() }
-        }
-
-        card.stack.addArrangedSubview(captionTextView)
-        card.stack.addArrangedSubview(hashtagsField)
-        card.stack.addArrangedSubview(saveCapBtn)
-        mainStack.addArrangedSubview(card)
-    }
-
-    private func buildApproveAndScheduleSection() {
-        let card = IOSCardView(padding: 14, spacing: 12)
-        card.stack.addArrangedSubview(UILabel.studio("Onay ve Zamanlama", size: 15, weight: .bold))
-
-        approveButton = UIButton.studioPill(title: "Sürümü Onayla", primary: true) { [weak self] in
-            guard let self else { return }
-            Task { await self.model.approve() }
-        }
-        card.stack.addArrangedSubview(approveButton)
-
-        datePicker.datePickerMode = .dateAndTime
-        datePicker.preferredDatePickerStyle = .compact
-        datePicker.locale = TurkishFormat.locale
-        datePicker.minimumDate = Date()
-        datePicker.addAction(UIAction { [weak self] _ in
-            guard let self else { return }
-            self.model.scheduleDate = self.datePicker.date
-        }, for: .valueChanged)
-
-        let dateRow = UIStackView(arrangedSubviews: [UILabel.studio("Yayın Zamanı", size: 14, weight: .medium), UIView(), datePicker])
-        dateRow.axis = .horizontal
-        dateRow.alignment = .center
-        card.stack.addArrangedSubview(dateRow)
-
-        accountsStack.axis = .vertical
-        accountsStack.spacing = 8
-        card.stack.addArrangedSubview(accountsStack)
-
-        scheduleButton = UIButton.studioPill(title: "Zamanla", primary: false) { [weak self] in
-            guard let self else { return }
-            Task { await self.model.schedulePost() }
-        }
-        card.stack.addArrangedSubview(scheduleButton)
-        mainStack.addArrangedSubview(card)
-    }
-
-    func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) {
-        guard scrollView === slideScroll, slideScroll.bounds.width > 0 else { return }
-        let idx = Int(round(slideScroll.contentOffset.x / slideScroll.bounds.width))
-        model.selectSlide(idx)
-    }
+    // MARK: Render
 
     private func render() {
-        if let url = model.reelVideoURL, playerController?.player == nil {
-            playerController?.player = AVPlayer(url: url)
+        let s = session
+        title = s.content.title
+        var navHasher = Hasher()
+        navHasher.combine(s.canUndo)
+        navHasher.combine(s.canRedo)
+        navHasher.combine(s.slides.contains { $0.renderedAssetId != nil })
+        navHasher.combine(s.content.status)
+        let navSignature = navHasher.finalize()
+        if navSignature != self.navSignature {
+            self.navSignature = navSignature
+            navigationItem.rightBarButtonItems = navItems()
         }
 
-        // Slides
-        slidesRow.arrangedSubviews.forEach {
-            slidesRow.removeArrangedSubview($0)
-            $0.removeFromSuperview()
+        let placeholder = (title: s.content.title, eyebrow: s.card.eyebrow, needsImage: s.card.needsImage)
+        pager.configure(
+            slides: s.slides, placeholder: placeholder, images: app.images, editing: detailTab == .edit,
+            selectedLayer: s.selectedLayerId, previewBoxes: s.previewBoxes, selectedSlide: s.selectedSlideIndex)
+        let exporting = s.isExporting ? (s.exportMessage ?? "Hazırlanıyor") : nil
+        pager.setActivity(s.activity.isBusy ? s.activity.message : exporting)
+
+        // Bottom bar
+        if !instructionField.isFirstResponder, instructionField.text != s.instruction { instructionField.text = s.instruction }
+        let revising = s.revisionJobId != nil
+        instructionField.isEnabled = !revising
+        var sendConfig = instructionSend.configuration
+        sendConfig?.image = UIImage(systemName: revising ? "stop.circle.fill" : "arrow.up.circle.fill", withConfiguration: UIImage.SymbolConfiguration(pointSize: 24))
+        sendConfig?.baseForegroundColor = revising ? IOSTheme.ink : (s.instruction.trimmingCharacters(in: .whitespaces).isEmpty ? IOSTheme.textTertiary : IOSTheme.accent)
+        instructionSend.configuration = sendConfig
+        instructionSend.accessibilityLabel = revising ? "AI düzenlemesini durdur" : "Değişikliği iste"
+
+        let approved = s.content.status.hasApproval
+        approveButton.setPill(title: approved ? "Onaylandı" : "Onayla", kind: approved ? .secondary : .primary, busy: s.isApproving, image: approved ? "checkmark" : nil)
+        approveButton.isEnabled = !approved && s.canApprove
+        scheduleButton.setPill(title: s.card.schedule != nil ? "Zamanı değiştir" : "Zamanla", kind: .secondary, busy: s.isScheduling)
+        scheduleButton.isEnabled = !s.content.status.isLocked && (s.content.status.isSchedulable || s.card.approvableHash != nil)
+
+        // Tab content (rebuilt only when what it shows changed)
+        var hasher = Hasher()
+        hasher.combine(detailTab)
+        hasher.combine(s.card)
+        hasher.combine(s.displayedVersion?.id)
+        hasher.combine(s.selectedSlideIndex)
+        hasher.combine(s.selectedLayerId)
+        hasher.combine(s.versionSummaries)
+        hasher.combine(s.activity)
+        hasher.combine(s.canUndo)
+        hasher.combine(s.canRedo)
+        hasher.combine(nudgeStep)
+        hasher.combine(app.posts.slotUploads[s.content.id])
+        let signature = hasher.finalize()
+        if signature != tabSignature {
+            tabSignature = signature
+            tabContent.removeAllArranged()
+            switch detailTab {
+            case .post: buildPostTab()
+            case .edit: buildEditTab()
+            case .versions: buildVersionsTab()
+            }
         }
-        let slides = model.slides
-        for (i, slide) in slides.enumerated() {
-            let page = makeSlidePageView(slide: slide, index: i)
-            slidesRow.addArrangedSubview(page)
-            page.widthAnchor.constraint(equalTo: slideScroll.frameLayoutGuide.widthAnchor).isActive = true
+
+        if let error = s.error, error != lastError {
+            lastError = error
+            Toast.show(error, in: view, isError: true)
+            Haptics.error()
+            s.error = nil
+        } else if s.error == nil {
+            lastError = nil
         }
-        pageControl.numberOfPages = slides.count
-        pageControl.currentPage = model.selectedSlideIndex
-        pageControl.isHidden = slides.count <= 1
-
-        slotCard.isHidden = model.card.slots.isEmpty && !model.card.needsImage
-
-        // Quick layer form
-        if model.originalLayers != renderedLayersKey {
-            renderedLayersKey = model.originalLayers
-            rebuildLayerForm()
-        }
-        applyLayersButton.isEnabled = model.hasLayerChanges && !model.isBusy
-
-        if !captionTextView.isFirstResponder && captionTextView.text != model.captionDraft {
-            captionTextView.text = model.captionDraft
-        }
-        if !hashtagsField.isFirstResponder && hashtagsField.text != model.hashtagsDraft {
-            hashtagsField.text = model.hashtagsDraft
-        }
-
-        approveButton.configuration?.title = model.content.status.hasApproval ? "✓ Onaylandı" : "Bu Sürümü Onayla"
-        approveButton.isEnabled = model.canApprove
-
-        datePicker.date = model.scheduleDate
-        rebuildAccountsToggles()
-        scheduleButton.isEnabled = !model.selectedAccountIds.isEmpty && !model.isBusy
-
-        if let err = model.error {
-            feedbackLabel.text = err
-            feedbackLabel.textColor = .systemRed
-            feedbackLabel.isHidden = false
-        } else if let msg = model.statusMessage {
-            feedbackLabel.text = msg
-            feedbackLabel.textColor = IOSTheme.textSecondary
-            feedbackLabel.isHidden = false
-        } else {
-            feedbackLabel.isHidden = true
+        if let notice = s.notice, notice != lastNotice {
+            lastNotice = notice
+            Toast.show(notice, in: view)
+            s.notice = nil
+        } else if s.notice == nil {
+            lastNotice = nil
         }
     }
 
-    private func makeSlidePageView(slide: Slide, index: Int) -> UIView {
-        if let renderedId = slide.renderedAssetId, !model.card.needsImage {
-            return IOSAssetImageView(store: model.app.images, assetId: renderedId, cornerRadius: 0)
+    private func navItems() -> [UIBarButtonItem] {
+        let more = UIBarButtonItem(image: UIImage(systemName: "ellipsis.circle"), menu: moreMenu())
+        more.accessibilityLabel = "Diğer işlemler"
+        var items = [more]
+        if session.canRedo || session.canUndo {
+            let redo = UIBarButtonItem(image: UIImage(systemName: "arrow.uturn.forward"), primaryAction: UIAction { [weak self] _ in
+                guard let self else { return }
+                Task { await self.session.redo() }
+            })
+            redo.isEnabled = session.canRedo
+            redo.accessibilityLabel = "Yinele"
+            let undo = UIBarButtonItem(image: UIImage(systemName: "arrow.uturn.backward"), primaryAction: UIAction { [weak self] _ in
+                guard let self else { return }
+                Task { await self.session.undo() }
+            })
+            undo.isEnabled = session.canUndo
+            undo.accessibilityLabel = "Geri al"
+            items += [redo, undo]
         }
-        let page = UIView()
-        page.translatesAutoresizingMaskIntoConstraints = false
-        page.backgroundColor = IOSTheme.postDark
-        let layers = SlideLayerScanner.layers(inHTML: slide.html, slideIndex: index)
-        let eyebrow = layers.first { $0.layerId == "eyebrow" && !$0.isHidden }?.text ?? model.card.eyebrow
-        let headline = layers.first { ($0.layerId == "title" || $0.layerId == "headline") && !$0.isHidden }?.text ?? TurkishFormat.upper(model.content.title)
+        return items
+    }
 
-        let stack = UIStackView()
-        stack.axis = .vertical
-        stack.alignment = .leading
-        stack.spacing = 8
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        if let eyebrow {
-            stack.addArrangedSubview(UILabel.studio(eyebrow, size: 12, weight: .bold, color: IOSTheme.accent))
-        }
-        stack.addArrangedSubview(UILabel.studio(headline, size: 22, weight: .heavy, color: .white, lines: 4))
-        stack.addArrangedSubview(UIView())
-        if model.card.needsImage {
-            stack.addArrangedSubview(UILabel.studio("Görsel yuvası boş · aşağıdan fotoğraf seç", size: 12, color: .lightGray))
-        }
-        page.addSubview(stack)
-        NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: page.leadingAnchor, constant: 20),
-            stack.trailingAnchor.constraint(equalTo: page.trailingAnchor, constant: -20),
-            stack.topAnchor.constraint(equalTo: page.topAnchor, constant: 22),
-            stack.bottomAnchor.constraint(equalTo: page.bottomAnchor, constant: -22),
+    private func moreMenu() -> UIMenu {
+        let hasRender = session.slides.contains { $0.renderedAssetId != nil }
+        let export = UIMenu(title: "Paylaş ve kaydet", options: .displayInline, children: [
+            UIAction(title: "Paylaş", image: UIImage(systemName: "square.and.arrow.up"), attributes: hasRender ? [] : .disabled) { [weak self] _ in self?.share(.jpeg) },
+            UIAction(title: "Fotoğraflar'a kaydet", image: UIImage(systemName: "square.and.arrow.down")) { [weak self] _ in self?.saveToPhotos() },
+            UIAction(title: "PDF olarak paylaş", image: UIImage(systemName: "doc.richtext")) { [weak self] _ in self?.share(.pdf) },
+            UIAction(title: "PNG olarak paylaş", image: UIImage(systemName: "photo")) { [weak self] _ in self?.share(.png) },
+            UIAction(title: "Açıklamayı kopyala", image: UIImage(systemName: "doc.on.doc")) { [weak self] _ in
+                UIPasteboard.general.string = self?.session.content.caption
+                Toast.show("Açıklama kopyalandı", in: self?.view)
+            },
         ])
-        return page
+        let blocker = IOSPostsModel.deletionBlocker(session.card)
+        let manage = UIMenu(title: "", options: .displayInline, children: [
+            UIAction(title: "Çoğalt", image: UIImage(systemName: "plus.square.on.square")) { [weak self] _ in self?.duplicate() },
+            UIAction(title: "Sil…", image: UIImage(systemName: "trash"), attributes: blocker == nil ? .destructive : [.destructive, .disabled]) { [weak self] _ in self?.delete() },
+        ])
+        return UIMenu(children: [export, manage])
     }
 
-    private func rebuildLayerForm() {
-        layersFormStack.arrangedSubviews.forEach {
-            layersFormStack.removeArrangedSubview($0)
-            $0.removeFromSuperview()
+    // MARK: Post tab
+
+    private func buildPostTab() {
+        let s = session
+        let card = s.card
+
+        // Status
+        var statusViews: [UIView] = [IOSStatusDotView(color: card.state.tone.uiColor, size: 8), UILabel.studio(card.state.label, size: 15, weight: .semibold, style: .subheadline)]
+        if let schedule = card.schedule {
+            statusViews.append(UILabel.studio("· \(TurkishFormat.dayAndTime(schedule.scheduledAt))", size: 15, color: IOSTheme.textSecondary, style: .subheadline))
         }
-        if model.editableLayers.isEmpty {
-            layersFormStack.addArrangedSubview(UILabel.studio("Düzenlenebilir katman yok.", size: 13, color: IOSTheme.textTertiary))
+        statusViews.append(UIView.spacer())
+        tabContent.addArrangedSubview(UIStackView.h(statusViews, spacing: 8))
+
+        if !s.isViewingCurrentVersion, let shown = s.activeVersion?.version {
+            tabContent.addArrangedSubview(oldVersionBanner(shown))
+        }
+
+        // Caption
+        let captionCard = IOSCardView(padding: 16, spacing: 8)
+        let parts = CaptionParts(caption: s.content.caption)
+        let body = UILabel.studio(parts.body.isEmpty ? "Açıklama yok" : parts.body, size: 16, color: parts.body.isEmpty ? IOSTheme.textTertiary : IOSTheme.textPrimary, lines: 0)
+        captionCard.stack.addArrangedSubview(body)
+        if !parts.hashtags.isEmpty {
+            captionCard.stack.addArrangedSubview(UILabel.studio(parts.hashtags.joined(separator: " "), size: 15, color: IOSTheme.textSecondary, lines: 0, style: .subheadline))
+        }
+        let usage = CaptionLimits.usage(caption: s.content.caption, platforms: s.content.targetPlatforms)
+        let counters = usage.map { "\($0.platform.displayName) \($0.label)" }.joined(separator: " · ")
+        let over = usage.contains(where: \.isOverLimit)
+        let counterLabel = UILabel.studio(counters, size: 12, color: over ? IOSTheme.accent : IOSTheme.textTertiary, lines: 2, style: .caption1)
+        counterLabel.font = IOSTheme.monoDigits(12)
+        let edit = UIButton.studioPill(title: "Düzenle", kind: .secondary, image: "pencil") { [weak self] in self?.presentCaptionEditor() }
+        edit.isEnabled = !s.content.status.isLocked
+        captionCard.stack.addArrangedSubview(UIStackView.h([counterLabel, UIView.spacer(), edit], spacing: 8))
+        tabContent.addArrangedSubview(captionCard)
+
+        // Details
+        let info = IOSCardView(padding: 16, spacing: 10)
+        let dateText: String = {
+            if let schedule = card.schedule { return TurkishFormat.dayAndTime(schedule.scheduledAt) }
+            if let day = card.planItem?.date { return TurkishFormat.longDay(day) + ", 09:00" }
+            return "Tarih yok"
+        }()
+        info.stack.addArrangedSubview(infoRow("Tarih", dateText))
+        info.stack.addArrangedSubview(infoRow("Platform", TurkishFormat.platforms(s.content.targetPlatforms)))
+        info.stack.addArrangedSubview(infoRow("Tür", TurkishFormat.typeLabel(s.content.type, slides: s.slides)))
+        if let version = s.activeVersion {
+            info.stack.addArrangedSubview(infoRow("Sürüm", "v\(version.version) · \(Self.originLabel(version.origin))"))
+        }
+        let accounts = s.schedulableAccounts(app.accounts)
+        info.stack.addArrangedSubview(infoRow("Hesaplar", accounts.isEmpty ? "Bağlı hesap yok" : accounts.map { "\($0.platform.displayName) \($0.handle)" }.joined(separator: ", ")))
+        if !s.content.brief.isEmpty {
+            info.stack.addArrangedSubview(infoRow("Brif", s.content.brief))
+        }
+        tabContent.addArrangedSubview(info)
+
+        if let blocker = s.approveBlocker, !s.content.status.hasApproval, s.activity == .idle {
+            tabContent.addArrangedSubview(UILabel.studio(blocker, size: 13, color: IOSTheme.textSecondary, lines: 0, style: .footnote))
+        }
+        if s.card.needsImage {
+            tabContent.addArrangedSubview(slotCard())
+        }
+    }
+
+    private func infoRow(_ title: String, _ value: String) -> UIView {
+        let titleLabel = UILabel.studio(title, size: 14, color: IOSTheme.textSecondary, style: .subheadline)
+        titleLabel.widthAnchor.constraint(equalToConstant: 76).isActive = true
+        let valueLabel = UILabel.studio(value, size: 14, weight: .medium, lines: 0, style: .subheadline)
+        valueLabel.textAlignment = .right
+        let row = UIStackView.h([titleLabel, valueLabel], spacing: 12, alignment: .firstBaseline)
+        row.isAccessibilityElement = true
+        row.accessibilityLabel = "\(title): \(value)"
+        return row
+    }
+
+    static func originLabel(_ origin: ContentVersionOrigin) -> String {
+        switch origin {
+        case .generated: "Üretildi"
+        case .manualEdit: "Elle düzenleme"
+        case .aiEdit: "AI düzenlemesi"
+        case .unknown: "Sürüm"
+        }
+    }
+
+    private func oldVersionBanner(_ shown: Int) -> UIView {
+        let card = IOSCardView(padding: 14, spacing: 10, background: IOSTheme.fill)
+        card.layer.borderWidth = 0
+        card.stack.addArrangedSubview(UILabel.studio("Eski sürüm (v\(shown)) gösteriliyor. Düzenlemek ya da onaylamak için geri yükle.", size: 14, lines: 0, style: .subheadline))
+        let restore = UIButton.studioPill(title: "Bu sürümü geri yükle", kind: .ink) { [weak self] in
+            guard let self else { return }
+            Task { await self.session.restoreDisplayedVersion() }
+        }
+        restore.isEnabled = !session.activity.changesVersion
+        let back = UIButton.studioPill(title: "Güncel sürüm", kind: .secondary) { [weak self] in
+            guard let self else { return }
+            Task { await self.session.showCurrentVersion() }
+        }
+        card.stack.addArrangedSubview(UIStackView.h([restore, back, UIView.spacer()], spacing: 8))
+        return card
+    }
+
+    // MARK: Edit tab
+
+    private func buildEditTab() {
+        let s = session
+        if let blocker = s.editBlocker {
+            tabContent.addArrangedSubview(UILabel.studio(blocker, size: 14, color: IOSTheme.textSecondary, lines: 0, style: .subheadline))
+            if !s.isViewingCurrentVersion, let shown = s.activeVersion?.version { tabContent.addArrangedSubview(oldVersionBanner(shown)) }
             return
         }
-        for idx in model.editableLayers.indices {
-            let layer = model.editableLayers[idx]
-            let box = UIStackView()
-            box.axis = .vertical
-            box.spacing = 6
+        if !s.slots.isEmpty { tabContent.addArrangedSubview(slotCard()) }
 
-            let sw = UISwitch()
-            sw.isOn = !layer.isHidden
-            sw.onTintColor = IOSTheme.accent
-            sw.addAction(UIAction { [weak self, weak sw] _ in
-                guard let self, let sw, self.model.editableLayers.indices.contains(idx) else { return }
-                self.model.editableLayers[idx].isHidden = !sw.isOn
-                self.applyLayersButton.isEnabled = self.model.hasLayerChanges
-            }, for: .valueChanged)
+        if let layer = s.selectedLayer {
+            tabContent.addArrangedSubview(selectedLayerCard(layer))
+        } else if s.layerBoxes != nil {
+            tabContent.addArrangedSubview(UILabel.studio("Görselde bir katmana dokun ya da listeden seç.", size: 13, color: IOSTheme.textSecondary, lines: 0, style: .footnote))
+        }
 
-            let head = UIStackView(arrangedSubviews: [
-                UILabel.studio("\(layer.layerId) · \(layer.kind.label)", size: 12, weight: .semibold, color: IOSTheme.textSecondary),
-                UIView(),
-                sw,
-            ])
-            head.axis = .horizontal
-            head.alignment = .center
-            box.addArrangedSubview(head)
+        let list = IOSCardView(padding: 8, spacing: 0)
+        let header = UILabel.studio("Katmanlar · Slayt \(s.selectedSlideIndex + 1)", size: 13, weight: .semibold, color: IOSTheme.textSecondary, style: .footnote)
+        let headerRow = UIStackView.h([header, UIView.spacer()], spacing: 0)
+        headerRow.isLayoutMarginsRelativeArrangement = true
+        headerRow.directionalLayoutMargins = NSDirectionalEdgeInsets(top: 6, leading: 8, bottom: 6, trailing: 8)
+        list.stack.addArrangedSubview(headerRow)
+        let layers = s.editableLayers
+        if layers.isEmpty {
+            list.stack.addArrangedSubview(UILabel.studio("Bu slaytta düzenlenebilir katman yok.", size: 14, color: IOSTheme.textTertiary, lines: 0))
+        }
+        for layer in layers { list.stack.addArrangedSubview(layerRow(layer)) }
+        tabContent.addArrangedSubview(list)
+    }
 
-            if layer.kind == .text {
-                let tf = UITextField()
-                tf.text = layer.text
-                tf.font = UIFont.systemFont(ofSize: 14)
-                tf.textColor = IOSTheme.textPrimary
-                tf.backgroundColor = IOSTheme.fill
-                tf.layer.cornerRadius = 10
-                tf.leftView = UIView(frame: CGRect(x: 0, y: 0, width: 10, height: 1))
-                tf.leftViewMode = .always
-                tf.translatesAutoresizingMaskIntoConstraints = false
-                tf.heightAnchor.constraint(equalToConstant: 36).isActive = true
-                tf.addAction(UIAction { [weak self, weak tf] _ in
-                    guard let self, let tf, self.model.editableLayers.indices.contains(idx) else { return }
-                    self.model.editableLayers[idx].text = tf.text ?? ""
-                    self.applyLayersButton.isEnabled = self.model.hasLayerChanges
-                }, for: .editingChanged)
-                box.addArrangedSubview(tf)
-            }
-            layersFormStack.addArrangedSubview(box)
+    private static func icon(for kind: SlideLayer.Kind) -> String {
+        switch kind {
+        case .text: "textformat"
+        case .image: "photo"
+        case .slot: "photo.badge.plus"
+        case .logo: "seal"
+        case .shape: "square.on.circle"
+        case .group: "square.stack"
+        case .other: "square.dashed"
         }
     }
 
-    private func rebuildAccountsToggles() {
-        accountsStack.arrangedSubviews.forEach {
-            accountsStack.removeArrangedSubview($0)
-            $0.removeFromSuperview()
+    private func layerRow(_ layer: SlideLayer) -> UIView {
+        let selected = layer.layerId == session.selectedLayerId
+        let icon = ChatViews.icon(Self.icon(for: layer.kind), selected ? IOSTheme.accent : IOSTheme.textSecondary, size: 13)
+        let name = UILabel.studio(layer.kind == .text && !layer.text.isEmpty ? layer.text.replacingOccurrences(of: "\n", with: " ") : (layer.slotLabel ?? layer.layerId), size: 15, weight: selected ? .semibold : .regular, color: layer.isHidden ? IOSTheme.textTertiary : IOSTheme.textPrimary, lines: 1)
+        let kind = UILabel.studio(layer.kind.label, size: 12, color: IOSTheme.textTertiary, style: .caption1)
+        let texts = UIStackView.v([name, kind], spacing: 1)
+        let eye = UIButton.studioIcon(layer.isHidden ? "eye.slash" : "eye", label: layer.isHidden ? "Göster" : "Gizle", size: 14, tint: IOSTheme.textSecondary) { [weak self] in
+            self?.session.setHidden(layer.layerId, !layer.isHidden)
         }
-        for acc in model.schedulableAccounts {
-            let sw = UISwitch()
-            sw.isOn = model.selectedAccountIds.contains(acc.id)
-            sw.onTintColor = IOSTheme.accent
-            sw.addAction(UIAction { [weak self, weak sw] _ in
-                guard let self, let sw else { return }
-                if sw.isOn {
-                    self.model.selectedAccountIds.insert(acc.id)
-                } else {
-                    self.model.selectedAccountIds.remove(acc.id)
+        let row = UIStackView.h([icon, texts, UIView.spacer(), eye], spacing: 10)
+        row.isLayoutMarginsRelativeArrangement = true
+        row.directionalLayoutMargins = NSDirectionalEdgeInsets(top: 6, leading: 8, bottom: 6, trailing: 2)
+        let control = UIControl()
+        control.translatesAutoresizingMaskIntoConstraints = false
+        control.addSubview(row)
+        row.pin(to: control)
+        row.isUserInteractionEnabled = true
+        control.backgroundColor = selected ? IOSTheme.fill : .clear
+        control.layer.cornerRadius = 12
+        control.addAction(UIAction { [weak self] _ in
+            guard let self else { return }
+            self.session.selectedLayerId = selected ? nil : layer.layerId
+            Haptics.selection()
+        }, for: .touchUpInside)
+        control.isAccessibilityElement = true
+        control.accessibilityLabel = "\(layer.kind.label): \(name.text ?? layer.layerId)\(layer.isHidden ? ", gizli" : "")"
+        control.accessibilityTraits = selected ? [.button, .selected] : .button
+        control.accessibilityCustomActions = [UIAccessibilityCustomAction(name: layer.isHidden ? "Göster" : "Gizle") { [weak self] _ in
+            self?.session.setHidden(layer.layerId, !layer.isHidden)
+            return true
+        }]
+        return control
+    }
+
+    private func selectedLayerCard(_ layer: SlideLayer) -> UIView {
+        let s = session
+        let card = IOSCardView(padding: 14, spacing: 12)
+        card.layer.borderColor = IOSTheme.accent.withAlphaComponent(0.5).cgColor
+        let title = UILabel.studio(layer.kind == .text ? "Metin katmanı" : layer.kind.label, size: 15, weight: .semibold, style: .subheadline)
+        let close = UIButton.studioIcon("xmark", label: "Seçimi kaldır", size: 12, tint: IOSTheme.textSecondary) { [weak self] in
+            self?.session.flushNudge(layer.layerId)
+            self?.session.selectedLayerId = nil
+        }
+        card.stack.addArrangedSubview(UIStackView.h([title, UIView.spacer(), close], spacing: 8))
+
+        var actions: [UIView] = []
+        if layer.kind == .text {
+            actions.append(UIButton.studioPill(title: "Metni düzenle", kind: .ink, image: "character.cursor.ibeam") { [weak self] in self?.presentTextEditor(layer) })
+        }
+        if layer.kind == .slot || layer.kind == .image {
+            actions.append(UIButton.studioPill(title: "Fotoğraf", kind: .ink, image: "photo") { [weak self] in self?.pickImage(for: layer.layerId, camera: false) })
+            if ImagePicking.cameraAvailable {
+                actions.append(UIButton.studioPill(title: "Kamera", kind: .secondary, image: "camera") { [weak self] in self?.pickImage(for: layer.layerId, camera: true) })
+            }
+        }
+        actions.append(UIButton.studioPill(title: layer.isHidden ? "Göster" : "Gizle", kind: .secondary, image: layer.isHidden ? "eye" : "eye.slash") { [weak self] in
+            self?.session.setHidden(layer.layerId, !layer.isHidden)
+        })
+        let actionsScroll = horizontalScroll(actions)
+        card.stack.addArrangedSubview(actionsScroll)
+
+        if s.box(for: layer.layerId) != nil {
+            let pad = nudgePad(layer.layerId)
+            let stepControl = UISegmentedControl(items: ["1 px", "10 px", "40 px"])
+            stepControl.selectedSegmentIndex = nudgeStep == 1 ? 0 : (nudgeStep == 10 ? 1 : 2)
+            stepControl.addAction(UIAction { [weak self, weak stepControl] _ in
+                guard let self, let stepControl else { return }
+                self.nudgeStep = [1, 10, 40][stepControl.selectedSegmentIndex]
+            }, for: .valueChanged)
+            let smaller = UIButton.studioPill(title: "Küçült", kind: .secondary, image: "minus.magnifyingglass") { [weak self] in self?.session.resize(layer.layerId, factor: 0.95) }
+            let bigger = UIButton.studioPill(title: "Büyüt", kind: .secondary, image: "plus.magnifyingglass") { [weak self] in self?.session.resize(layer.layerId, factor: 1.05) }
+            let reset = UIButton.studioPill(title: "Konumu sıfırla", kind: .plain) { [weak self] in self?.session.resetTransform(layer.layerId) }
+            reset.isEnabled = s.transform(of: layer.layerId) != .identity
+            let side = UIStackView.v([stepControl, UIStackView.h([smaller, bigger], spacing: 6), reset], spacing: 8, alignment: .leading)
+            card.stack.addArrangedSubview(UIStackView.h([pad, side], spacing: 16, alignment: .center))
+        } else {
+            card.stack.addArrangedSubview(UILabel.studio("Taşımak için katman kutuları ölçülmeli; Mac'te render bitince açılır.", size: 12, color: IOSTheme.textTertiary, lines: 0, style: .caption1))
+        }
+        return card
+    }
+
+    private func nudgePad(_ layerId: String) -> UIView {
+        func arrow(_ symbol: String, _ label: String, dx: CGFloat, dy: CGFloat) -> UIButton {
+            let button = UIButton.studioIcon(symbol, label: label, size: 15) { [weak self] in
+                guard let self else { return }
+                self.session.nudge(layerId, dx: dx * self.nudgeStep, dy: dy * self.nudgeStep)
+                Haptics.tap()
+            }
+            button.backgroundColor = IOSTheme.fill
+            button.layer.cornerRadius = 18
+            return button
+        }
+        let up = arrow("arrow.up", "Yukarı taşı", dx: 0, dy: -1)
+        let down = arrow("arrow.down", "Aşağı taşı", dx: 0, dy: 1)
+        let left = arrow("arrow.left", "Sola taşı", dx: -1, dy: 0)
+        let right = arrow("arrow.right", "Sağa taşı", dx: 1, dy: 0)
+        let middle = UIStackView.h([left, UIView(), right], spacing: 36)
+        return UIStackView.v([up, middle, down], spacing: 2, alignment: .center)
+    }
+
+    private func horizontalScroll(_ views: [UIView]) -> UIView {
+        let scroll = UIScrollView()
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+        scroll.showsHorizontalScrollIndicator = false
+        let row = UIStackView.h(views, spacing: 8)
+        scroll.addSubview(row)
+        NSLayoutConstraint.activate([
+            row.leadingAnchor.constraint(equalTo: scroll.contentLayoutGuide.leadingAnchor),
+            row.trailingAnchor.constraint(equalTo: scroll.contentLayoutGuide.trailingAnchor),
+            row.topAnchor.constraint(equalTo: scroll.contentLayoutGuide.topAnchor),
+            row.bottomAnchor.constraint(equalTo: scroll.contentLayoutGuide.bottomAnchor),
+            row.heightAnchor.constraint(equalTo: scroll.frameLayoutGuide.heightAnchor),
+            scroll.heightAnchor.constraint(equalToConstant: 40),
+        ])
+        return scroll
+    }
+
+    private func slotCard() -> UIView {
+        let s = session
+        let card = IOSCardView(padding: 14, spacing: 10)
+        let empty = s.slots.filter(\.isEmpty).count
+        let title = empty > 0 ? "Görsel yuvası boş" : "Görsel yuvası"
+        var titleViews: [UIView] = []
+        if empty > 0 { titleViews.append(IOSStatusDotView(color: IOSTheme.accent, size: 7)) }
+        titleViews += [UILabel.studio(title, size: 15, weight: .semibold, style: .subheadline), UIView.spacer()]
+        card.stack.addArrangedSubview(UIStackView.h(titleViews, spacing: 6))
+        let hint = s.card.planItem?.imageBrief ?? s.targetSlot?.label ?? "Fotoğraf seç ya da çek; Mac yuvaya yerleştirip yeniden render eder."
+        card.stack.addArrangedSubview(UILabel.studio(hint, size: 14, color: IOSTheme.textSecondary, lines: 0, style: .subheadline))
+        if case .uploading(let progress) = s.activity {
+            let bar = UIProgressView(progressViewStyle: .default)
+            bar.progress = Float(progress)
+            bar.progressTintColor = IOSTheme.accent
+            card.stack.addArrangedSubview(bar)
+        }
+        var actions: [UIView] = [
+            UIButton.studioPill(title: "Fotoğraflardan", kind: empty > 0 ? .primary : .secondary, image: "photo") { [weak self] in self?.pickSlotImage(camera: false) },
+        ]
+        if ImagePicking.cameraAvailable {
+            actions.append(UIButton.studioPill(title: "Kamera", kind: .secondary, image: "camera") { [weak self] in self?.pickSlotImage(camera: true) })
+        }
+        if let filled = s.slots.first(where: { !$0.isEmpty && $0.slideIndex == s.selectedSlideIndex }), let id = filled.layerId {
+            actions.append(UIButton.studioPill(title: "Boşalt", kind: .plain) { [weak self] in self?.session.clearSlot(id) })
+        }
+        for view in actions { (view as? UIButton)?.isEnabled = s.canEdit && !s.activity.changesVersion }
+        card.stack.addArrangedSubview(horizontalScroll(actions))
+        return card
+    }
+
+    // MARK: Versions tab
+
+    private func buildVersionsTab() {
+        let s = session
+        if !s.isViewingCurrentVersion, let shown = s.activeVersion?.version { tabContent.addArrangedSubview(oldVersionBanner(shown)) }
+        let list = IOSCardView(padding: 8, spacing: 0)
+        if s.versionSummaries.isEmpty {
+            list.stack.addArrangedSubview(UILabel.studio("Henüz sürüm yok.", size: 14, color: IOSTheme.textTertiary))
+        }
+        let current = s.content.currentVersion?.version
+        for summary in s.versionSummaries {
+            let isCurrent = summary.version == current
+            let isShown = summary.version == s.activeVersion?.version
+            let title = UILabel.studio("v\(summary.version) · \(Self.originLabel(summary.origin))", size: 15, weight: isShown ? .semibold : .regular, style: .subheadline)
+            var detail = AssistantStatus.relative(summary.createdAt)
+            if let note = summary.note, !note.isEmpty { detail += " · \(note)" }
+            let detailLabel = UILabel.studio(detail, size: 12, color: IOSTheme.textSecondary, lines: 2, style: .caption1)
+            var trailing: [UIView] = []
+            if isCurrent { trailing.append(Self.badge("Güncel", ink: true)) }
+            if isShown && !isCurrent { trailing.append(Self.badge("Gösteriliyor", ink: false)) }
+            let row = UIStackView.h([UIStackView.v([title, detailLabel], spacing: 2), UIView.spacer()] + trailing, spacing: 8)
+            row.isLayoutMarginsRelativeArrangement = true
+            row.directionalLayoutMargins = NSDirectionalEdgeInsets(top: 8, leading: 8, bottom: 8, trailing: 8)
+            let control = UIControl()
+            control.translatesAutoresizingMaskIntoConstraints = false
+            control.addSubview(row)
+            row.pin(to: control)
+            control.backgroundColor = isShown ? IOSTheme.fill : .clear
+            control.layer.cornerRadius = 12
+            control.addAction(UIAction { [weak self] _ in
+                guard let self else { return }
+                Task {
+                    if isCurrent { await self.session.showCurrentVersion() } else { await self.session.selectVersion(summary.version) }
                 }
-            }, for: .valueChanged)
-            let row = UIStackView(arrangedSubviews: [
-                UILabel.studio("\(acc.platform.displayName) · \(acc.handle)", size: 13),
-                UIView(),
-                sw,
-            ])
-            row.axis = .horizontal
-            row.alignment = .center
-            accountsStack.addArrangedSubview(row)
+                Haptics.selection()
+            }, for: .touchUpInside)
+            control.isAccessibilityElement = true
+            control.accessibilityLabel = "Sürüm \(summary.version), \(Self.originLabel(summary.origin)), \(detail)\(isCurrent ? ", güncel" : "")"
+            control.accessibilityTraits = isShown ? [.button, .selected] : .button
+            list.stack.addArrangedSubview(control)
+        }
+        tabContent.addArrangedSubview(list)
+    }
+
+    private static func badge(_ text: String, ink: Bool) -> UIView {
+        let label = PaddedLabel(text: text)
+        label.backgroundColor = ink ? IOSTheme.ink : IOSTheme.fillStrong
+        label.textColor = ink ? IOSTheme.onInk : IOSTheme.textPrimary
+        return label
+    }
+
+    // MARK: Actions
+
+    private func sendInstruction() {
+        let text = session.instruction.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+        instructionField.resignFirstResponder()
+        Task { await session.sendInstruction() }
+    }
+
+    private func approve() {
+        Task {
+            if await session.approve() { Haptics.success() }
         }
     }
 
-    // MARK: - Photos & Camera Slot Pickers
-
-    private func pickFromPhotos() {
-        var cfg = PHPickerConfiguration()
-        cfg.filter = .images
-        cfg.selectionLimit = 1
-        let picker = PHPickerViewController(configuration: cfg)
-        picker.delegate = self
-        present(picker, animated: true)
+    private func presentSchedule() {
+        let sheet = ScheduleSheetViewController(app: app, session: session)
+        presentSheet(sheet, detents: [.large()])
     }
 
-    private func pickFromCamera() {
-        guard UIImagePickerController.isSourceTypeAvailable(.camera) else {
-            pickFromPhotos()
-            return
+    private func presentCaptionEditor() {
+        presentSheet(CaptionEditorViewController(session: session), detents: [.large()])
+    }
+
+    private func presentTextEditor(_ layer: SlideLayer) {
+        let editor = LayerTextEditorViewController(text: layer.text) { [weak self] text in
+            self?.session.setText(layer.layerId, text)
         }
-        let cam = UIImagePickerController()
-        cam.sourceType = .camera
-        cam.delegate = self
-        present(cam, animated: true)
+        presentSheet(editor, detents: [.medium(), .large()])
     }
 
-    func picker(_ picker: PHPickerViewController, didFinishPicking results: [PHPickerResult]) {
-        picker.dismiss(animated: true)
-        guard let first = results.first, first.itemProvider.canLoadObject(ofClass: UIImage.self) else { return }
-        first.itemProvider.loadObject(ofClass: UIImage.self) { [weak self] obj, _ in
-            guard let img = obj as? UIImage else { return }
-            Task { @MainActor [weak self] in
-                await self?.model.fillSlot(with: img)
+    private func pickSlotImage(camera: Bool) {
+        let handle: ([UIImage]) -> Void = { [weak self] images in
+            guard let self, let image = images.first else { return }
+            do {
+                let imported = try IOSImageImport.from(image: image, filename: "yuva.jpg")
+                self.session.fillSlot(with: imported.file)
+            } catch {
+                self.presentError(IOSAppModel.describe(error))
+            }
+        }
+        if camera { ImagePicking.camera(from: self, onPick: handle) } else { ImagePicking.photos(from: self, onPick: handle) }
+    }
+
+    private func pickImage(for layerId: String, camera: Bool) {
+        let handle: ([UIImage]) -> Void = { [weak self] images in
+            guard let self, let image = images.first else { return }
+            do {
+                let imported = try IOSImageImport.from(image: image, filename: "\(layerId).jpg")
+                self.session.placeImage(imported.file, into: layerId)
+            } catch {
+                self.presentError(IOSAppModel.describe(error))
+            }
+        }
+        if camera { ImagePicking.camera(from: self, onPick: handle) } else { ImagePicking.photos(from: self, onPick: handle) }
+    }
+
+    private func share(_ format: PostExportFormat) {
+        Task {
+            let files = await session.export(format)
+            guard !files.isEmpty else { return }
+            do {
+                let urls = try FileSharing.write(files)
+                FileSharing.share(urls, from: self, barItem: navigationItem.rightBarButtonItems?.first)
+            } catch {
+                presentError(IOSAppModel.describe(error))
             }
         }
     }
 
-    func imagePickerController(_ picker: UIImagePickerController, didFinishPickingMediaWithInfo info: [UIImagePickerController.InfoKey: Any]) {
-        picker.dismiss(animated: true)
-        if let img = info[.originalImage] as? UIImage {
-            Task { await model.fillSlot(with: img) }
+    private func saveToPhotos() {
+        Task {
+            let files = await session.export(.jpeg)
+            guard !files.isEmpty else { return }
+            do {
+                let count = try await FileSharing.saveToPhotos(files)
+                Haptics.success()
+                Toast.show(count == 1 ? "Fotoğraflar'a kaydedildi" : "\(count) görsel Fotoğraflar'a kaydedildi", in: view)
+            } catch {
+                presentError(IOSAppModel.describe(error))
+            }
+        }
+    }
+
+    private func duplicate() {
+        Task {
+            if let copy = await app.posts.duplicate(session.card) {
+                navigationController?.pushViewController(IOSPostDetailViewController(app: app, card: copy), animated: true)
+            } else if let error = app.posts.error {
+                presentError(error)
+            }
+        }
+    }
+
+    private func delete() {
+        confirm("“\(session.content.title)” silinsin mi?", message: "Post ve tüm sürümleri silinir. Bu geri alınamaz.", action: "Sil") { [weak self] in
+            guard let self else { return }
+            Task {
+                if await self.app.posts.delete(self.session.card) {
+                    Haptics.success()
+                    self.navigationController?.popViewController(animated: true)
+                } else if let error = self.app.posts.error {
+                    self.presentError(error)
+                }
+            }
         }
     }
 }

@@ -1,37 +1,23 @@
 import AppKit
 import StudioKit
 
-/// Settings → "Markalar": every brand (active and archived) with its settings and
-/// archive / restore, plus the first-run guide.
-final class BrandsSectionView: NSView {
+/// Settings → "Markalar": every brand (active and archived) as a row with its
+/// settings and restore, plus "Yeni marka".
+final class BrandsSectionView: SettingsPaneView {
     private unowned let app: AppModel
-    private let group = SettingsGroupCardView(title: "Markalar")
-    private let list = BrandUI.vstack(spacing: 8)
+    private let list = SettingsGroupBlock()
     private var signature = ""
     private var observation: ObservationToken?
 
     init(app: AppModel) {
         self.app = app
-        super.init(frame: .zero)
-        translatesAutoresizingMaskIntoConstraints = false
-        addSubview(group)
-        NSLayoutConstraint.activate([
-            group.leadingAnchor.constraint(equalTo: leadingAnchor),
-            group.trailingAnchor.constraint(equalTo: trailingAnchor),
-            group.topAnchor.constraint(equalTo: topAnchor),
-            group.bottomAnchor.constraint(equalTo: bottomAnchor),
-        ])
-        group.addFullWidth(list)
-        let newBrand = PillButton(title: "Yeni marka…", kind: .secondary, height: 24) { [weak app] in
+        super.init(section: .brands)
+        add(list)
+        let create = PillButton(title: "Oluştur", kind: .secondary, height: 26) { [weak app] in
             app?.settingsPresented = false
             app?.newBrandPresented = true
         }
-        let guide = PillButton(title: "Başlangıç rehberi", kind: .secondary, height: 24) { [weak app] in
-            app?.settingsPresented = false
-            app?.onboarding.reopen()
-        }
-        guide.isHidden = app.isSample
-        group.stack.addArrangedSubview(BrandUI.hstack([newBrand, guide]))
+        addRow(SettingsCatalog.newBrand, accessory: create)
         observation = observe { [weak self] in self?.render() }
         Task { await app.refreshArchivedBrands() }
     }
@@ -44,37 +30,33 @@ final class BrandsSectionView: NSView {
         let next = (active + archived).map { "\($0.id):\($0.name):\($0.status.rawValue):\($0.id == app.currentBrandId)" }.joined(separator: "|")
         guard next != signature else { return }
         signature = next
-        list.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        var blocks: [SettingsBlock] = active.map(row)
         if active.isEmpty && archived.isEmpty {
-            BrandUI.addFull(BrandUI.note("Henüz marka yok."), to: list)
-            return
+            blocks.append(SettingsNoteView("Henüz marka yok."))
         }
-        for brand in active { BrandUI.addFull(row(brand), to: list) }
         if !archived.isEmpty {
-            list.addArrangedSubview(BrandUI.caption("Arşivdekiler"))
-            for brand in archived { BrandUI.addFull(row(brand), to: list) }
+            blocks.append(SettingsSubheaderView("Arşiv"))
+            blocks += archived.map(row)
         }
+        list.setBlocks(blocks)
     }
 
-    private func row(_ brand: Brand) -> NSView {
+    private func row(_ brand: Brand) -> SettingsRowView {
         let archived = brand.status == .archived
-        let name = NSTextField.styledLabel(brand.name, font: Theme.rowFont, color: archived ? Theme.textSecondary : Theme.textPrimary)
-        name.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         var detail = "\(brand.slug) · \(BrandLanguage.label(brand.defaultLanguage))"
         if brand.id == app.currentBrandId { detail += " · seçili" }
-        let meta = NSTextField.styledLabel(detail, font: Theme.smallFont, color: Theme.textTertiary)
-        let open = PillButton(title: "Ayarlar…", kind: .secondary, height: 24) { [weak app] in
+        let open = PillButton(title: "Ayarlar", kind: .secondary, height: 26) { [weak app] in
             app?.settingsPresented = false
             app?.openBrandSettings(brand.id)
         }
-        var views: [NSView] = [BrandUI.vstack([name, meta], spacing: 1), BrandUI.spacer()]
+        var buttons: [NSView] = []
         if archived {
-            let restore = PillButton(title: "Geri yükle", kind: .secondary, height: 24) { [weak self] in self?.restore(brand) }
-            views += [restore, open]
-        } else {
-            views.append(open)
+            buttons.append(PillButton(title: "Geri yükle", kind: .secondary, height: 26) { [weak self] in self?.restore(brand) })
         }
-        return BrandUI.hstack(views, spacing: 8)
+        buttons.append(open)
+        let row = SettingsRowView(title: brand.name, detail: detail, accessory: SettingsControls.buttons(buttons), keywords: archived ? "arşiv marka" : "marka")
+        if archived { row.titleColor = Theme.textSecondary }
+        return row
     }
 
     private func restore(_ brand: Brand) {

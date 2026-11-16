@@ -54,7 +54,7 @@ Kurallar: ajanlar en fazla Opus 5.5 / xhigh; aynı anda en fazla 3 ajan; para ha
 | 1 | A5 | Sohbet ajanı (Wecra yöntemi): oturum sürdürme, HTTP MCP araçları, onay kartları, /usage | xhigh | Tamam (denetlendi; canlı: --resume ile ikinci tur 4 sn) |
 | 1 | P1 | Mac postlar ve editör: postlar ızgarası, açık post, katman düzenleme, görsel yuvası doldurma, sürüm geçmişi ve geri al, "Neyi değiştireyim?", dışa aktarım (JPEG/PNG/PDF, paylaş) | xhigh | Tamam (denetlendi; canlı: metin+taşıma, yuva doldurma, onay, dışa aktarım, AI düzeltme) |
 | 1 | P2 | Mac ilk açılış ve marka: ilk açılış akışı (Claude girişi, Mac sunucusu, ilk marka), marka sihirbazı, marka kiti, örnek postlardan profil çıkarma, profil düzenleme ve onay | high | Tamam (denetlendi; canlı: kit → profil çıkar → onay) |
-| 2 | P3 | Mac yayın, hesaplar, takvim, bildirimler: hesap bağlama, zamanlama ve takvim, bulut yayıncı eşitleme, yayın günlüğü, macOS bildirimleri | high | Çalışıyor |
-| 2 | P4 | Mac nihai cila: menüler ve kısayollar, boş/yükleniyor/hata durumları, arama, medya, tutarlılık ve erişilebilirlik | high | Sırada |
-| 3 | P5 | iOS: Mac ile eş düzey | xhigh | Sırada |
-| 3 | P6 | Reels'in Mac arayüzünde uçtan uca kullanımı | high | Sırada |
+| 2 | P3 | Mac yayın, hesaplar, takvim, bildirimler: hesap bağlama, zamanlama ve takvim, bulut yayıncı eşitleme, yayın günlüğü, macOS bildirimleri | high | Tamam (canlı: FakeGraph ile bağla → zamanla → yayınla → bildirim; IG/FB görsel postları bulut yayıncı ister) |
+| 2 | P4 | Mac nihai cila: menüler ve kısayollar, boş/yükleniyor/hata durumları, arama, medya, tutarlılık ve erişilebilirlik | high | Tamam (Türkçe menüler + ⌘1…9, ⌘F arama, oturum geri yükleme, tek hata şeridi, VoiceOver; pencere kapanınca Studio çalışmaya devam eder) |
+| 3 | P5 | iOS: Mac ile eş düzey | xhigh | Tamam (canlı: LAN eşleştirme, editör v2→v5, @mention'lı görselli sohbet, onay kartı; iPhone'a kuruldu) |
+| 3 | P6 | Reels'in Mac arayüzünde uçtan uca kullanımı | high | Tamam (3 tarif + editör + sohbetten Reels, hepsi 15/15 Reels denetimi) |

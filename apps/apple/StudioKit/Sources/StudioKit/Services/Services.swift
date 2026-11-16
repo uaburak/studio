@@ -28,6 +28,8 @@ public protocol ConversationService: Sendable {
     /// with the given model / effort (nil = worker default).
     func acceptAndGenerate(_ plan: Plan, model: AgentModel?, effort: AgentEffort?) async throws -> Plan
     func rejectPlan(_ planId: EntityID, reason: String?) async throws -> Plan
+    /// Queue generation for an already accepted plan (items without a running job).
+    func generatePlan(_ planId: EntityID, model: AgentModel?, effort: AgentEffort?) async throws -> Plan
     /// Upload an image the user attaches to a message.
     func uploadImage(_ file: UploadFile, brandId: EntityID, progress: @escaping @Sendable (Double) -> Void) async throws -> Asset
 }
@@ -119,6 +121,56 @@ public protocol StudioDataService: Sendable {
     /// Live jobs + presence (all brands).
     func jobFeed() -> AsyncStream<JobFeedEvent>
     func cancelJob(_ id: EntityID) async throws -> Job
+
+    // Publishing, accounts and calendar (P3). Defaults below keep other conformers compiling.
+    func publishingStatus() async throws -> PublishingStatus
+    func setCloudPublisher(url: String, token: String) async throws -> PublishingStatus
+    func clearCloudPublisher() async throws -> PublishingStatus
+    /// Ask the worker to push and pull cloud orders now (app focus).
+    func requestPublishingSync() async throws -> PublishingStatus
+    /// Platform rules for `contentId` on the accounts (nil = all usable accounts of its brand).
+    func preflight(contentId: EntityID, accountIds: [EntityID]?) async throws -> SchedulePreflight
+    func publishNow(contentId: EntityID, accountIds: [EntityID]) async throws -> PublishNowResult
+    /// Move a pending schedule (calendar drag).
+    func reschedule(_ scheduleId: EntityID, to date: Date) async throws -> Schedule
+    /// Publish attempts; with `finishedAfter` only finished ones after it, oldest first.
+    func publishLogs(brandId: EntityID?, finishedAfter: Date?) async throws -> [PublishLogFeedItem]
+    func exchangeMeta(_ input: MetaExchangeInput) async throws -> MetaExchangeResult
+    func linkedInOAuth(_ input: LinkedInOAuthInput) async throws -> SocialAccount
+    func checkSocialAccount(id: EntityID, _ input: SocialAccountCheckInput) async throws -> SocialAccount
+    func disconnectSocialAccount(id: EntityID) async throws -> SocialAccount
+}
+
+/// P3 defaults: the sample and test backends publish nothing.
+extension StudioDataService {
+    public func publishingStatus() async throws -> PublishingStatus { .unknownLocal }
+    public func setCloudPublisher(url: String, token: String) async throws -> PublishingStatus {
+        throw StudioAPIError.invalidConfiguration("Bulut yayıncı bu bağlantıda ayarlanamıyor.")
+    }
+    public func clearCloudPublisher() async throws -> PublishingStatus { .unknownLocal }
+    public func requestPublishingSync() async throws -> PublishingStatus { .unknownLocal }
+    public func preflight(contentId: EntityID, accountIds: [EntityID]?) async throws -> SchedulePreflight {
+        SchedulePreflight(mode: .local, ok: true, targets: [])
+    }
+    public func publishNow(contentId: EntityID, accountIds: [EntityID]) async throws -> PublishNowResult {
+        throw StudioAPIError.invalidConfiguration("Bu bağlantıda yayın yapılamıyor.")
+    }
+    public func reschedule(_ scheduleId: EntityID, to date: Date) async throws -> Schedule {
+        throw StudioAPIError.invalidConfiguration("Bu bağlantıda zamanlama taşınamıyor.")
+    }
+    public func publishLogs(brandId: EntityID?, finishedAfter: Date?) async throws -> [PublishLogFeedItem] { [] }
+    public func exchangeMeta(_ input: MetaExchangeInput) async throws -> MetaExchangeResult {
+        throw StudioAPIError.invalidConfiguration("Hesap bağlama yalnızca Mac sunucusuyla çalışır.")
+    }
+    public func linkedInOAuth(_ input: LinkedInOAuthInput) async throws -> SocialAccount {
+        throw StudioAPIError.invalidConfiguration("Hesap bağlama yalnızca Mac sunucusuyla çalışır.")
+    }
+    public func checkSocialAccount(id: EntityID, _ input: SocialAccountCheckInput) async throws -> SocialAccount {
+        try await checkSocialAccountToken(id: id)
+    }
+    public func disconnectSocialAccount(id: EntityID) async throws -> SocialAccount {
+        try await updateSocialAccount(id, SocialAccountUpdate(status: .disabled))
+    }
 }
 
 /// Brand kit, archived brands and single-job reads (P2). Default implementations keep
@@ -144,6 +196,11 @@ extension ConversationService {
     /// Accept and generate with the worker's default model and effort.
     public func acceptAndGenerate(_ plan: Plan) async throws -> Plan {
         try await acceptAndGenerate(plan, model: nil, effort: nil)
+    }
+
+    /// Default for conformers without plan generation (the sample backend generates on accept).
+    public func generatePlan(_ planId: EntityID, model: AgentModel?, effort: AgentEffort?) async throws -> Plan {
+        throw StudioAPIError.invalidConfiguration("Bu bağlantıda plan üretimi başlatılamıyor.")
     }
 }
 
@@ -251,6 +308,10 @@ public struct RemoteConversationService: ConversationService {
 
     public func rejectPlan(_ planId: EntityID, reason: String?) async throws -> Plan {
         try await client.rejectPlan(planId, PlanReject(reason: reason))
+    }
+
+    public func generatePlan(_ planId: EntityID, model: AgentModel?, effort: AgentEffort?) async throws -> Plan {
+        try await client.generatePlan(planId, PlanGenerate(model: model?.sendable, effort: effort?.sendable)).plan
     }
 
     public func uploadImage(_ file: UploadFile, brandId: EntityID, progress: @escaping @Sendable (Double) -> Void) async throws -> Asset {
@@ -402,4 +463,30 @@ public struct RemoteStudioDataService: StudioDataService {
     }
 
     public func cancelJob(_ id: EntityID) async throws -> Job { try await client.cancelJob(id) }
+
+    // P3
+    public func publishingStatus() async throws -> PublishingStatus { try await client.publishingStatus() }
+    public func setCloudPublisher(url: String, token: String) async throws -> PublishingStatus {
+        try await client.setCloudPublisher(PublishingCloudPut(url: url, token: token))
+    }
+    public func clearCloudPublisher() async throws -> PublishingStatus { try await client.clearCloudPublisher() }
+    public func requestPublishingSync() async throws -> PublishingStatus { try await client.requestPublishingSync() }
+    public func preflight(contentId: EntityID, accountIds: [EntityID]?) async throws -> SchedulePreflight {
+        try await client.preflight(SchedulePreflightInput(contentId: contentId, socialAccountIds: accountIds))
+    }
+    public func publishNow(contentId: EntityID, accountIds: [EntityID]) async throws -> PublishNowResult {
+        try await client.publishNow(PublishNowInput(contentId: contentId, socialAccountIds: accountIds))
+    }
+    public func reschedule(_ scheduleId: EntityID, to date: Date) async throws -> Schedule {
+        try await client.reschedule(scheduleId, to: date)
+    }
+    public func publishLogs(brandId: EntityID?, finishedAfter: Date?) async throws -> [PublishLogFeedItem] {
+        try await client.publishLogs(brandId: brandId, finishedAfter: finishedAfter)
+    }
+    public func exchangeMeta(_ input: MetaExchangeInput) async throws -> MetaExchangeResult { try await client.exchangeMeta(input) }
+    public func linkedInOAuth(_ input: LinkedInOAuthInput) async throws -> SocialAccount { try await client.linkedInOAuth(input) }
+    public func checkSocialAccount(id: EntityID, _ input: SocialAccountCheckInput) async throws -> SocialAccount {
+        try await client.checkSocialAccount(id: id, input)
+    }
+    public func disconnectSocialAccount(id: EntityID) async throws -> SocialAccount { try await client.disconnectSocialAccount(id: id) }
 }

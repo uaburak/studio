@@ -68,7 +68,9 @@ Tam liste ve şemalar: `GET /api/openapi.json`.
 | Sürümler        | `GET/POST /api/contents/{id}/versions`, `GET/PATCH /api/contents/{id}/versions/{version}`, `POST …/versions/{version}/restore` (eski sürümün birebir kopyası yeni sürüm olur; render ve katman kutuları korunur)        |
 | İşler           | `GET/POST /api/jobs`, `GET /api/jobs/{id}`, `POST /api/jobs/{id}/cancel`, `GET /api/jobs/stream` (WebSocket, canlı izleme)                                                                                              |
 | Worker          | `GET /api/workers/presence` (Mac çevrimiçi mi, şu an çalışan işler, kuyruk uzunluğu); `GET /api/hub` (worker WebSocket'i, token ister)                                                                                  |
-| Zamanlama       | `GET/POST /api/schedules`, `GET /api/schedules/{id}`, `POST …/cancel`, `GET …/logs`                                                                                                                                     |
+| Zamanlama       | `GET/POST /api/schedules`, `GET/PATCH /api/schedules/{id}` (taşı), `POST …/cancel`, `GET …/logs`, `POST /api/schedules/preflight`, `POST /api/schedules/publish-now`                                                    |
+| Yayın (P3)      | `GET /api/publishing/status`, `PUT/DELETE /api/publishing/cloud` (yalnızca Mac), `POST /api/publishing/sync`, `GET /api/publish-logs`; worker: `GET /api/worker/publishing/config`, `POST …/report`, `POST /api/worker/schedules/{id}/delivery`, `GET /api/worker/schedules/cancelled` |
+| Hesap bağlama   | `POST /api/social-accounts/meta/exchange`, `…/meta/discover` (`selections`), `…/linkedin/oauth`, `…/{id}/check` (`live`), `…/{id}/disconnect` (hepsi yalnızca Mac)                                                       |
 | Konuşmalar      | `GET/POST /api/conversations`, `GET/PATCH /api/conversations/{id}`, `GET/POST …/messages`, `POST …/messages/{messageId}/answer`, `GET …/runs`, `GET …/stream` (WebSocket), `GET …/aliases`, `PATCH …/aliases/{aliasId}` |
 | Ajan turları    | `GET /api/agent-runs/{id}`, `POST /api/agent-runs/{id}/cancel`                                                                                                                                                          |
 | Planlar         | `GET /api/plans`, `GET/PATCH /api/plans/{id}`, `POST …/accept`, `POST …/reject`, `POST …/generate`                                                                                                                      |
@@ -426,9 +428,33 @@ giden `conversation.updated` bunu taşır; ajan ek eklediğinde ve yeniden adlan
 `conversation.updated` gider. `conversation.snapshot` tam listeyi `aliases` olarak taşır. Referans
 indirgeyici `state.aliases`'ı tutar (snapshot'tan alır, `conversation.updated.aliases` ile upsert eder).
 
+## Yayın, hesaplar ve token kasası (P3)
+
+- **Token kasası** (`src/lib/token-vault.ts`): AES-256-GCM, anahtar `TOKEN_ENCRYPTION_KEY` (kurulum başına rastgele;
+  Mac uygulaması `~/Library/Application Support/Studio/vault-key` dosyasında 0600 olarak üretir ve API'ye yalnızca
+  ortam değişkeniyle verir; elle çalıştırırken `.dev.vars`). Gömülü yedek anahtar **yok**: anahtar yoksa token yazma
+  `409` ile reddedilir. Eski (P3 öncesi, `WORKER_TOKEN`/sabit değerden türetilmiş) satırlar `key_version = 1`; anahtar
+  geldiğinde ilk `GET /api/publishing/status` ya da token okumasında yeni anahtarla yeniden şifrelenir (`key_version = 2`),
+  çözülemeyen satır `needs_reauth` olur. Bulut yayıncı token'ı da aynı kasayla (`publishing_settings`) saklanır.
+- **Meta bağlama:** Mac Facebook Login'i tarayıcıda açar, yönlendirme `http://localhost:8793/meta/callback`'e döner.
+  `meta/exchange` kodu (App Secret ile) ya da örtük akış token'ını alır, App Secret varsa ~60 günlük token'a çevirir,
+  Sayfaları token'sız listeler. `meta/discover` + `selections` yalnızca seçilen Sayfa / Instagram hesaplarını markaya
+  bağlar (Sayfa token'ları kasaya). `check {live, appId, appSecret}` `debug_token` ile süre/izin/geçerlilik okur.
+- **LinkedIn:** `linkedin/oauth` kodu değiştirir, OIDC `userinfo` ile üyeyi okur, 60 günlük token'ı kasaya yazar.
+- **Ön denetim:** `preflight` ve her `POST /api/schedules` `@studio/publishers` doğrulayıcılarını (Instagram JPEG,
+  oranlar, açıklama/hashtag sınırları, carousel, Reels süresi…) Türkçe mesajlarla çalıştırır. Bulut yayıncı yokken
+  Instagram/Facebook görsel türleri reddedilir (Meta görseli herkese açık adresten indirir; Mac'e ulaşamaz).
+  Test ve FakeGraph için `STUDIO_ALLOW_PRIVATE_MEDIA_URLS=1`; Graph/LinkedIn kökleri `META_GRAPH_BASE_URL`,
+  `LINKEDIN_OAUTH_BASE_URL`, `LINKEDIN_API_BASE_URL` ile değiştirilebilir (`wrangler dev --var`).
+- **Zamanlama durumu:** `schedules.delivery` (`local` / `cloud`), `cloud_synced_at`, `last_error`. Taşınan zamanlamada
+  `cloud_synced_at` sıfırlanır, worker yeniden gönderir; buluta gitmiş ve iptal edilen zamanlamalar
+  `/api/worker/schedules/cancelled` ile worker'a bildirilir, worker bulutta iptal eder.
+- **Bildirim akışı:** `GET /api/publish-logs?finishedAfter=` biten denemeleri (eskiden yeniye) başlık ve hesapla verir;
+  Mac bunları macOS bildirimine çevirir.
+
 ## Migration
 
-Şema `src/db/schema.ts`. Migration SQL'leri `migrations/` altında (`0000_init`, `0001_core_model`, `0002_job_queue`, `0003_chat`, `0004_attachment_aliases`, `0005_run_model_effort`, `0006_devices`, …).
+Şema `src/db/schema.ts`. Migration SQL'leri `migrations/` altında (`0000_init`, `0001_core_model`, `0002_job_queue`, `0003_chat`, `0004_attachment_aliases`, `0005_run_model_effort`, `0006_devices`, …, `0010_publishing`: `publishing_settings`, `schedules.delivery/cloud_synced_at/last_error`, `social_account_tokens.key_version`).
 `0002` yalnızca `jobs` tablosuna sütun ve indeks ekler (tablo yeniden kurulmaz); yeni sütunların aralıkları API'de doğrulanır.
 `0003` yalnızca yeni tablolar ekler (konuşmalar, mesajlar, turlar, akış olayları, planlar, plan kalemleri).
 `0004` iki yeni tablo (`conversation_aliases`, `conversation_alias_names`) ve `messages.mentions` sütununu ekler (null = anma yok).

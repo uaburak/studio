@@ -8,7 +8,7 @@ describe("loadConfig", () => {
       hubUrl: "ws://127.0.0.1:8787/api/hub",
       token: undefined,
       workerId: "mac",
-      concurrency: 1,
+      concurrency: 3,
       heartbeatIntervalMs: 15_000,
       shutdownTimeoutMs: 10_000,
       stateDir: DEFAULT_STATE_DIR,

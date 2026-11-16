@@ -262,7 +262,29 @@ final class ComposerNSTextView: NSTextView {
 
     override func paste(_ sender: Any?) {
         if let editor, editor.handlePaste(NSPasteboard.general) { return }
-        pasteAsPlainText(sender)
+        super.pasteAsPlainText(sender)
+    }
+
+    override func pasteAsPlainText(_ sender: Any?) {
+        if let editor, editor.handlePaste(NSPasteboard.general) { return }
+        super.pasteAsPlainText(sender)
+    }
+
+    /// A plain-text view disables Paste for an image-only pasteboard; here images become
+    /// attachments, so Düzen → Yapıştır (⌘V) stays enabled for them.
+    override func validateUserInterfaceItem(_ item: any NSValidatedUserInterfaceItem) -> Bool {
+        if Self.pasteAcceptsImages(action: item.action, pasteboard: .general, canAttach: editor != nil && isEditable) { return true }
+        return super.validateUserInterfaceItem(item)
+    }
+
+    override func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        if Self.pasteAcceptsImages(action: menuItem.action, pasteboard: .general, canAttach: editor != nil && isEditable) { return true }
+        return super.validateMenuItem(menuItem)
+    }
+
+    static func pasteAcceptsImages(action: Selector?, pasteboard: NSPasteboard, canAttach: Bool) -> Bool {
+        guard canAttach, action == #selector(paste(_:)) || action == #selector(pasteAsPlainText(_:)) else { return false }
+        return ImageImport.pasteboardHasImages(pasteboard)
     }
 
     override func draw(_ dirtyRect: NSRect) {

@@ -13,7 +13,15 @@ export default defineConfig(async () => {
         wrangler: { configPath: "./wrangler.jsonc" },
         miniflare: {
           // WORKER_TOKEN: test-only value for the /api/hub shared-secret check.
-          bindings: { TEST_MIGRATIONS: migrations, WORKER_TOKEN: "test-worker-token" },
+          // TOKEN_ENCRYPTION_KEY: test-only token vault key (32+ characters).
+          bindings: {
+            TEST_MIGRATIONS: migrations,
+            WORKER_TOKEN: "test-worker-token",
+            TOKEN_ENCRYPTION_KEY: "test-vault-key-0123456789abcdef0123456789",
+            // Route tests schedule Instagram posts without a cloud publisher; the local-mode
+            // refusal itself is tested on preflightTargets (test/publishing.test.ts).
+            STUDIO_ALLOW_PRIVATE_MEDIA_URLS: "1",
+          },
         },
       }),
     ],

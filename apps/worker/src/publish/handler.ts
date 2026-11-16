@@ -14,7 +14,9 @@ import {
   type CloudOrderMedia,
   type CloudPublishKind,
   SchedulePublishPayload,
+  selectPublishKind as selectKind,
   type WorkerScheduleCredentials,
+  type WorkerScheduleDelivery,
 } from "@studio/contract";
 import sharp from "sharp";
 import {
@@ -30,6 +32,15 @@ import { abortableSleep } from "../claude/gate.ts";
 import { defineHandler, type JobContext, RetryableError } from "../registry.ts";
 import { type ContentRenderDeps, executeContentRender } from "../render/handler.ts";
 import { extractReelVersionAssets } from "../video/recipes.ts";
+import {
+  type CloudPublisherConfig,
+  cloudState,
+  envCloudPublisherConfig,
+  pushKey,
+  resolveCloudPublisherConfig,
+} from "./cloud-state.ts";
+
+export type { CloudPublisherConfig } from "./cloud-state.ts";
 
 export interface SchedulePublishDeps extends ContentRenderDeps {
   publisherMachineOptions?: Partial<MachineOptions>;
@@ -38,20 +49,27 @@ export interface SchedulePublishDeps extends ContentRenderDeps {
   inFlightSchedules?: Set<string>;
 }
 
-export interface CloudPublisherConfig {
-  url: string;
-  token: string;
+/** Cloud publisher from the worker's environment only (see `resolveCloudPublisherConfig`). */
+export function getCloudPublisherConfig(deps: SchedulePublishDeps): CloudPublisherConfig | null {
+  return envCloudPublisherConfig(deps);
 }
 
-export function getCloudPublisherConfig(deps: SchedulePublishDeps): CloudPublisherConfig | null {
-  const url = (
-    deps.settings.parentEnv.STUDIO_CLOUD_PUBLISHER_URL ?? deps.settings.cloudPublisherUrl
-  )?.trim();
-  const token = (
-    deps.settings.parentEnv.STUDIO_CLOUD_PUBLISHER_TOKEN ?? deps.settings.cloudPublisherToken
-  )?.trim();
-  if (!url || !token) return null;
-  return { url: url.replace(/\/+$/, ""), token };
+/** Best-effort: tell the API who publishes the schedule (shown in the calendar). */
+export async function reportDelivery(
+  deps: SchedulePublishDeps,
+  scheduleId: string,
+  input: WorkerScheduleDelivery,
+  signal?: AbortSignal,
+): Promise<void> {
+  try {
+    await deps.api.client.workerSchedules.delivery(
+      scheduleId,
+      input,
+      signal ? { signal } : undefined,
+    );
+  } catch {
+    // Older API or a transient error: the next round reports again.
+  }
 }
 
 function sha256Hex(bytes: Uint8Array): string {
@@ -77,26 +95,13 @@ function hasAiGeneratedMarker(creds: WorkerScheduleCredentials): boolean {
   return creds.version.slides.some((s) => /data-ai-generated|ai-image-/i.test(s.html));
 }
 
+/** Same rule the API preflight uses (`selectPublishKind` in the contract). */
 export function selectPublishKind(
   platform: "instagram" | "facebook" | "linkedin",
   contentType: "post" | "carousel" | "story" | "reel",
   slideCount: number,
 ): CloudPublishKind {
-  if (platform === "instagram") {
-    if (contentType === "reel") return "instagram.reel";
-    if (contentType === "story") return "instagram.story";
-    if (contentType === "carousel" || slideCount > 1) return "instagram.carousel";
-    return "instagram.image";
-  }
-  if (platform === "facebook") {
-    if (contentType === "reel") return "facebook.reel";
-    if (contentType === "story") return "facebook.story";
-    if (contentType === "carousel" || slideCount > 1) return "facebook.multi_photo";
-    return "facebook.photo";
-  }
-  if (contentType === "reel") return "linkedin.video";
-  if (contentType === "carousel" || slideCount > 1) return "linkedin.document";
-  return slideCount >= 1 ? "linkedin.image" : "linkedin.text";
+  return selectKind(platform, contentType, slideCount);
 }
 
 interface PreparedMediaAsset {
@@ -134,11 +139,9 @@ async function ensurePreparedMediaForSchedule(
         signal,
       });
       reelAssets = {
+        ...reelAssets,
         videoAssetId: rendered.videoAssetId ?? null,
         coverAssetId: rendered.coverAssetId ?? null,
-        recipe: reelAssets.recipe,
-        durationMs: reelAssets.durationMs,
-        compositionHtml: reelAssets.compositionHtml,
       };
     }
     if (!reelAssets.videoAssetId) {
@@ -250,6 +253,37 @@ async function ensurePreparedMediaForSchedule(
       meta = { width: resized.info.width, height: resized.info.height, format: "jpeg" };
     }
 
+    // Instagram accepts JPEG only: convert anything else (a PNG export, a WebP upload) here,
+    // so the bytes match the declared type the cloud publisher and Meta check.
+    const isJpeg = meta?.format === "jpeg" || (!meta?.format && dl.contentType.includes("jpeg"));
+    if (kind.startsWith("instagram.") && !isJpeg) {
+      const converted = await sharp(dl.bytes, { animated: false })
+        .flatten({ background: "#ffffff" })
+        .toColorspace("srgb")
+        .jpeg({ quality: 92, chromaSubsampling: "4:4:4", mozjpeg: true })
+        .toBuffer({ resolveWithObject: true });
+      const jpegBytes = new Uint8Array(
+        converted.data.buffer,
+        converted.data.byteOffset,
+        converted.data.byteLength,
+      );
+      const uploaded = await deps.api.client.assets.upload(
+        {
+          brandId: content.brandId,
+          kind: "image",
+          source: "generated",
+          width: converted.info.width,
+          height: converted.info.height,
+          file: new Blob([jpegBytes.slice()], { type: "image/jpeg" }),
+          filename: `ig-jpeg-slide-${idx + 1}.jpg`,
+        },
+        { signal },
+      );
+      assetId = uploaded.id;
+      dl = { bytes: jpegBytes, contentType: "image/jpeg" };
+      meta = { width: converted.info.width, height: converted.info.height, format: "jpeg" };
+    }
+
     const isPng = dl.contentType.includes("png") || meta?.format === "png";
     const mimeType = isPng && !kind.startsWith("instagram.") ? "image/png" : "image/jpeg";
     const ext = mimeType === "image/png" ? "png" : "jpg";
@@ -278,6 +312,56 @@ export async function pushScheduleToCloudPublisher(input: {
   deps: SchedulePublishDeps;
   signal: AbortSignal;
 }): Promise<{ orderId: string; mediaUploaded: number; status: string }> {
+  const { scheduleId, deps, signal } = input;
+  try {
+    const pushed = await pushOrder(input);
+    cloudState(deps).pushed.set(scheduleId, pushed.key);
+    await reportDelivery(
+      deps,
+      scheduleId,
+      { delivery: "cloud", cloudSyncedAt: new Date(nowMs(deps)).toISOString(), error: null },
+      signal,
+    );
+    return { orderId: pushed.orderId, mediaUploaded: pushed.mediaUploaded, status: pushed.status };
+  } catch (error) {
+    if (!signal.aborted && !(error instanceof ApiError && error.status === 409)) {
+      const message = error instanceof Error ? error.message : String(error);
+      await reportDelivery(
+        deps,
+        scheduleId,
+        { delivery: "cloud", error: message.slice(0, 2000) },
+        signal,
+      );
+    }
+    throw error;
+  }
+}
+
+function nowMs(deps: SchedulePublishDeps): number {
+  return (deps.now ?? (() => new Date()))().getTime();
+}
+
+/** Turkish summary of a cloud publisher error body (`{ error: { message, issues } }`). */
+function cloudErrorText(raw: string): string {
+  try {
+    const body = JSON.parse(raw) as {
+      error?: { message?: string; issues?: { message?: string }[] };
+    };
+    const issues = (body.error?.issues ?? []).map((i) => i.message).filter(Boolean);
+    if (issues.length) return issues.join(" ");
+    if (body.error?.message) return body.error.message;
+  } catch {
+    // not JSON
+  }
+  return raw.slice(0, 300);
+}
+
+async function pushOrder(input: {
+  scheduleId: string;
+  cloud: CloudPublisherConfig;
+  deps: SchedulePublishDeps;
+  signal: AbortSignal;
+}): Promise<{ orderId: string; mediaUploaded: number; status: string; key: string }> {
   const { scheduleId, cloud, deps, signal } = input;
   const doFetch = deps.publisherFetch ?? globalThis.fetch.bind(globalThis);
   const init = { signal };
@@ -371,6 +455,15 @@ export async function pushScheduleToCloudPublisher(input: {
     signal,
   });
 
+  if (putOrderRes.status === 409) {
+    // Publishing already started (or the order was cancelled there): nothing to replace.
+    return {
+      orderId: scheduleId,
+      mediaUploaded: 0,
+      status: "started",
+      key: pushKey(creds.schedule),
+    };
+  }
   if (!putOrderRes.ok) {
     const raw = redactToken(
       await putOrderRes.text().catch(() => ""),
@@ -378,7 +471,7 @@ export async function pushScheduleToCloudPublisher(input: {
       creds.accessToken,
     );
     throw new Error(
-      `Cloud Publisher sipariş hatası (HTTP ${putOrderRes.status}): ${raw.slice(0, 300)}`,
+      `Bulut yayıncı siparişi reddetti (HTTP ${putOrderRes.status}): ${cloudErrorText(raw)}`,
     );
   }
 
@@ -407,7 +500,51 @@ export async function pushScheduleToCloudPublisher(input: {
     orderId: scheduleId,
     mediaUploaded: uploadedCount,
     status: "scheduled",
+    key: pushKey(creds.schedule),
   };
+}
+
+/** Cancel orders of schedules cancelled on the Mac after they reached the cloud. */
+export async function cancelCloudOrders(input: {
+  cloud: CloudPublisherConfig;
+  deps: SchedulePublishDeps;
+  signal: AbortSignal;
+}): Promise<number> {
+  const { cloud, deps, signal } = input;
+  const doFetch = deps.publisherFetch ?? globalThis.fetch.bind(globalThis);
+  let list: { items: { id: string }[] };
+  try {
+    list = await deps.api.client.workerSchedules.cancelled({ limit: 100 }, { signal });
+  } catch {
+    return 0;
+  }
+  let cancelled = 0;
+  for (const sched of list.items) {
+    if (signal.aborted) break;
+    const res = await doFetch(`${cloud.url}/v1/orders/${encodeURIComponent(sched.id)}/cancel`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${cloud.token}`, accept: "application/json" },
+      signal,
+    });
+    // 404: never fully created there; 409: already publishing (too late to stop).
+    if (res.ok || res.status === 404 || res.status === 409) {
+      cloudState(deps).pushed.delete(sched.id);
+      await reportDelivery(
+        deps,
+        sched.id,
+        {
+          delivery: "cloud",
+          cloudSyncedAt: null,
+          ...(res.status === 409
+            ? { error: "Bulut yayıncı yayına başlamıştı; iptal edilemedi." }
+            : {}),
+        },
+        signal,
+      );
+      cancelled++;
+    }
+  }
+  return cancelled;
 }
 
 /**
@@ -727,6 +864,7 @@ export async function publishScheduleLocally(input: {
     throw new Error(msg);
   }
 
+  await reportDelivery(deps, scheduleId, { delivery: "local", cloudSyncedAt: null }, signal);
   progress(0.15, "Medya dosyaları yayına hazırlanıyor");
   const kind = selectPublishKind(
     creds.schedule.platform,
@@ -900,24 +1038,19 @@ export function createSchedulePublishHandler(deps: SchedulePublishDeps) {
       }
       lockSet?.add(payload.scheduleId);
       try {
-        const cloud = getCloudPublisherConfig(deps);
-        const nowMs = (deps.now ?? (() => new Date()))().getTime();
+        const { cloud } = await resolveCloudPublisherConfig(deps, { signal: ctx.signal });
         if (cloud) {
-          const sched = await deps.api.client.schedules.get(payload.scheduleId, {
+          // With a cloud publisher every schedule goes there (Meta fetches images from its
+          // signed public URLs); a due one is sent for a few seconds from now.
+          ctx.progress(0.3, "Bulut yayıncıya sipariş aktarılıyor");
+          const pushed = await pushScheduleToCloudPublisher({
+            scheduleId: payload.scheduleId,
+            cloud,
+            deps,
             signal: ctx.signal,
           });
-          // Future schedule with Cloud Publisher configured: push order to cloud
-          if (Date.parse(sched.scheduledAt) > nowMs + 15_000) {
-            ctx.progress(0.3, "Bulut yayıncıya sipariş aktarılıyor");
-            const pushed = await pushScheduleToCloudPublisher({
-              scheduleId: payload.scheduleId,
-              cloud,
-              deps,
-              signal: ctx.signal,
-            });
-            ctx.progress(1, "Bulut yayıncıya aktarıldı");
-            return { mode: "cloud", ...pushed };
-          }
+          ctx.progress(1, "Bulut yayıncıya aktarıldı");
+          return { mode: "cloud", ...pushed };
         }
 
         const published = await publishScheduleLocally({

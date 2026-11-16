@@ -414,7 +414,7 @@ final class OnboardingSheetController: NSViewController {
         let serverOK = host?.isUp ?? (app.presence?.online == true)
         let brand = model.existingBrand
         let rows: [(Bool, String)] = [
-            (claudeOK, claudeOK ? "Claude hesabı bağlı" : "Claude girişi yapılmadı · Ayarlar → Yapay Zekâ Bağlantıları"),
+            (claudeOK, claudeOK ? "Claude hesabı bağlı" : "Claude girişi yapılmadı · Ayarlar → Yapay zekâ"),
             (serverOK, serverOK ? "Mac sunucusu çalışıyor" : "Mac sunucusu çalışmıyor · Ayarlar → Mac sunucusu"),
             (brand != nil, brand.map { "Marka: \($0.name)" } ?? "Marka eklenmedi · kenar çubuğunda Yeni marka"),
         ]

@@ -3,9 +3,9 @@ import StudioKit
 
 /// Pure AppKit left sidebar (`NSSplitViewItem(sidebarWithViewController:)`):
 /// - Uses a native `.sourceList` `NSTableView` for macOS sidebar styling & keyboard navigation
-/// - Top actions: Yeni sohbet (`+`), Ara (`magnifyingglass`), Postlar (`square.grid.2x2`), Takvim (`calendar`, "yakında")
+/// - Top actions: Yeni sohbet (`+`), Ara (`magnifyingglass`), Postlar (`square.grid.2x2`), Takvim (`calendar`), Medya
 /// - Collapsible brand sections with conversation rows (orange dot when `activeRunId != nil`, right-click archive)
-/// - Bottom `UserRowView` (`● Burak` appearance menu + Settings gear).
+/// - Bottom `UserRowView` (monogram, Mac server status, appearance menu + Settings gear).
 final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTableViewDelegate {
     private unowned let app: AppModel
     private unowned let settings: AppSettings
@@ -238,7 +238,7 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
             return makeIconLabelCell(symbol: "plus", title: "Yeni sohbet", help: "Yeni sohbet (⌘N)")
 
         case .actionSearch:
-            return makeIconLabelCell(symbol: "magnifyingglass", title: "Ara", help: "Sohbetlerde ve postlarda ara (⌘K)")
+            return makeIconLabelCell(symbol: "magnifyingglass", title: "Ara", help: "Markalarda, sohbetlerde ve postlarda ara (⌘F)")
 
         case .posts:
             return makeIconLabelCell(symbol: "square.grid.2x2", title: "Postlar", help: "Postlar (⇧⌘P)")
@@ -525,6 +525,9 @@ private final class SidebarUserRowView: NSView {
     private unowned let app: AppModel
     private unowned let settings: AppSettings
     private let userButton = NSControl()
+    private let statusDot = StatusDotView(color: Theme.textTertiary, size: 6)
+    private let statusLabel = NSTextField(labelWithString: "")
+    private var statusObservation: ObservationToken?
 
     init(app: AppModel, settings: AppSettings) {
         self.app = app
@@ -532,14 +535,41 @@ private final class SidebarUserRowView: NSView {
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
 
-        let avatar = StatusDotView(color: Theme.accent, size: 20)
+        // Neutral monogram: orange is reserved for the primary action and "waiting on you".
+        let avatar = ThemedView()
+        avatar.translatesAutoresizingMaskIntoConstraints = false
+        avatar.backgroundColor = Theme.ink
+        avatar.cornerRadius = 11
+        let initial = NSTextField.styledLabel("B", font: NSFont.systemFont(ofSize: 11, weight: .semibold), color: Theme.canvas)
+        initial.translatesAutoresizingMaskIntoConstraints = false
+        avatar.addSubview(initial)
+        NSLayoutConstraint.activate([
+            avatar.widthAnchor.constraint(equalToConstant: 22),
+            avatar.heightAnchor.constraint(equalToConstant: 22),
+            initial.centerXAnchor.constraint(equalTo: avatar.centerXAnchor),
+            initial.centerYAnchor.constraint(equalTo: avatar.centerYAnchor),
+        ])
         let nameLabel = NSTextField.styledLabel("Burak", font: NSFont.systemFont(ofSize: 13, weight: .medium), color: Theme.textPrimary)
+        statusLabel.font = Theme.smallFont
+        statusLabel.textColor = Theme.textSecondary
+        statusLabel.lineBreakMode = .byTruncatingTail
+        statusLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        let statusRow = NSStackView(views: [statusDot, statusLabel])
+        statusRow.orientation = .horizontal
+        statusRow.alignment = .centerY
+        statusRow.spacing = 5
+        let nameColumn = NSStackView(views: [nameLabel, statusRow])
+        nameColumn.orientation = .vertical
+        nameColumn.alignment = .leading
+        nameColumn.spacing = 1
 
         let profileControl = SidebarUserMenuTrigger { [weak self] anchor in
             self?.showUserMenu(from: anchor)
         }
-        profileControl.toolTip = "Görünüm ve ayarlar"
-        let profileStack = NSStackView(views: [avatar, nameLabel])
+        profileControl.toolTip = "Görünüm, Mac sunucusu ve ayarlar"
+        profileControl.setAccessibilityRole(.popUpButton)
+        profileControl.setAccessibilityLabel("Burak: görünüm ve ayarlar")
+        let profileStack = NSStackView(views: [avatar, nameColumn])
         profileStack.orientation = .horizontal
         profileStack.alignment = .centerY
         profileStack.spacing = 10
@@ -556,7 +586,7 @@ private final class SidebarUserRowView: NSView {
         spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
 
         let gear = GlyphButton(symbol: "gearshape", size: 13) { [weak app] in
-            app?.settingsPresented = true
+            app?.openSettings()
         }
         gear.toolTip = "Ayarlar (⌘,)"
         gear.setAccessibilityLabel("Ayarlar")
@@ -574,12 +604,33 @@ private final class SidebarUserRowView: NSView {
             row.topAnchor.constraint(equalTo: topAnchor, constant: 10),
             row.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -10),
         ])
+
+        statusObservation = observe { [weak self] in self?.syncStatus() }
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
 
+    /// Mac server status under the name: accent only when something waits on the owner.
+    private func syncStatus() {
+        let status = app.serverStatus
+        statusLabel.stringValue = status.text
+        statusDot.color = status.needsOwner ? Theme.accent : (status.text.hasPrefix("Mac hazır") ? Theme.ink : Theme.textTertiary)
+        statusLabel.toolTip = app.connectionIssue?.message ?? status.text
+        statusLabel.setAccessibilityLabel("Mac sunucusu: \(status.text)")
+    }
+
     private func showUserMenu(from anchor: NSView) {
         let menu = NSMenu()
+        let statusItem = NSMenuItem(title: "Mac sunucusu: \(app.serverStatus.text)", action: nil, keyEquivalent: "")
+        statusItem.isEnabled = false
+        menu.addItem(statusItem)
+        if let issue = app.connectionIssue {
+            for action in issue.actions {
+                let entry = ClosureMenuItem(title: RootViewController.title(for: action)) { [weak app] in app?.perform(action) }
+                menu.addItem(entry)
+            }
+        }
+        menu.addItem(.separator())
         menu.addItem(.sectionHeader(title: "Görünüm"))
         for option in AppearancePreference.allCases {
             let item = NSMenuItem(title: option.label, action: #selector(pickAppearance(_:)), keyEquivalent: "")
@@ -602,7 +653,7 @@ private final class SidebarUserRowView: NSView {
     }
 
     @objc private func openSettings() {
-        app.settingsPresented = true
+        app.openSettings()
     }
 }
 
@@ -619,5 +670,15 @@ private final class SidebarUserMenuTrigger: NSControl {
 
     override func mouseDown(with event: NSEvent) {
         onClick(self)
+    }
+
+    override func accessibilityPerformPress() -> Bool {
+        onClick(self)
+        return true
+    }
+
+    override func accessibilityPerformShowMenu() -> Bool {
+        onClick(self)
+        return true
     }
 }

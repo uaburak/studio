@@ -1,0 +1,23 @@
+{
+  "id": "01a1e3d2-9498-7000-af9e-82dc3731de30",
+  "type": "content.generate",
+  "status": "cancelled",
+  "payload": {
+    "brief": "İki slaytlık carousel",
+    "title": "Hasat sezonu",
+    "type": "carousel",
+    "targetPlatforms": [
+      "instagram"
+    ],
+    "assetIds": []
+  },
+  "brandId": "01a1e3d2-9445-7000-be35-4dc48ed328bf",
+  "contentId": "01a1e3d2-9483-7000-9ec6-03dac7c76ca3",
+  "createdAt": "2026-11-16T10:06:31.064Z",
+  "updatedAt": "2026-11-16T10:06:31.108Z",
+  "finishedAt": "2026-11-16T10:06:31.108Z",
+  "priority": 0,
+  "attempts": 0,
+  "maxAttempts": 3,
+  "cancelRequestedAt": "2026-11-16T10:06:31.108Z"
+}

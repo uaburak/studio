@@ -335,16 +335,36 @@ public struct MetaDiscoverInput: Codable, Sendable, Equatable {
     public var appId: String?
     public var appSecret: String?
     public var autoConnect: Bool
+    /// Connect only these Pages / Instagram accounts (nil = every publishable Page).
+    public var selections: [MetaPageSelection]?
+    /// Expiry of `userAccessToken` when it came from `exchangeMeta` (skips a second exchange).
+    public var userTokenExpiresAt: Date?
 
     public init(
         brandId: EntityID, userAccessToken: String,
-        appId: String? = nil, appSecret: String? = nil, autoConnect: Bool = true
+        appId: String? = nil, appSecret: String? = nil, autoConnect: Bool = true,
+        selections: [MetaPageSelection]? = nil, userTokenExpiresAt: Date? = nil
     ) {
         self.brandId = brandId
         self.userAccessToken = userAccessToken
         self.appId = appId
         self.appSecret = appSecret
         self.autoConnect = autoConnect
+        self.selections = selections
+        self.userTokenExpiresAt = userTokenExpiresAt
+    }
+}
+
+/// `MetaPageSelection` in social-account.ts.
+public struct MetaPageSelection: Codable, Sendable, Hashable {
+    public var pageId: String
+    public var facebook: Bool
+    public var instagram: Bool
+
+    public init(pageId: String, facebook: Bool, instagram: Bool) {
+        self.pageId = pageId
+        self.facebook = facebook
+        self.instagram = instagram
     }
 }
 

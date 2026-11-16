@@ -5,9 +5,13 @@
 # imzasız derler, sonra bu Mac'teki "Apple Development" sertifikası ve telefonu
 # kapsayan joker ("*") geliştirme profiliyle elle imzalar.
 #
-# Kullanım: apps/apple/scripts/install-ios-device.sh [cihaz-udid]
+# Kullanım: apps/apple/scripts/install-ios-device.sh [--launch] [cihaz-udid]
 #   (udid verilmezse bağlı ilk iPhone kullanılır)
+#   Varsayılan: yalnızca kurar, uygulamayı AÇMAZ (Burak telefonu kullanırken araya girmesin).
+#   --launch yalnızca Burak açıkça istediğinde kullanılır.
 set -euo pipefail
+LAUNCH=0
+if [ "${1:-}" = "--launch" ]; then LAUNCH=1; shift; fi
 cd "$(dirname "$0")/../StudioIOS"
 
 DEVICE="${1:-$(xcrun devicectl list devices 2>/dev/null | awk '/iPhone/ && /connected|available/ {for (i=1;i<=NF;i++) if ($i ~ /^[0-9A-F]{8}-[0-9A-F]{16}$/) {print $i; exit}}')}"
@@ -50,5 +54,9 @@ rm -f "$ENT"
 
 codesign --verify --deep --strict "$APP"
 xcrun devicectl device install app --device "$DEVICE" "$APP"
-xcrun devicectl device process launch --device "$DEVICE" --terminate-existing net.burakkoc.studio.ios >/dev/null
-echo "Kuruldu ve açıldı: net.burakkoc.studio.ios → $DEVICE"
+if [ "$LAUNCH" = 1 ]; then
+  xcrun devicectl device process launch --device "$DEVICE" --terminate-existing net.burakkoc.studio.ios >/dev/null
+  echo "Kuruldu ve açıldı: net.burakkoc.studio.ios → $DEVICE"
+else
+  echo "Kuruldu (açılmadı): net.burakkoc.studio.ios → $DEVICE"
+fi

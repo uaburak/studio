@@ -1,26 +1,43 @@
 import { createRoute } from "@hono/zod-openapi";
 import {
   ACTIVE_SCHEDULE_STATUSES,
+  JobCreate,
   PublishLogList,
   PublishLogListQuery,
+  PublishNowInput,
+  PublishNowResult,
   SCHEDULABLE_STATUSES,
   Schedule,
   ScheduleCreate,
   ScheduleList,
   ScheduleListQuery,
+  SchedulePreflight,
+  SchedulePreflightInput,
+  type SchedulePreflightTarget,
+  ScheduleUpdate,
   statusIn,
 } from "@studio/contract";
 import { and, asc, eq, gt, gte, inArray, lt, ne, notExists, or, type SQL } from "drizzle-orm";
 import type { BatchItem } from "drizzle-orm/batch";
 import { createDb, type Db } from "../db/client.ts";
 import { toPublishLog, toSchedule } from "../db/mappers.ts";
-import { contents, publishLogs, schedules } from "../db/schema.ts";
+import {
+  contents,
+  contentVersionSlides,
+  publishLogs,
+  schedules,
+  socialAccounts,
+  socialAccountTokens,
+} from "../db/schema.ts";
 import { ApiProblem, badRequest, conflict, invalidTransition, notFound } from "../lib/errors.ts";
 import { newId } from "../lib/ids.ts";
 import { decodeTimeCursor, encodeTimeCursor, toPage } from "../lib/pagination.ts";
+import { preflightTargets } from "../lib/preflight.ts";
+import { loadPublishingSettings, publishingMode } from "../lib/publishing.ts";
 import { createRouter, errors, IdParams, json, jsonBody } from "../lib/router.ts";
-import { approvalMatchesCurrent, loadContent } from "./contents.ts";
-import { requireSocialAccount } from "./social-accounts.ts";
+import { approvalMatchesCurrent, type LoadedContent, loadContent } from "./contents.ts";
+import { createJob } from "./jobs.ts";
+import { loadSocialAccountWithToken, requireSocialAccount } from "./social-accounts.ts";
 
 const tags = ["Schedules"];
 
@@ -30,6 +47,144 @@ async function requireSchedule(db: Db, id: string) {
   const row = await db.query.schedules.findFirst({ where: eq(schedules.id, id) });
   if (!row) throw notFound("schedule", id);
   return row;
+}
+
+/** Preflight the content on the given accounts (or every usable account of its brand). */
+export async function runPreflight(
+  db: Db,
+  env: Env,
+  loaded: LoadedContent,
+  accountIds?: string[],
+): Promise<{
+  mode: "cloud" | "local";
+  targets: SchedulePreflightTarget[];
+  contentErrors: { code: string; path: string; message: string }[];
+}> {
+  const { row: content, current } = loaded;
+  const mode = publishingMode(await loadPublishingSettings(db));
+  const contentErrors: { code: string; path: string; message: string }[] = [];
+  if (!current) {
+    contentErrors.push({
+      code: "NO_VERSION",
+      path: "",
+      message: "Bu postun henüz bir tasarım sürümü yok.",
+    });
+    return { mode, targets: [], contentErrors };
+  }
+  const slides = await db
+    .select({
+      html: contentVersionSlides.html,
+      width: contentVersionSlides.width,
+      height: contentVersionSlides.height,
+      renderedAssetId: contentVersionSlides.renderedAssetId,
+    })
+    .from(contentVersionSlides)
+    .where(eq(contentVersionSlides.versionId, current.id))
+    .orderBy(asc(contentVersionSlides.position));
+
+  let accounts: {
+    account: typeof socialAccounts.$inferSelect;
+    token: typeof socialAccountTokens.$inferSelect | null;
+  }[];
+  if (accountIds?.length) {
+    accounts = [];
+    for (const id of accountIds) accounts.push(await loadSocialAccountWithToken(db, id));
+  } else {
+    accounts = await db
+      .select({ account: socialAccounts, token: socialAccountTokens })
+      .from(socialAccounts)
+      .leftJoin(socialAccountTokens, eq(socialAccounts.id, socialAccountTokens.socialAccountId))
+      .where(
+        and(
+          eq(socialAccounts.brandId, content.brandId),
+          ne(socialAccounts.status, "disabled"),
+          inArray(socialAccounts.platform, content.targetPlatforms),
+        ),
+      );
+  }
+  const targets = await preflightTargets({
+    db,
+    content: { type: content.type, title: content.title, caption: content.caption, slides },
+    accounts,
+    mode,
+    allowPrivateMedia: env.STUDIO_ALLOW_PRIVATE_MEDIA_URLS === "1",
+  });
+  return { mode, targets, contentErrors };
+}
+
+/** Insert one schedule (shared by create and publish-now); throws the API's usual errors. */
+async function insertSchedule(
+  db: Db,
+  env: Env,
+  input: {
+    contentId: string;
+    socialAccountId: string;
+    platform?: string | undefined;
+    scheduledAt: Date;
+  },
+  opts: { immediate: boolean },
+) {
+  const loaded = await loadContent(db, input.contentId);
+  const { row: content } = loaded;
+  const account = await requireSocialAccount(db, input.socialAccountId);
+
+  const platform = input.platform ?? account.platform;
+  if (platform !== account.platform) {
+    throw badRequest(`account ${account.id} is a ${account.platform} account`, [
+      { path: "platform", message: `must be ${account.platform}` },
+    ]);
+  }
+  if (!opts.immediate && input.scheduledAt.getTime() <= Date.now()) {
+    throw badRequest("scheduledAt must be in the future", [
+      { path: "scheduledAt", message: "in the past" },
+    ]);
+  }
+  if (account.brandId !== content.brandId) {
+    throw conflict("the social account belongs to a different brand");
+  }
+  if (account.status === "disabled") throw conflict(`social account ${account.id} is disabled`);
+  if (!content.targetPlatforms.includes(account.platform)) {
+    throw conflict(`${platform} is not one of the content's target platforms`);
+  }
+  if (!statusIn(content.status, SCHEDULABLE_STATUSES)) {
+    throw invalidTransition(`content is ${content.status}; only approved content can be scheduled`);
+  }
+  if (!approvalMatchesCurrent(loaded) || !loaded.current) {
+    throw new ApiProblem("hash_mismatch", "the approval does not match the current version");
+  }
+
+  // Platform rules (Turkish messages) before anything is written.
+  const preflight = await runPreflight(db, env, loaded, [account.id]);
+  const target = preflight.targets[0];
+  if (target && !target.ok) {
+    throw badRequest(
+      `${account.handle}: ${target.errors.map((e) => e.message).join(" ")}`,
+      target.errors.map((e) => ({ path: e.path || "content", message: e.message })),
+    );
+  }
+
+  const now = new Date();
+  const id = newId();
+  await db.batch([
+    db.insert(schedules).values({
+      id,
+      contentId: content.id,
+      brandId: content.brandId,
+      platform: account.platform,
+      socialAccountId: account.id,
+      versionId: loaded.current.id,
+      contentHash: loaded.current.contentHash,
+      scheduledAt: input.scheduledAt,
+      status: "pending",
+      createdAt: now,
+      updatedAt: now,
+    }),
+    db
+      .update(contents)
+      .set({ status: "scheduled", updatedAt: now })
+      .where(and(eq(contents.id, content.id), eq(contents.status, content.status))),
+  ]);
+  return requireSchedule(db, id);
 }
 
 export const scheduleRoutes = createRouter()
@@ -95,15 +250,130 @@ export const scheduleRoutes = createRouter()
     async (c) => {
       const input = c.req.valid("json");
       const db = createDb(c.env.DB);
+      const row = await insertSchedule(
+        db,
+        c.env,
+        { ...input, scheduledAt: new Date(input.scheduledAt) },
+        { immediate: false },
+      );
+      return c.json(toSchedule(row), 201);
+    },
+  )
+  .openapi(
+    createRoute({
+      method: "post",
+      path: "/api/schedules/preflight",
+      tags,
+      summary: "Check platform rules for a content item on accounts before scheduling",
+      description:
+        "Runs the publishers' validators (JPEG for Instagram, aspect ratios, caption and " +
+        "hashtag limits, carousel size, Reels duration …) on what the worker would publish. " +
+        "Messages are Turkish. In local mode (no cloud publisher) Instagram/Facebook image " +
+        "posts are refused: Meta downloads images from a public URL.",
+      request: { body: jsonBody(SchedulePreflightInput) },
+      responses: {
+        200: json(SchedulePreflight, "Per-account result."),
+        400: errors[400],
+        404: errors[404],
+      },
+    }),
+    async (c) => {
+      const input = c.req.valid("json");
+      const db = createDb(c.env.DB);
       const loaded = await loadContent(db, input.contentId);
-      const { row: content } = loaded;
-      const account = await requireSocialAccount(db, input.socialAccountId);
-
-      const platform = input.platform ?? account.platform;
-      if (platform !== account.platform) {
-        throw badRequest(`account ${account.id} is a ${account.platform} account`, [
-          { path: "platform", message: `must be ${account.platform}` },
-        ]);
+      const { mode, targets, contentErrors } = await runPreflight(
+        db,
+        c.env,
+        loaded,
+        input.socialAccountIds,
+      );
+      return c.json(
+        {
+          mode,
+          ok: contentErrors.length === 0 && targets.length > 0 && targets.every((t) => t.ok),
+          errors: contentErrors,
+          targets,
+        },
+        200,
+      );
+    },
+  )
+  .openapi(
+    createRoute({
+      method: "post",
+      path: "/api/schedules/publish-now",
+      tags,
+      summary: "Publish approved content now on accounts (schedule + schedule.publish job)",
+      description:
+        "Creates a schedule a few seconds from now per account and queues a `schedule.publish` " +
+        "job for each. With a cloud publisher the worker hands it to the cloud at once.",
+      request: { body: jsonBody(PublishNowInput) },
+      responses: {
+        201: json(PublishNowResult, "Created."),
+        400: errors[400],
+        404: errors[404],
+        409: errors[409],
+      },
+    }),
+    async (c) => {
+      const input = c.req.valid("json");
+      const db = createDb(c.env.DB);
+      const created = [];
+      const jobs = [];
+      for (const accountId of [...new Set(input.socialAccountIds)]) {
+        const row = await insertSchedule(
+          db,
+          c.env,
+          {
+            contentId: input.contentId,
+            socialAccountId: accountId,
+            scheduledAt: new Date(Date.now() + 5_000),
+          },
+          { immediate: true },
+        );
+        created.push(toSchedule(row));
+        jobs.push(
+          await createJob(
+            c.env,
+            JobCreate.parse({
+              type: "schedule.publish",
+              brandId: row.brandId,
+              contentId: row.contentId,
+              payload: { scheduleId: row.id },
+              priority: 20,
+            }),
+          ),
+        );
+      }
+      return c.json({ schedules: created, jobs }, 201);
+    },
+  )
+  .openapi(
+    createRoute({
+      method: "patch",
+      path: "/api/schedules/{id}",
+      tags,
+      summary: "Move a pending schedule to another time (calendar drag)",
+      description:
+        "Only `pending` schedules move, and only into the future. A schedule already at the " +
+        "cloud publisher is pushed again by the worker with the new time.",
+      request: { params: IdParams, body: jsonBody(ScheduleUpdate) },
+      responses: {
+        200: json(Schedule, "Moved."),
+        400: errors[400],
+        404: errors[404],
+        409: errors[409],
+      },
+    }),
+    async (c) => {
+      const { id } = c.req.valid("param");
+      const input = c.req.valid("json");
+      const db = createDb(c.env.DB);
+      const schedule = await requireSchedule(db, id);
+      if (schedule.status !== "pending") {
+        throw invalidTransition(
+          `schedule is ${schedule.status}; only pending schedules can be moved`,
+        );
       }
       const scheduledAt = new Date(input.scheduledAt);
       if (scheduledAt.getTime() <= Date.now()) {
@@ -111,44 +381,19 @@ export const scheduleRoutes = createRouter()
           { path: "scheduledAt", message: "in the past" },
         ]);
       }
-      if (account.brandId !== content.brandId) {
-        throw conflict("the social account belongs to a different brand");
-      }
-      if (account.status === "disabled") throw conflict(`social account ${account.id} is disabled`);
-      if (!content.targetPlatforms.includes(platform)) {
-        throw conflict(`${platform} is not one of the content's target platforms`);
-      }
-      if (!statusIn(content.status, SCHEDULABLE_STATUSES)) {
-        throw invalidTransition(
-          `content is ${content.status}; only approved content can be scheduled`,
-        );
-      }
-      if (!approvalMatchesCurrent(loaded) || !loaded.current) {
-        throw new ApiProblem("hash_mismatch", "the approval does not match the current version");
-      }
-
       const now = new Date();
-      const id = newId();
-      await db.batch([
-        db.insert(schedules).values({
-          id,
-          contentId: content.id,
-          brandId: content.brandId,
-          platform,
-          socialAccountId: account.id,
-          versionId: loaded.current.id,
-          contentHash: loaded.current.contentHash,
+      const [row] = await db
+        .update(schedules)
+        .set({
           scheduledAt,
-          status: "pending",
-          createdAt: now,
+          // The cloud copy has the old time until the worker pushes it again.
+          cloudSyncedAt: null,
           updatedAt: now,
-        }),
-        db
-          .update(contents)
-          .set({ status: "scheduled", updatedAt: now })
-          .where(and(eq(contents.id, content.id), eq(contents.status, content.status))),
-      ]);
-      return c.json(toSchedule(await requireSchedule(db, id)), 201);
+        })
+        .where(and(eq(schedules.id, id), eq(schedules.status, "pending")))
+        .returning();
+      if (!row) throw invalidTransition("schedule is no longer pending");
+      return c.json(toSchedule(row), 200);
     },
   )
   .openapi(

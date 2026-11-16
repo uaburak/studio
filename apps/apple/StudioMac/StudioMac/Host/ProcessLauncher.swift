@@ -82,18 +82,23 @@ struct PosixProcessLauncher: ProcessLauncher {
         guard result == 0 else {
             throw LaunchError(message: "\(spec.name) başlatılamadı: \(String(cString: strerror(result)))")
         }
-        return PosixProcess(pid: pid)
+        return PosixProcess(pid: pid, name: spec.name, logFile: spec.logFile)
     }
 }
 
 final class PosixProcess: RunningProcess, @unchecked Sendable {
     let pid: Int32
+    private let name: String
+    /// Gets an `=== … exited` line, so a silent child still leaves a trace.
+    private let logFile: URL?
     private let lock = NSLock()
     private var status: Int32?
     private var waiters: [CheckedContinuation<Int32, Never>] = []
 
-    init(pid: Int32) {
+    init(pid: Int32, name: String = "", logFile: URL? = nil) {
         self.pid = pid
+        self.name = name
+        self.logFile = logFile
         let thread = Thread { [self] in reap() }
         thread.name = "studio.reap.\(pid)"
         thread.start()
@@ -113,6 +118,11 @@ final class PosixProcess: RunningProcess, @unchecked Sendable {
         }
         // Leftovers of the group (children of the child) must not outlive it.
         killpg(pid, SIGKILL)
+        if let logFile, let handle = FileHandle(forWritingAtPath: logFile.path) {
+            handle.seekToEndOfFile()
+            handle.write(Data("=== \(Date().formatted(.iso8601)) \(name) bitti (çıkış kodu \(code))\n".utf8))
+            try? handle.close()
+        }
         let resume = lock.withLock {
             status = code
             defer { waiters = [] }

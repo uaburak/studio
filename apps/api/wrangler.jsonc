@@ -26,7 +26,11 @@
   // Locally: copy .dev.vars.example to .dev.vars. Deployed: `wrangler secret put
   // WORKER_TOKEN` (deploy task). Declaring it here also fixes the generated Env
   // type, independent of whether a .dev.vars file exists.
-  "secrets": { "required": ["WORKER_TOKEN"] },
+  //
+  // TOKEN_ENCRYPTION_KEY: the token vault's per-install key (src/lib/token-vault.ts).
+  // The Mac app generates it on first run (~/Library/Application Support/Studio/vault-key,
+  // 0600) and passes it through the environment; by hand: put it in .dev.vars.
+  "secrets": { "required": ["WORKER_TOKEN", "TOKEN_ENCRYPTION_KEY"] },
 
   "d1_databases": [
     {

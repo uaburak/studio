@@ -2,14 +2,21 @@ import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import type { Asset, Content, ContentVersion, Job, SlideLayout } from "@studio/contract";
+import {
+  type Asset,
+  type Content,
+  type ContentVersion,
+  type Job,
+  ReelSpec,
+  readReelVersionInfo,
+  type SlideLayout,
+} from "@studio/contract";
 import type { LintReport } from "@studio/design-kit/lint";
 import { createRenderer, isChromiumAvailable } from "@studio/design-kit/render";
 import sharp from "sharp";
 import { afterAll, describe, expect, it } from "vitest";
 import { loadAgentSettings } from "../src/agent.ts";
 import { ClaudeGate } from "../src/claude/gate.ts";
-import { buildBrandContext } from "../src/generate/brand.ts";
 import { silentLogger } from "../src/log.ts";
 import type { JobContext } from "../src/registry.ts";
 import {
@@ -300,22 +307,16 @@ describe("content.render handler", () => {
 
   it("delegates reel content / format=mp4 to the Reels video engine", async () => {
     const { api, state } = createFakeApi({ brands: [fakeBrand()] });
-    const brandCtx = buildBrandContext({
-      brand: fakeBrand(),
-      profile: null,
-      api,
-      cacheDir: tmpdir(),
-    });
     const reelSlide = buildReelVersionSlideHtml({
-      brand: brandCtx,
-      hook: "Kanca",
-      cta: "MTM Agro",
+      spec: ReelSpec.parse({
+        recipe: "motion_graphics",
+        hook: "Kanca",
+        cta: "MTM Agro",
+        scenes: [{ headline: "Kanca", durationMs: 2000 }],
+        durationMs: 3800,
+      }),
       videoAssetId: "old_vid",
       coverAssetId: "old_cov",
-      recipe: "motion_graphics",
-      durationMs: 2000,
-      compositionHtml:
-        "<!doctype html><html><body><script>window.__seek = () => {};</script></body></html>",
     });
     seedContentWithSlides(state, [{ html: reelSlide, width: 1080, height: 1920 }], "reel");
 
@@ -323,13 +324,16 @@ describe("content.render handler", () => {
     const handler = createContentRenderHandler(
       makeDeps(api, fakeRenderer(), {
         reelSeams: {
-          frameCapturer: async () => ({ frames: [coverPng], coverPng }),
+          frameCapturer: async function* () {
+            yield coverPng;
+          },
           ffmpeg: async () => ({ stdout: new TextEncoder().encode("MP4"), stderr: "" }),
         },
       }),
     );
 
-    const out = await handler.run({ format: "mp4" }, renderJobCtx("cnt_1", { format: "mp4" }));
+    const payload = { format: "mp4" as const, reel: { hook: "Yeni kanca" } };
+    const out = await handler.run(payload, renderJobCtx("cnt_1", payload));
     expect(out).toMatchObject({
       contentId: "cnt_1",
       version: 2,
@@ -337,6 +341,18 @@ describe("content.render handler", () => {
       coverAssetId: "asset_gen_2",
       renderedAssetIds: ["asset_gen_2"],
     });
+    const stored = state.versionCreates.at(-1);
+    expect(stored?.origin).toBe("manual_edit");
+    const info = readReelVersionInfo(stored?.slides[0]?.html ?? "");
+    expect(info.spec?.hook).toBe("Yeni kanca");
+    expect(info.videoAssetId).toBe("asset_gen_1");
+
+    // A plain jpeg render of a reel does not re-encode the video.
+    const again = await handler.run({ format: "jpeg" }, renderJobCtx("cnt_1", { format: "jpeg" }));
+    expect(again).toMatchObject({ unchanged: true });
+    await expect(
+      handler.run({ format: "pdf" }, renderJobCtx("cnt_1", { format: "pdf" })),
+    ).rejects.toThrow(/Reels için PNG\/PDF/);
   });
 
   it("accepts the apps' older patch spellings", () => {

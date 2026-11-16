@@ -328,13 +328,14 @@ private final class PlanItemRowView: NSView {
     required init?(coder: NSCoder) { fatalError("not used") }
 }
 
-private final class PlanExpandButtonView: NSControl {
+private final class PlanExpandButtonView: TapControl {
     private let onTap: () -> Void
 
     init(title: String, onTap: @escaping () -> Void) {
         self.onTap = onTap
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
+        setAccessibilityLabel(title)
         let label = NSTextField.styledLabel(title, font: Theme.captionFont, color: Theme.textSecondary)
         label.translatesAutoresizingMaskIntoConstraints = false
         addSubview(label)
@@ -350,6 +351,8 @@ private final class PlanExpandButtonView: NSControl {
     override func mouseDown(with event: NSEvent) {
         onTap()
     }
+
+    override func performTap() { onTap() }
 }
 
 private final class PlanDecisionCardView: NSView {

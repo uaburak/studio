@@ -1,0 +1,14 @@
+{
+  "items": [
+    {
+      "id": "01a1e3d2-9445-7000-be35-4dc48ed328bf",
+      "name": "iOS fixture 1794823590",
+      "slug": "ios-fixture-1794823590",
+      "defaultLanguage": "tr",
+      "status": "active",
+      "createdAt": "2026-11-16T10:06:30.981Z",
+      "updatedAt": "2026-11-16T10:06:30.981Z"
+    }
+  ],
+  "nextCursor": "01a1e3d2-9445-7000-be35-4dc48ed328bf"
+}

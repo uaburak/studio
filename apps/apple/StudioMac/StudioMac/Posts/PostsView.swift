@@ -113,6 +113,7 @@ final class PostsViewController: NSViewController {
 
         errorBanner.isHidden = true
         errorBanner.onDismiss = { [weak self] in self?.app.posts.error = nil }
+        errorBanner.onRetry = { [weak self] in Task { await self?.app.posts.load() } }
 
         stateView.isHidden = true
         stateView.onRetry = { [weak self] in
@@ -312,10 +313,47 @@ final class PostsViewController: NSViewController {
     }
 
     func exportMenu(for card: PostCard) -> NSMenu {
+        if card.content.type == .reel { return reelExportMenu(for: card) }
         let reason: String? = card.version == nil ? "Bu postun henüz bir tasarımı yok." : nil
         let menu = PostFileExport.menu(target: self, action: #selector(exportChosen(_:)), slideCount: card.version?.slides.count ?? 1, currentSlide: nil, disabledReason: reason)
         for item in menu.items { item.representedObject = CardExportChoice(card: card, choice: item.representedObject as! ExportChoice) }
         return menu
+    }
+
+    /// Reels: the MP4 or the cover.
+    private func reelExportMenu(for card: PostCard) -> NSMenu {
+        let menu = NSMenu(title: "Dışa aktar")
+        menu.autoenablesItems = false
+        let info = card.version.map { ReelVersionInfo(version: $0) }
+        for (title, cover) in [("MP4 video", false), ("Kapak görseli (JPEG)", true)] {
+            let assetId = cover ? info?.coverAssetId : info?.videoAssetId
+            let item = ClosureMenuItem(title: title) { [weak self] in
+                guard let self, let assetId, let version = card.version else { return }
+                self.saveReelFile(card: card, version: version, assetId: assetId, cover: cover)
+            }
+            item.isEnabled = assetId != nil
+            if assetId == nil { item.toolTip = "Bu Reels'in henüz videosu yok." }
+            menu.addItem(item)
+        }
+        return menu
+    }
+
+    private func saveReelFile(card: PostCard, version: ContentVersion, assetId: EntityID, cover: Bool) {
+        let panel = NSSavePanel()
+        let base = PostExporter.baseName(title: card.title, version: version.version)
+        panel.nameFieldStringValue = cover ? "\(base)-kapak.jpg" : "\(base).mp4"
+        panel.allowedContentTypes = cover ? [.jpeg] : [.mpeg4Movie]
+        panel.canCreateDirectories = true
+        Task {
+            let response: NSApplication.ModalResponse = if let window = view.window { await panel.beginSheetModal(for: window) } else { panel.runModal() }
+            guard response == .OK, let url = panel.url else { return }
+            do {
+                try await app.dataService.imageData(assetId: assetId).write(to: url, options: .atomic)
+                NSWorkspace.shared.activateFileViewerSelecting([url])
+            } catch {
+                app.posts.error = "Dışa aktarma: \(AppModel.describe(error))"
+            }
+        }
     }
 
     @objc private func exportChosen(_ sender: NSMenuItem) {
@@ -825,6 +863,8 @@ final class PostPlaceholderView: ThemedView {
         let slides = effectiveVersion?.slides ?? []
         let activeSlide = slides.indices.contains(slideIndex) ? slides[slideIndex] : slides.first
         let slideNeedsImage: Bool = {
+            // A reel's picture is its video cover, never an image slot.
+            if card.content.type == .reel { return false }
             if let activeSlide {
                 let s = SlotScanner.slots(inHTML: activeSlide.html)
                 if !s.isEmpty { return s.contains(where: \.isEmpty) }
@@ -864,6 +904,9 @@ final class PostPlaceholderView: ThemedView {
                 img.topAnchor.constraint(equalTo: topAnchor),
                 img.bottomAnchor.constraint(equalTo: bottomAnchor),
             ])
+            if card.content.type == .reel, scale <= 1 {
+                addReelBadges(durationMs: activeSlide.flatMap { ReelVersionInfo(html: $0.html).durationMs })
+            }
             // The rendered image shows the brand's empty-slot placeholder; offer the slot on top.
             if slideNeedsImage, scale <= 1 {
                 let smallSlot = SmallSlotDropView(card: card, uploadProgress: uploadProgress, onDropImage: onDropImage, onPickImage: onPickImage, onDark: true)
@@ -944,6 +987,46 @@ final class PostPlaceholderView: ThemedView {
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
+
+    /// Reels in the grid: a play glyph on the cover and the length ("0:12").
+    private func addReelBadges(durationMs: Int?) {
+        let play = NSImageView(image: NSImage(systemSymbolName: "play.fill", accessibilityDescription: "Video")?
+            .withSymbolConfiguration(.init(pointSize: 15, weight: .bold)) ?? NSImage())
+        play.contentTintColor = .white
+        let circle = ThemedView()
+        circle.backgroundColor = NSColor.black.withAlphaComponent(0.5)
+        circle.cornerRadius = 20
+        circle.translatesAutoresizingMaskIntoConstraints = false
+        play.translatesAutoresizingMaskIntoConstraints = false
+        circle.addSubview(play)
+        addSubview(circle)
+        NSLayoutConstraint.activate([
+            circle.widthAnchor.constraint(equalToConstant: 40),
+            circle.heightAnchor.constraint(equalToConstant: 40),
+            circle.centerXAnchor.constraint(equalTo: centerXAnchor),
+            circle.centerYAnchor.constraint(equalTo: centerYAnchor),
+            play.centerXAnchor.constraint(equalTo: circle.centerXAnchor, constant: 1.5),
+            play.centerYAnchor.constraint(equalTo: circle.centerYAnchor),
+        ])
+        guard let durationMs else { return }
+        let pill = ThemedView()
+        pill.backgroundColor = NSColor.black.withAlphaComponent(0.6)
+        pill.cornerRadius = 9
+        pill.translatesAutoresizingMaskIntoConstraints = false
+        let label = NSTextField.styledLabel(TurkishFormat.clock(ms: durationMs), font: NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .semibold), color: .white)
+        label.translatesAutoresizingMaskIntoConstraints = false
+        pill.addSubview(label)
+        addSubview(pill)
+        NSLayoutConstraint.activate([
+            pill.heightAnchor.constraint(equalToConstant: 18),
+            pill.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
+            pill.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -10),
+            label.leadingAnchor.constraint(equalTo: pill.leadingAnchor, constant: 7),
+            label.trailingAnchor.constraint(equalTo: pill.trailingAnchor, constant: -7),
+            label.centerYAnchor.constraint(equalTo: pill.centerYAnchor),
+        ])
+        setAccessibilityLabel("Reels, \(TurkishFormat.duration(ms: durationMs))")
+    }
 
     override func mouseDown(with event: NSEvent) {
         if let slotControl, !slotControl.isHidden {

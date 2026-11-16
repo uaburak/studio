@@ -1,0 +1,21 @@
+{
+ "id": "01a1e620-1da8-7000-a6a3-1fee8f72cab0",
+ "contentId": "01a1e61f-df6b-7000-b347-9e78666fca32",
+ "version": 1,
+ "origin": "generated",
+ "contentHash": "bdd4c6ce18ff63b88fc96c8858842ff2a9534014209be0613154ba2644a369db",
+ "slideCount": 1,
+ "note": "Reels üretildi (seslendirmeli, 12.4 sn, geçici marka profili v1 (onaylanmamış kaynaklardan türetildi)).",
+ "jobId": "01a1e61f-df6e-7000-9258-fbccda7a5d89",
+ "createdAt": "2026-11-16T20:50:26.856Z",
+ "updatedAt": "2026-11-16T20:50:26.856Z",
+ "slides": [
+  {
+   "html": "<!doctype html>\n<html lang=\"tr\">\n<head>\n<meta charset=\"utf-8\">\n<meta name=\"studio:contract\" content=\"v1\">\n<meta name=\"studio:format\" content=\"1080x1920\">\n<meta name=\"studio:kind\" content=\"reel\">\n<style>main[data-artboard] { position: relative; overflow: hidden; background: #000; } .reel-cover { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }</style>\n</head>\n<body>\n<main data-artboard data-reel=\"1\" data-video-asset-id=\"01a1e620-1d47-7000-8a54-b3cf794950a6\" data-cover-asset-id=\"01a1e620-1da1-7000-ba9d-520c8c53871a\" data-reel-recipe=\"narration\" data-duration-ms=\"12420\" data-reel-spec-b64=\"eyJ2IjoxLCJyZWNpcGUiOiJuYXJyYXRpb24iLCJob29rIjoiw4dpw6dla2xlbm1lZGUgYm9yIG5lZGVuIMO2bmVtbGk/IiwiY3RhIjoiVmVudGEgQm9yaW5jIGlsZSB0YW7EscWfxLFuIiwic2NlbmVzIjpbeyJleWVicm93IjoiIiwiaGVhZGxpbmUiOiJNZXl2ZSB0dXR1bXUgZMO8xZ9lciIsInN1YmhlYWQiOiIiLCJkdXJhdGlvbk1zIjozMDAwfSx7ImV5ZWJyb3ciOiIiLCJoZWFkbGluZSI6IkJvciArIMOnaW5rbyBiaXJsaWt0ZSIsInN1YmhlYWQiOiIiLCJkdXJhdGlvbk1zIjozMDAwfSx7ImV5ZWJyb3ciOiIiLCJoZWFkbGluZSI6IllhcHJha3RhbiB1eWd1bGFtYSIsInN1YmhlYWQiOiIiLCJkdXJhdGlvbk1zIjozMDAwfV0sIm92ZXJsYXlzIjpbXSwibmFycmF0aW9uU2NyaXB0Ijoiw4dpw6dla2xlbm1lIGTDtm5lbWluZGUgYm9yIGVrc2lrbGnEn2kgbWV5dmUgdHV0dW11bnUgZMO8xZ/DvHLDvHIuIFZlbnRhIEJvcmluYywgYm9yIHZlIMOnaW5rb3l1IGJpcmxpa3RlIHZlcmlyLiBZYXByYWt0YW4gdXlndWxhecSxbiwgYml0a2luaXogZmFya8SxIGhlbWVuIGhpc3NldHNpbi4iLCJ3b3JkcyI6W3sid29yZCI6IsOHacOnZWtsZW5tZSIsInN0YXJ0TXMiOjEyMCwiZW5kTXMiOjcxOH0seyJ3b3JkIjoiZMO2bmVtaW5kZSIsInN0YXJ0TXMiOjc1MywiZW5kTXMiOjEzNTJ9LHsid29yZCI6ImJvciIsInN0YXJ0TXMiOjEzODcsImVuZE1zIjoxNjc4fSx7IndvcmQiOiJla3Npa2xpxJ9pIiwic3RhcnRNcyI6MTcwNCwiZW5kTXMiOjIzMDJ9LHsid29yZCI6Im1leXZlIiwic3RhcnRNcyI6MjMzNywiZW5kTXMiOjI2Mjh9LHsid29yZCI6InR1dHVtdW51Iiwic3RhcnRNcyI6MjY1NCwiZW5kTXMiOjMyNTJ9LHsid29yZCI6ImTDvMWfw7xyw7xyLiIsInN0YXJ0TXMiOjMyODcsImVuZE1zIjozOTQ5fSx7IndvcmQiOiJWZW50YSIsInN0YXJ0TXMiOjQyNjIsImVuZE1zIjo0NTUzfSx7IndvcmQiOiJCb3JpbmMsIiwic3RhcnRNcyI6NDU3OSwiZW5kTXMiOjUxMTR9LHsid29yZCI6ImJvciIsInN0YXJ0TXMiOjUxNDksImVuZE1zIjo1NDQwfSx7IndvcmQiOiJ2ZSIsInN0YXJ0TXMiOjU0NjYsImVuZE1zIjo1NjExfSx7IndvcmQiOiLDp2lua295dSIsInN0YXJ0TXMiOjU2MjQsImVuZE1zIjo2MDY0fSx7IndvcmQiOiJiaXJsaWt0ZSIsInN0YXJ0TXMiOjYwOTksImVuZE1zIjo2Njk4fSx7IndvcmQiOiJ2ZXJpci4iLCJzdGFydE1zIjo2NzMzLCJlbmRNcyI6NzIzNn0seyJ3b3JkIjoiWWFwcmFrdGFuIiwic3RhcnRNcyI6NzU1NSwiZW5kTXMiOjgyNDV9LHsid29yZCI6InV5Z3VsYXnEsW4sIiwic3RhcnRNcyI6ODI4MCwiZW5kTXMiOjkwNzh9LHsid29yZCI6ImJpdGtpbml6Iiwic3RhcnRNcyI6OTExMywiZW5kTXMiOjk4MDJ9LHsid29yZCI6ImZhcmvEsSIsInN0YXJ0TXMiOjk4MzcsImVuZE1zIjoxMDE3MX0seyJ3b3JkIjoiaGVtZW4iLCJzdGFydE1zIjoxMDIwMCwiZW5kTXMiOjEwNTMzfSx7IndvcmQiOiJoaXNzZXRzaW4uIiwic3RhcnRNcyI6MTA1NjIsImVuZE1zIjoxMTUwNX1dLCJjYXB0aW9ucyI6dHJ1ZSwiZHVyYXRpb25NcyI6MTI0MjAsImNsaXBBc3NldElkIjpudWxsLCJjbGlwU3RhcnRNcyI6MCwiYXVkaW9Bc3NldElkIjpudWxsLCJoZXJvQXNzZXRJZCI6IjAxYTFlNjFmLTU2NzgtNzAwMC1iMTNmLTFiNTg2M2I2ZTQ4NCIsInZvaWNlIjpudWxsLCJ2b2ljZUFzc2V0SWQiOiIwMWExZTYyMC0xZDI3LTcwMDAtOTY1OC03MGUwNWMwNTc2YWQiLCJjb3ZlckF0TXMiOm51bGx9\" style=\"width:1080px;height:1920px\">\n<img data-layer=\"cover\" data-type=\"image\" class=\"reel-cover\" src=\"/media/01a1e620-1da1-7000-ba9d-520c8c53871a.jpg\" alt=\"Çiçeklenmede bor neden önemli?\">\n</main>\n</body>\n</html>",
+   "width": 1080,
+   "height": 1920,
+   "renderedAssetId": "01a1e620-1da1-7000-ba9d-520c8c53871a",
+   "layers": null
+  }
+ ]
+}

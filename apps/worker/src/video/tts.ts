@@ -1,15 +1,16 @@
 /**
- * Pluggable Voiceover (TTS) providers for Reels (`PLAN.md` §7):
- * - `ElevenLabsTtsProvider`: `/v1/text-to-speech/{voiceId}/with-timestamps` (exact character -> word alignment),
- * - `MacSayTtsProvider`: local offline macOS `/usr/bin/say` + `ffmpeg` AAC conversion with syllable-weighted word timings,
- * - `SilentOrCustomAudioProvider`: uploaded `audio` asset or `ffmpeg` `anullsrc` stereo silence.
+ * Voice-over for `narration` reels, with word timings for burned-in captions.
+ * - `ElevenLabsTtsProvider`: `/v1/text-to-speech/{voiceId}/with-timestamps` (character alignment).
+ *   Used only when `ELEVENLABS_API_KEY` is set (paid).
+ * - `MacSayTtsProvider`: offline macOS `say` (Turkish voice "Yelda"); every sentence is also
+ *   measured on its own so the captions follow the real sentence rhythm, words inside a
+ *   sentence are spread by Turkish syllable weight.
  */
 import { execFile as nodeExecFile } from "node:child_process";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
-import { type FfmpegRunner, generateSilentAac, REELS_FFMPEG_AUDIO_ARGS } from "./ffmpeg.ts";
+import { type FfmpegRunner, probeMedia, transcodeAudioToAac } from "./ffmpeg.ts";
 
 const execFileAsync = promisify(nodeExecFile);
 
@@ -20,17 +21,18 @@ export interface WordTimestamp {
 }
 
 export interface TtsSynthesisResult {
-  audioBytes: Uint8Array;
-  mimeType: string;
+  /** AAC (`.m4a`) or MP3 file in the caller's work dir. */
+  audioPath: string;
   durationMs: number;
   words: WordTimestamp[];
+  provider: string;
 }
 
 export interface TtsSynthesizeInput {
   text: string;
-  voiceId?: string;
+  voice?: string | null;
   language?: string;
-  durationMs?: number;
+  workDir: string;
   signal?: AbortSignal;
 }
 
@@ -39,7 +41,7 @@ export interface TtsProvider {
   synthesize(input: TtsSynthesizeInput): Promise<TtsSynthesisResult>;
 }
 
-const TURKISH_VOWELS = /[aeıioöuüAEIİOÖUÜ]/g;
+const TURKISH_VOWELS = /[aeıioöuüâîûAEIİOÖUÜÂÎÛ]/g;
 
 function syllableWeight(word: string): number {
   const vowels = word.match(TURKISH_VOWELS)?.length ?? 0;
@@ -48,37 +50,43 @@ function syllableWeight(word: string): number {
   return base + pauseBonus;
 }
 
-/**
- * Estimate word-level timestamps proportionally by Turkish syllable/character weight
- * and punctuation pauses when exact character alignments are not returned by the engine.
- */
-export function estimateWordTimestamps(text: string, durationMs: number): WordTimestamp[] {
+/** Spread `text`'s words over `[offsetMs, offsetMs + durationMs]` by syllable weight. */
+export function estimateWordTimestamps(
+  text: string,
+  durationMs: number,
+  offsetMs = 0,
+): WordTimestamp[] {
   const tokens = text
     .trim()
     .split(/\s+/)
     .filter((w) => w.length > 0);
   if (tokens.length === 0) return [];
-
   const totalMs = Math.max(tokens.length * 120, Math.round(durationMs));
-  const leadInMs = Math.min(150, Math.round(totalMs * 0.04));
-  const tailOutMs = Math.min(200, Math.round(totalMs * 0.05));
-  const activeSpanMs = Math.max(tokens.length * 80, totalMs - leadInMs - tailOutMs);
-
+  const leadInMs = Math.min(120, Math.round(totalMs * 0.03));
+  const tailOutMs = Math.min(180, Math.round(totalMs * 0.05));
+  const span = Math.max(tokens.length * 80, totalMs - leadInMs - tailOutMs);
   const weights = tokens.map(syllableWeight);
-  const totalWeight = weights.reduce((sum, w) => sum + w, 0) || tokens.length;
-
+  const total = weights.reduce((sum, w) => sum + w, 0) || tokens.length;
   let cursor = leadInMs;
   return tokens.map((word, idx) => {
-    const w = weights[idx] ?? 1;
-    const rawDur = (w / totalWeight) * activeSpanMs;
+    const raw = ((weights[idx] ?? 1) / total) * span;
     const startMs = Math.round(cursor);
-    cursor += rawDur;
-    const endMs =
-      idx === tokens.length - 1
-        ? Math.max(startMs + 60, totalMs - tailOutMs)
-        : Math.max(startMs + 60, Math.round(cursor - Math.min(35, rawDur * 0.08)));
-    return { word, startMs, endMs };
+    cursor += raw;
+    const endMs = Math.max(startMs + 60, Math.round(cursor - Math.min(35, raw * 0.08)));
+    return { word: word.slice(0, 60), startMs: startMs + offsetMs, endMs: endMs + offsetMs };
   });
+}
+
+/** Sentences (keeps the punctuation). */
+export function splitSentences(text: string): string[] {
+  return (
+    text
+      .replace(/\s+/g, " ")
+      .trim()
+      .match(/[^.!?…]+[.!?…]*/g)
+      ?.map((s) => s.trim())
+      .filter(Boolean) ?? []
+  );
 }
 
 interface ElevenLabsAlignment {
@@ -108,118 +116,96 @@ export function wordsFromCharacterAlignment(
       durationMs: fallbackDurationMs,
     };
   }
-
   const words: WordTimestamp[] = [];
-  let currentWord = "";
-  let wordStartSec: number | null = null;
-  let wordEndSec = 0;
-
+  let current = "";
+  let startSec: number | null = null;
+  let endSec = 0;
+  const push = () => {
+    if (current && startSec !== null) {
+      words.push({
+        word: current.slice(0, 60),
+        startMs: Math.max(0, Math.round(startSec * 1000)),
+        endMs: Math.max(Math.round(startSec * 1000) + 40, Math.round(endSec * 1000)),
+      });
+    }
+    current = "";
+    startSec = null;
+  };
   for (let i = 0; i < chars.length; i++) {
     const ch = chars[i] ?? "";
-    const s = starts[i] ?? 0;
-    const e = ends[i] ?? s;
     if (/\s/.test(ch)) {
-      if (currentWord.length > 0 && wordStartSec !== null) {
-        words.push({
-          word: currentWord,
-          startMs: Math.max(0, Math.round(wordStartSec * 1000)),
-          endMs: Math.max(Math.round(wordStartSec * 1000) + 40, Math.round(wordEndSec * 1000)),
-        });
-        currentWord = "";
-        wordStartSec = null;
-      }
+      push();
     } else {
-      if (wordStartSec === null) wordStartSec = s;
-      currentWord += ch;
-      wordEndSec = Math.max(wordEndSec, e);
+      if (startSec === null) startSec = starts[i] ?? 0;
+      current += ch;
+      endSec = Math.max(endSec, ends[i] ?? starts[i] ?? 0);
     }
   }
-  if (currentWord.length > 0 && wordStartSec !== null) {
-    words.push({
-      word: currentWord,
-      startMs: Math.max(0, Math.round(wordStartSec * 1000)),
-      endMs: Math.max(Math.round(wordStartSec * 1000) + 40, Math.round(wordEndSec * 1000)),
-    });
-  }
-
+  push();
   const lastEndMs = Math.round((ends.at(-1) ?? 0) * 1000);
-  const durationMs = Math.max(fallbackDurationMs, lastEndMs + 150, words.at(-1)?.endMs ?? 0);
+  const durationMs = Math.max(lastEndMs + 150, words.at(-1)?.endMs ?? 0);
   return {
     words: words.length > 0 ? words : estimateWordTimestamps(fallbackText, durationMs),
     durationMs,
   };
 }
 
-export interface ElevenLabsTtsOptions {
-  apiKey: string;
-  defaultVoiceId?: string;
-  modelId?: string;
-  fetch?: typeof globalThis.fetch;
-}
-
 export class ElevenLabsTtsProvider implements TtsProvider {
   readonly name = "elevenlabs";
   private readonly doFetch: typeof globalThis.fetch;
-  private readonly defaultVoiceId: string;
-  private readonly modelId: string;
 
-  constructor(private readonly options: ElevenLabsTtsOptions) {
+  constructor(
+    private readonly options: {
+      apiKey: string;
+      defaultVoiceId?: string;
+      modelId?: string;
+      fetch?: typeof globalThis.fetch;
+    },
+  ) {
     this.doFetch = options.fetch ?? globalThis.fetch.bind(globalThis);
-    this.defaultVoiceId = options.defaultVoiceId ?? "21m00Tcm4TlvDq8ikWAM";
-    this.modelId = options.modelId ?? "eleven_multilingual_v2";
   }
 
   async synthesize(input: TtsSynthesizeInput): Promise<TtsSynthesisResult> {
     const apiKey = this.options.apiKey.trim();
-    if (!apiKey) {
-      throw new Error("ElevenLabs seslendirme için ELEVENLABS_API_KEY tanımlı değil.");
-    }
-    const voiceId = input.voiceId ?? this.defaultVoiceId;
-    const url = `https://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(voiceId)}/with-timestamps`;
-    const res = await this.doFetch(url, {
-      method: "POST",
-      headers: {
-        "xi-api-key": apiKey,
-        "content-type": "application/json",
-        accept: "application/json",
+    const voiceId = input.voice ?? this.options.defaultVoiceId ?? "21m00Tcm4TlvDq8ikWAM";
+    const res = await this.doFetch(
+      `https://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(voiceId)}/with-timestamps`,
+      {
+        method: "POST",
+        headers: {
+          "xi-api-key": apiKey,
+          "content-type": "application/json",
+          accept: "application/json",
+        },
+        body: JSON.stringify({
+          text: input.text,
+          model_id: this.options.modelId ?? "eleven_multilingual_v2",
+          ...(input.language ? { language_code: input.language.split("-")[0] } : {}),
+        }),
+        ...(input.signal ? { signal: input.signal } : {}),
       },
-      body: JSON.stringify({
-        text: input.text,
-        model_id: this.modelId,
-        ...(input.language ? { language_code: input.language.split("-")[0] } : {}),
-      }),
-      ...(input.signal ? { signal: input.signal } : {}),
-    });
-
+    );
     if (!res.ok) {
       const errText = (await res.text().catch(() => "")).split(apiKey).join("[REDACTED]");
-      throw new Error(`ElevenLabs TTS hatası (HTTP ${res.status}): ${errText.slice(0, 240)}`);
+      throw new Error(
+        `ElevenLabs seslendirme hatası (HTTP ${res.status}): ${errText.slice(0, 240)}`,
+      );
     }
-
     const body = (await res.json()) as {
       audio_base64?: string;
       alignment?: ElevenLabsAlignment;
       normalized_alignment?: ElevenLabsAlignment;
     };
-    if (!body.audio_base64) {
-      throw new Error("ElevenLabs yanıtında ses verisi (audio_base64) bulunamadı.");
-    }
-    const buf = Buffer.from(body.audio_base64, "base64");
-    const audioBytes = new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
-    const estDurationMs =
-      input.durationMs ?? Math.max(2000, input.text.trim().split(/\s+/).length * 420);
+    if (!body.audio_base64) throw new Error("ElevenLabs yanıtında ses yok (audio_base64).");
+    const audioPath = path.join(input.workDir, "voice.mp3");
+    await writeFile(audioPath, Buffer.from(body.audio_base64, "base64"));
+    const est = Math.max(2000, input.text.trim().split(/\s+/).length * 420);
     const { words, durationMs } = wordsFromCharacterAlignment(
       body.alignment ?? body.normalized_alignment,
       input.text,
-      estDurationMs,
+      est,
     );
-
-    return {
-      audioBytes,
-      mimeType: "audio/mpeg",
-      durationMs,
-      words,
-    };
+    return { audioPath, durationMs, words, provider: this.name };
   }
 }
 
@@ -229,151 +215,109 @@ export type SayCommandRunner = (
   options?: { signal?: AbortSignal },
 ) => Promise<{ stdout: string; stderr: string }>;
 
-export interface MacSayTtsOptions {
-  ffmpeg: FfmpegRunner;
-  sayBin?: string;
-  voice?: string;
-  exec?: SayCommandRunner;
-}
-
-function parseFfmpegDurationMs(stderr: string): number | null {
-  const m = /Duration:\s*(\d{2}):(\d{2}):(\d{2}(?:\.\d+)?)/.exec(stderr);
-  if (!m) return null;
-  const hours = Number(m[1]);
-  const minutes = Number(m[2]);
-  const seconds = Number(m[3]);
-  return Math.round((hours * 3600 + minutes * 60 + seconds) * 1000);
-}
-
 export class MacSayTtsProvider implements TtsProvider {
   readonly name = "mac-say";
   private readonly sayBin: string;
   private readonly exec: SayCommandRunner;
 
-  constructor(private readonly options: MacSayTtsOptions) {
+  constructor(
+    private readonly options: {
+      ffmpeg: FfmpegRunner;
+      sayBin?: string;
+      voice?: string;
+      exec?: SayCommandRunner;
+    },
+  ) {
     this.sayBin = options.sayBin ?? "/usr/bin/say";
     this.exec =
       options.exec ??
       (async (bin, args, opts) => {
-        const res = await execFileAsync(bin, [...args], {
+        const r = await execFileAsync(bin, [...args], {
           ...(opts?.signal ? { signal: opts.signal } : {}),
         });
-        return { stdout: String(res.stdout), stderr: String(res.stderr) };
+        return { stdout: String(r.stdout), stderr: String(r.stderr) };
       });
   }
 
-  async synthesize(input: TtsSynthesizeInput): Promise<TtsSynthesisResult> {
-    const workDir = await mkdtemp(path.join(tmpdir(), "studio-say-"));
-    const aiffPath = path.join(workDir, "speech.aiff");
-    const aacPath = path.join(workDir, "speech.m4a");
+  private async say(
+    text: string,
+    out: string,
+    voice: string | undefined,
+    signal?: AbortSignal,
+  ): Promise<string | undefined> {
+    const run = (v?: string) =>
+      this.exec(this.sayBin, [...(v ? ["-v", v] : []), "-o", out, text], signal ? { signal } : {});
     try {
-      const preferredVoice =
-        input.voiceId ??
-        this.options.voice ??
-        (input.language === undefined || input.language.startsWith("tr") ? "Yelda" : undefined);
-
-      const runSay = async (voice?: string) => {
-        const args = [...(voice ? ["-v", voice] : []), "-o", aiffPath, input.text];
-        await this.exec(this.sayBin, args, input.signal ? { signal: input.signal } : undefined);
-      };
-
-      try {
-        await runSay(preferredVoice);
-      } catch (err) {
-        if (preferredVoice && !input.signal?.aborted) {
-          // Fallback to default macOS system voice if Turkish voice pack isn't installed
-          await runSay(undefined);
-        } else {
-          throw err;
-        }
-      }
-
-      const ffRes = await this.options.ffmpeg(
-        ["-hide_banner", "-y", "-i", aiffPath, ...REELS_FFMPEG_AUDIO_ARGS, aacPath],
-        input.signal ? { signal: input.signal } : {},
-      );
-
-      let audioBytes: Uint8Array;
-      try {
-        audioBytes = new Uint8Array(await readFile(aacPath));
-      } catch {
-        audioBytes =
-          ffRes.stdout.byteLength > 0 ? ffRes.stdout : new Uint8Array([0xff, 0xf1, 0x50, 0x80]);
-      }
-
-      const wordCount = Math.max(1, input.text.trim().split(/\s+/).filter(Boolean).length);
-      const measuredMs = parseFfmpegDurationMs(ffRes.stderr);
-      const durationMs = measuredMs ?? input.durationMs ?? Math.max(2000, wordCount * 430);
-      const words = estimateWordTimestamps(input.text, durationMs);
-
-      return {
-        audioBytes,
-        mimeType: "audio/mp4",
-        durationMs,
-        words,
-      };
-    } finally {
-      await rm(workDir, { recursive: true, force: true }).catch(() => undefined);
+      await run(voice);
+      return voice;
+    } catch (error) {
+      signal?.throwIfAborted();
+      if (!voice) throw error;
+      await run(undefined); // the Turkish voice is not installed: system voice
+      return undefined;
     }
   }
-}
-
-export interface SilentOrCustomAudioOptions {
-  ffmpeg: FfmpegRunner;
-  customAudio?: {
-    bytes: Uint8Array;
-    mimeType: string;
-    durationMs?: number | null;
-  };
-}
-
-export class SilentOrCustomAudioProvider implements TtsProvider {
-  readonly name = "silent-or-custom";
-
-  constructor(private readonly options: SilentOrCustomAudioOptions) {}
 
   async synthesize(input: TtsSynthesizeInput): Promise<TtsSynthesisResult> {
-    if (this.options.customAudio) {
-      const wordCount = Math.max(1, input.text.trim().split(/\s+/).filter(Boolean).length);
-      const durationMs =
-        this.options.customAudio.durationMs ?? input.durationMs ?? Math.max(4000, wordCount * 420);
-      return {
-        audioBytes: this.options.customAudio.bytes,
-        mimeType: this.options.customAudio.mimeType,
-        durationMs,
-        words: input.text.trim() ? estimateWordTimestamps(input.text, durationMs) : [],
-      };
-    }
+    const signal = input.signal;
+    const wanted =
+      input.voice ??
+      this.options.voice ??
+      (input.language === undefined || input.language.startsWith("tr") ? "Yelda" : undefined);
+    const aiff = path.join(input.workDir, "voice.aiff");
+    const voice = await this.say(input.text, aiff, wanted, signal);
+    const audioPath = path.join(input.workDir, "voice.m4a");
+    await transcodeAudioToAac({
+      ffmpeg: this.options.ffmpeg,
+      inPath: aiff,
+      outPath: audioPath,
+      ...(signal ? { signal } : {}),
+    });
+    const probe = await probeMedia(this.options.ffmpeg, audioPath, signal);
+    const totalMs = probe.durationMs ?? Math.max(2000, input.text.trim().split(/\s+/).length * 430);
 
-    const durationMs = input.durationMs ?? 6000;
-    const audioBytes = await generateSilentAac(durationMs, this.options.ffmpeg, input.signal);
+    // Measure each sentence alone, scale to the full take: captions follow the real rhythm.
+    const sentences = splitSentences(input.text);
+    let words: WordTimestamp[];
+    if (sentences.length > 1) {
+      const lengths: number[] = [];
+      for (const [i, sentence] of sentences.entries()) {
+        const part = path.join(input.workDir, `sentence-${i}.aiff`);
+        await this.say(sentence, part, voice, signal);
+        lengths.push((await probeMedia(this.options.ffmpeg, part, signal)).durationMs ?? 0);
+      }
+      const sum = lengths.reduce((a, b) => a + b, 0);
+      if (sum > 0) {
+        const scale = totalMs / sum;
+        words = [];
+        let cursor = 0;
+        for (const [i, sentence] of sentences.entries()) {
+          const len = (lengths[i] ?? 0) * scale;
+          words.push(...estimateWordTimestamps(sentence, len, Math.round(cursor)));
+          cursor += len;
+        }
+      } else {
+        words = estimateWordTimestamps(input.text, totalMs);
+      }
+    } else {
+      words = estimateWordTimestamps(input.text, totalMs);
+    }
     return {
-      audioBytes,
-      mimeType: "audio/aac",
-      durationMs,
-      words: input.text.trim() ? estimateWordTimestamps(input.text, durationMs) : [],
+      audioPath,
+      durationMs: totalMs,
+      words,
+      provider: `${this.name}${voice ? `:${voice}` : ""}`,
     };
   }
 }
 
 export function selectTtsProvider(options: {
-  recipe: "motion_graphics" | "footage_edit" | "narration";
   elevenLabsApiKey?: string | undefined;
   elevenLabsVoiceId?: string | undefined;
-  customAudio?: { bytes: Uint8Array; mimeType: string; durationMs?: number | null } | undefined;
   ffmpeg: FfmpegRunner;
   fetch?: typeof globalThis.fetch;
   sayExec?: SayCommandRunner;
-}): TtsProvider {
-  if (options.customAudio) {
-    return new SilentOrCustomAudioProvider({
-      ffmpeg: options.ffmpeg,
-      customAudio: options.customAudio,
-    });
-  }
-  if (options.recipe !== "narration") {
-    return new SilentOrCustomAudioProvider({ ffmpeg: options.ffmpeg });
-  }
+}): TtsProvider | null {
   if (options.elevenLabsApiKey?.trim()) {
     return new ElevenLabsTtsProvider({
       apiKey: options.elevenLabsApiKey,
@@ -387,5 +331,5 @@ export function selectTtsProvider(options: {
       ...(options.sayExec ? { exec: options.sayExec } : {}),
     });
   }
-  return new SilentOrCustomAudioProvider({ ffmpeg: options.ffmpeg });
+  return null;
 }

@@ -5,3 +5,9 @@
 # /api/hub. Must equal STUDIO_WORKER_TOKEN in apps/worker/.env.
 # Generate one with: openssl rand -hex 32
 WORKER_TOKEN=change-me-local-dev-token
+#
+# Token vault key (social account tokens, cloud publisher token). At least 32
+# random characters; changing it makes stored tokens unreadable (reconnect accounts).
+# The Mac app generates its own (~/Library/Application Support/Studio/vault-key).
+# Generate one with: openssl rand -base64 32
+TOKEN_ENCRYPTION_KEY=change-me-local-dev-vault-key-at-least-32-chars

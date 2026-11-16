@@ -9,38 +9,92 @@ import {
   EXPIRING_SOON_MS,
   encryptAccountToken,
   evaluateTokenHealth,
+  VAULT_KEY_VERSION,
+  vaultReady,
 } from "../src/lib/token-vault.ts";
+
+/** How pre-P3 builds sealed tokens (HKDF salt v1), to test the migration path. */
+export async function legacySeal(secret: string, accountId: string, plaintext: string) {
+  const enc = new TextEncoder();
+  const base = await crypto.subtle.importKey("raw", enc.encode(secret), "HKDF", false, [
+    "deriveKey",
+  ]);
+  const key = await crypto.subtle.deriveKey(
+    {
+      name: "HKDF",
+      hash: "SHA-256",
+      salt: enc.encode("studio-token-vault-v1"),
+      info: enc.encode("social-account-tokens"),
+    },
+    base,
+    { name: "AES-GCM", length: 256 },
+    false,
+    ["encrypt"],
+  );
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ct = new Uint8Array(
+    await crypto.subtle.encrypt(
+      { name: "AES-GCM", iv, additionalData: enc.encode(`social_account_token:${accountId}`) },
+      key,
+      enc.encode(plaintext),
+    ),
+  );
+  const b64 = (b: Uint8Array) => btoa(String.fromCharCode(...b));
+  return { ciphertext: b64(ct), iv: b64(iv) };
+}
+
 import { deriveContentStatusAfterOutcome } from "../src/routes/worker-schedules.ts";
 
 describe("token-vault AES-256-GCM", () => {
+  const KEY = "per-install-vault-key-0123456789abcdef0123";
+
   it("encrypts and decrypts row-bound tokens and rejects cross-account AAD tampering", async () => {
-    const env = { TOKEN_ENCRYPTION_KEY: "test-vault-secret-key" };
+    const env = { TOKEN_ENCRYPTION_KEY: KEY };
     const plain = "AQV-super-secret-linkedin-token-123456";
-    const { ciphertext, iv } = await encryptAccountToken(env, "acc-1", plain);
+    const sealed = await encryptAccountToken(env, "acc-1", plain);
 
-    expect(ciphertext).not.toContain(plain);
-    expect(await decryptAccountToken(env, "acc-1", ciphertext, iv)).toBe(plain);
+    expect(sealed.keyVersion).toBe(VAULT_KEY_VERSION);
+    expect(sealed.ciphertext).not.toContain(plain);
+    expect(await decryptAccountToken(env, "acc-1", sealed)).toBe(plain);
 
-    await expect(decryptAccountToken(env, "acc-2", ciphertext, iv)).rejects.toThrow();
+    await expect(decryptAccountToken(env, "acc-2", sealed)).rejects.toThrow();
     await expect(
-      decryptAccountToken({ TOKEN_ENCRYPTION_KEY: "wrong-key" }, "acc-1", ciphertext, iv),
+      decryptAccountToken({ TOKEN_ENCRYPTION_KEY: `${KEY}-other` }, "acc-1", sealed),
     ).rejects.toThrow();
   });
 
-  it("falls back to WORKER_TOKEN and local dev default cleanly", async () => {
-    const { ciphertext, iv } = await encryptAccountToken(
-      { WORKER_TOKEN: "worker-fallback" },
-      "acc-9",
-      "EAA-page-token-xyz",
+  it("refuses to encrypt without a per-install key (no hard-coded fallback)", async () => {
+    expect(vaultReady({})).toBe(false);
+    expect(vaultReady({ WORKER_TOKEN: "worker-token-only" })).toBe(false);
+    expect(vaultReady({ TOKEN_ENCRYPTION_KEY: "too-short" })).toBe(false);
+    expect(vaultReady({ TOKEN_ENCRYPTION_KEY: KEY })).toBe(true);
+    await expect(encryptAccountToken({}, "acc-local", "local-token-123")).rejects.toThrow(
+      /Token kasası anahtarı/,
     );
-    expect(
-      await decryptAccountToken({ WORKER_TOKEN: "worker-fallback" }, "acc-9", ciphertext, iv),
-    ).toBe("EAA-page-token-xyz");
+    await expect(
+      encryptAccountToken({ WORKER_TOKEN: "worker-fallback" }, "acc-9", "EAA-page-token-xyz"),
+    ).rejects.toThrow(/Token kasası anahtarı/);
+  });
 
-    const local = await encryptAccountToken({}, "acc-local", "local-token-123");
-    expect(await decryptAccountToken({}, "acc-local", local.ciphertext, local.iv)).toBe(
-      "local-token-123",
-    );
+  it("still reads legacy (pre-P3) rows so they can be re-encrypted", async () => {
+    const legacy = await legacySeal("studio-local-dev-vault", "acc-old", "EAA-legacy-token-1");
+    expect(
+      await decryptAccountToken({ TOKEN_ENCRYPTION_KEY: KEY }, "acc-old", {
+        ...legacy,
+        keyVersion: 1,
+      }),
+    ).toBe("EAA-legacy-token-1");
+    const fromWorker = await legacySeal("worker-secret", "acc-w", "EAA-legacy-token-2");
+    expect(
+      await decryptAccountToken(
+        { TOKEN_ENCRYPTION_KEY: KEY, WORKER_TOKEN: "worker-secret" },
+        "acc-w",
+        {
+          ...fromWorker,
+          keyVersion: 1,
+        },
+      ),
+    ).toBe("EAA-legacy-token-2");
   });
 
   it("classifies valid, expiring_soon (<= 7d) and invalid (expired) tokens", () => {
@@ -164,6 +218,7 @@ describe("mappers & worker schedule status transitions", () => {
       expiresAt: now,
       health: "valid",
       checkedAt: now,
+      keyVersion: 2,
       createdAt: now,
       updatedAt: now,
     });
@@ -186,6 +241,9 @@ describe("mappers & worker schedule status transitions", () => {
       scheduledAt: now,
       status: "published",
       permalink: "https://www.linkedin.com/feed/update/urn:li:share:1/",
+      delivery: "local",
+      cloudSyncedAt: null,
+      lastError: null,
       cancelledAt: null,
       createdAt: now,
       updatedAt: now,

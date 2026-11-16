@@ -41,6 +41,7 @@ export const ENUMS = {
   versionOrigin: ["generated", "manual_edit", "ai_edit"],
   jobStatus: ["queued", "running", "succeeded", "failed", "cancelled"],
   scheduleStatus: ["pending", "publishing", "published", "failed", "cancelled"],
+  scheduleDelivery: ["local", "cloud"],
   publishLogStatus: ["started", "succeeded", "failed"],
   // --- chat (A2) ---
   conversationStatus: ["active", "archived"],
@@ -131,6 +132,8 @@ export const socialAccountTokens = sqliteTable(
     expiresAt: integer("expires_at", { mode: "timestamp_ms" }),
     health: text("health", { enum: ENUMS.tokenHealth }).notNull().default("valid"),
     checkedAt: integer("checked_at", { mode: "timestamp_ms" }),
+    /** 1 = legacy (pre-P3 derived secret), 2 = per-install vault key. See lib/token-vault.ts. */
+    keyVersion: integer("key_version").notNull().default(1),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
@@ -389,6 +392,12 @@ export const schedules = sqliteTable(
     scheduledAt: integer("scheduled_at", { mode: "timestamp_ms" }).notNull(),
     status: text("status", { enum: ENUMS.scheduleStatus }).notNull().default("pending"),
     permalink: text("permalink"),
+    /** Who publishes it: `cloud` (order pushed) or `local` (Mac worker). Null until decided. */
+    delivery: text("delivery", { enum: ENUMS.scheduleDelivery }),
+    /** When the order and all its media reached the cloud publisher; null = not (or no longer) there. */
+    cloudSyncedAt: integer("cloud_synced_at", { mode: "timestamp_ms" }),
+    /** Last publishing-path error (Turkish). */
+    lastError: text("last_error"),
     cancelledAt: integer("cancelled_at", { mode: "timestamp_ms" }),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
@@ -407,6 +416,23 @@ export const schedules = sqliteTable(
     check("schedules_status_check", oneOf(t.status, ENUMS.scheduleStatus)),
   ],
 );
+
+/**
+ * Publishing path settings (single row, id `main`): the cloud publisher URL and its
+ * bearer token (sealed with the token vault), plus the worker's last sync report.
+ */
+export const publishingSettings = sqliteTable("publishing_settings", {
+  id: text("id").primaryKey(),
+  cloudUrl: text("cloud_url"),
+  cloudTokenCiphertext: text("cloud_token_ciphertext"),
+  cloudTokenIv: text("cloud_token_iv"),
+  cloudTokenKeyVersion: integer("cloud_token_key_version"),
+  syncRequestedAt: integer("sync_requested_at", { mode: "timestamp_ms" }),
+  lastSyncAt: integer("last_sync_at", { mode: "timestamp_ms" }),
+  lastSyncOk: integer("last_sync_ok", { mode: "boolean" }),
+  lastSyncError: text("last_sync_error"),
+  updatedAt: updatedAt(),
+});
 
 export const publishLogs = sqliteTable(
   "publish_logs",

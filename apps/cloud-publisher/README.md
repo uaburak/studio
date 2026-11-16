@@ -50,7 +50,9 @@ Henüz dağıtılmadı. Cloudflare'de hiçbir kaynak oluşturulmadı (bkz. "Kuru
 
 Yerelde: `.dev.vars.example` dosyasını `.dev.vars` olarak kopyalayın.
 
-## Mac bunu nasıl kullanacak (henüz bağlanmadı)
+## Mac bunu nasıl kullanıyor (P3)
+
+Adres ve `PUBLISHER_TOKEN` Mac'te Ayarlar → Yayın'dan girilir (API kasasında saklanır, worker `GET /api/worker/publishing/config` ile okur). Worker her 30 sn'de ve uygulama öne gelince aşağıdakileri yapar; zamanlamanın durumu takvimde "Bulutta" olarak görünür.
 
 1. İçerik onaylanıp zamanlanınca Mac `PUT /v1/orders/{scheduleId}` gönderir (sipariş kimliği = Mac'teki zamanlama kimliği, böylece tekrar göndermek zararsız), ardından her dosyayı `PUT …/media/{mediaId}` ile yükler.
 2. Zaman ya da içerik değişirse aynı kimlikle yeniden `PUT`; zamanlama geri çekilirse `POST …/cancel`. İkisi de yalnızca yayın başlamadan çalışır.
