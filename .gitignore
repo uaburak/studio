@@ -23,3 +23,5 @@ spikes/**/logs/
 DerivedData/
 *.xcuserstate
 xcuserdata/
+
+apps/apple/**/build/

@@ -1,0 +1,196 @@
+[
+  {
+    "type": "part.added",
+    "seq": 18,
+    "messageId": "01a1e449-bdb0-7000-9d15-3d0b89404347",
+    "index": 0,
+    "part": {
+      "type": "text",
+      "text": "Aralık için 4 post planladım. 2 tanesinde görsel yerini boş bıraktım."
+    }
+  },
+  {
+    "type": "plan.updated",
+    "seq": 19,
+    "plan": {
+      "id": "01a1e449-bdbc-7000-8d40-4ddf4122931c",
+      "brandId": "01a1e449-b8cd-7000-af13-a51dff3a877f",
+      "conversationId": "01a1e449-bb30-7000-9153-ece73d0594e5",
+      "runId": "01a1e449-bd93-7000-ac96-9705b7245bde",
+      "title": "Aralık planı",
+      "periodStart": "2026-12-01",
+      "periodEnd": "2026-12-31",
+      "status": "proposed",
+      "summary": "4 postluk Aralık taslağı hazır. Onaylarsan üretime başlarım.",
+      "revision": 1,
+      "decidedAt": null,
+      "rejectionReason": null,
+      "items": [
+        {
+          "id": "01a1e449-bdbc-7001-a38c-2223047a3af1",
+          "planId": "01a1e449-bdbc-7000-8d40-4ddf4122931c",
+          "position": 0,
+          "date": "2026-12-02",
+          "platforms": [
+            "instagram"
+          ],
+          "contentType": "post",
+          "title": "Kış bakımı",
+          "brief": "",
+          "pillar": "Rehber",
+          "imageSlot": "none",
+          "imageBrief": null,
+          "status": "planned",
+          "contentId": null,
+          "generation": null,
+          "createdAt": "2026-11-16T12:16:40.378Z",
+          "updatedAt": "2026-11-16T12:16:40.378Z"
+        },
+        {
+          "id": "01a1e449-bdbc-7002-9fed-35f87b0e1d84",
+          "planId": "01a1e449-bdbc-7000-8d40-4ddf4122931c",
+          "position": 1,
+          "date": "2026-12-09",
+          "platforms": [
+            "instagram",
+            "facebook"
+          ],
+          "contentType": "post",
+          "title": "Yılın ürünü",
+          "brief": "",
+          "pillar": "Ürün",
+          "imageSlot": "user_upload",
+          "imageBrief": null,
+          "status": "planned",
+          "contentId": null,
+          "generation": null,
+          "createdAt": "2026-11-16T12:16:40.378Z",
+          "updatedAt": "2026-11-16T12:16:40.378Z"
+        },
+        {
+          "id": "01a1e449-bdbc-7003-ab33-92bdf65232f7",
+          "planId": "01a1e449-bdbc-7000-8d40-4ddf4122931c",
+          "position": 2,
+          "date": "2026-12-16",
+          "platforms": [
+            "instagram"
+          ],
+          "contentType": "post",
+          "title": "Bayi ödülleri",
+          "brief": "",
+          "pillar": "Kampanya",
+          "imageSlot": "user_upload",
+          "imageBrief": null,
+          "status": "planned",
+          "contentId": null,
+          "generation": null,
+          "createdAt": "2026-11-16T12:16:40.378Z",
+          "updatedAt": "2026-11-16T12:16:40.378Z"
+        },
+        {
+          "id": "01a1e449-bdbc-7004-813c-62e26eff54ad",
+          "planId": "01a1e449-bdbc-7000-8d40-4ddf4122931c",
+          "position": 3,
+          "date": "2026-12-30",
+          "platforms": [
+            "instagram",
+            "facebook"
+          ],
+          "contentType": "post",
+          "title": "Yeni yıl",
+          "brief": "",
+          "pillar": "Özet",
+          "imageSlot": "none",
+          "imageBrief": null,
+          "status": "planned",
+          "contentId": null,
+          "generation": null,
+          "createdAt": "2026-11-16T12:16:40.378Z",
+          "updatedAt": "2026-11-16T12:16:40.378Z"
+        }
+      ],
+      "createdAt": "2026-11-16T12:16:40.378Z",
+      "updatedAt": "2026-11-16T12:16:40.378Z"
+    }
+  },
+  {
+    "type": "part.added",
+    "seq": 20,
+    "messageId": "01a1e449-bdb0-7000-9d15-3d0b89404347",
+    "index": 1,
+    "part": {
+      "type": "plan_proposal",
+      "planId": "01a1e449-bdbc-7000-8d40-4ddf4122931c"
+    }
+  },
+  {
+    "type": "message.updated",
+    "seq": 21,
+    "message": {
+      "id": "01a1e449-bdb0-7000-9d15-3d0b89404347",
+      "conversationId": "01a1e449-bb30-7000-9153-ece73d0594e5",
+      "role": "assistant",
+      "status": "complete",
+      "runId": "01a1e449-bd93-7000-ac96-9705b7245bde",
+      "parts": [
+        {
+          "type": "text",
+          "text": "Aralık için 4 post planladım. 2 tanesinde görsel yerini boş bıraktım."
+        },
+        {
+          "type": "plan_proposal",
+          "planId": "01a1e449-bdbc-7000-8d40-4ddf4122931c"
+        }
+      ],
+      "mentions": [],
+      "createdAt": "2026-11-16T12:16:40.367Z",
+      "updatedAt": "2026-11-16T12:16:40.391Z"
+    }
+  },
+  {
+    "type": "run.updated",
+    "seq": 22,
+    "run": {
+      "id": "01a1e449-bd93-7000-ac96-9705b7245bde",
+      "conversationId": "01a1e449-bb30-7000-9153-ece73d0594e5",
+      "triggerMessageId": "01a1e449-bd92-7000-a6ba-6599bf6959f0",
+      "jobId": "01a1e449-bd93-7001-a9e8-851512783bd2",
+      "status": "completed",
+      "attempt": 1,
+      "model": "seed",
+      "usage": null,
+      "error": null,
+      "createdAt": "2026-11-16T12:16:40.337Z",
+      "updatedAt": "2026-11-16T12:16:40.391Z",
+      "startedAt": "2026-11-16T12:16:40.350Z",
+      "finishedAt": "2026-11-16T12:16:40.391Z"
+    }
+  },
+  {
+    "type": "conversation.updated",
+    "seq": 23,
+    "conversation": {
+      "id": "01a1e449-bb30-7000-9153-ece73d0594e5",
+      "brandId": "01a1e449-b8cd-7000-af13-a51dff3a877f",
+      "title": "Kasım planı",
+      "status": "active",
+      "activeRunId": null,
+      "lastSeq": 23,
+      "lastActivityAt": "2026-11-16T12:16:40.378Z",
+      "createdAt": "2026-11-16T12:16:39.728Z",
+      "updatedAt": "2026-11-16T12:16:39.728Z"
+    }
+  },
+  {
+    "type": "conversation.resumed",
+    "seq": 23,
+    "replayed": 6,
+    "presence": {
+      "online": false,
+      "lastSeenAt": null,
+      "workers": [],
+      "currentJobs": [],
+      "queueLength": 0
+    }
+  }
+]

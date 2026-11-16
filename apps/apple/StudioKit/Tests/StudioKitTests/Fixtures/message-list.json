@@ -1,0 +1,77 @@
+{
+  "items": [
+    {
+      "id": "01a1e449-bdb0-7000-9d15-3d0b89404347",
+      "conversationId": "01a1e449-bb30-7000-9153-ece73d0594e5",
+      "role": "assistant",
+      "status": "complete",
+      "runId": "01a1e449-bd93-7000-ac96-9705b7245bde",
+      "parts": [
+        {
+          "type": "text",
+          "text": "Aralık için 4 post planladım. 2 tanesinde görsel yerini boş bıraktım."
+        },
+        {
+          "type": "plan_proposal",
+          "planId": "01a1e449-bdbc-7000-8d40-4ddf4122931c"
+        }
+      ],
+      "mentions": [],
+      "createdAt": "2026-11-16T12:16:40.367Z",
+      "updatedAt": "2026-11-16T12:16:40.391Z"
+    },
+    {
+      "id": "01a1e449-bd92-7000-a6ba-6599bf6959f0",
+      "conversationId": "01a1e449-bb30-7000-9153-ece73d0594e5",
+      "role": "user",
+      "status": "complete",
+      "runId": null,
+      "parts": [
+        {
+          "type": "text",
+          "text": "Aralık için de bir taslak çıkar, yine görselleri ben yüklerim."
+        }
+      ],
+      "mentions": [],
+      "createdAt": "2026-11-16T12:16:40.337Z",
+      "updatedAt": "2026-11-16T12:16:40.337Z"
+    },
+    {
+      "id": "01a1e449-bb5a-7000-82f2-f47a393b0da2",
+      "conversationId": "01a1e449-bb30-7000-9153-ece73d0594e5",
+      "role": "assistant",
+      "status": "complete",
+      "runId": "01a1e449-bb3e-7000-8f4d-e371e677c3e3",
+      "parts": [
+        {
+          "type": "text",
+          "text": "Kasım için 12 post hazırladım. 6 tanesinde görsel yerini boş bıraktım."
+        },
+        {
+          "type": "plan_proposal",
+          "planId": "01a1e449-bb69-7000-bb96-d97a04d53e97"
+        }
+      ],
+      "mentions": [],
+      "createdAt": "2026-11-16T12:16:39.769Z",
+      "updatedAt": "2026-11-16T12:16:39.799Z"
+    },
+    {
+      "id": "01a1e449-bb3d-7000-86b8-539abf5b1743",
+      "conversationId": "01a1e449-bb30-7000-9153-ece73d0594e5",
+      "role": "user",
+      "status": "complete",
+      "runId": null,
+      "parts": [
+        {
+          "type": "text",
+          "text": "MTM için bu ayın postlarını üret, resimleri ben yükleyeceğim."
+        }
+      ],
+      "mentions": [],
+      "createdAt": "2026-11-16T12:16:39.740Z",
+      "updatedAt": "2026-11-16T12:16:39.740Z"
+    }
+  ],
+  "nextCursor": null
+}

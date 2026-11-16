@@ -1,0 +1,15 @@
+{
+  "id": "01a1e449-ba6c-7000-83fb-72e2f7172518",
+  "brandId": "01a1e449-b8cd-7000-af13-a51dff3a877f",
+  "kind": "image",
+  "source": "upload",
+  "objectKey": "brands/01a1e449-b8cd-7000-af13-a51dff3a877f/assets/01a1e449-ba6c-7000-83fb-72e2f7172518.png",
+  "mimeType": "image/png",
+  "bytes": 4296,
+  "sha256": "b058f918ac3a6ae5d44ba5065b43a7e41bf62dc37e99e6384815ed0e6dde859d",
+  "width": 540,
+  "height": 675,
+  "durationMs": null,
+  "originalFilename": "tarla.png",
+  "createdAt": "2026-11-16T12:16:39.536Z"
+}

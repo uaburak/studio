@@ -29,9 +29,9 @@ Son güncelleme: 2026-11-16. Mimari ve kararlar için: [PLAN.md](PLAN.md).
 | A4 | Worker üretim hattı: sohbet ajanı, aylık plan, post üretimi, kalite döngüsü, render, yükleme | xhigh | `apps/worker` | Çalışıyor |
 | A5 | Marka profili: marka kiti yükleme, post çekme, analiz | high | `apps/api`, `apps/worker` | A4'ten sonra; post çekme Meta uygulamasını bekliyor |
 | A6 | Yayın motoru: Meta girişi, token kasası, zamanlayıcı | xhigh | `apps/api` | Meta uygulamasını bekliyor |
-| A7 | Ortak Swift paketi (macOS + iOS): API istemcisi, modeller, canlı akış | xhigh | `apps/apple/StudioKit` | M1 içinde çalışıyor |
+| A7 | Ortak Swift paketi (macOS + iOS): API istemcisi, modeller, canlı akış | xhigh | `apps/apple/StudioKit` | Tamam (M1 içinde) |
 | A2b | Görsel takma adları ve @anmalar (arka uç) | medium | `apps/api`, `packages/contract` | Tamam (denetlendi) |
-| M1 | Native macOS uygulaması: Wecra'da onaylanan altı ekran, açık ve koyu mod (Burak öne aldı) | xhigh | `apps/apple` | Çalışıyor |
+| M1 | Native macOS uygulaması: Wecra'da onaylanan altı ekran, açık ve koyu mod (Burak öne aldı) | xhigh | `apps/apple` | Tamam: derleme ve birim testleri geçiyor; görsel inceleme Burak'ta |
 | A8 | Cloudflare'e dağıtım ve Access | high | `apps/api` | Burak'ın Cloudflare yetkilendirmesini bekliyor |
 
 Durdurulan: F4-1 iOS ekranları (arayüz işi; yarım kalan kod `apps/ios` altında, commit edilmedi). Ağ katmanı A7'de yeniden ele alınacak.

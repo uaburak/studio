@@ -1,0 +1,12 @@
+{
+  "error": {
+    "code": "validation_error",
+    "message": "invalid request json",
+    "issues": [
+      {
+        "path": "name",
+        "message": "Too small: expected string to have >=1 characters"
+      }
+    ]
+  }
+}

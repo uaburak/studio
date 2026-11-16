@@ -1,0 +1,41 @@
+{
+  "items": [
+    {
+      "id": "01a1e449-b8f2-7000-a0e2-7751d07df704",
+      "name": "burakkoc.net",
+      "slug": "burakkoc-net",
+      "defaultLanguage": "tr",
+      "status": "active",
+      "createdAt": "2026-11-16T12:16:39.154Z",
+      "updatedAt": "2026-11-16T12:16:39.154Z"
+    },
+    {
+      "id": "01a1e449-b8e7-7000-986f-952f1389dbb9",
+      "name": "Finvo",
+      "slug": "finvo",
+      "defaultLanguage": "tr",
+      "status": "active",
+      "createdAt": "2026-11-16T12:16:39.143Z",
+      "updatedAt": "2026-11-16T12:16:39.143Z"
+    },
+    {
+      "id": "01a1e449-b8da-7000-b842-741294b2a002",
+      "name": "Koç Chords",
+      "slug": "koc-chords",
+      "defaultLanguage": "tr",
+      "status": "active",
+      "createdAt": "2026-11-16T12:16:39.130Z",
+      "updatedAt": "2026-11-16T12:16:39.130Z"
+    },
+    {
+      "id": "01a1e449-b8cd-7000-af13-a51dff3a877f",
+      "name": "MTM Agro",
+      "slug": "mtm-agro",
+      "defaultLanguage": "tr",
+      "status": "active",
+      "createdAt": "2026-11-16T12:16:39.117Z",
+      "updatedAt": "2026-11-16T12:16:39.117Z"
+    }
+  ],
+  "nextCursor": null
+}

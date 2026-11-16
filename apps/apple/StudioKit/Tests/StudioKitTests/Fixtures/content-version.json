@@ -1,0 +1,20 @@
+{
+  "id": "01a1e449-bbb4-7000-9fc8-15daea747a8f",
+  "contentId": "01a1e449-bb8d-7000-8fe2-6e2efa79e613",
+  "version": 1,
+  "origin": "generated",
+  "contentHash": "3686386c42d67dfe500fc6ef1f58bf0a9370156757cab9ac595e40067450c985",
+  "slideCount": 1,
+  "note": null,
+  "jobId": null,
+  "createdAt": "2026-11-16T12:16:39.860Z",
+  "updatedAt": "2026-11-16T12:16:39.860Z",
+  "slides": [
+    {
+      "html": "<!doctype html><html lang=\"tr\"><head><meta charset=\"utf-8\"></head><body data-artboard=\"1080x1350\" style=\"margin:0;width:1080px;height:1350px\"><p data-layer=\"eyebrow\" data-type=\"text\">Yeni ürün</p><h1 data-layer=\"title\" data-type=\"text\">Venta Borinc</h1><div data-layer=\"photo\" data-type=\"slot\" data-slot-ratio=\"1:1\" data-slot-state=\"empty\" data-slot-label=\"Ürün fotoğrafı\" style=\"position:absolute;left:72px;top:400px;width:936px;height:936px\"></div></body></html>",
+      "width": 1080,
+      "height": 1350,
+      "renderedAssetId": null
+    }
+  ]
+}

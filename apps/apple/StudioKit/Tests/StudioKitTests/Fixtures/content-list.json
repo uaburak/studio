@@ -1,0 +1,269 @@
+{
+  "items": [
+    {
+      "id": "01a1e449-bb8e-700a-b9ed-4d7529a974ba",
+      "brandId": "01a1e449-b8cd-7000-af13-a51dff3a877f",
+      "type": "post",
+      "title": "Sezon kapanışı",
+      "brief": "Sezonun kapanışı ve teşekkür.",
+      "status": "scheduled",
+      "targetPlatforms": [
+        "instagram",
+        "facebook"
+      ],
+      "caption": "Sezon kapanışı için açıklama taslağı.\n\n#mtmagro",
+      "currentVersion": {
+        "id": "01a1e449-bd65-7000-82f8-3d4aa30c6b31",
+        "version": 1,
+        "contentHash": "bef3d88c16f8d15b81969251efb27b43eb7ac31c0445a97047addcf0496dd4ae"
+      },
+      "approval": {
+        "versionId": "01a1e449-bd65-7000-82f8-3d4aa30c6b31",
+        "contentHash": "bef3d88c16f8d15b81969251efb27b43eb7ac31c0445a97047addcf0496dd4ae",
+        "approvedAt": "2026-11-16T12:16:40.315Z"
+      },
+      "createdAt": "2026-11-16T12:16:39.820Z",
+      "updatedAt": "2026-11-16T12:16:40.325Z"
+    },
+    {
+      "id": "01a1e449-bb8e-7009-88ea-e0d40d8274e4",
+      "brandId": "01a1e449-b8cd-7000-af13-a51dff3a877f",
+      "type": "post",
+      "title": "Müşteri hikâyesi",
+      "brief": "Bir üreticinin deneyimi.",
+      "status": "draft",
+      "targetPlatforms": [
+        "instagram",
+        "facebook"
+      ],
+      "caption": "Müşteri hikâyesi için açıklama taslağı.\n\n#mtmagro",
+      "currentVersion": {
+        "id": "01a1e449-bd40-7000-ae46-bcc615c58d4f",
+        "version": 1,
+        "contentHash": "8801c27a3c05018597e8adc51b06e8a593de112953c7241b559994ca8c876955"
+      },
+      "approval": null,
+      "createdAt": "2026-11-16T12:16:39.820Z",
+      "updatedAt": "2026-11-16T12:16:40.268Z"
+    },
+    {
+      "id": "01a1e449-bb8e-7008-a6de-02c97199c3de",
+      "brandId": "01a1e449-b8cd-7000-af13-a51dff3a877f",
+      "type": "post",
+      "title": "Bayi haritası",
+      "brief": "Bölgedeki bayiler.",
+      "status": "draft",
+      "targetPlatforms": [
+        "instagram",
+        "facebook"
+      ],
+      "caption": "Bayi haritası için açıklama taslağı.\n\n#mtmagro",
+      "currentVersion": {
+        "id": "01a1e449-bd1a-7000-b19a-1b769f8a00dd",
+        "version": 1,
+        "contentHash": "ef7b1af33ea8dabb53f2188b301b5ce3e62fcd62a5b348c96cefb4d1b886f874"
+      },
+      "approval": null,
+      "createdAt": "2026-11-16T12:16:39.820Z",
+      "updatedAt": "2026-11-16T12:16:40.231Z"
+    },
+    {
+      "id": "01a1e449-bb8e-7007-88cd-bd56df3600de",
+      "brandId": "01a1e449-b8cd-7000-af13-a51dff3a877f",
+      "type": "post",
+      "title": "Kış hazırlığı",
+      "brief": "Toprağı kışa hazırlamak.",
+      "status": "draft",
+      "targetPlatforms": [
+        "instagram",
+        "facebook"
+      ],
+      "caption": "Kış hazırlığı için açıklama taslağı.\n\n#mtmagro",
+      "currentVersion": {
+        "id": "01a1e449-bcf5-7000-8130-83a125382218",
+        "version": 1,
+        "contentHash": "df5549569dbbfe567afaee1866cdc1f444046b22b57be319af7e57e1858c3ee7"
+      },
+      "approval": null,
+      "createdAt": "2026-11-16T12:16:39.820Z",
+      "updatedAt": "2026-11-16T12:16:40.195Z"
+    },
+    {
+      "id": "01a1e449-bb8e-7006-8c25-45e9318ca5e5",
+      "brandId": "01a1e449-b8cd-7000-af13-a51dff3a877f",
+      "type": "post",
+      "title": "Ay sonu",
+      "brief": "Kasım ayının kısa özeti.",
+      "status": "approved",
+      "targetPlatforms": [
+        "instagram",
+        "facebook"
+      ],
+      "caption": "Ay sonu için açıklama taslağı.\n\n#mtmagro",
+      "currentVersion": {
+        "id": "01a1e449-bcc7-7000-8399-b5f758a695d5",
+        "version": 1,
+        "contentHash": "53b1f505e0d9734f779e5a06cd02f211fe3fdce6a59c7da70c7bf040ef3d1db5"
+      },
+      "approval": {
+        "versionId": "01a1e449-bcc7-7000-8399-b5f758a695d5",
+        "contentHash": "53b1f505e0d9734f779e5a06cd02f211fe3fdce6a59c7da70c7bf040ef3d1db5",
+        "approvedAt": "2026-11-16T12:16:40.157Z"
+      },
+      "createdAt": "2026-11-16T12:16:39.820Z",
+      "updatedAt": "2026-11-16T12:16:40.157Z"
+    },
+    {
+      "id": "01a1e449-bb8e-7005-b88b-feef44eb2d5f",
+      "brandId": "01a1e449-b8cd-7000-af13-a51dff3a877f",
+      "type": "post",
+      "title": "Soru cevap",
+      "brief": "En sık gelen üç soru.",
+      "status": "approved",
+      "targetPlatforms": [
+        "instagram",
+        "facebook"
+      ],
+      "caption": "Soru cevap için açıklama taslağı.\n\n#mtmagro",
+      "currentVersion": {
+        "id": "01a1e449-bc98-7000-848c-f31cfa7395d0",
+        "version": 1,
+        "contentHash": "3f7e2d468ffe97348fcc37effb49340267d0204b21d7c568f4e303984823da2b"
+      },
+      "approval": {
+        "versionId": "01a1e449-bc98-7000-848c-f31cfa7395d0",
+        "contentHash": "3f7e2d468ffe97348fcc37effb49340267d0204b21d7c568f4e303984823da2b",
+        "approvedAt": "2026-11-16T12:16:40.110Z"
+      },
+      "createdAt": "2026-11-16T12:16:39.820Z",
+      "updatedAt": "2026-11-16T12:16:40.110Z"
+    },
+    {
+      "id": "01a1e449-bb8e-7004-a4e8-a05c32bed977",
+      "brandId": "01a1e449-b8cd-7000-af13-a51dff3a877f",
+      "type": "post",
+      "title": "Tarladan",
+      "brief": "Üreticinin tarladan çektiği fotoğrafla sonuç.",
+      "status": "draft",
+      "targetPlatforms": [
+        "instagram",
+        "facebook"
+      ],
+      "caption": "Tarladan için açıklama taslağı.\n\n#mtmagro",
+      "currentVersion": {
+        "id": "01a1e449-bc72-7000-ad78-af65b2e389ae",
+        "version": 1,
+        "contentHash": "2512f6025cb6ef2f485b363d08f48fefb1a63e1e4c1dbf5dc8784e836c45afb5"
+      },
+      "approval": null,
+      "createdAt": "2026-11-16T12:16:39.820Z",
+      "updatedAt": "2026-11-16T12:16:40.064Z"
+    },
+    {
+      "id": "01a1e449-bb8e-7003-beb6-2f5c1cf4ac53",
+      "brandId": "01a1e449-b8cd-7000-af13-a51dff3a877f",
+      "type": "post",
+      "title": "Uygulama zamanı",
+      "brief": "Hangi dönemde, hangi dozda uygulanır.",
+      "status": "draft",
+      "targetPlatforms": [
+        "instagram",
+        "facebook"
+      ],
+      "caption": "Uygulama zamanı için açıklama taslağı.\n\n#mtmagro",
+      "currentVersion": {
+        "id": "01a1e449-bc4d-7000-b91c-e439ce098f8f",
+        "version": 1,
+        "contentHash": "6c5adc19cf28fc5ddcc069d290fbdb25843ae07bef1df03ea6e60ea63822ff33"
+      },
+      "approval": null,
+      "createdAt": "2026-11-16T12:16:39.820Z",
+      "updatedAt": "2026-11-16T12:16:40.026Z"
+    },
+    {
+      "id": "01a1e449-bb8e-7002-ae5f-5778f0fce9b8",
+      "brandId": "01a1e449-b8cd-7000-af13-a51dff3a877f",
+      "type": "post",
+      "title": "Bayi buluşması",
+      "brief": "Bayi buluşmasının tarih ve yeri.",
+      "status": "draft",
+      "targetPlatforms": [
+        "instagram",
+        "facebook"
+      ],
+      "caption": "Bayi buluşmamız 20 Kasım'da Konya'da. Yerinizi ayırtın.\n\n#mtmagro #bayi",
+      "currentVersion": {
+        "id": "01a1e449-bc26-7000-af93-6a8bd7fa9745",
+        "version": 1,
+        "contentHash": "f5ac06c6c4e231e48bc68c6edf6b29991b69fcfcc9219e834d55fc917047c895"
+      },
+      "approval": null,
+      "createdAt": "2026-11-16T12:16:39.820Z",
+      "updatedAt": "2026-11-16T12:16:39.987Z"
+    },
+    {
+      "id": "01a1e449-bb8e-7001-93ca-dfc05b4cd3cd",
+      "brandId": "01a1e449-b8cd-7000-af13-a51dff3a877f",
+      "type": "post",
+      "title": "Bor ve çinko",
+      "brief": "İki besin elementinin birlikte alımı.",
+      "status": "draft",
+      "targetPlatforms": [
+        "instagram",
+        "facebook"
+      ],
+      "caption": "Bor ve çinko için açıklama taslağı.\n\n#mtmagro",
+      "currentVersion": {
+        "id": "01a1e449-bc01-7000-b996-acf0df4419c3",
+        "version": 1,
+        "contentHash": "590e38788a8896f98ef841d3f3f544a742185ee082a03c68243813f720ad7c7d"
+      },
+      "approval": null,
+      "createdAt": "2026-11-16T12:16:39.820Z",
+      "updatedAt": "2026-11-16T12:16:39.950Z"
+    },
+    {
+      "id": "01a1e449-bb8e-7000-9a9b-ba1f5c3d3e48",
+      "brandId": "01a1e449-b8cd-7000-af13-a51dff3a877f",
+      "type": "post",
+      "title": "Doğru saklama rehberi",
+      "brief": "Gübrenin kışın nasıl saklanacağına dair üç adım.",
+      "status": "draft",
+      "targetPlatforms": [
+        "instagram",
+        "facebook"
+      ],
+      "caption": "Gübreyi kuru, serin ve güneş almayan bir yerde saklayın.\n\n#mtmagro #saklama",
+      "currentVersion": {
+        "id": "01a1e449-bbdc-7000-bb43-538fccba346e",
+        "version": 1,
+        "contentHash": "9fb9a11132b0f46a5976ee2272659b76372621e6bcde21d2ac3bc84d687606f3"
+      },
+      "approval": null,
+      "createdAt": "2026-11-16T12:16:39.820Z",
+      "updatedAt": "2026-11-16T12:16:39.913Z"
+    },
+    {
+      "id": "01a1e449-bb8d-7000-8fe2-6e2efa79e613",
+      "brandId": "01a1e449-b8cd-7000-af13-a51dff3a877f",
+      "type": "post",
+      "title": "Venta Borinc",
+      "brief": "Venta Borinc ilk kez tanıtılıyor; bor ve çinkonun birlikte etkisi.",
+      "status": "draft",
+      "targetPlatforms": [
+        "instagram",
+        "facebook"
+      ],
+      "caption": "Bor ve çinko bir arada. Venta Borinc ile tanışın.\nAyrıntılar için bayinize danışın.\n\n#mtmagro #venta #borinc #bor #çinko #bitkibesleme",
+      "currentVersion": {
+        "id": "01a1e449-bbb4-7000-9fc8-15daea747a8f",
+        "version": 1,
+        "contentHash": "3686386c42d67dfe500fc6ef1f58bf0a9370156757cab9ac595e40067450c985"
+      },
+      "approval": null,
+      "createdAt": "2026-11-16T12:16:39.820Z",
+      "updatedAt": "2026-11-16T12:16:39.874Z"
+    }
+  ],
+  "nextCursor": null
+}

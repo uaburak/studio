@@ -1,0 +1,35 @@
+{
+  "items": [
+    {
+      "id": "01a1e449-b914-7000-8d33-e4986032c798",
+      "brandId": "01a1e449-b8cd-7000-af13-a51dff3a877f",
+      "platform": "linkedin",
+      "handle": "MTM Agro",
+      "externalId": null,
+      "status": "pending",
+      "createdAt": "2026-11-16T12:16:39.188Z",
+      "updatedAt": "2026-11-16T12:16:39.188Z"
+    },
+    {
+      "id": "01a1e449-b90b-7000-b709-4dec31799675",
+      "brandId": "01a1e449-b8cd-7000-af13-a51dff3a877f",
+      "platform": "facebook",
+      "handle": "MTM Agro",
+      "externalId": "102200000000001",
+      "status": "connected",
+      "createdAt": "2026-11-16T12:16:39.179Z",
+      "updatedAt": "2026-11-16T12:16:39.179Z"
+    },
+    {
+      "id": "01a1e449-b8fe-7000-a662-50740e98e952",
+      "brandId": "01a1e449-b8cd-7000-af13-a51dff3a877f",
+      "platform": "instagram",
+      "handle": "mtmagro",
+      "externalId": "17841400000000001",
+      "status": "connected",
+      "createdAt": "2026-11-16T12:16:39.166Z",
+      "updatedAt": "2026-11-16T12:16:39.166Z"
+    }
+  ],
+  "nextCursor": null
+}

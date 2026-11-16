@@ -1,0 +1,5 @@
+StudioKit/.build/
+StudioKit/.swiftpm/
+StudioMac/build/
+*.xcuserstate
+xcuserdata/

@@ -1,0 +1,6 @@
+{
+  "error": {
+    "code": "hash_mismatch",
+    "message": "hash does not match the current version (v1); reload and review again"
+  }
+}

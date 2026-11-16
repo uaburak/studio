@@ -1,0 +1,36 @@
+{
+  "items": [
+    {
+      "id": "01a1e449-ba99-7000-8fd1-5a43a6413b43",
+      "conversationId": "01a1e449-ba87-7000-8749-122836fa79f4",
+      "alias": "image",
+      "previousAliases": [],
+      "assetId": "01a1e449-ba6c-7000-83fb-72e2f7172518",
+      "kind": "image",
+      "mimeType": "image/png",
+      "width": 540,
+      "height": 675,
+      "filename": "tarla.png",
+      "contentPath": "/api/assets/01a1e449-ba6c-7000-83fb-72e2f7172518/content",
+      "messageId": "01a1e449-ba98-7000-8868-1c8f17583140",
+      "createdAt": "2026-11-16T12:16:39.575Z",
+      "updatedAt": "2026-11-16T12:16:39.575Z"
+    },
+    {
+      "id": "01a1e449-ba99-7001-9d24-f80acbc4e2d4",
+      "conversationId": "01a1e449-ba87-7000-8749-122836fa79f4",
+      "alias": "image-1",
+      "previousAliases": [],
+      "assetId": "01a1e449-ba7b-7000-89f2-5085434440c3",
+      "kind": "image",
+      "mimeType": "image/png",
+      "width": 540,
+      "height": 675,
+      "filename": "depo.png",
+      "contentPath": "/api/assets/01a1e449-ba7b-7000-89f2-5085434440c3/content",
+      "messageId": "01a1e449-ba98-7000-8868-1c8f17583140",
+      "createdAt": "2026-11-16T12:16:39.575Z",
+      "updatedAt": "2026-11-16T12:16:39.575Z"
+    }
+  ]
+}

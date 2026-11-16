@@ -1,0 +1,375 @@
+{
+  "items": [
+    {
+      "id": "01a1e449-bdbc-7000-8d40-4ddf4122931c",
+      "brandId": "01a1e449-b8cd-7000-af13-a51dff3a877f",
+      "conversationId": "01a1e449-bb30-7000-9153-ece73d0594e5",
+      "runId": "01a1e449-bd93-7000-ac96-9705b7245bde",
+      "title": "Aralık planı",
+      "periodStart": "2026-12-01",
+      "periodEnd": "2026-12-31",
+      "status": "proposed",
+      "summary": "4 postluk Aralık taslağı hazır. Onaylarsan üretime başlarım.",
+      "revision": 1,
+      "decidedAt": null,
+      "rejectionReason": null,
+      "items": [
+        {
+          "id": "01a1e449-bdbc-7001-a38c-2223047a3af1",
+          "planId": "01a1e449-bdbc-7000-8d40-4ddf4122931c",
+          "position": 0,
+          "date": "2026-12-02",
+          "platforms": [
+            "instagram"
+          ],
+          "contentType": "post",
+          "title": "Kış bakımı",
+          "brief": "",
+          "pillar": "Rehber",
+          "imageSlot": "none",
+          "imageBrief": null,
+          "status": "planned",
+          "contentId": null,
+          "generation": null,
+          "createdAt": "2026-11-16T12:16:40.378Z",
+          "updatedAt": "2026-11-16T12:16:40.378Z"
+        },
+        {
+          "id": "01a1e449-bdbc-7002-9fed-35f87b0e1d84",
+          "planId": "01a1e449-bdbc-7000-8d40-4ddf4122931c",
+          "position": 1,
+          "date": "2026-12-09",
+          "platforms": [
+            "instagram",
+            "facebook"
+          ],
+          "contentType": "post",
+          "title": "Yılın ürünü",
+          "brief": "",
+          "pillar": "Ürün",
+          "imageSlot": "user_upload",
+          "imageBrief": null,
+          "status": "planned",
+          "contentId": null,
+          "generation": null,
+          "createdAt": "2026-11-16T12:16:40.378Z",
+          "updatedAt": "2026-11-16T12:16:40.378Z"
+        },
+        {
+          "id": "01a1e449-bdbc-7003-ab33-92bdf65232f7",
+          "planId": "01a1e449-bdbc-7000-8d40-4ddf4122931c",
+          "position": 2,
+          "date": "2026-12-16",
+          "platforms": [
+            "instagram"
+          ],
+          "contentType": "post",
+          "title": "Bayi ödülleri",
+          "brief": "",
+          "pillar": "Kampanya",
+          "imageSlot": "user_upload",
+          "imageBrief": null,
+          "status": "planned",
+          "contentId": null,
+          "generation": null,
+          "createdAt": "2026-11-16T12:16:40.378Z",
+          "updatedAt": "2026-11-16T12:16:40.378Z"
+        },
+        {
+          "id": "01a1e449-bdbc-7004-813c-62e26eff54ad",
+          "planId": "01a1e449-bdbc-7000-8d40-4ddf4122931c",
+          "position": 3,
+          "date": "2026-12-30",
+          "platforms": [
+            "instagram",
+            "facebook"
+          ],
+          "contentType": "post",
+          "title": "Yeni yıl",
+          "brief": "",
+          "pillar": "Özet",
+          "imageSlot": "none",
+          "imageBrief": null,
+          "status": "planned",
+          "contentId": null,
+          "generation": null,
+          "createdAt": "2026-11-16T12:16:40.378Z",
+          "updatedAt": "2026-11-16T12:16:40.378Z"
+        }
+      ],
+      "createdAt": "2026-11-16T12:16:40.378Z",
+      "updatedAt": "2026-11-16T12:16:40.378Z"
+    },
+    {
+      "id": "01a1e449-bb69-7000-bb96-d97a04d53e97",
+      "brandId": "01a1e449-b8cd-7000-af13-a51dff3a877f",
+      "conversationId": "01a1e449-bb30-7000-9153-ece73d0594e5",
+      "runId": "01a1e449-bb3e-7000-8f4d-e371e677c3e3",
+      "title": "Kasım planı",
+      "periodStart": "2026-11-01",
+      "periodEnd": "2026-11-30",
+      "status": "accepted",
+      "summary": "12 postluk Kasım planı hazır. Onaylarsan üretime başlarım.",
+      "revision": 1,
+      "decidedAt": "2026-11-16T12:16:39.820Z",
+      "rejectionReason": null,
+      "items": [
+        {
+          "id": "01a1e449-bb69-7001-a272-d7d6fd8b9251",
+          "planId": "01a1e449-bb69-7000-bb96-d97a04d53e97",
+          "position": 0,
+          "date": "2026-11-04",
+          "platforms": [
+            "instagram",
+            "facebook"
+          ],
+          "contentType": "post",
+          "title": "Venta Borinc",
+          "brief": "Venta Borinc ilk kez tanıtılıyor; bor ve çinkonun birlikte etkisi.",
+          "pillar": "Yeni ürün",
+          "imageSlot": "user_upload",
+          "imageBrief": "Ürün torbasının tarlada dikey fotoğrafı",
+          "status": "accepted",
+          "contentId": "01a1e449-bb8d-7000-8fe2-6e2efa79e613",
+          "generation": null,
+          "createdAt": "2026-11-16T12:16:39.783Z",
+          "updatedAt": "2026-11-16T12:16:39.820Z"
+        },
+        {
+          "id": "01a1e449-bb69-7002-b011-c817fd96b019",
+          "planId": "01a1e449-bb69-7000-bb96-d97a04d53e97",
+          "position": 1,
+          "date": "2026-11-07",
+          "platforms": [
+            "instagram",
+            "facebook"
+          ],
+          "contentType": "post",
+          "title": "Doğru saklama rehberi",
+          "brief": "Gübrenin kışın nasıl saklanacağına dair üç adım.",
+          "pillar": "Rehber",
+          "imageSlot": "none",
+          "imageBrief": null,
+          "status": "accepted",
+          "contentId": "01a1e449-bb8e-7000-9a9b-ba1f5c3d3e48",
+          "generation": null,
+          "createdAt": "2026-11-16T12:16:39.783Z",
+          "updatedAt": "2026-11-16T12:16:39.820Z"
+        },
+        {
+          "id": "01a1e449-bb69-7003-aeca-bfda5f5b4f53",
+          "planId": "01a1e449-bb69-7000-bb96-d97a04d53e97",
+          "position": 2,
+          "date": "2026-11-11",
+          "platforms": [
+            "instagram",
+            "facebook"
+          ],
+          "contentType": "post",
+          "title": "Bor ve çinko",
+          "brief": "İki besin elementinin birlikte alımı.",
+          "pillar": "Bilgi",
+          "imageSlot": "none",
+          "imageBrief": null,
+          "status": "accepted",
+          "contentId": "01a1e449-bb8e-7001-93ca-dfc05b4cd3cd",
+          "generation": null,
+          "createdAt": "2026-11-16T12:16:39.783Z",
+          "updatedAt": "2026-11-16T12:16:39.820Z"
+        },
+        {
+          "id": "01a1e449-bb69-7004-ad7c-8ff300be9a2e",
+          "planId": "01a1e449-bb69-7000-bb96-d97a04d53e97",
+          "position": 3,
+          "date": "2026-11-14",
+          "platforms": [
+            "instagram",
+            "facebook"
+          ],
+          "contentType": "post",
+          "title": "Bayi buluşması",
+          "brief": "Bayi buluşmasının tarih ve yeri.",
+          "pillar": "Kampanya",
+          "imageSlot": "user_upload",
+          "imageBrief": "Geçen yılki buluşmadan bir kare",
+          "status": "accepted",
+          "contentId": "01a1e449-bb8e-7002-ae5f-5778f0fce9b8",
+          "generation": null,
+          "createdAt": "2026-11-16T12:16:39.783Z",
+          "updatedAt": "2026-11-16T12:16:39.820Z"
+        },
+        {
+          "id": "01a1e449-bb69-7005-b872-1347fd8473be",
+          "planId": "01a1e449-bb69-7000-bb96-d97a04d53e97",
+          "position": 4,
+          "date": "2026-11-18",
+          "platforms": [
+            "instagram",
+            "facebook"
+          ],
+          "contentType": "post",
+          "title": "Uygulama zamanı",
+          "brief": "Hangi dönemde, hangi dozda uygulanır.",
+          "pillar": "Bilgi",
+          "imageSlot": "none",
+          "imageBrief": null,
+          "status": "accepted",
+          "contentId": "01a1e449-bb8e-7003-beb6-2f5c1cf4ac53",
+          "generation": null,
+          "createdAt": "2026-11-16T12:16:39.783Z",
+          "updatedAt": "2026-11-16T12:16:39.820Z"
+        },
+        {
+          "id": "01a1e449-bb69-7006-8606-8b17c113cd7e",
+          "planId": "01a1e449-bb69-7000-bb96-d97a04d53e97",
+          "position": 5,
+          "date": "2026-11-21",
+          "platforms": [
+            "instagram",
+            "facebook"
+          ],
+          "contentType": "post",
+          "title": "Tarladan",
+          "brief": "Üreticinin tarladan çektiği fotoğrafla sonuç.",
+          "pillar": "Ürün",
+          "imageSlot": "user_upload",
+          "imageBrief": "Üreticinin tarla fotoğrafı",
+          "status": "accepted",
+          "contentId": "01a1e449-bb8e-7004-a4e8-a05c32bed977",
+          "generation": null,
+          "createdAt": "2026-11-16T12:16:39.783Z",
+          "updatedAt": "2026-11-16T12:16:39.820Z"
+        },
+        {
+          "id": "01a1e449-bb69-7007-b74c-d1a3cd9b10b0",
+          "planId": "01a1e449-bb69-7000-bb96-d97a04d53e97",
+          "position": 6,
+          "date": "2026-11-25",
+          "platforms": [
+            "instagram",
+            "facebook"
+          ],
+          "contentType": "post",
+          "title": "Soru cevap",
+          "brief": "En sık gelen üç soru.",
+          "pillar": "Bilgi",
+          "imageSlot": "none",
+          "imageBrief": null,
+          "status": "accepted",
+          "contentId": "01a1e449-bb8e-7005-b88b-feef44eb2d5f",
+          "generation": null,
+          "createdAt": "2026-11-16T12:16:39.783Z",
+          "updatedAt": "2026-11-16T12:16:39.820Z"
+        },
+        {
+          "id": "01a1e449-bb69-7008-87a1-fab489d1b449",
+          "planId": "01a1e449-bb69-7000-bb96-d97a04d53e97",
+          "position": 7,
+          "date": "2026-11-28",
+          "platforms": [
+            "instagram",
+            "facebook"
+          ],
+          "contentType": "post",
+          "title": "Ay sonu",
+          "brief": "Kasım ayının kısa özeti.",
+          "pillar": "Özet",
+          "imageSlot": "none",
+          "imageBrief": null,
+          "status": "accepted",
+          "contentId": "01a1e449-bb8e-7006-8c25-45e9318ca5e5",
+          "generation": null,
+          "createdAt": "2026-11-16T12:16:39.783Z",
+          "updatedAt": "2026-11-16T12:16:39.820Z"
+        },
+        {
+          "id": "01a1e449-bb69-7009-aac2-2d052f2bf3d8",
+          "planId": "01a1e449-bb69-7000-bb96-d97a04d53e97",
+          "position": 8,
+          "date": "2026-11-29",
+          "platforms": [
+            "instagram",
+            "facebook"
+          ],
+          "contentType": "post",
+          "title": "Kış hazırlığı",
+          "brief": "Toprağı kışa hazırlamak.",
+          "pillar": "Rehber",
+          "imageSlot": "user_upload",
+          "imageBrief": "Kışa hazırlanan tarla",
+          "status": "accepted",
+          "contentId": "01a1e449-bb8e-7007-88cd-bd56df3600de",
+          "generation": null,
+          "createdAt": "2026-11-16T12:16:39.783Z",
+          "updatedAt": "2026-11-16T12:16:39.820Z"
+        },
+        {
+          "id": "01a1e449-bb69-700a-80da-722064655eee",
+          "planId": "01a1e449-bb69-7000-bb96-d97a04d53e97",
+          "position": 9,
+          "date": "2026-11-30",
+          "platforms": [
+            "instagram",
+            "facebook"
+          ],
+          "contentType": "post",
+          "title": "Bayi haritası",
+          "brief": "Bölgedeki bayiler.",
+          "pillar": "Kampanya",
+          "imageSlot": "user_upload",
+          "imageBrief": "Bayi önünden bir kare",
+          "status": "accepted",
+          "contentId": "01a1e449-bb8e-7008-a6de-02c97199c3de",
+          "generation": null,
+          "createdAt": "2026-11-16T12:16:39.783Z",
+          "updatedAt": "2026-11-16T12:16:39.820Z"
+        },
+        {
+          "id": "01a1e449-bb69-700b-a355-2801b63c31c5",
+          "planId": "01a1e449-bb69-7000-bb96-d97a04d53e97",
+          "position": 10,
+          "date": "2026-11-30",
+          "platforms": [
+            "instagram",
+            "facebook"
+          ],
+          "contentType": "post",
+          "title": "Müşteri hikâyesi",
+          "brief": "Bir üreticinin deneyimi.",
+          "pillar": "Ürün",
+          "imageSlot": "user_upload",
+          "imageBrief": "Üreticinin portresi",
+          "status": "accepted",
+          "contentId": "01a1e449-bb8e-7009-88ea-e0d40d8274e4",
+          "generation": null,
+          "createdAt": "2026-11-16T12:16:39.783Z",
+          "updatedAt": "2026-11-16T12:16:39.820Z"
+        },
+        {
+          "id": "01a1e449-bb69-700c-b884-228f2b8a9769",
+          "planId": "01a1e449-bb69-7000-bb96-d97a04d53e97",
+          "position": 11,
+          "date": "2026-11-30",
+          "platforms": [
+            "instagram",
+            "facebook"
+          ],
+          "contentType": "post",
+          "title": "Sezon kapanışı",
+          "brief": "Sezonun kapanışı ve teşekkür.",
+          "pillar": "Özet",
+          "imageSlot": "none",
+          "imageBrief": null,
+          "status": "accepted",
+          "contentId": "01a1e449-bb8e-700a-b9ed-4d7529a974ba",
+          "generation": null,
+          "createdAt": "2026-11-16T12:16:39.783Z",
+          "updatedAt": "2026-11-16T12:16:39.820Z"
+        }
+      ],
+      "createdAt": "2026-11-16T12:16:39.783Z",
+      "updatedAt": "2026-11-16T12:16:39.820Z"
+    }
+  ],
+  "nextCursor": null
+}

@@ -1,0 +1,82 @@
+{
+  "items": [
+    {
+      "id": "01a1e449-bb30-7000-9153-ece73d0594e5",
+      "brandId": "01a1e449-b8cd-7000-af13-a51dff3a877f",
+      "title": "Kasım planı",
+      "status": "active",
+      "activeRunId": null,
+      "lastSeq": 23,
+      "lastActivityAt": "2026-11-16T12:16:40.391Z",
+      "createdAt": "2026-11-16T12:16:39.728Z",
+      "updatedAt": "2026-11-16T12:16:39.728Z"
+    },
+    {
+      "id": "01a1e449-baed-7000-af4c-f33ca06861fa",
+      "brandId": "01a1e449-b8cd-7000-af13-a51dff3a877f",
+      "title": "Venta Borinc lansmanı",
+      "status": "active",
+      "activeRunId": null,
+      "lastSeq": 10,
+      "lastActivityAt": "2026-11-16T12:16:39.716Z",
+      "createdAt": "2026-11-16T12:16:39.661Z",
+      "updatedAt": "2026-11-16T12:16:39.661Z"
+    },
+    {
+      "id": "01a1e449-bae2-7000-8a5a-90ac0591aac4",
+      "brandId": "01a1e449-b8f2-7000-a0e2-7751d07df704",
+      "title": "Portfolyo güncellemesi",
+      "status": "active",
+      "activeRunId": null,
+      "lastSeq": 0,
+      "lastActivityAt": "2026-11-16T12:16:39.650Z",
+      "createdAt": "2026-11-16T12:16:39.650Z",
+      "updatedAt": "2026-11-16T12:16:39.650Z"
+    },
+    {
+      "id": "01a1e449-bad8-7000-8a21-486c03d5b9e9",
+      "brandId": "01a1e449-b8e7-7000-986f-952f1389dbb9",
+      "title": "Ekim raporu",
+      "status": "active",
+      "activeRunId": null,
+      "lastSeq": 0,
+      "lastActivityAt": "2026-11-16T12:16:39.640Z",
+      "createdAt": "2026-11-16T12:16:39.640Z",
+      "updatedAt": "2026-11-16T12:16:39.640Z"
+    },
+    {
+      "id": "01a1e449-bacf-7000-9e85-e27e81000686",
+      "brandId": "01a1e449-b8da-7000-b842-741294b2a002",
+      "title": "Konser duyurusu",
+      "status": "active",
+      "activeRunId": null,
+      "lastSeq": 0,
+      "lastActivityAt": "2026-11-16T12:16:39.631Z",
+      "createdAt": "2026-11-16T12:16:39.631Z",
+      "updatedAt": "2026-11-16T12:16:39.631Z"
+    },
+    {
+      "id": "01a1e449-ba87-7000-8749-122836fa79f4",
+      "brandId": "01a1e449-b8cd-7000-af13-a51dff3a877f",
+      "title": "Hasat sezonu serisi",
+      "status": "active",
+      "activeRunId": null,
+      "lastSeq": 10,
+      "lastActivityAt": "2026-11-16T12:16:39.618Z",
+      "createdAt": "2026-11-16T12:16:39.559Z",
+      "updatedAt": "2026-11-16T12:16:39.559Z"
+    },
+    {
+      "id": "01a1e449-b92b-7000-8c6f-8fbf8559dd69",
+      "brandId": "01a1e449-b8cd-7000-af13-a51dff3a877f",
+      "title": "Bayi duyurusu",
+      "status": "active",
+      "activeRunId": null,
+      "lastSeq": 9,
+      "lastActivityAt": "2026-11-16T12:16:39.271Z",
+      "createdAt": "2026-11-16T12:16:39.211Z",
+      "updatedAt": "2026-11-16T12:16:39.211Z"
+    }
+  ],
+  "nextCursor": null
+}

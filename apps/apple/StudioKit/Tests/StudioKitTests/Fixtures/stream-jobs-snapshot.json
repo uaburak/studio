@@ -1,0 +1,97 @@
+{
+  "type": "jobs.snapshot",
+  "jobs": [
+    {
+      "id": "01a1e449-bd93-7001-a9e8-851512783bd2",
+      "type": "chat.turn",
+      "status": "cancelled",
+      "payload": {
+        "conversationId": "01a1e449-bb30-7000-9153-ece73d0594e5",
+        "runId": "01a1e449-bd93-7000-ac96-9705b7245bde"
+      },
+      "brandId": "01a1e449-b8cd-7000-af13-a51dff3a877f",
+      "createdAt": "2026-11-16T12:16:40.337Z",
+      "updatedAt": "2026-11-16T12:16:40.413Z",
+      "finishedAt": "2026-11-16T12:16:40.413Z",
+      "priority": 10,
+      "attempts": 0,
+      "maxAttempts": 2,
+      "cancelRequestedAt": "2026-11-16T12:16:40.413Z"
+    },
+    {
+      "id": "01a1e449-bb3e-7001-a14a-a3f38fb0a510",
+      "type": "chat.turn",
+      "status": "cancelled",
+      "payload": {
+        "conversationId": "01a1e449-bb30-7000-9153-ece73d0594e5",
+        "runId": "01a1e449-bb3e-7000-8f4d-e371e677c3e3"
+      },
+      "brandId": "01a1e449-b8cd-7000-af13-a51dff3a877f",
+      "createdAt": "2026-11-16T12:16:39.740Z",
+      "updatedAt": "2026-11-16T12:16:40.423Z",
+      "finishedAt": "2026-11-16T12:16:40.423Z",
+      "priority": 10,
+      "attempts": 0,
+      "maxAttempts": 2,
+      "cancelRequestedAt": "2026-11-16T12:16:40.423Z"
+    },
+    {
+      "id": "01a1e449-bafd-7001-9a67-34431b4b9e58",
+      "type": "chat.turn",
+      "status": "cancelled",
+      "payload": {
+        "conversationId": "01a1e449-baed-7000-af4c-f33ca06861fa",
+        "runId": "01a1e449-bafd-7000-bd24-a8ebcfd34968"
+      },
+      "brandId": "01a1e449-b8cd-7000-af13-a51dff3a877f",
+      "createdAt": "2026-11-16T12:16:39.674Z",
+      "updatedAt": "2026-11-16T12:16:40.433Z",
+      "finishedAt": "2026-11-16T12:16:40.433Z",
+      "priority": 10,
+      "attempts": 0,
+      "maxAttempts": 2,
+      "cancelRequestedAt": "2026-11-16T12:16:40.433Z"
+    },
+    {
+      "id": "01a1e449-ba99-7003-a7e6-2149b0c7ea77",
+      "type": "chat.turn",
+      "status": "cancelled",
+      "payload": {
+        "conversationId": "01a1e449-ba87-7000-8749-122836fa79f4",
+        "runId": "01a1e449-ba99-7002-935f-6f891b07f22c"
+      },
+      "brandId": "01a1e449-b8cd-7000-af13-a51dff3a877f",
+      "createdAt": "2026-11-16T12:16:39.575Z",
+      "updatedAt": "2026-11-16T12:16:40.442Z",
+      "finishedAt": "2026-11-16T12:16:40.442Z",
+      "priority": 10,
+      "attempts": 0,
+      "maxAttempts": 2,
+      "cancelRequestedAt": "2026-11-16T12:16:40.442Z"
+    },
+    {
+      "id": "01a1e449-b93d-7001-a0c0-e3698f034388",
+      "type": "chat.turn",
+      "status": "cancelled",
+      "payload": {
+        "conversationId": "01a1e449-b92b-7000-8c6f-8fbf8559dd69",
+        "runId": "01a1e449-b93d-7000-a86c-300a415b17a2"
+      },
+      "brandId": "01a1e449-b8cd-7000-af13-a51dff3a877f",
+      "createdAt": "2026-11-16T12:16:39.226Z",
+      "updatedAt": "2026-11-16T12:16:40.452Z",
+      "finishedAt": "2026-11-16T12:16:40.452Z",
+      "priority": 10,
+      "attempts": 0,
+      "maxAttempts": 2,
+      "cancelRequestedAt": "2026-11-16T12:16:40.452Z"
+    }
+  ],
+  "presence": {
+    "online": false,
+    "lastSeenAt": null,
+    "workers": [],
+    "currentJobs": [],
+    "queueLength": 0
+  }
+}

@@ -1,0 +1,90 @@
+{
+  "items": [
+    {
+      "id": "01a1e449-bab8-7000-a7dd-4ecd5dbb9fac",
+      "conversationId": "01a1e449-ba87-7000-8749-122836fa79f4",
+      "role": "assistant",
+      "status": "complete",
+      "runId": "01a1e449-ba99-7002-935f-6f891b07f22c",
+      "parts": [
+        {
+          "type": "text",
+          "text": "Tamam. Kapak postunu @image ile, saklama ipucunu @image-1 ile hazırlıyorum."
+        },
+        {
+          "type": "progress",
+          "stepId": "posts",
+          "label": "Postlar hazırlanıyor",
+          "state": "done",
+          "detail": null,
+          "current": 4,
+          "total": 4
+        }
+      ],
+      "mentions": [],
+      "createdAt": "2026-11-16T12:16:39.606Z",
+      "updatedAt": "2026-11-16T12:16:39.618Z"
+    },
+    {
+      "id": "01a1e449-ba98-7000-8868-1c8f17583140",
+      "conversationId": "01a1e449-ba87-7000-8749-122836fa79f4",
+      "role": "user",
+      "status": "complete",
+      "runId": null,
+      "parts": [
+        {
+          "type": "text",
+          "text": "Hasat serisi için dört post hazırla. @image tarladan, @image-1 depodan; ilk postta @image kullan."
+        },
+        {
+          "type": "attachment",
+          "assetId": "01a1e449-ba6c-7000-83fb-72e2f7172518",
+          "kind": "image",
+          "mimeType": "image/png",
+          "width": 540,
+          "height": 675,
+          "filename": "tarla.png",
+          "alias": "image",
+          "aliasId": "01a1e449-ba99-7000-8fd1-5a43a6413b43"
+        },
+        {
+          "type": "attachment",
+          "assetId": "01a1e449-ba7b-7000-89f2-5085434440c3",
+          "kind": "image",
+          "mimeType": "image/png",
+          "width": 540,
+          "height": 675,
+          "filename": "depo.png",
+          "alias": "image-1",
+          "aliasId": "01a1e449-ba99-7001-9d24-f80acbc4e2d4"
+        }
+      ],
+      "mentions": [
+        {
+          "alias": "image",
+          "aliasId": "01a1e449-ba99-7000-8fd1-5a43a6413b43",
+          "assetId": "01a1e449-ba6c-7000-83fb-72e2f7172518",
+          "start": 37,
+          "end": 43
+        },
+        {
+          "alias": "image-1",
+          "aliasId": "01a1e449-ba99-7001-9d24-f80acbc4e2d4",
+          "assetId": "01a1e449-ba7b-7000-89f2-5085434440c3",
+          "start": 54,
+          "end": 62
+        },
+        {
+          "alias": "image",
+          "aliasId": "01a1e449-ba99-7000-8fd1-5a43a6413b43",
+          "assetId": "01a1e449-ba6c-7000-83fb-72e2f7172518",
+          "start": 83,
+          "end": 89
+        }
+      ],
+      "createdAt": "2026-11-16T12:16:39.575Z",
+      "updatedAt": "2026-11-16T12:16:39.575Z"
+    }
+  ],
+  "nextCursor": null
+}

@@ -1,0 +1,21 @@
+{
+  "id": "01a1e449-bb8d-7000-8fe2-6e2efa79e613",
+  "brandId": "01a1e449-b8cd-7000-af13-a51dff3a877f",
+  "type": "post",
+  "title": "Venta Borinc",
+  "brief": "Venta Borinc ilk kez tanıtılıyor; bor ve çinkonun birlikte etkisi.",
+  "status": "draft",
+  "targetPlatforms": [
+    "instagram",
+    "facebook"
+  ],
+  "caption": "Bor ve çinko bir arada. Venta Borinc ile tanışın.\nAyrıntılar için bayinize danışın.\n\n#mtmagro #venta #borinc #bor #çinko #bitkibesleme",
+  "currentVersion": {
+    "id": "01a1e449-bbb4-7000-9fc8-15daea747a8f",
+    "version": 1,
+    "contentHash": "3686386c42d67dfe500fc6ef1f58bf0a9370156757cab9ac595e40067450c985"
+  },
+  "approval": null,
+  "createdAt": "2026-11-16T12:16:39.820Z",
+  "updatedAt": "2026-11-16T12:16:39.874Z"
+}

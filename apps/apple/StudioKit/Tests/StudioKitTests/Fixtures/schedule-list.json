@@ -1,0 +1,19 @@
+{
+  "items": [
+    {
+      "id": "01a1e449-bd85-7000-8f9c-96c1bf4859f4",
+      "contentId": "01a1e449-bb8e-700a-b9ed-4d7529a974ba",
+      "brandId": "01a1e449-b8cd-7000-af13-a51dff3a877f",
+      "platform": "instagram",
+      "socialAccountId": "01a1e449-b8fe-7000-a662-50740e98e952",
+      "versionId": "01a1e449-bd65-7000-82f8-3d4aa30c6b31",
+      "contentHash": "bef3d88c16f8d15b81969251efb27b43eb7ac31c0445a97047addcf0496dd4ae",
+      "scheduledAt": "2026-11-30T06:00:00.000Z",
+      "status": "pending",
+      "cancelledAt": null,
+      "createdAt": "2026-11-16T12:16:40.325Z",
+      "updatedAt": "2026-11-16T12:16:40.325Z"
+    }
+  ],
+  "nextCursor": null
+}

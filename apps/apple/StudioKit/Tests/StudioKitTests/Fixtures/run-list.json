@@ -1,0 +1,35 @@
+{
+  "items": [
+    {
+      "id": "01a1e449-bd93-7000-ac96-9705b7245bde",
+      "conversationId": "01a1e449-bb30-7000-9153-ece73d0594e5",
+      "triggerMessageId": "01a1e449-bd92-7000-a6ba-6599bf6959f0",
+      "jobId": "01a1e449-bd93-7001-a9e8-851512783bd2",
+      "status": "completed",
+      "attempt": 1,
+      "model": "seed",
+      "usage": null,
+      "error": null,
+      "createdAt": "2026-11-16T12:16:40.337Z",
+      "updatedAt": "2026-11-16T12:16:40.391Z",
+      "startedAt": "2026-11-16T12:16:40.350Z",
+      "finishedAt": "2026-11-16T12:16:40.391Z"
+    },
+    {
+      "id": "01a1e449-bb3e-7000-8f4d-e371e677c3e3",
+      "conversationId": "01a1e449-bb30-7000-9153-ece73d0594e5",
+      "triggerMessageId": "01a1e449-bb3d-7000-86b8-539abf5b1743",
+      "jobId": "01a1e449-bb3e-7001-a14a-a3f38fb0a510",
+      "status": "completed",
+      "attempt": 1,
+      "model": "seed",
+      "usage": null,
+      "error": null,
+      "createdAt": "2026-11-16T12:16:39.740Z",
+      "updatedAt": "2026-11-16T12:16:39.799Z",
+      "startedAt": "2026-11-16T12:16:39.753Z",
+      "finishedAt": "2026-11-16T12:16:39.799Z"
+    }
+  ],
+  "nextCursor": null
+}

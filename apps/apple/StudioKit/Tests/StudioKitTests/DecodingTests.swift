@@ -1,0 +1,140 @@
+import Foundation
+import Testing
+@testable import StudioKit
+
+/// Responses captured from the running local API (scripts/capture-fixtures.sh).
+@Suite("Decoding captured API responses")
+struct DecodingTests {
+    @Test func health() throws {
+        let health = try Fixture.decode(HealthResponse.self, "health")
+        #expect(health.service == "studio-api")
+        #expect(health.checks.db == "ok")
+    }
+
+    @Test func brandsAndAccounts() throws {
+        let brands = try Fixture.decode(Page<Brand>.self, "brand-list").items
+        #expect(brands.map(\.name).contains("MTM Agro"))
+        #expect(brands.allSatisfy { $0.status == .active })
+        let accounts = try Fixture.decode(Page<SocialAccount>.self, "social-account-list").items
+        #expect(Set(accounts.map(\.platform)) == [.instagram, .facebook, .linkedin])
+        #expect(accounts.first { $0.platform == .linkedin }?.status == .pending)
+    }
+
+    @Test func contentsVersionsAndHash() throws {
+        let contents = try Fixture.decode(Page<Content>.self, "content-list").items
+        #expect(contents.count == 12)
+        #expect(contents.contains { $0.status == .scheduled })
+        let content = try Fixture.decode(Content.self, "content")
+        let version = try Fixture.decode(ContentVersion.self, "content-version")
+        #expect(version.contentId == content.id)
+        // The hash the app recomputes equals the server's (computeContentHash).
+        #expect(ContentHash.compute(version.slides) == version.contentHash)
+        #expect(content.currentVersion?.contentHash == version.contentHash)
+        // The seeded "Venta Borinc" leaves an empty image slot.
+        let slots = SlotScanner.slots(in: version.slides)
+        #expect(slots.count == 1)
+        #expect(slots.first?.isEmpty == true)
+        #expect(slots.first?.ratio == "1:1")
+        #expect(CaptionParts(caption: content.caption).hashtags.first == "#mtmagro")
+    }
+
+    @Test func plansSchedulesJobsPresence() throws {
+        let plans = try Fixture.decode(Page<Plan>.self, "plan-list").items
+        #expect(plans.map(\.status) == [.proposed, .accepted])
+        let accepted = try #require(plans.first { $0.status == .accepted })
+        #expect(accepted.items.count == 12)
+        #expect(accepted.userImageItemCount == 6)
+        #expect(accepted.items.allSatisfy { $0.contentId != nil })
+        #expect(accepted.items.first?.date == CalendarDay(year: 2026, month: 11, day: 4))
+        let schedules = try Fixture.decode(Page<Schedule>.self, "schedule-list").items
+        #expect(schedules.first?.status == .pending)
+        let jobs = try Fixture.decode(Page<Job>.self, "job-list").items
+        #expect(!jobs.isEmpty)
+        let presence = try Fixture.decode(WorkerPresence.self, "presence")
+        #expect(presence.online == false)
+    }
+
+    @Test func conversationsMessagesAliases() throws {
+        let conversations = try Fixture.decode(Page<Conversation>.self, "conversation-list").items
+        #expect(conversations.first?.title == "Kasım planı")
+        let messages = try Fixture.decode(Page<Message>.self, "message-list").items
+        #expect(messages.contains { message in message.parts.contains { if case .planProposal = $0 { true } else { false } } })
+
+        let withAttachments = try Fixture.decode(Page<Message>.self, "message-list-attachments").items
+        let user = try #require(withAttachments.first { $0.role == .user })
+        let attachments = user.parts.compactMap { if case .attachment(let a) = $0 { a } else { nil } }
+        #expect(attachments.map(\.alias) == ["image", "image-1"])
+        #expect(attachments.allSatisfy { $0.aliasId != nil })
+        let mentions = try #require(user.mentions)
+        #expect(mentions.map(\.alias) == ["image", "image-1", "image"])
+        // Server offsets are UTF-16 and match the local resolver exactly.
+        let aliases = try Fixture.decode(Page<ConversationAlias>.self, "alias-list").items
+        #expect(aliases.map(\.alias) == ["image", "image-1"])
+        #expect(MentionText.resolve(user.plainText, aliases: aliases.map(MentionText.Target.init)) == mentions)
+        let assistant = try #require(withAttachments.first { $0.role == .assistant })
+        #expect(assistant.mentions == [])
+
+        let runs = try Fixture.decode(Page<AgentRun>.self, "run-list").items
+        #expect(runs.allSatisfy { $0.status == .completed })
+        let asset = try Fixture.decode(Asset.self, "asset")
+        #expect(asset.kind == .image)
+    }
+
+    @Test func errorShapes() throws {
+        let notFound = StudioAPIError.from(status: 404, body: try Fixture.data("error-not-found"))
+        #expect(notFound.code == .notFound)
+        let mismatch = StudioAPIError.from(status: 409, body: try Fixture.data("error-hash-mismatch"))
+        #expect(mismatch.code == .hashMismatch)
+        let validation = StudioAPIError.from(status: 400, body: try Fixture.data("error-validation"))
+        guard case .server(_, .validationError, _, let issues) = validation else {
+            Issue.record("expected a validation error, got \(validation)")
+            return
+        }
+        #expect(issues.first?.path == "name")
+    }
+
+    @Test func streamFrames() throws {
+        guard case .snapshot(let jobs, _) = try JobStreamMessage.decode(Fixture.text("stream-jobs-snapshot")) else {
+            Issue.record("expected jobs.snapshot")
+            return
+        }
+        #expect(!jobs.isEmpty)
+        #expect(try JobStreamMessage.decode(Fixture.text("stream-pong")) == .pong(ts: 1_763_290_000_000))
+
+        guard case .snapshot(let snapshot) = try ConversationStreamMessage.decode(Fixture.text("stream-conversation-snapshot")) else {
+            Issue.record("expected conversation.snapshot")
+            return
+        }
+        #expect(snapshot.conversation.title == "Kasım planı")
+        #expect(snapshot.plans.count == 2)
+        #expect(snapshot.messages.first?.role == .user)
+    }
+
+    /// Replaying the stored events from an earlier seq reproduces the snapshot.
+    @Test func resumeReplaysToTheSnapshot() throws {
+        guard case .snapshot(let snapshot) = try ConversationStreamMessage.decode(Fixture.text("stream-conversation-snapshot")) else {
+            Issue.record("expected conversation.snapshot")
+            return
+        }
+        let frames = try JSONSerialization.jsonObject(with: Fixture.data("stream-conversation-resume")) as! [Any]
+        let decoded = try frames.map { frame in
+            try ConversationStreamMessage.decode(String(decoding: JSONSerialization.data(withJSONObject: frame), as: UTF8.self))
+        }
+        #expect(decoded.last.map { if case .resumed = $0 { true } else { false } } == true)
+        // Rewind the snapshot to just before the replayed events and re-apply them:
+        // every event is an idempotent upsert, so the result must equal the snapshot.
+        let firstSeq = try #require(decoded.first?.seq)
+        var state: ConversationState? = ConversationState(snapshot: snapshot)
+        state?.seq = firstSeq - 1
+        for frame in decoded { state = ConversationState.apply(state, frame) }
+        let final = try #require(state)
+        #expect(final.stale == false)
+        #expect(final.seq == snapshot.seq)
+        #expect(final.messages == snapshot.messages)
+        #expect(final.plans.map(\.id) == snapshot.plans.map(\.id))
+        // lastActivityAt may differ by milliseconds: the server stamps it after building the event.
+        var conversation = final.conversation
+        conversation.lastActivityAt = snapshot.conversation.lastActivityAt
+        #expect(conversation == snapshot.conversation)
+    }
+}

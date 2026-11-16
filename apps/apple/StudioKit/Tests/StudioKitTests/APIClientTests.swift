@@ -1,0 +1,149 @@
+import Foundation
+import Testing
+@testable import StudioKit
+
+@Suite("API client")
+struct APIClientTests {
+    private func client(_ handler: @escaping StubURLProtocol.Handler, auth: any AuthProvider = NoAuth()) -> (APIClient, String) {
+        let host = uniqueHost()
+        let session = StubURLProtocol.session(host: host, handler: handler)
+        return (APIClient(baseURL: URL(string: "http://\(host):8787/")!, auth: auth, session: session), host)
+    }
+
+    @Test func buildsRequestsAndDecodes() async throws {
+        let body = try Fixture.data("content-list")
+        let (api, host) = client { _, _ in .init(status: 200, body: body) }
+        let contents = try await api.contents(brandId: "b 1", status: .draft)
+        #expect(contents.count == 12)
+        let request = try #require(StubURLProtocol.recorded(host: host).first?.0)
+        #expect(request.httpMethod == "GET")
+        #expect(request.url?.path == "/api/contents")
+        let query = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems ?? []
+        #expect(query.contains(URLQueryItem(name: "brandId", value: "b 1")))
+        #expect(query.contains(URLQueryItem(name: "status", value: "draft")))
+        #expect(query.contains(URLQueryItem(name: "limit", value: "100")))
+    }
+
+    @Test func followsCursors() async throws {
+        let (api, host) = client { request, _ in
+            let cursor = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems?.first { $0.name == "cursor" }?.value
+            let page = cursor == nil
+                ? #"{"items":[{"id":"b1","name":"A","slug":"a","defaultLanguage":"tr","status":"active","createdAt":"2026-11-16T10:00:00.000Z","updatedAt":"2026-11-16T10:00:00Z"}],"nextCursor":"next"}"#
+                : #"{"items":[{"id":"b2","name":"B","slug":"b","defaultLanguage":"tr","status":"archived","createdAt":"2026-11-16T10:00:00.000Z","updatedAt":"2026-11-16T10:00:00.000Z"}],"nextCursor":null}"#
+            return .init(status: 200, body: Data(page.utf8))
+        }
+        let brands = try await api.brands(status: nil)
+        #expect(brands.map(\.id) == ["b1", "b2"])
+        #expect(StubURLProtocol.recorded(host: host).count == 2)
+    }
+
+    @Test func sendsAccessServiceTokenFromTheStore() async throws {
+        let store = InMemoryCredentialStore(AccessServiceToken(clientId: "id.access", clientSecret: "s3cret"))
+        let (api, host) = client({ _, _ in .init(status: 200, body: try Fixture.data("presence")) }, auth: AccessServiceTokenAuth(store: store))
+        _ = try await api.presence()
+        let request = try #require(StubURLProtocol.recorded(host: host).first?.0)
+        #expect(request.value(forHTTPHeaderField: "CF-Access-Client-Id") == "id.access")
+        #expect(request.value(forHTTPHeaderField: "CF-Access-Client-Secret") == "s3cret")
+
+        try store.delete()
+        _ = try await api.presence()
+        let second = try #require(StubURLProtocol.recorded(host: host).last?.0)
+        #expect(second.value(forHTTPHeaderField: "CF-Access-Client-Id") == nil)
+    }
+
+    @Test func approvePostsTheHash() async throws {
+        let content = try Fixture.data("content")
+        let (api, host) = client { _, _ in .init(status: 200, body: content) }
+        _ = try await api.approveContent("c1", hash: "abc")
+        let (request, body) = try #require(StubURLProtocol.recorded(host: host).first)
+        #expect(request.httpMethod == "POST")
+        #expect(request.url?.path == "/api/contents/c1/approve")
+        #expect(request.value(forHTTPHeaderField: "Content-Type") == "application/json")
+        #expect(try JSONSerialization.jsonObject(with: body) as? [String: String] == ["hash": "abc"])
+    }
+
+    @Test func mapsTheErrorShape() async throws {
+        let mismatch = try Fixture.data("error-hash-mismatch")
+        let (api, _) = client { _, _ in .init(status: 409, body: mismatch) }
+        await #expect(throws: StudioAPIError.self) { _ = try await api.approveContent("c1", hash: "x") }
+        do {
+            _ = try await api.approveContent("c1", hash: "x")
+        } catch {
+            #expect(error.code == .hashMismatch)
+            #expect(error.errorDescription?.contains("değişti") == true)
+        }
+    }
+
+    @Test func mapsNonContractResponses() async throws {
+        let (html, _) = client { _, _ in .init(status: 200, body: Data("<html>Access</html>".utf8), headers: ["Content-Type": "text/html"]) }
+        do {
+            _ = try await html.presence()
+            Issue.record("expected a failure")
+        } catch {
+            guard case .unexpectedResponse = error else { Issue.record("got \(error)"); return }
+        }
+
+        let (forbidden, _) = client { _, _ in .init(status: 403, body: Data("denied".utf8), headers: [:]) }
+        do {
+            _ = try await forbidden.presence()
+            Issue.record("expected a failure")
+        } catch {
+            #expect(error == .unauthorized(status: 403))
+        }
+
+        let (offline, _) = client { _, _ in throw URLError(.cannotConnectToHost) }
+        do {
+            _ = try await offline.presence()
+            Issue.record("expected a failure")
+        } catch {
+            #expect(error == .offline)
+            #expect(error.isConnectivity)
+        }
+    }
+
+    @Test func rejectsBadBaseURLs() throws {
+        let api = APIClient(baseURL: URL(string: "ftp://example.com")!)
+        #expect(throws: StudioAPIError.self) { _ = try api.url("/api/health") }
+        let ws = try APIClient(baseURL: URL(string: "https://studio.example.com")!).conversationStreamURL("c 1", after: 7)
+        #expect(ws.absoluteString == "wss://studio.example.com/api/conversations/c%201/stream?after=7")
+    }
+
+    @Test func uploadsMultipartWithProgress() async throws {
+        let asset = try Fixture.data("asset")
+        let (api, host) = client { _, _ in .init(status: 201, body: asset) }
+        let progress = ProgressBox()
+        let file = UploadFile(filename: "tarla.png", mimeType: "image/png", data: Data([0x89, 0x50, 0x4E, 0x47]), width: 540, height: 675)
+        let uploaded = try await api.uploadAsset(file, brandId: "brand-1") { progress.add($0) }
+        #expect(uploaded.kind == .image)
+        #expect(progress.values.last == 1)
+        let (request, body) = try #require(StubURLProtocol.recorded(host: host).first)
+        #expect(request.value(forHTTPHeaderField: "Content-Type")?.hasPrefix("multipart/form-data; boundary=") == true)
+        let text = String(decoding: body, as: UTF8.self)
+        #expect(text.contains("name=\"brandId\"\r\n\r\nbrand-1\r\n"))
+        #expect(text.contains("name=\"kind\"\r\n\r\nimage\r\n"))
+        #expect(text.contains("name=\"width\"\r\n\r\n540\r\n"))
+        #expect(text.contains("filename=\"tarla.png\"\r\nContent-Type: image/png"))
+    }
+
+    @Test func messageWireUsesAttachmentsWithAliases() throws {
+        let message = OutgoingMessage(
+            text: "  @image tarladan  ", attachments: [OutgoingAttachment(assetId: "a1", alias: "image"), OutgoingAttachment(assetId: "a2", alias: nil)],
+            clientMessageId: "k1")
+        let json = try JSONSerialization.jsonObject(with: MessageWire.encode(message)) as! [String: Any]
+        #expect(json["text"] as? String == "@image tarladan")
+        #expect(json["attachmentAssetIds"] == nil)
+        let attachments = json["attachments"] as! [[String: String]]
+        #expect(attachments == [["assetId": "a1", "alias": "image"], ["assetId": "a2"]])
+        #expect(json["clientMessageId"] as? String == "k1")
+
+        let plain = try JSONSerialization.jsonObject(with: MessageWire.encode(OutgoingMessage(text: "merhaba", clientMessageId: "k2"))) as! [String: Any]
+        #expect(plain["attachments"] == nil)
+    }
+}
+
+final class ProgressBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: [Double] = []
+    func add(_ value: Double) { lock.withLock { stored.append(value) } }
+    var values: [Double] { lock.withLock { stored } }
+}
