@@ -23,7 +23,8 @@ TEAM=$(security cms -D -i "$PROFILE" | plutil -extract TeamIdentifier.0 raw -)
 IDENTITY=$(security find-identity -v -p codesigning | grep "Apple Development" | head -1 | awk '{print $2}')
 
 xcodebuild -project StudioIOS.xcodeproj -scheme StudioIOS -configuration Debug \
-  -destination 'generic/platform=iOS' -derivedDataPath build/DeviceData CODE_SIGNING_ALLOWED=NO build -quiet
+  -destination 'generic/platform=iOS' -derivedDataPath build/DeviceData CODE_SIGNING_ALLOWED=NO \
+  ENABLE_DEBUG_DYLIB=NO build -quiet
 APP=build/DeviceData/Build/Products/Debug-iphoneos/Studio.app
 cp "$PROFILE" "$APP/embedded.mobileprovision"
 
@@ -38,11 +39,16 @@ cat > "$ENT" <<EOF
 <key>keychain-access-groups</key><array><string>$TEAM.net.burakkoc.studio.ios</string></array>
 </dict></plist>
 EOF
+# Every nested binary must be signed too (frameworks, and any *.dylib next to the
+# executable, e.g. Xcode's debug dylib), or dyld refuses to load it at launch.
 if [ -d "$APP/Frameworks" ]; then
   for fw in "$APP"/Frameworks/*; do codesign -f -s "$IDENTITY" "$fw"; done
 fi
+for lib in "$APP"/*.dylib; do [ -e "$lib" ] && codesign -f -s "$IDENTITY" "$lib"; done
 codesign -f -s "$IDENTITY" --entitlements "$ENT" "$APP"
 rm -f "$ENT"
 
+codesign --verify --deep --strict "$APP"
 xcrun devicectl device install app --device "$DEVICE" "$APP"
-echo "Kuruldu: net.burakkoc.studio.ios → $DEVICE"
+xcrun devicectl device process launch --device "$DEVICE" --terminate-existing net.burakkoc.studio.ios >/dev/null
+echo "Kuruldu ve açıldı: net.burakkoc.studio.ios → $DEVICE"
