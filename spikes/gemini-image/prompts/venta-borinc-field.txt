@@ -1,0 +1,67 @@
+Create a professional commercial product photograph.
+
+REFERENCES
+- Image 1: the product, a white stand-up fertilizer pouch. Use it as the exact product: same shape, proportions, colours, logo and label layout.
+- Image 2: a close-up of the same label, for reading its layout and typography.
+
+SCENE
+The pouch stands upright on rich, dark, freshly tilled soil at the edge of a cultivated field. Rows of young green crop plants recede into the distance. Early-morning golden-hour light, warm backlight, softly blurred background (85mm lens look, shallow depth of field). Natural contact shadow on the soil, a few small seedlings near the base. The pouch is the hero: centred, front-facing, perfectly sharp, occupying about 70 percent of the frame height so the label is large and readable. No people, no hands, no props, no text or logos outside the pouch, no watermark. Vertical 4:5.
+
+LABEL: REPRODUCE EXACTLY
+The label must match the reference in layout and must contain exactly the text below, character for character. Do not paraphrase, translate, shorten, reorder, correct or invent any word or number. Each item appears once, in the same position as in the reference. Render every line crisp and legible.
+
+Language: the body text is Turkish and keeps its diacritics (İ ı Ş ş Ğ ğ Ü ü Ö ö Ç ç). The brand lines "EC FERTILIZER", "VENTA BY", "MTM AGRO", "VENTA" and "BORINC" are plain Latin capitals: write I without a dot in them.
+
+Critical values: these numbers and identifiers must be exact, digit for digit: "+90 507 036 49 39", "256 Sk. No:3b", "100-150 g/da", "80-100 g/da", "50-80 g/da", "100-120 L/Da", "50-60 L/da", "10", "6132", "2026TK15056", "5°C – 45°C", "15 dakika", "3 yıldır".
+
+TOP BAND
+- Left: two hexagon badges, "B" (orange) and "Zn" (green).
+- Centre: the square monogram logo from the reference.
+- Right: "VENTA BY", below it "MTM AGRO", below it in tiny type "MTM KİMYA TARIM SAN. VE TİC. LTD. ŞTİ."
+
+CENTRE BLOCK
+- "EC FERTILIZER"
+- "Bor (B) ve Çinko (Zn-Sülfat)"
+- "Mikro Bitki Besin Maddeleri Karışımı"
+- Large black italic logotype "VENTA" with a green triangle inside the last A.
+- Bold green "BORINC"
+
+LEFT COLUMN
+Heading: "İMALATÇI FİRMA"
+Bold line: "MTM KİMYA TARIM SANAYİ VE TİCARET LİMİTED ŞİRKETİ"
+Line: "Gaziler Mah.Küçük Esnaflar Sanayi Sitesi 256 Sk. No:3b Kepez, Antalya"
+Bold line: "info@mtmagro.com - www.mtmagro.com - +90 507 036 49 39"
+
+Heading: "KULLANIMDA GÜVENLİK KURALLARI"
+Paragraph: "Kullanmadan önce etiketi okuyunuz. Uygulama sırasında koruyucu eldiven, gözlük ve maske kullanınız; bir şey yiyip içmeyiniz, sigara kullanmayınız. Cilt temasında bol su ve sabunla yıkayınız. Gözle temasta en az 15 dakika bol suyla yıkayıp tıbbi yardım alınız. Yutulması halinde ağzı bol suyla çalkalayınız, kusturmayınız ve derhal doktora başvurunuz. Gıda ve yemlerden uzak tutunuz. Toprak ve/veya yaprak analizi yaptırılarak ürünün kullanılması tavsiye edilir."
+
+Heading: "DEPOLAMA BİLGİLERİ"
+Paragraph: "Serin, kuru, iyi havalandırılan ve güneş almayan yerde (5°C – 45°C) saklayınız. Orijinal ambalajında, ağzı kapalı muhafaza ediniz. Gıda, yem ve ilaçlardan ayrı; çocukların ve hayvanların erişemeyeceği yerlerde tutunuz. Açılan ambalajı sıkıca kapatıp kısa sürede tüketiniz. Uygun koşullarda raf ömrü 3 yıldır."
+
+Heading: "FİRMA BEYANI"
+Paragraph: "Bu ürün mevzuata uygun olarak üretilmiştir. Etiket ve kullanım talimatlarına uyulması koşuluyla kalitesi firmamızın garantisi altındadır. Hatalı kullanım, depolama ve uygunsuz karışımlardan doğabilecek zararlardan firmamız sorumlu tutulamaz."
+
+Heading: "KARIŞABİLİRLİK BİLGİLERİ"
+Paragraph: "Ürünlerimiz genel olarak yaygın kullanılan bitki besleme ürünleri ve bitki koruma preparatları ile karışabilir niteliktedir."
+
+RIGHT COLUMN
+Heading: "KULLANIM YERİ ZAMANI VE DOZU"
+Table with three columns and a header row: "Bitki Türü" | "Uygulama Süreci" | "Doz (Yapraktan)"
+Row 1: "Meyve ağaçları (sert çekirdekli, yumuşak çekirdekli, narenciye, zeytin, şaraplık üzüm vb.)" | "Olgunlaşma öncesi, hasat öncesi ve hasat sonrası uygulama" | "100-150 g/da"
+Row 2: "Yapraklı ve çiçekli sebzeler (marul, lahana, hindiba vb.)" | "4-6 yaprak aşamasından başlayarak her 12-15 günde 1-2 uygulama" | "80-100 g/da"
+Row 3: "Sebzeler (domates, biber, kabak vb.)" | "Çiçek öncesi ve olgunlaşma öncesi" | "100-150 g/da"
+Row 4: "Tahıllar ve endüstriyel ürünler" | "4-6 yaprak aşamasından başlayarak her 12-15 günde 2-3 uygulama" | "80-100 g/da"
+Row 5: "Fidanlıklar ve süs bitkileri" | "Vejetatif başlangıçta her 12-15 günde 1-2 uygulama" | "50-80 g/da"
+Below the table: "Not:" then "*Min. Su hacmi: Genel meyve ağaçları için 100-120 L/Da, Sebzeler ve otsu bitkiler için 50-60 L/da olmalıdır."
+
+Heading: "GARANTİ EDİLEN İÇERİK"
+Table with two columns and a header row: "GARANTİ EDİLEN İÇERİK" | "% w/w"
+Row 1: "Suda Çözünür Bor (B)" | "10"
+Row 2: "Suda Çözünür Çinko (Zn)" | "10"
+
+Rounded box, two lines: "ASLA UYGUN DOZ ORANLARINI AŞMAYINIZ!" and "SADECE GEREKLİ YERLERDE KULLANINIZ!"
+Rounded box: "ULUSAL ZEHİR DANIŞMA MERKEZİ UZEM" above a row of ten small safety pictograms.
+Rounded box: "Lisans No :" with value "6132", and "Tescil No :" with value "2026TK15056"
+Rounded box: "NET AĞIRLIK" above an empty rounded rectangle followed by "kg"
+
+Green horizontal bands close the label at the top and bottom, as in the reference.

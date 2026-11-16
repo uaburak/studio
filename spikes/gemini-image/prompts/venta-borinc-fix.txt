@@ -1,0 +1,51 @@
+Edit Image 1.
+
+Image 1 is a finished product photograph. Image 2 is a close-up of the real label, for reference.
+
+Keep Image 1 exactly as it is: the scene, the pouch, the lighting, the composition, the label layout, the logos and all text that is not listed below. Change only the label text listed here so that each item reads exactly as given, character for character. Keep the same position, size, weight and colour for each corrected line.
+
+CORRECTIONS
+
+Centre block
+- The line above the product name must read: "EC FERTILIZER" (plain Latin capitals, I without a dot).
+
+Left column, under "İMALATÇI FİRMA"
+- Address line: "Gaziler Mah.Küçük Esnaflar Sanayi Sitesi 256 Sk. No:3b Kepez, Antalya"
+- Contact line: "info@mtmagro.com - www.mtmagro.com - +90 507 036 49 39"
+
+Left column, paragraph under "KULLANIMDA GÜVENLİK KURALLARI"
+"Kullanmadan önce etiketi okuyunuz. Uygulama sırasında koruyucu eldiven, gözlük ve maske kullanınız; bir şey yiyip içmeyiniz, sigara kullanmayınız. Cilt temasında bol su ve sabunla yıkayınız. Gözle temasta en az 15 dakika bol suyla yıkayıp tıbbi yardım alınız. Yutulması halinde ağzı bol suyla çalkalayınız, kusturmayınız ve derhal doktora başvurunuz. Gıda ve yemlerden uzak tutunuz. Toprak ve/veya yaprak analizi yaptırılarak ürünün kullanılması tavsiye edilir."
+
+Left column, paragraph under "DEPOLAMA BİLGİLERİ"
+"Serin, kuru, iyi havalandırılan ve güneş almayan yerde (5°C – 45°C) saklayınız. Orijinal ambalajında, ağzı kapalı muhafaza ediniz. Gıda, yem ve ilaçlardan ayrı; çocukların ve hayvanların erişemeyeceği yerlerde tutunuz. Açılan ambalajı sıkıca kapatıp kısa sürede tüketiniz. Uygun koşullarda raf ömrü 3 yıldır."
+
+Left column, paragraph under "FİRMA BEYANI"
+"Bu ürün mevzuata uygun olarak üretilmiştir. Etiket ve kullanım talimatlarına uyulması koşuluyla kalitesi firmamızın garantisi altındadır. Hatalı kullanım, depolama ve uygunsuz karışımlardan doğabilecek zararlardan firmamız sorumlu tutulamaz."
+
+Left column, paragraph under "KARIŞABİLİRLİK BİLGİLERİ"
+"Ürünlerimiz genel olarak yaygın kullanılan bitki besleme ürünleri ve bitki koruma preparatları ile karışabilir niteliktedir."
+
+Right column, table under "KULLANIM YERİ ZAMANI VE DOZU"
+Header row: "Bitki Türü" | "Uygulama Süreci" | "Doz (Yapraktan)"
+Row 1: "Meyve ağaçları (sert çekirdekli, yumuşak çekirdekli, narenciye, zeytin, şaraplık üzüm vb.)" | "Olgunlaşma öncesi, hasat öncesi ve hasat sonrası uygulama" | "100-150 g/da"
+Row 2: "Yapraklı ve çiçekli sebzeler (marul, lahana, hindiba vb.)" | "4-6 yaprak aşamasından başlayarak her 12-15 günde 1-2 uygulama" | "80-100 g/da"
+Row 3: "Sebzeler (domates, biber, kabak vb.)" | "Çiçek öncesi ve olgunlaşma öncesi" | "100-150 g/da"
+Row 4: "Tahıllar ve endüstriyel ürünler" | "4-6 yaprak aşamasından başlayarak her 12-15 günde 2-3 uygulama" | "80-100 g/da"
+Row 5: "Fidanlıklar ve süs bitkileri" | "Vejetatif başlangıçta her 12-15 günde 1-2 uygulama" | "50-80 g/da"
+
+Right column, under the table
+"Not:"
+"*Min. Su hacmi: Genel meyve ağaçları için 100-120 L/Da, Sebzeler ve otsu bitkiler için 50-60 L/da olmalıdır."
+
+Right column, table under "GARANTİ EDİLEN İÇERİK"
+Header row: "GARANTİ EDİLEN İÇERİK" | "% w/w"
+Row 1: "Suda Çözünür Bor (B)" | "10"
+Row 2: "Suda Çözünür Çinko (Zn)" | "10"
+
+Right column, boxes
+- "ASLA UYGUN DOZ ORANLARINI AŞMAYINIZ!" and below it "SADECE GEREKLİ YERLERDE KULLANINIZ!"
+- "ULUSAL ZEHİR DANIŞMA MERKEZİ UZEM"
+- "Lisans No :" "6132" and "Tescil No :" "2026TK15056"
+- "NET AĞIRLIK"
+
+Do not add, remove or move anything else.

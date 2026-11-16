@@ -1,0 +1,21 @@
+{
+  "name": "@studio/contract",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Shared zod schemas and types for Studio (API, web, worker, hub protocol).",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

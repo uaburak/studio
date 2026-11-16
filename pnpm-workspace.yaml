@@ -1,0 +1,37 @@
+# Workspace packages. spikes/ is intentionally NOT included: those are
+# independent throwaway projects with their own installs.
+packages:
+  - apps/web
+  - apps/api
+  - apps/worker
+  - packages/*
+
+# Single source of truth for dependency versions. Packages reference these
+# with "catalog:" so every app uses the same pinned version.
+catalog:
+  "@biomejs/biome": 2.6.7
+  "@cloudflare/vitest-plugin": 1.8.2
+  "@hono/zod-openapi": 1.6.3
+  "@tailwindcss/vite": 4.3.5
+  "@types/node": 24.19.2
+  "@types/react": 19.3.0
+  "@types/react-dom": 19.3.0
+  "@vitejs/plugin-react": 6.3.0
+  drizzle-kit: 0.31.11
+  drizzle-orm: 0.45.4
+  esbuild: 0.28.2
+  hono: 4.13.18
+  react: 19.3.1
+  react-dom: 19.3.1
+  tailwindcss: 4.3.5
+  tsx: 4.23.15
+  typescript: 7.0.2
+  vite: 8.3.8
+  vitest: 5.1.0
+  wrangler: 4.162.0
+  zod: 4.6.7
+
+# Dependencies allowed to run install scripts (pnpm blocks all others).
+allowBuilds:
+  esbuild: true
+  workerd: true
