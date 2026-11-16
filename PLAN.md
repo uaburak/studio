@@ -4,6 +4,8 @@ Plan v0.2 · 2026-11-16 · Durum: Burak üretime geçilmesini istedi; Faz 0 yür
 
 Bu belge araştırma bulgularını, verilen kararları ve üretim planını tek yerde toplar. "Doğrulanmadı" diye işaretlenen her madde Faz 0'daki bir testle kapatılır; o testler geçmeden üzerine bir şey inşa edilmez.
 
+> **Yön düzeltmesi (2026-11-16):** Ana ürün native macOS uygulamasıdır (iOS onunla birlikte); ana yüzey bir AI sohbetidir; arayüz Liquid Glass, minimal Apple tasarımıdır. Önce altyapı tamamlanır, arayüz sonra Burak'la adım adım yapılır. Aşağıdaki web panosu ve "yalnızca komuta + onay" iOS kapsamı bu karardan önce yazıldı; güncel sıra [TASKS.md](TASKS.md) dosyasındadır.
+
 ---
 
 ## 1. Ürün özeti
