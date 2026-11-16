@@ -1,9 +1,58 @@
+import type { z } from "zod";
+import { Asset, AssetList, type AssetListQuery, type AssetUploadFields } from "./asset.ts";
+import {
+  Brand,
+  type BrandCreate,
+  BrandList,
+  type BrandListQuery,
+  type BrandUpdate,
+} from "./brand.ts";
+import {
+  BrandProfile,
+  type BrandProfileCreate,
+  BrandProfileList,
+  type BrandProfileListQuery,
+  type BrandProfileUpdate,
+} from "./brand-profile.ts";
+import { ApiErrorBody, type ErrorCode, type ErrorIssue } from "./common.ts";
+import {
+  Content,
+  type ContentCreate,
+  ContentList,
+  type ContentListQuery,
+  type ContentTransition,
+  type ContentUpdate,
+  ContentVersion,
+  type ContentVersionCreate,
+  ContentVersionList,
+  type ContentVersionListQuery,
+  type ContentVersionUpdate,
+} from "./content.ts";
 import { HealthResponse } from "./health.ts";
+import { Job, type JobCreate, JobList, type JobListQuery } from "./job.ts";
+import {
+  PublishLogList,
+  type PublishLogListQuery,
+  Schedule,
+  type ScheduleCreate,
+  ScheduleList,
+  type ScheduleListQuery,
+} from "./schedule.ts";
+import {
+  SocialAccount,
+  type SocialAccountCreate,
+  SocialAccountList,
+  type SocialAccountListQuery,
+  type SocialAccountUpdate,
+} from "./social-account.ts";
 
 export class ApiError extends Error {
   constructor(
     message: string,
     readonly status?: number,
+    /** Present when the server answered with the contract error shape. */
+    readonly code?: ErrorCode,
+    readonly issues?: ErrorIssue[],
   ) {
     super(message);
     this.name = "ApiError";
@@ -16,33 +65,227 @@ export interface ApiClientOptions {
   fetch?: typeof fetch;
 }
 
+type Query = Record<string, string | number | boolean | undefined | null>;
+
+interface RequestOptions {
+  method?: "GET" | "POST" | "PATCH" | "DELETE";
+  query?: Query | undefined;
+  json?: unknown;
+  form?: FormData;
+  init?: RequestInit | undefined;
+}
+
+/** Fields for `assets.upload`; `file` is any Blob (a `File` keeps its name). */
+export type AssetUploadInput = AssetUploadFields & { file: Blob; filename?: string };
+
+const enc = encodeURIComponent;
+
 /**
- * Minimal typed client. Every response is validated against the contract
- * schema, so a server/client mismatch fails loudly instead of silently.
+ * Typed client for the Studio API. Every response is validated against the
+ * contract schema, so a server/client mismatch fails loudly instead of
+ * silently. Non-2xx responses throw `ApiError` with the server's `code`.
  */
 export function createApiClient(options: ApiClientOptions = {}) {
   const baseUrl = (options.baseUrl ?? "").replace(/\/$/, "");
   const doFetch = options.fetch ?? globalThis.fetch.bind(globalThis);
 
-  async function getJson(path: string, init?: RequestInit): Promise<unknown> {
-    const res = await doFetch(`${baseUrl}${path}`, {
-      ...init,
-      headers: { accept: "application/json", ...init?.headers },
+  function url(path: string, query?: Query): string {
+    const params = new URLSearchParams();
+    for (const [key, value] of Object.entries(query ?? {})) {
+      if (value !== undefined && value !== null) params.set(key, String(value));
+    }
+    const qs = params.toString();
+    return `${baseUrl}${path}${qs ? `?${qs}` : ""}`;
+  }
+
+  async function send(path: string, opts: RequestOptions = {}): Promise<Response> {
+    const headers = new Headers(opts.init?.headers);
+    headers.set("accept", "application/json");
+    let body: FormData | string | undefined;
+    if (opts.form) {
+      body = opts.form;
+    } else if (opts.json !== undefined) {
+      headers.set("content-type", "application/json");
+      body = JSON.stringify(opts.json);
+    }
+    const res = await doFetch(url(path, opts.query), {
+      ...opts.init,
+      method: opts.method ?? "GET",
+      headers,
+      ...(body !== undefined ? { body } : {}),
     });
     if (!res.ok) {
+      const parsed = ApiErrorBody.safeParse(await res.json().catch(() => null));
+      if (parsed.success) {
+        const { code, message, issues } = parsed.data.error;
+        throw new ApiError(`${path}: ${message}`, res.status, code, issues);
+      }
       throw new ApiError(`${path} returned HTTP ${res.status}`, res.status);
     }
-    return res.json();
+    return res;
   }
+
+  async function call<S extends z.ZodType>(
+    schema: S,
+    path: string,
+    opts?: RequestOptions,
+  ): Promise<z.output<S>> {
+    const res = await send(path, opts);
+    const parsed = schema.safeParse(await res.json());
+    if (!parsed.success) {
+      throw new ApiError(`${path} response does not match the contract`, res.status);
+    }
+    return parsed.data;
+  }
+
+  const q = (query: object | undefined) => query as Query | undefined;
 
   return {
     async health(init?: RequestInit): Promise<HealthResponse> {
-      const data = await getJson("/api/health", init);
-      const parsed = HealthResponse.safeParse(data);
-      if (!parsed.success) {
-        throw new ApiError("/api/health response does not match the contract");
-      }
-      return parsed.data;
+      return call(HealthResponse, "/api/health", { init });
+    },
+
+    brands: {
+      list: (query?: BrandListQuery, init?: RequestInit) =>
+        call(BrandList, "/api/brands", { query: q(query), init }),
+      get: (id: string, init?: RequestInit) => call(Brand, `/api/brands/${enc(id)}`, { init }),
+      create: (input: BrandCreate, init?: RequestInit) =>
+        call(Brand, "/api/brands", { method: "POST", json: input, init }),
+      update: (id: string, input: BrandUpdate, init?: RequestInit) =>
+        call(Brand, `/api/brands/${enc(id)}`, { method: "PATCH", json: input, init }),
+    },
+
+    brandProfiles: {
+      list: (brandId: string, query?: BrandProfileListQuery, init?: RequestInit) =>
+        call(BrandProfileList, `/api/brands/${enc(brandId)}/profiles`, { query: q(query), init }),
+      /** Throws ApiError 404 when the brand has no approved profile yet. */
+      current: (brandId: string, init?: RequestInit) =>
+        call(BrandProfile, `/api/brands/${enc(brandId)}/profiles/current`, { init }),
+      get: (brandId: string, version: number, init?: RequestInit) =>
+        call(BrandProfile, `/api/brands/${enc(brandId)}/profiles/${version}`, { init }),
+      create: (brandId: string, input: BrandProfileCreate = {}, init?: RequestInit) =>
+        call(BrandProfile, `/api/brands/${enc(brandId)}/profiles`, {
+          method: "POST",
+          json: input,
+          init,
+        }),
+      update: (brandId: string, version: number, input: BrandProfileUpdate, init?: RequestInit) =>
+        call(BrandProfile, `/api/brands/${enc(brandId)}/profiles/${version}`, {
+          method: "PATCH",
+          json: input,
+          init,
+        }),
+      approve: (brandId: string, version: number, init?: RequestInit) =>
+        call(BrandProfile, `/api/brands/${enc(brandId)}/profiles/${version}/approve`, {
+          method: "POST",
+          init,
+        }),
+    },
+
+    socialAccounts: {
+      list: (query?: SocialAccountListQuery, init?: RequestInit) =>
+        call(SocialAccountList, "/api/social-accounts", { query: q(query), init }),
+      get: (id: string, init?: RequestInit) =>
+        call(SocialAccount, `/api/social-accounts/${enc(id)}`, { init }),
+      create: (input: SocialAccountCreate, init?: RequestInit) =>
+        call(SocialAccount, "/api/social-accounts", { method: "POST", json: input, init }),
+      update: (id: string, input: SocialAccountUpdate, init?: RequestInit) =>
+        call(SocialAccount, `/api/social-accounts/${enc(id)}`, {
+          method: "PATCH",
+          json: input,
+          init,
+        }),
+    },
+
+    assets: {
+      list: (query?: AssetListQuery, init?: RequestInit) =>
+        call(AssetList, "/api/assets", { query: q(query), init }),
+      get: (id: string, init?: RequestInit) => call(Asset, `/api/assets/${enc(id)}`, { init }),
+      upload: (input: AssetUploadInput, init?: RequestInit) => {
+        const { file, filename, ...fields } = input;
+        const form = new FormData();
+        for (const [key, value] of Object.entries(fields)) {
+          if (value !== undefined && value !== null) form.set(key, String(value));
+        }
+        const name = filename ?? (file instanceof File ? file.name : "upload");
+        form.set("file", file, name);
+        return call(Asset, "/api/assets", { method: "POST", form, init });
+      },
+      /** URL that streams the stored bytes (usable as `<img src>`). */
+      contentUrl: (id: string) => url(`/api/assets/${enc(id)}/content`),
+    },
+
+    contents: {
+      list: (query?: ContentListQuery, init?: RequestInit) =>
+        call(ContentList, "/api/contents", { query: q(query), init }),
+      get: (id: string, init?: RequestInit) => call(Content, `/api/contents/${enc(id)}`, { init }),
+      create: (input: ContentCreate, init?: RequestInit) =>
+        call(Content, "/api/contents", { method: "POST", json: input, init }),
+      update: (id: string, input: ContentUpdate, init?: RequestInit) =>
+        call(Content, `/api/contents/${enc(id)}`, { method: "PATCH", json: input, init }),
+      delete: async (id: string, init?: RequestInit): Promise<void> => {
+        await send(`/api/contents/${enc(id)}`, { method: "DELETE", init });
+      },
+      /** Approve the current version; `hash` must equal its `contentHash`. */
+      approve: (id: string, hash: string, init?: RequestInit) =>
+        call(Content, `/api/contents/${enc(id)}/approve`, {
+          method: "POST",
+          json: { hash },
+          init,
+        }),
+      transition: (id: string, to: ContentTransition["to"], init?: RequestInit) =>
+        call(Content, `/api/contents/${enc(id)}/transition`, {
+          method: "POST",
+          json: { to },
+          init,
+        }),
+      versions: {
+        list: (contentId: string, query?: ContentVersionListQuery, init?: RequestInit) =>
+          call(ContentVersionList, `/api/contents/${enc(contentId)}/versions`, {
+            query: q(query),
+            init,
+          }),
+        get: (contentId: string, version: number, init?: RequestInit) =>
+          call(ContentVersion, `/api/contents/${enc(contentId)}/versions/${version}`, { init }),
+        create: (contentId: string, input: ContentVersionCreate, init?: RequestInit) =>
+          call(ContentVersion, `/api/contents/${enc(contentId)}/versions`, {
+            method: "POST",
+            json: input,
+            init,
+          }),
+        update: (
+          contentId: string,
+          version: number,
+          input: ContentVersionUpdate,
+          init?: RequestInit,
+        ) =>
+          call(ContentVersion, `/api/contents/${enc(contentId)}/versions/${version}`, {
+            method: "PATCH",
+            json: input,
+            init,
+          }),
+      },
+    },
+
+    jobs: {
+      list: (query?: JobListQuery, init?: RequestInit) =>
+        call(JobList, "/api/jobs", { query: q(query), init }),
+      get: (id: string, init?: RequestInit) => call(Job, `/api/jobs/${enc(id)}`, { init }),
+      create: (input: JobCreate, init?: RequestInit) =>
+        call(Job, "/api/jobs", { method: "POST", json: input, init }),
+    },
+
+    schedules: {
+      list: (query?: ScheduleListQuery, init?: RequestInit) =>
+        call(ScheduleList, "/api/schedules", { query: q(query), init }),
+      get: (id: string, init?: RequestInit) =>
+        call(Schedule, `/api/schedules/${enc(id)}`, { init }),
+      create: (input: ScheduleCreate, init?: RequestInit) =>
+        call(Schedule, "/api/schedules", { method: "POST", json: input, init }),
+      cancel: (id: string, init?: RequestInit) =>
+        call(Schedule, `/api/schedules/${enc(id)}/cancel`, { method: "POST", init }),
+      logs: (id: string, query?: PublishLogListQuery, init?: RequestInit) =>
+        call(PublishLogList, `/api/schedules/${enc(id)}/logs`, { query: q(query), init }),
     },
   };
 }

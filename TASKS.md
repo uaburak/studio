@@ -28,12 +28,12 @@ Son güncelleme: 2026-11-16. Mimari ve kararlar için: [PLAN.md](PLAN.md).
 
 | No   | Görev                                                                     | Efor  | Klasör                                      |
 | ---- | ------------------------------------------------------------------------- | ----- | ------------------------------------------- |
-| F1-1 | Veri modeli ve API: D1 şeması; marka, içerik, sürüm, iş uçları            | high  | `apps/api`, `packages/contract`             |
+| F1-1 | Veri modeli ve API: D1 şeması; marka, içerik, sürüm, iş uçları (TAMAM, denetlendi) | high  | `apps/api`, `packages/contract`             |
 | F1-2 | Tasarım kiti: sözleşme, denetleyici, HTML yama araçları (denemeden ürüne) | xhigh | `packages/design-kit`                       |
 | F1-3 | Worker üretim hattı: ajan çağrısı, kalite döngüsü, render, yükleme        | xhigh | `apps/worker`                               |
 | F1-4 | Marka profili: post çekme, marka kiti yükleme, analiz, onay               | high  | `packages/brand`, `apps/api`, `apps/worker` |
-| F1-5 | Web panosu: markalar, prompt, inceleme, dışa aktarım                      | high  | `apps/web`                                  |
-| F1-6 | Hub ve iş kuyruğu (denemeden ürüne)                                       | high  | `apps/api`, `apps/worker`                   |
+| F1-5 | Web panosu: markalar, prompt, inceleme, dışa aktarım (ÇALIŞIYOR)          | high  | `apps/web`                                  |
+| F1-6 | Hub ve iş kuyruğu (denemeden ürüne) (ÇALIŞIYOR)                           | high  | `apps/api`, `apps/worker`                   |
 
 Aynı klasöre dokunan görevler aynı anda yürütülmez.
 

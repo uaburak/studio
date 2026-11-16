@@ -1,6 +1,24 @@
 import { env, exports } from "cloudflare:workers";
-import { decodeMessage, encodeMessage, HealthResponse, type Job } from "@studio/contract";
+import {
+  AssetKind,
+  AssetSource,
+  BrandProfileStatus,
+  BrandStatus,
+  ContentStatus,
+  ContentType,
+  ContentVersionOrigin,
+  decodeMessage,
+  encodeMessage,
+  HealthResponse,
+  type Job,
+  JobStatus,
+  Platform,
+  PublishLogStatus,
+  ScheduleStatus,
+  SocialAccountStatus,
+} from "@studio/contract";
 import { describe, expect, it } from "vitest";
+import { ENUMS } from "../src/db/schema.ts";
 import * as entry from "../src/index.ts";
 
 const BASE = "http://studio.test";
@@ -44,6 +62,87 @@ describe("D1 + Drizzle", () => {
       "select name from sqlite_master where type = 'table' and name = 'app_meta'",
     ).first<{ name: string }>();
     expect(row?.name).toBe("app_meta");
+  });
+
+  it("has the core model tables", async () => {
+    const { results } = await env.DB.prepare(
+      "select name from sqlite_master where type = 'table' order by name",
+    ).all<{ name: string }>();
+    expect(results.map((r) => r.name)).toEqual(
+      expect.arrayContaining([
+        "brands",
+        "social_accounts",
+        "brand_profiles",
+        "assets",
+        "contents",
+        "content_versions",
+        "content_version_slides",
+        "jobs",
+        "schedules",
+        "publish_logs",
+      ]),
+    );
+  });
+
+  it("enforces foreign keys", async () => {
+    await expect(
+      env.DB.prepare(
+        "insert into social_accounts (id, brand_id, platform, handle, status, created_at, updated_at) values ('x', 'no-such-brand', 'instagram', 'h', 'pending', 0, 0)",
+      ).run(),
+    ).rejects.toThrow(/FOREIGN KEY/);
+  });
+
+  it("keeps CHECK enums in sync with the contract", () => {
+    const pairs: Array<[readonly string[], readonly string[]]> = [
+      [ENUMS.brandStatus, BrandStatus.options],
+      [ENUMS.platform, Platform.options],
+      [ENUMS.socialAccountStatus, SocialAccountStatus.options],
+      [ENUMS.brandProfileStatus, BrandProfileStatus.options],
+      [ENUMS.assetKind, AssetKind.options],
+      [ENUMS.assetSource, AssetSource.options],
+      [ENUMS.contentType, ContentType.options],
+      [ENUMS.contentStatus, ContentStatus.options],
+      [ENUMS.versionOrigin, ContentVersionOrigin.options],
+      [ENUMS.jobStatus, JobStatus.options],
+      [ENUMS.scheduleStatus, ScheduleStatus.options],
+      [ENUMS.publishLogStatus, PublishLogStatus.options],
+    ];
+    for (const [db, contract] of pairs) expect([...db]).toEqual([...contract]);
+  });
+});
+
+describe("OpenAPI document", () => {
+  it("documents the core resources with contract schemas", async () => {
+    const res = await exports.default.fetch(`${BASE}/api/openapi.json`);
+    const doc = (await res.json()) as {
+      paths: Record<string, Record<string, unknown>>;
+      components?: { schemas?: Record<string, unknown> };
+    };
+    for (const path of [
+      "/api/brands",
+      "/api/brands/{id}",
+      "/api/brands/{brandId}/profiles",
+      "/api/brands/{brandId}/profiles/current",
+      "/api/brands/{brandId}/profiles/{version}/approve",
+      "/api/social-accounts",
+      "/api/assets",
+      "/api/assets/{id}/content",
+      "/api/contents",
+      "/api/contents/{id}/approve",
+      "/api/contents/{id}/transition",
+      "/api/contents/{id}/versions",
+      "/api/contents/{id}/versions/{version}",
+      "/api/jobs",
+      "/api/schedules",
+      "/api/schedules/{id}/cancel",
+      "/api/schedules/{id}/logs",
+    ]) {
+      expect(doc.paths, path).toHaveProperty([path]);
+    }
+    expect(doc.paths["/api/assets"]).toHaveProperty("post");
+    expect(doc.components?.schemas).toHaveProperty("ApiErrorBody");
+    expect(doc.components?.schemas).toHaveProperty("Content");
+    expect(doc.components?.schemas).toHaveProperty("ContentVersion");
   });
 });
 
