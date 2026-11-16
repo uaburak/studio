@@ -48,6 +48,14 @@ export function createMockApi() {
       get: vi.fn<C["socialAccounts"]["get"]>(notMocked("socialAccounts.get")),
       create: vi.fn<C["socialAccounts"]["create"]>(notMocked("socialAccounts.create")),
       update: vi.fn<C["socialAccounts"]["update"]>(notMocked("socialAccounts.update")),
+      putToken: vi.fn<C["socialAccounts"]["putToken"]>(notMocked("socialAccounts.putToken")),
+      checkToken: vi.fn<C["socialAccounts"]["checkToken"]>(notMocked("socialAccounts.checkToken")),
+      discoverMeta: vi.fn<C["socialAccounts"]["discoverMeta"]>(
+        notMocked("socialAccounts.discoverMeta"),
+      ),
+      connectLinkedIn: vi.fn<C["socialAccounts"]["connectLinkedIn"]>(
+        notMocked("socialAccounts.connectLinkedIn"),
+      ),
     },
     assets: {
       list: vi.fn<C["assets"]["list"]>(empty),
@@ -74,6 +82,20 @@ export function createMockApi() {
       list: vi.fn<C["jobs"]["list"]>(empty),
       get: vi.fn<C["jobs"]["get"]>(notMocked("jobs.get")),
       create: vi.fn<C["jobs"]["create"]>(notMocked("jobs.create")),
+      cancel: vi.fn<C["jobs"]["cancel"]>(notMocked("jobs.cancel")),
+      streamUrl: vi.fn<C["jobs"]["streamUrl"]>(() => "ws://localhost/api/jobs/stream"),
+      watch: vi.fn<C["jobs"]["watch"]>((_query, handlers) => {
+        handlers.onStatus?.("closed");
+        return { close: vi.fn() };
+      }),
+    },
+    workers: {
+      presence: vi.fn<C["workers"]["presence"]>(notMocked("workers.presence")),
+      claude: vi.fn<C["workers"]["claude"]>(notMocked("workers.claude")),
+      claudeLogin: vi.fn<C["workers"]["claudeLogin"]>(notMocked("workers.claudeLogin")),
+      claudeRefresh: vi.fn<C["workers"]["claudeRefresh"]>(notMocked("workers.claudeRefresh")),
+      gemini: vi.fn<C["workers"]["gemini"]>(notMocked("workers.gemini")),
+      geminiRefresh: vi.fn<C["workers"]["geminiRefresh"]>(notMocked("workers.geminiRefresh")),
     },
     schedules: {
       list: vi.fn<C["schedules"]["list"]>(empty),
@@ -81,6 +103,42 @@ export function createMockApi() {
       create: vi.fn<C["schedules"]["create"]>(notMocked("schedules.create")),
       cancel: vi.fn<C["schedules"]["cancel"]>(notMocked("schedules.cancel")),
       logs: vi.fn<C["schedules"]["logs"]>(empty),
+    },
+    conversations: {
+      list: vi.fn<C["conversations"]["list"]>(empty),
+      get: vi.fn<C["conversations"]["get"]>(notMocked("conversations.get")),
+      create: vi.fn<C["conversations"]["create"]>(notMocked("conversations.create")),
+      update: vi.fn<C["conversations"]["update"]>(notMocked("conversations.update")),
+      messages: {
+        list: vi.fn<C["conversations"]["messages"]["list"]>(empty),
+        send: vi.fn<C["conversations"]["messages"]["send"]>(notMocked("messages.send")),
+        answer: vi.fn<C["conversations"]["messages"]["answer"]>(notMocked("messages.answer")),
+        consent: vi.fn<C["conversations"]["messages"]["consent"]>(notMocked("messages.consent")),
+      },
+      aliases: {
+        list: vi.fn<C["conversations"]["aliases"]["list"]>(() => Promise.resolve({ items: [] })),
+        rename: vi.fn<C["conversations"]["aliases"]["rename"]>(notMocked("aliases.rename")),
+      },
+      runs: vi.fn<C["conversations"]["runs"]>(empty),
+      streamUrl: vi.fn<C["conversations"]["streamUrl"]>(
+        (id) => `ws://localhost/api/conversations/${id}/stream`,
+      ),
+      watch: vi.fn<C["conversations"]["watch"]>((_id, handlers) => {
+        handlers.onStatus?.("closed");
+        return { close: vi.fn(), lastSeq: undefined };
+      }),
+    },
+    agentRuns: {
+      get: vi.fn<C["agentRuns"]["get"]>(notMocked("agentRuns.get")),
+      cancel: vi.fn<C["agentRuns"]["cancel"]>(notMocked("agentRuns.cancel")),
+    },
+    plans: {
+      list: vi.fn<C["plans"]["list"]>(empty),
+      get: vi.fn<C["plans"]["get"]>(notMocked("plans.get")),
+      update: vi.fn<C["plans"]["update"]>(notMocked("plans.update")),
+      accept: vi.fn<C["plans"]["accept"]>(notMocked("plans.accept")),
+      reject: vi.fn<C["plans"]["reject"]>(notMocked("plans.reject")),
+      generate: vi.fn<C["plans"]["generate"]>(notMocked("plans.generate")),
     },
   };
 }

@@ -93,6 +93,9 @@ public enum StudioAPIError: Error, Sendable, Equatable, LocalizedError {
             case .payloadTooLarge: return "Dosya çok büyük."
             case .unsupportedMediaType: return "Bu dosya türü desteklenmiyor."
             case .validationError: return "Geçersiz istek: \(message)"
+            case .unauthorized: return "Bu cihaz Mac ile eşleşmemiş ya da anahtarı iptal edilmiş. Yeniden eşleştir."
+            case .forbidden: return "Bu işlem yalnızca Mac'te yapılabilir."
+            case .rateLimited: return "Çok fazla hatalı deneme. Birkaç dakika sonra yeniden dene."
             case .internalError, .unknown: return "Sunucu hatası: \(message)"
             }
         case .unauthorized: return "Sunucu erişimi reddetti. Ayarlar'daki erişim anahtarını kontrol et."

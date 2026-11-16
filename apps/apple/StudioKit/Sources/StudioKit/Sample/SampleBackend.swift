@@ -7,11 +7,12 @@ import UniformTypeIdentifiers
 ///
 /// Behaves like the real API without a Mac worker: sending a message stores
 /// it and starts a run that stays `queued`; accepting a plan creates draft
-/// posts and queued generation jobs; uploads are kept in memory. Only for
-/// previews, tests and screenshot renders.
+/// posts and queued generation jobs; uploads, slot fills, layer edits, brand
+/// profiles, OAuth token checks, and AI image generation are simulated in memory.
 public actor SampleBackend: ConversationService, StudioDataService {
     private var data: SampleData
     private var uploads: [EntityID: Data] = [:]
+    private var versionHistory: [EntityID: [ContentVersion]] = [:]
     private var observers: [EntityID: [UUID: AsyncStream<ConversationFeedEvent>.Continuation]] = [:]
     private var jobObservers: [UUID: AsyncStream<JobFeedEvent>.Continuation] = [:]
     private var seqs: [EntityID: Int] = [:]
@@ -22,6 +23,11 @@ public actor SampleBackend: ConversationService, StudioDataService {
     public init(data: SampleData = SampleData(), uploadDelay: Duration = .milliseconds(600)) {
         self.data = data
         self.uploadDelay = uploadDelay
+        var hist: [EntityID: [ContentVersion]] = [:]
+        for (contentId, version) in data.versions {
+            hist[contentId] = [version]
+        }
+        self.versionHistory = hist
     }
 
     private func nextId(_ prefix: String) -> String {
@@ -104,7 +110,6 @@ public actor SampleBackend: ConversationService, StudioDataService {
         if data.runs.contains(where: { $0.conversationId == conversationId && $0.status.isActive }) {
             throw StudioAPIError.server(status: 409, code: .conflict, message: "another run is active", issues: [])
         }
-        // Aliases: same rules as the server (requested name if free, else the next free automatic one).
         var aliases = data.aliases[conversationId] ?? []
         var allocator = AliasAllocator(aliases: aliases)
         let messageId = nextId("m")
@@ -144,10 +149,37 @@ public actor SampleBackend: ConversationService, StudioDataService {
         if !text.isEmpty { parts.append(.text(text)) }
         let mentions = MentionText.resolve(text, aliases: aliases.map(MentionText.Target.init))
         let stored = Message(id: messageId, conversationId: conversationId, role: .user, parts: parts, mentions: mentions, createdAt: now, updatedAt: now)
+        data.messages[conversationId, default: []].append(stored)
+
+        if text.lowercased() == "/usage" && message.attachments.isEmpty {
+            let run = AgentRun(
+                id: nextId("run"), conversationId: conversationId, triggerMessageId: stored.id, jobId: nil, status: .completed,
+                model: message.model?.sendable?.rawValue, effort: message.effort?.sendable,
+                createdAt: now, updatedAt: now, startedAt: now, finishedAt: now
+            )
+            data.runs.append(run)
+            let summary = usageSummaryText()
+            let reply = Message(
+                id: nextId("m"), conversationId: conversationId, role: .assistant, status: .complete, runId: run.id,
+                parts: [
+                    .toolStep(ToolStepPart(id: "ts-usage", name: "usage_status", label: "Kullanım ve bağlantılar okundu", state: .done, summary: "Örnek oturum")),
+                    .text(summary),
+                ],
+                createdAt: now, updatedAt: now
+            )
+            data.messages[conversationId, default: []].append(reply)
+            if let index = data.conversations.firstIndex(where: { $0.id == conversationId }) {
+                if data.conversations[index].title.isEmpty { data.conversations[index].title = "Kullanım durumu" }
+                data.conversations[index].activeRunId = nil
+                data.conversations[index].lastActivityAt = now
+            }
+            broadcast(conversationId)
+            return UserMessageResult(message: stored, run: run, replayed: false)
+        }
+
         let run = AgentRun(
             id: nextId("run"), conversationId: conversationId, triggerMessageId: stored.id, jobId: nextId("job"), status: .queued,
             model: message.model?.sendable?.rawValue, effort: message.effort?.sendable, createdAt: now, updatedAt: now)
-        data.messages[conversationId, default: []].append(stored)
         data.runs.append(run)
         data.jobs.insert(Job(id: run.jobId!, type: .chatTurn, status: .queued, payload: ["conversationId": .string(conversationId), "runId": .string(run.id)], createdAt: now, updatedAt: now), at: 0)
         if let index = data.conversations.firstIndex(where: { $0.id == conversationId }) {
@@ -158,6 +190,40 @@ public actor SampleBackend: ConversationService, StudioDataService {
         broadcast(conversationId)
         broadcastJobs()
         return UserMessageResult(message: stored, run: run, replayed: false)
+    }
+
+    private func usageSummaryText() -> String {
+        var lines: [String] = []
+        if let claude = data.presence.claude {
+            let status: String = switch claude.status {
+            case .signedIn: "Giriş yapıldı (\(claude.email ?? "hesap")\(claude.plan.map { " · \($0)" } ?? ""))"
+            case .signedOut: "Giriş yapılmadı"
+            case .signingIn: "Tarayıcıda giriş bekleniyor"
+            case .notInstalled: "Kurulu değil"
+            case .error, .unknown: claude.detail ?? "Durum okunamadı"
+            }
+            lines.append("Claude: \(status)")
+        }
+        if let usage = data.presence.usage {
+            for window in usage.windows {
+                let name = switch window.kind {
+                case .fiveHour: "5 saatlik"
+                case .weekly: "Haftalık"
+                case .other, .unknown: "Diğer"
+                }
+                let val = window.limited ? "Sınıra ulaşıldı" : "%\(Int(window.effectivePercent.rounded())) kullanıldı"
+                lines.append("• \(name): \(val)")
+            }
+        }
+        if let gemini = data.presence.gemini {
+            let gStatus: String = switch gemini.status {
+            case .ready: "Hazır (\(gemini.detail ?? gemini.mode.rawValue))"
+            case .notConfigured: "Yapılandırılmadı"
+            case .error, .unknown: gemini.detail ?? "Hata"
+            }
+            lines.append("Gemini: \(gStatus)")
+        }
+        return lines.isEmpty ? "Henüz kullanım veya bağlantı bilgisi yok." : lines.joined(separator: "\n")
     }
 
     public func answer(conversationId: EntityID, messageId: EntityID, _ answer: QuestionAnswerCreate) async throws -> QuestionAnswerResult {
@@ -180,6 +246,38 @@ public actor SampleBackend: ConversationService, StudioDataService {
         data.runs.append(run)
         broadcast(conversationId)
         return QuestionAnswerResult(message: message, run: run)
+    }
+
+    public func decideConsent(conversationId: EntityID, messageId: EntityID, _ decision: ConsentDecisionCreate) async throws -> ConsentDecisionResult {
+        guard var list = data.messages[conversationId], let index = list.firstIndex(where: { $0.id == messageId }) else {
+            throw StudioAPIError.server(status: 404, code: .notFound, message: "message not found", issues: [])
+        }
+        var message = list[index]
+        guard let partIndex = message.parts.firstIndex(where: { if case .consent(let c) = $0 { c.consentId == decision.consentId } else { false } }),
+              case .consent(var consent) = message.parts[partIndex] else {
+            throw StudioAPIError.server(status: 404, code: .notFound, message: "consent card not found", issues: [])
+        }
+        guard consent.state == .pending else {
+            throw StudioAPIError.server(status: 409, code: .invalidTransition, message: "consent already \(consent.state.rawValue)", issues: [])
+        }
+        consent.state = decision.allow ? .allowed : .denied
+        consent.decidedAt = now
+        message.parts[partIndex] = .consent(consent)
+        message.updatedAt = now
+        list[index] = message
+        data.messages[conversationId] = list
+        let seq = (seqs[conversationId] ?? data.conversations.first { $0.id == conversationId }?.lastSeq ?? 0) + 1
+        seqs[conversationId] = seq
+        if let state = state(of: conversationId) {
+            let frame = ConversationStreamMessage.event(seq: seq, .partUpdated(messageId: messageId, index: partIndex, part: .consent(consent)))
+            var previous = state
+            previous.seq = seq - 1
+            let applied = ConversationState.apply(previous, frame) ?? state
+            for continuation in observers[conversationId, default: [:]].values {
+                continuation.yield(.conversation(applied))
+            }
+        }
+        return ConsentDecisionResult(message: message)
     }
 
     public func cancelRun(_ runId: EntityID) async throws -> AgentRun {
@@ -271,14 +369,24 @@ public actor SampleBackend: ConversationService, StudioDataService {
         return data.plans[index]
     }
 
-    public func uploadImage(_ file: UploadFile, brandId: EntityID, progress: @escaping @Sendable (Double) -> Void) async throws -> Asset {
+    // MARK: - Assets & AI Image Generation
+
+    public func assets(brandId: EntityID?, kind: AssetKind?) async throws -> [Asset] {
+        data.assets.values
+            .filter { (brandId == nil || $0.brandId == brandId) && (kind == nil || $0.kind == kind) }
+            .sorted { $0.createdAt > $1.createdAt }
+    }
+
+    public func uploadAsset(_ file: UploadFile, brandId: EntityID, kind: AssetKind?, progress: @escaping @Sendable (Double) -> Void) async throws -> Asset {
         let steps = 5
         for step in 1...steps {
             if uploadDelay > .zero { try await Task.sleep(for: uploadDelay / steps) }
             progress(Double(step) / Double(steps) * 0.97)
         }
+        let resolvedKind = kind ?? Self.inferAssetKind(mimeType: file.mimeType)
         let asset = Asset(
-            id: nextId("asset"), brandId: brandId, kind: .image, source: .upload, objectKey: "sample", mimeType: file.mimeType,
+            id: nextId("asset"), brandId: brandId, kind: resolvedKind, source: .upload,
+            objectKey: "brands/\(brandId)/assets/\(file.filename)", mimeType: file.mimeType,
             bytes: file.data.count, sha256: String(repeating: "0", count: 64), width: file.width, height: file.height,
             originalFilename: file.filename, createdAt: now)
         data.assets[asset.id] = asset
@@ -287,13 +395,315 @@ public actor SampleBackend: ConversationService, StudioDataService {
         return asset
     }
 
-    // MARK: - StudioDataService
+    public func uploadImage(_ file: UploadFile, brandId: EntityID, progress: @escaping @Sendable (Double) -> Void) async throws -> Asset {
+        try await uploadAsset(file, brandId: brandId, kind: .image, progress: progress)
+    }
 
-    public func brands() async throws -> [Brand] { data.brands }
+    private static func inferAssetKind(mimeType: String) -> AssetKind {
+        let lower = mimeType.lowercased()
+        if lower.hasPrefix("image/") { return .image }
+        if lower.hasPrefix("video/") { return .video }
+        if lower.hasPrefix("audio/") { return .audio }
+        if lower == "application/pdf" { return .document }
+        return .other
+    }
+
+    public func generateAIImage(
+        brandId: EntityID, prompt: String, aspectRatio: String, imageSize: String,
+        referenceAssetIds: [EntityID], preserveProductLabel: Bool,
+        targetContentId: EntityID?, targetSlotId: String?
+    ) async throws -> Job {
+        let trimmed = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            throw StudioAPIError.server(status: 400, code: .validationError, message: "prompt boş olamaz", issues: [])
+        }
+        let dims: (Int, Int) = switch (aspectRatio, imageSize) {
+        case ("9:16", "2K"): (1440, 2560)
+        case ("9:16", _): (1080, 1920)
+        case ("1:1", "2K"): (2048, 2048)
+        case ("1:1", _): (1024, 1024)
+        case (_, "1K"): (1080, 1350)
+        default: (1856, 2304)
+        }
+        let png = SampleImages.png(seed: trimmed) ?? Data([0x89, 0x50, 0x4E, 0x47])
+        let asset = Asset(
+            id: nextId("ai-asset"), brandId: brandId, kind: .image, source: .generated,
+            objectKey: "brands/\(brandId)/generated/\(UUID().uuidString).png", mimeType: "image/png",
+            bytes: png.count, sha256: String(repeating: "a", count: 64), width: dims.0, height: dims.1,
+            originalFilename: "ai-\(Brand.slugify(String(trimmed.prefix(24)))).png", createdAt: now
+        )
+        data.assets[asset.id] = asset
+        uploads[asset.id] = png
+
+        if let targetContentId {
+            _ = try? fillSlotInternal(contentId: targetContentId, slotId: targetSlotId ?? "photo", assetId: asset.id)
+        }
+
+        var payload: JSONObject = [
+            "prompt": .string(trimmed),
+            "aspectRatio": .string(aspectRatio),
+            "imageSize": .string(imageSize),
+            "referenceAssetIds": .array(referenceAssetIds.map { .string($0) }),
+            "preserveProductLabel": .bool(preserveProductLabel),
+        ]
+        if let targetContentId { payload["targetContentId"] = .string(targetContentId) }
+        if let targetSlotId { payload["targetSlotId"] = .string(targetSlotId) }
+
+        let job = Job(
+            id: nextId("job"), type: .imageGenerate, status: .succeeded, payload: payload,
+            brandId: brandId, createdAt: now, updatedAt: now, startedAt: now, finishedAt: now, progress: 1,
+            output: ["assetId": .string(asset.id)]
+        )
+        data.jobs.insert(job, at: 0)
+        broadcastJobs()
+        return job
+    }
+
+    // MARK: - Brands & Brand Profiles
+
+    public func brands() async throws -> [Brand] {
+        data.brands.filter { $0.status == .active }
+    }
+
+    public func createBrand(_ input: BrandCreate) async throws -> Brand {
+        let name = input.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else {
+            throw StudioAPIError.server(status: 400, code: .validationError, message: "Marka adı boş olamaz", issues: [])
+        }
+        let slug = (input.slug?.trimmingCharacters(in: .whitespacesAndNewlines)).flatMap { $0.isEmpty ? nil : $0 } ?? Brand.slugify(name)
+        if data.brands.contains(where: { $0.slug == slug }) {
+            throw StudioAPIError.server(status: 409, code: .conflict, message: "Bu kısa ad (\(slug)) zaten kullanılıyor.", issues: [])
+        }
+        let brand = Brand(id: nextId("b"), name: name, slug: slug, defaultLanguage: input.defaultLanguage, status: .active, createdAt: now, updatedAt: now)
+        data.brands.append(brand)
+        return brand
+    }
+
+    public func updateBrand(_ id: EntityID, _ input: BrandUpdate) async throws -> Brand {
+        guard let index = data.brands.firstIndex(where: { $0.id == id }) else {
+            throw StudioAPIError.server(status: 404, code: .notFound, message: "brand not found", issues: [])
+        }
+        if let name = input.name { data.brands[index].name = name }
+        if let slug = input.slug { data.brands[index].slug = slug }
+        if let lang = input.defaultLanguage { data.brands[index].defaultLanguage = lang }
+        if let status = input.status { data.brands[index].status = status }
+        data.brands[index].updatedAt = now
+        return data.brands[index]
+    }
+
+    public func brandProfiles(brandId: EntityID) async throws -> [BrandProfile] {
+        (data.brandProfiles[brandId] ?? []).sorted { $0.version > $1.version }
+    }
+
+    public func currentBrandProfile(brandId: EntityID) async throws -> BrandProfile? {
+        data.brandProfiles[brandId]?.first { $0.isCurrent }
+    }
+
+    public func createBrandProfile(brandId: EntityID, _ input: BrandProfileCreate) async throws -> BrandProfile {
+        var list = data.brandProfiles[brandId] ?? []
+        let nextVer = (list.map(\.version).max() ?? 0) + 1
+        let profile = BrandProfile(
+            id: nextId("bp"), brandId: brandId, version: nextVer, status: .draft, isCurrent: false,
+            tokens: input.tokens, designRules: input.designRules, voice: input.voice,
+            approvedAt: nil, createdAt: now, updatedAt: now
+        )
+        list.append(profile)
+        data.brandProfiles[brandId] = list
+        return profile
+    }
+
+    public func updateBrandProfile(brandId: EntityID, version: Int, _ input: BrandProfileUpdate) async throws -> BrandProfile {
+        guard var list = data.brandProfiles[brandId],
+              let index = list.firstIndex(where: { $0.version == version }) else {
+            throw StudioAPIError.server(status: 404, code: .notFound, message: "profile not found", issues: [])
+        }
+        guard list[index].status == .draft else {
+            throw StudioAPIError.server(status: 409, code: .invalidTransition, message: "Onaylı profil düzenlenemez; yeni taslak oluşturun.", issues: [])
+        }
+        if let tokens = input.tokens { list[index].tokens = tokens }
+        if let rules = input.designRules { list[index].designRules = rules }
+        if let voice = input.voice { list[index].voice = voice }
+        list[index].updatedAt = now
+        data.brandProfiles[brandId] = list
+        return list[index]
+    }
+
+    public func approveBrandProfile(brandId: EntityID, version: Int) async throws -> BrandProfile {
+        guard var list = data.brandProfiles[brandId],
+              let index = list.firstIndex(where: { $0.version == version }) else {
+            throw StudioAPIError.server(status: 404, code: .notFound, message: "profile not found", issues: [])
+        }
+        for i in list.indices {
+            list[i].isCurrent = (i == index)
+        }
+        list[index].status = .approved
+        if list[index].approvedAt == nil { list[index].approvedAt = now }
+        list[index].updatedAt = now
+        data.brandProfiles[brandId] = list
+        return list[index]
+    }
+
+    public func analyzeBrand(brandId: EntityID, notes: String?) async throws -> Job {
+        let brandName = data.brands.first { $0.id == brandId }?.name ?? "Marka"
+        var list = data.brandProfiles[brandId] ?? []
+        let nextVer = (list.map(\.version).max() ?? 0) + 1
+        let noteLine = notes.flatMap { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : "\n- Not: \($0)" } ?? ""
+        let draft = BrandProfile(
+            id: nextId("bp"),
+            brandId: brandId,
+            version: nextVer,
+            status: .draft,
+            isCurrent: false,
+            tokens: [
+                "colors": .object([
+                    "primary": .string("#FF6A00"),
+                    "background": .string("#0A0A0A"),
+                    "surface": .string("#F4F4F5"),
+                ]),
+            ],
+            designRules: "# AI Analiz Tasarım Kuralları (\(brandName))\n\n- Güçlü tipografi hiyerarşisi ve net boşluk kullanımı.\(noteLine)",
+            voice: "# AI Analiz Metin Tonu (\(brandName))\n\n- Doğrudan, anlaşılır ve hedef kitleye uygun Türkçe ton.\(noteLine)",
+            createdAt: now,
+            updatedAt: now
+        )
+        list.append(draft)
+        data.brandProfiles[brandId] = list
+
+        var payload: JSONObject = [:]
+        if let notes, !notes.isEmpty { payload["notes"] = .string(notes) }
+        let job = Job(
+            id: nextId("job"), type: .brandAnalyze, status: .succeeded, payload: payload,
+            brandId: brandId, createdAt: now, updatedAt: now, startedAt: now, finishedAt: now, progress: 1,
+            output: ["version": .number(Double(draft.version))]
+        )
+        data.jobs.insert(job, at: 0)
+        broadcastJobs()
+        return job
+    }
+
+    // MARK: - Social Accounts & Token Vault
 
     public func socialAccounts(brandId: EntityID?) async throws -> [SocialAccount] {
         data.accounts.filter { brandId == nil || $0.brandId == brandId }
     }
+
+    public func createSocialAccount(_ input: SocialAccountCreate) async throws -> SocialAccount {
+        let account = SocialAccount(
+            id: nextId("sa"), brandId: input.brandId, platform: input.platform,
+            handle: input.handle, externalId: input.externalId,
+            status: input.status ?? .pending, createdAt: now, updatedAt: now,
+            hasToken: false, tokenHealth: .unchecked
+        )
+        data.accounts.append(account)
+        return account
+    }
+
+    public func updateSocialAccount(_ id: EntityID, _ input: SocialAccountUpdate) async throws -> SocialAccount {
+        guard let index = data.accounts.firstIndex(where: { $0.id == id }) else {
+            throw StudioAPIError.server(status: 404, code: .notFound, message: "account not found", issues: [])
+        }
+        if let handle = input.handle { data.accounts[index].handle = handle }
+        if let externalId = input.externalId { data.accounts[index].externalId = externalId }
+        if let status = input.status { data.accounts[index].status = status }
+        data.accounts[index].updatedAt = now
+        return data.accounts[index]
+    }
+
+    public func putSocialAccountToken(id: EntityID, _ input: SocialAccountTokenPut) async throws -> SocialAccount {
+        guard let index = data.accounts.firstIndex(where: { $0.id == id }) else {
+            throw StudioAPIError.server(status: 404, code: .notFound, message: "account not found", issues: [])
+        }
+        if let handle = input.handle, !handle.isEmpty { data.accounts[index].handle = handle }
+        if let externalId = input.externalId, !externalId.isEmpty { data.accounts[index].externalId = externalId }
+        data.accounts[index].status = .connected
+        data.accounts[index].hasToken = true
+        data.accounts[index].tokenExpiresAt = input.expiresAt ?? now.addingTimeInterval(60 * 86_400)
+        data.accounts[index].tokenScopes = input.scopes ?? ["publish"]
+        data.accounts[index].tokenHealth = .valid
+        data.accounts[index].tokenCheckedAt = now
+        data.accounts[index].updatedAt = now
+        return data.accounts[index]
+    }
+
+    public func checkSocialAccountToken(id: EntityID) async throws -> SocialAccount {
+        guard let index = data.accounts.firstIndex(where: { $0.id == id }) else {
+            throw StudioAPIError.server(status: 404, code: .notFound, message: "account not found", issues: [])
+        }
+        data.accounts[index].tokenCheckedAt = now
+        if data.accounts[index].hasToken == true {
+            data.accounts[index].tokenHealth = .valid
+            if data.accounts[index].status == .needsReauth || data.accounts[index].status == .pending {
+                data.accounts[index].status = .connected
+            }
+        } else {
+            data.accounts[index].tokenHealth = .invalid
+        }
+        data.accounts[index].updatedAt = now
+        return data.accounts[index]
+    }
+
+    public func discoverMetaAccounts(_ input: MetaDiscoverInput) async throws -> MetaDiscoverResult {
+        let brandName = data.brands.first { $0.id == input.brandId }?.name ?? "Studio Sayfası"
+        let slug = data.brands.first { $0.id == input.brandId }?.slug.replacingOccurrences(of: "-", with: "") ?? "studio"
+        let page = MetaDiscoveredPage(
+            pageId: "fb-\(slug)",
+            pageName: brandName,
+            canPublish: true,
+            instagram: .init(igUserId: "ig-\(slug)", username: slug)
+        )
+        var connected: [SocialAccount] = []
+        if input.autoConnect {
+            for (platform, handle, extId) in [(Platform.facebook, brandName, page.pageId), (Platform.instagram, slug, "ig-\(slug)")] {
+                if let idx = data.accounts.firstIndex(where: { $0.brandId == input.brandId && $0.platform == platform }) {
+                    data.accounts[idx].handle = handle
+                    data.accounts[idx].externalId = extId
+                    data.accounts[idx].status = .connected
+                    data.accounts[idx].hasToken = true
+                    data.accounts[idx].tokenHealth = .valid
+                    data.accounts[idx].tokenCheckedAt = now
+                    data.accounts[idx].tokenExpiresAt = now.addingTimeInterval(60 * 86_400)
+                    data.accounts[idx].updatedAt = now
+                    connected.append(data.accounts[idx])
+                } else {
+                    let created = SocialAccount(
+                        id: nextId("sa"), brandId: input.brandId, platform: platform, handle: handle, externalId: extId,
+                        status: .connected, createdAt: now, updatedAt: now,
+                        hasToken: true, tokenExpiresAt: now.addingTimeInterval(60 * 86_400),
+                        tokenHealth: .valid, tokenCheckedAt: now
+                    )
+                    data.accounts.append(created)
+                    connected.append(created)
+                }
+            }
+        }
+        return MetaDiscoverResult(pages: [page], connectedAccounts: connected)
+    }
+
+    public func connectLinkedInAccount(_ input: LinkedInConnectInput) async throws -> SocialAccount {
+        let expires = now.addingTimeInterval(Double(input.expiresInSeconds ?? 60 * 86_400))
+        if let idx = data.accounts.firstIndex(where: { $0.brandId == input.brandId && $0.platform == .linkedin }) {
+            data.accounts[idx].handle = input.handle
+            data.accounts[idx].externalId = input.personUrn
+            data.accounts[idx].status = .connected
+            data.accounts[idx].hasToken = true
+            data.accounts[idx].tokenExpiresAt = expires
+            data.accounts[idx].tokenScopes = ["openid", "profile", "w_member_social"]
+            data.accounts[idx].tokenHealth = .valid
+            data.accounts[idx].tokenCheckedAt = now
+            data.accounts[idx].updatedAt = now
+            return data.accounts[idx]
+        }
+        let created = SocialAccount(
+            id: nextId("sa"), brandId: input.brandId, platform: .linkedin, handle: input.handle, externalId: input.personUrn,
+            status: .connected, createdAt: now, updatedAt: now,
+            hasToken: true, tokenExpiresAt: expires, tokenScopes: ["openid", "profile", "w_member_social"],
+            tokenHealth: .valid, tokenCheckedAt: now
+        )
+        data.accounts.append(created)
+        return created
+    }
+
+    // MARK: - Contents, Versions, Slot-Fill, Layer Patch & Export
 
     public func contents(brandId: EntityID) async throws -> [Content] {
         data.contents.filter { $0.brandId == brandId }
@@ -307,14 +717,51 @@ public actor SampleBackend: ConversationService, StudioDataService {
     }
 
     public func version(contentId: EntityID, version: Int) async throws -> ContentVersion {
+        if let list = versionHistory[contentId], let match = list.first(where: { $0.version == version }) {
+            return match
+        }
         guard let found = data.versions[contentId], found.version == version else {
             throw StudioAPIError.server(status: 404, code: .notFound, message: "version not found", issues: [])
         }
         return found
     }
 
+    public func versions(contentId: EntityID) async throws -> [ContentVersionSummary] {
+        let list = versionHistory[contentId] ?? data.versions[contentId].map { [$0] } ?? []
+        return list.sorted { $0.version > $1.version }.map {
+            ContentVersionSummary(
+                id: $0.id, contentId: $0.contentId, version: $0.version, origin: $0.origin,
+                contentHash: $0.contentHash, slideCount: $0.slideCount, note: $0.note,
+                jobId: $0.jobId, createdAt: $0.createdAt, updatedAt: $0.updatedAt
+            )
+        }
+    }
+
     public func plans(brandId: EntityID) async throws -> [Plan] { data.plans.filter { $0.brandId == brandId } }
     public func schedules(brandId: EntityID) async throws -> [Schedule] { data.schedules.filter { $0.brandId == brandId } }
+
+    public func cancelSchedule(_ id: EntityID) async throws -> Schedule {
+        guard let index = data.schedules.firstIndex(where: { $0.id == id }) else {
+            throw StudioAPIError.server(status: 404, code: .notFound, message: "schedule not found", issues: [])
+        }
+        guard data.schedules[index].status.isActive else {
+            throw StudioAPIError.server(status: 409, code: .invalidTransition, message: "schedule cannot be cancelled", issues: [])
+        }
+        data.schedules[index].status = .cancelled
+        data.schedules[index].cancelledAt = now
+        data.schedules[index].updatedAt = now
+        let contentId = data.schedules[index].contentId
+        let hasOtherActive = data.schedules.contains { $0.contentId == contentId && $0.status.isActive }
+        if !hasOtherActive, let cIdx = data.contents.firstIndex(where: { $0.id == contentId }), data.contents[cIdx].status == .scheduled {
+            data.contents[cIdx].status = .approved
+            data.contents[cIdx].updatedAt = now
+        }
+        return data.schedules[index]
+    }
+
+    public func scheduleLogs(scheduleId: EntityID) async throws -> [PublishLog] {
+        data.publishLogs[scheduleId] ?? []
+    }
 
     public func updateCaption(contentId: EntityID, caption: String) async throws -> Content {
         let updated = try updateContent(contentId) { content in
@@ -373,6 +820,167 @@ public actor SampleBackend: ConversationService, StudioDataService {
         return job
     }
 
+    public func fillSlotAndRender(contentId: EntityID, slotId: String, assetId: EntityID) async throws -> Job {
+        let newVersion = try fillSlotInternal(contentId: contentId, slotId: slotId, assetId: assetId)
+        let item = try await content(contentId)
+        let job = Job(
+            id: nextId("job"),
+            type: .contentRender,
+            status: .succeeded,
+            payload: ["format": .string("jpeg"), "slotAssignments": .object([slotId: .string(assetId)])],
+            brandId: item.brandId,
+            contentId: contentId,
+            createdAt: now,
+            updatedAt: now,
+            startedAt: now,
+            finishedAt: now,
+            progress: 1,
+            output: ["version": .number(Double(newVersion.version)), "versionId": .string(newVersion.id)]
+        )
+        data.jobs.insert(job, at: 0)
+        broadcastJobs()
+        return job
+    }
+
+    private func fillSlotInternal(contentId: EntityID, slotId: String, assetId: EntityID) throws -> ContentVersion {
+        guard let cIndex = data.contents.firstIndex(where: { $0.id == contentId }) else {
+            throw StudioAPIError.server(status: 404, code: .notFound, message: "content not found", issues: [])
+        }
+        let baseSlides = data.versions[contentId]?.slides ?? [
+            Slide(html: SampleData.slideHTML(title: data.contents[cIndex].title, pillar: "İçerik", emptySlot: true), width: 1080, height: 1350),
+        ]
+        var slides = baseSlides
+        for idx in slides.indices {
+            let filledHTML = SlideLayerScanner.fillSlot(inHTML: slides[idx].html, slotId: slotId, assetId: assetId)
+            if filledHTML != slides[idx].html || idx == 0 {
+                slides[idx].html = filledHTML
+                slides[idx].renderedAssetId = assetId
+            }
+        }
+        return storeNewVersion(contentIndex: cIndex, slides: slides, origin: .generated, note: "Görsel yuvası dolduruldu.")
+    }
+
+    public func patchLayersAndRender(contentId: EntityID, patches: [SlideLayerPatch]) async throws -> Job {
+        guard let cIndex = data.contents.firstIndex(where: { $0.id == contentId }) else {
+            throw StudioAPIError.server(status: 404, code: .notFound, message: "content not found", issues: [])
+        }
+        let baseSlides = data.versions[contentId]?.slides ?? [
+            Slide(html: SampleData.slideHTML(title: data.contents[cIndex].title, pillar: "İçerik", emptySlot: false), width: 1080, height: 1350),
+        ]
+        let patchedSlides = SlideLayerScanner.apply(patches: patches, to: baseSlides)
+        let newVersion = storeNewVersion(contentIndex: cIndex, slides: patchedSlides, origin: .manualEdit, note: "Katmanlar güncellendi.")
+        let brandId = data.contents[cIndex].brandId
+        let job = Job(
+            id: nextId("job"),
+            type: .contentRender,
+            status: .succeeded,
+            payload: ["format": .string("jpeg"), "patches": .array(patches.map { .object($0.toJSONObject()) })],
+            brandId: brandId,
+            contentId: contentId,
+            createdAt: now,
+            updatedAt: now,
+            startedAt: now,
+            finishedAt: now,
+            progress: 1,
+            output: ["version": .number(Double(newVersion.version)), "versionId": .string(newVersion.id)]
+        )
+        data.jobs.insert(job, at: 0)
+        broadcastJobs()
+        return job
+    }
+
+    public func exportContent(contentId: EntityID, format: String) async throws -> Job {
+        let item = try await content(contentId)
+        var output: JSONObject = ["format": .string(format)]
+        if format == "pdf" || format == "both" {
+            let pdfBytes = Self.samplePDF(title: item.title)
+            let pdfAsset = Asset(
+                id: nextId("pdf"), brandId: item.brandId, kind: .document, source: .generated,
+                objectKey: "brands/\(item.brandId)/exports/\(item.id).pdf", mimeType: "application/pdf",
+                bytes: pdfBytes.count, sha256: String(repeating: "b", count: 64), width: 1080, height: 1350,
+                originalFilename: "\(Brand.slugify(item.title))-carousel.pdf", createdAt: now
+            )
+            data.assets[pdfAsset.id] = pdfAsset
+            uploads[pdfAsset.id] = pdfBytes
+            output["pdfAssetId"] = .string(pdfAsset.id)
+        }
+        if format == "jpeg" || format == "both" {
+            let png = SampleImages.png(seed: item.id) ?? Data([0x89, 0x50, 0x4E, 0x47])
+            let imgAsset = Asset(
+                id: nextId("jpg"), brandId: item.brandId, kind: .image, source: .generated,
+                objectKey: "brands/\(item.brandId)/exports/\(item.id).jpg", mimeType: "image/jpeg",
+                bytes: png.count, sha256: String(repeating: "c", count: 64), width: 1080, height: 1350,
+                originalFilename: "\(Brand.slugify(item.title)).jpg", createdAt: now
+            )
+            data.assets[imgAsset.id] = imgAsset
+            uploads[imgAsset.id] = png
+            output["jpegAssetIds"] = .array([.string(imgAsset.id)])
+        }
+        let job = Job(
+            id: nextId("job"), type: .contentRender, status: .succeeded,
+            payload: ["format": .string(format)], brandId: item.brandId, contentId: contentId,
+            createdAt: now, updatedAt: now, startedAt: now, finishedAt: now, progress: 1, output: output
+        )
+        data.jobs.insert(job, at: 0)
+        broadcastJobs()
+        return job
+    }
+
+    private func storeNewVersion(contentIndex: Int, slides: [Slide], origin: ContentVersionOrigin, note: String?) -> ContentVersion {
+        let contentId = data.contents[contentIndex].id
+        var list = versionHistory[contentId] ?? data.versions[contentId].map { [$0] } ?? []
+        let nextVerNum = (list.map(\.version).max() ?? 0) + 1
+        let hash = ContentHash.compute(slides)
+        let created = ContentVersion(
+            id: "\(contentId)-v\(nextVerNum)",
+            contentId: contentId,
+            version: nextVerNum,
+            origin: origin,
+            contentHash: hash,
+            note: note,
+            createdAt: now,
+            updatedAt: now,
+            slides: slides
+        )
+        list.append(created)
+        versionHistory[contentId] = list
+        data.versions[contentId] = created
+        data.contents[contentIndex].currentVersion = ContentVersionRef(id: created.id, version: nextVerNum, contentHash: hash)
+        data.contents[contentIndex].status = .draft
+        data.contents[contentIndex].approval = nil
+        data.contents[contentIndex].updatedAt = now
+        for sIdx in data.schedules.indices where data.schedules[sIdx].contentId == contentId && data.schedules[sIdx].status == .pending {
+            data.schedules[sIdx].status = .cancelled
+            data.schedules[sIdx].cancelledAt = now
+        }
+        return created
+    }
+
+    private static func samplePDF(title: String) -> Data {
+        let safeTitle = title.replacingOccurrences(of: "(", with: "").replacingOccurrences(of: ")", with: "")
+        let pdf = """
+        %PDF-1.4
+        1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj
+        2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj
+        3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 1080 1350] /Contents 4 0 R >> endobj
+        4 0 obj << /Length 44 >> stream
+        BT /F1 24 Tf 72 1200 Td (\(safeTitle.prefix(24))) Tj ET
+        endstream endobj
+        xref
+        0 5
+        0000000000 65535 f 
+        0000000009 00000 n 
+        0000000058 00000 n 
+        0000000115 00000 n 
+        0000000206 00000 n 
+        trailer << /Size 5 /Root 1 0 R >>
+        startxref
+        301
+        %%EOF
+        """
+        return Data(pdf.utf8)
+    }
+
     private func updateContent(_ id: EntityID, _ change: (inout Content) -> Void) throws -> Content {
         guard let index = data.contents.firstIndex(where: { $0.id == id }) else {
             throw StudioAPIError.server(status: 404, code: .notFound, message: "content not found", issues: [])
@@ -384,6 +992,9 @@ public actor SampleBackend: ConversationService, StudioDataService {
 
     public func imageData(assetId: EntityID) async throws -> Data {
         if let upload = uploads[assetId] { return upload }
+        if let asset = data.assets[assetId], asset.kind == .document {
+            return Self.samplePDF(title: asset.originalFilename ?? assetId)
+        }
         guard data.assets[assetId] != nil, let png = SampleImages.png(seed: assetId) else {
             throw StudioAPIError.server(status: 404, code: .notFound, message: "asset not found", issues: [])
         }
@@ -391,6 +1002,45 @@ public actor SampleBackend: ConversationService, StudioDataService {
     }
 
     public func presence() async throws -> WorkerPresence { data.presence }
+
+    public func claudeControl() async throws -> ClaudeControl {
+        ClaudeControl(account: data.presence.claude, online: data.presence.online, sent: 0)
+    }
+
+    public func claudeLogin() async throws -> ClaudeControl {
+        data.presence.claude = ClaudeAccount(
+            status: .signedIn,
+            email: data.presence.claude?.email ?? "burak@burakkoc.net",
+            plan: data.presence.claude?.plan ?? "Claude Max",
+            cliVersion: data.presence.claude?.cliVersion ?? "1.0.24",
+            detail: "Giriş yapıldı · Claude Max",
+            checkedAt: now
+        )
+        broadcastJobs()
+        return ClaudeControl(account: data.presence.claude, online: data.presence.online, sent: data.presence.online ? 1 : 0)
+    }
+
+    public func claudeRefresh() async throws -> ClaudeControl {
+        if var account = data.presence.claude {
+            account.checkedAt = now
+            data.presence.claude = account
+        }
+        broadcastJobs()
+        return ClaudeControl(account: data.presence.claude, online: data.presence.online, sent: data.presence.online ? 1 : 0)
+    }
+
+    public func geminiControl() async throws -> GeminiControl {
+        GeminiControl(account: data.presence.gemini, online: data.presence.online, sent: 0)
+    }
+
+    public func geminiRefresh() async throws -> GeminiControl {
+        if var account = data.presence.gemini {
+            account.checkedAt = now
+            data.presence.gemini = account
+        }
+        broadcastJobs()
+        return GeminiControl(account: data.presence.gemini, online: data.presence.online, sent: data.presence.online ? 1 : 0)
+    }
 
     public func jobs(brandId: EntityID?) async throws -> [Job] {
         data.jobs.filter { brandId == nil || $0.brandId == brandId }

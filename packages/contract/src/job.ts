@@ -1,5 +1,14 @@
 import { z } from "zod";
-import { EntityId, jsonWithin, PageQuery, pageOf, Timestamp } from "./common.ts";
+import { ClaudeAccount, GeminiAccount } from "./agent.ts";
+import {
+  AgentEffort,
+  AgentModel,
+  EntityId,
+  jsonWithin,
+  PageQuery,
+  pageOf,
+  Timestamp,
+} from "./common.ts";
 
 export const JobId = z.string().min(1).max(128);
 export type JobId = z.infer<typeof JobId>;
@@ -11,12 +20,22 @@ export type JobId = z.infer<typeof JobId>;
  *   the generation pipeline (F1-3) and brand profiling (F1-4); their payload
  *   schemas are defined by those tasks. Until then the payload is free-form.
  *   (`ContentGeneratePayload` in plan.ts describes what plan generation sends.)
+ * - `image.generate` generates visual assets via Gemini image models.
+ * - `schedule.publish` publishes a due schedule from the local worker.
  * - `chat.turn` runs one agent turn of a conversation (A2). Only the API
  *   creates it (when a user message or answer arrives); `POST /api/jobs`
  *   refuses it. Payload: `ChatTurnPayload`.
  */
 export const JobType = z
-  .enum(["demo.echo", "content.generate", "content.render", "brand.analyze", "chat.turn"])
+  .enum([
+    "demo.echo",
+    "content.generate",
+    "content.render",
+    "brand.analyze",
+    "image.generate",
+    "schedule.publish",
+    "chat.turn",
+  ])
   .meta({ id: "JobType" });
 export type JobType = z.infer<typeof JobType>;
 
@@ -31,6 +50,8 @@ export const JOB_TYPE_REQUIREMENTS = {
   "content.generate": { brand: true, content: true },
   "content.render": { brand: true, content: true },
   "brand.analyze": { brand: true, content: false },
+  "image.generate": { brand: true, content: false },
+  "schedule.publish": { brand: true, content: true },
   "chat.turn": { brand: false, content: false },
 } as const satisfies Record<JobType, { brand: boolean; content: boolean }>;
 
@@ -149,6 +170,64 @@ export const ChatTurnPayload = z
   .meta({ id: "ChatTurnPayload" });
 export type ChatTurnPayload = z.infer<typeof ChatTurnPayload>;
 
+// --- content.render / image.generate / brand.analyze / schedule.publish --------
+
+export const ContentRenderPayload = z
+  .object({
+    version: z.number().int().min(1).optional(),
+    format: z.enum(["jpeg", "pdf", "both", "mp4"]).default("jpeg"),
+    slotAssignments: z.record(z.string(), EntityId).optional(),
+    patches: z.array(z.record(z.string(), z.unknown())).optional(),
+  })
+  .meta({ id: "ContentRenderPayload" });
+export type ContentRenderPayload = z.infer<typeof ContentRenderPayload>;
+export type ContentRenderPayloadInput = z.input<typeof ContentRenderPayload>;
+
+export const ImageGeneratePayload = z
+  .object({
+    prompt: z.string().trim().min(1).max(4000),
+    aspectRatio: z.enum(["4:5", "9:16", "1:1"]).default("4:5"),
+    imageSize: z.enum(["1K", "2K"]).default("2K"),
+    referenceAssetIds: z.array(EntityId).max(10).default([]),
+    preserveProductLabel: z.boolean().default(false),
+    targetContentId: EntityId.optional(),
+    targetSlotId: z.string().max(128).optional(),
+    model: z.string().max(128).optional(),
+  })
+  .meta({ id: "ImageGeneratePayload" });
+export type ImageGeneratePayload = z.infer<typeof ImageGeneratePayload>;
+export type ImageGeneratePayloadInput = z.input<typeof ImageGeneratePayload>;
+
+export const BrandAnalyzePayload = z
+  .object({
+    notes: z.string().max(10_000).optional(),
+    samplePosts: z
+      .array(
+        z.object({
+          caption: z.string().max(4000),
+          imageAssetId: EntityId.optional(),
+          likes: z.number().int().nonnegative().optional(),
+          comments: z.number().int().nonnegative().optional(),
+        }),
+      )
+      .max(30)
+      .default([]),
+    includeApprovedContentFeedback: z.boolean().default(true),
+    autoApprove: z.boolean().default(false),
+    model: AgentModel.optional(),
+    effort: AgentEffort.optional(),
+  })
+  .meta({ id: "BrandAnalyzePayload" });
+export type BrandAnalyzePayload = z.infer<typeof BrandAnalyzePayload>;
+export type BrandAnalyzePayloadInput = z.input<typeof BrandAnalyzePayload>;
+
+export const SchedulePublishPayload = z
+  .object({
+    scheduleId: EntityId,
+  })
+  .meta({ id: "SchedulePublishPayload" });
+export type SchedulePublishPayload = z.infer<typeof SchedulePublishPayload>;
+
 /** Job types only the API itself creates; `POST /api/jobs` refuses them. */
 export const INTERNAL_JOB_TYPES = ["chat.turn"] as const satisfies readonly JobType[];
 
@@ -156,6 +235,8 @@ export const INTERNAL_JOB_TYPES = ["chat.turn"] as const satisfies readonly JobT
 export const JOB_PAYLOAD_SCHEMAS: Partial<Record<JobType, z.ZodType>> = {
   "demo.echo": DemoEchoPayload,
   "chat.turn": ChatTurnPayload,
+  "image.generate": ImageGeneratePayload,
+  "schedule.publish": SchedulePublishPayload,
 };
 
 // --- Live updates and worker presence (F1-6) --------------------------------
@@ -231,6 +312,16 @@ export const WorkerPresence = z
     queueLength: z.number().int().min(0),
     /** Latest `worker.usage` report (kept across hub restarts); absent until a worker sent one. */
     usage: WorkerUsage.optional(),
+    /**
+     * The Mac's Claude sign-in as the worker last reported it (`worker.claude`,
+     * kept across hub restarts); absent until a worker sent one.
+     */
+    claude: ClaudeAccount.optional(),
+    /**
+     * The Mac's Gemini API / CLI readiness as the worker last reported it
+     * (`worker.gemini`, kept across hub restarts); absent until a worker sent one.
+     */
+    gemini: GeminiAccount.optional(),
   })
   .meta({ id: "WorkerPresence" });
 export type WorkerPresence = z.infer<typeof WorkerPresence>;

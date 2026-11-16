@@ -8,6 +8,13 @@
 		<key>NSAllowsLocalNetworking</key>
 		<true/>
 	</dict>
+	<!-- L1: the app advertises its local API on the network for paired phones. -->
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Studio, aynı ağdaki eşleştirdiğin telefonun bu Mac'teki Studio sunucusunu bulabilmesi için kendini yerel ağda duyurur.</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_studio._tcp</string>
+	</array>
 	<key>CFBundleLocalizations</key>
 	<array>
 		<string>tr</string>

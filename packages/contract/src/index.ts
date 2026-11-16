@@ -1,3 +1,4 @@
+export * from "./agent.ts";
 export * from "./asset.ts";
 export * from "./brand.ts";
 export * from "./brand-profile.ts";
@@ -5,8 +6,10 @@ export * from "./chat.ts";
 export * from "./chat-alias.ts";
 export * from "./chat-stream.ts";
 export * from "./client.ts";
+export * from "./cloud-publisher.ts";
 export * from "./common.ts";
 export * from "./content.ts";
+export * from "./device.ts";
 export * from "./health.ts";
 export * from "./job.ts";
 export * from "./plan.ts";

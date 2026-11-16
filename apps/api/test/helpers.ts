@@ -13,6 +13,19 @@ import { expect } from "vitest";
 
 export const BASE = "http://studio.test";
 
+/**
+ * Header that makes a request look like it came from the Mac itself
+ * (Miniflare sets CF-Connecting-IP from the socket; tests have no socket).
+ */
+export const LOCAL = { "CF-Connecting-IP": "127.0.0.1" } as const;
+
+/** `exports.default.fetch` as the Mac app would call it (127.0.0.1). */
+export function localFetch(input: string, init: RequestInit = {}): Promise<Response> {
+  const headers = new Headers(init.headers);
+  if (!headers.has("CF-Connecting-IP")) headers.set("CF-Connecting-IP", "127.0.0.1");
+  return exports.default.fetch(input, { ...init, headers });
+}
+
 export interface ApiResult<T = unknown> {
   status: number;
   body: T;
@@ -25,7 +38,7 @@ export async function api<T = unknown>(
   path: string,
   body?: unknown,
 ): Promise<ApiResult<T>> {
-  const res = await exports.default.fetch(`${BASE}${path}`, {
+  const res = await localFetch(`${BASE}${path}`, {
     method,
     ...(body !== undefined
       ? { headers: { "content-type": "application/json" }, body: JSON.stringify(body) }

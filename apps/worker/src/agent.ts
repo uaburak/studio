@@ -1,15 +1,19 @@
 /**
- * Settings and shared dependencies of the Claude-backed job handlers.
+ * Settings and shared dependencies of the Claude- and Gemini-backed job handlers.
  */
+import type { spawn as nodeSpawn } from "node:child_process";
 import path from "node:path";
+import type { ClaudeAccount, GeminiAccount } from "@studio/contract";
 import { z } from "zod";
 import type { StudioApi } from "./api.ts";
 import type { ClaudeGate } from "./claude/gate.ts";
 import type { ClaudeHealth } from "./claude/health.ts";
+import type { UsageTracker } from "./claude/usage.ts";
+import { DEFAULT_GEMINI_MODELS, type GeminiModelAlias } from "./gemini/models.ts";
 import type { Logger } from "./log.ts";
 
 const AgentEnv = z.object({
-  /** `0` runs the worker without the Claude-backed job types (demo/smoke only). */
+  /** `0` runs the worker without the AI-backed job types (demo/smoke only). */
   STUDIO_CLAUDE_ENABLED: z.enum(["0", "1"]).default("1"),
   /** API origin; default derived from STUDIO_HUB_URL. */
   STUDIO_API_URL: z.url({ protocol: /^https?$/ }).optional(),
@@ -32,6 +36,29 @@ const AgentEnv = z.object({
   STUDIO_IMAGE_MAX_EDGE: z.coerce.number().int().min(256).max(4096).default(1568),
   /** Extra fix passes after critique-and-revise when lint errors remain (default 1). */
   STUDIO_DESIGN_FIX_PASSES: z.coerce.number().int().min(0).max(3).default(1),
+
+  // --- Gemini chat & image provider (.env GEMINI_API_KEY and/or `gemini` CLI) ---
+  GEMINI_API_KEY: z.string().trim().min(1).optional(),
+  STUDIO_GEMINI_BIN: z.string().min(1).default("gemini"),
+  STUDIO_GEMINI_MODE: z.enum(["auto", "api", "cli"]).default("auto"),
+  STUDIO_GEMINI_MODEL_FLASH_LITE: z
+    .string()
+    .min(1)
+    .default(DEFAULT_GEMINI_MODELS["gemini-flash-lite"]),
+  STUDIO_GEMINI_MODEL_FLASH: z.string().min(1).default(DEFAULT_GEMINI_MODELS["gemini-flash"]),
+  STUDIO_GEMINI_MODEL_PRO: z.string().min(1).default(DEFAULT_GEMINI_MODELS["gemini-pro"]),
+  STUDIO_GEMINI_IMAGE_MODEL: z.string().min(1).default("gemini-nano-banana-2.1"),
+
+  // --- Reels Video / TTS / Transcription ---
+  ELEVENLABS_API_KEY: z.string().trim().min(1).optional(),
+  STUDIO_ELEVENLABS_VOICE_ID: z.string().trim().min(1).default("21m00Tcm4TlvDq8ikWAM"),
+  STUDIO_FFMPEG_BIN: z.string().trim().min(1).optional(),
+  STUDIO_WHISPER_BIN: z.string().trim().min(1).optional(),
+
+  // --- Cloud Publisher & Background Schedule Sync ---
+  STUDIO_CLOUD_PUBLISHER_URL: z.url({ protocol: /^https?$/ }).optional(),
+  STUDIO_CLOUD_PUBLISHER_TOKEN: z.string().trim().min(1).optional(),
+  STUDIO_SCHEDULE_POLL_INTERVAL_S: z.coerce.number().min(0).max(3600).default(30),
 });
 
 export interface AgentSettings {
@@ -52,10 +79,29 @@ export interface AgentSettings {
   designFixPasses: number;
   /** Max bytes downloaded per image. */
   imageMaxBytes: number;
+  /** Direct Gemini API key from `.env` (never logged). */
+  geminiApiKey: string | undefined;
+  geminiBin: string;
+  geminiMode: "auto" | "api" | "cli";
+  geminiModels: Record<GeminiModelAlias, string>;
+  geminiImageModel: string;
+  /** ElevenLabs API key from `.env` (never logged). */
+  elevenLabsApiKey: string | undefined;
+  elevenLabsVoiceId: string;
+  ffmpegBin: string | undefined;
+  whisperBin: string | undefined;
+  /** Cloud Publisher URL & bearer token (never logged). */
+  cloudPublisherUrl: string | undefined;
+  cloudPublisherToken: string | undefined;
+  schedulePollIntervalMs: number;
+  /** Source environment passed to `loadAgentSettings` (keeps unit tests hermetic). */
+  parentEnv: NodeJS.ProcessEnv;
 }
 
 export function loadAgentSettings(env: NodeJS.ProcessEnv = process.env): AgentSettings {
-  const cleaned = Object.fromEntries(Object.entries(env).filter(([, v]) => v !== ""));
+  const cleaned = Object.fromEntries(
+    Object.entries(env).filter(([, v]) => v !== undefined && v.trim() !== ""),
+  );
   const parsed = AgentEnv.safeParse(cleaned);
   if (!parsed.success) {
     throw new Error(`Invalid agent configuration:\n${z.prettifyError(parsed.error)}`);
@@ -78,6 +124,23 @@ export function loadAgentSettings(env: NodeJS.ProcessEnv = process.env): AgentSe
     imageMaxEdge: e.STUDIO_IMAGE_MAX_EDGE,
     designFixPasses: e.STUDIO_DESIGN_FIX_PASSES,
     imageMaxBytes: 25 * 1024 * 1024,
+    geminiApiKey: e.GEMINI_API_KEY,
+    geminiBin: e.STUDIO_GEMINI_BIN,
+    geminiMode: e.STUDIO_GEMINI_MODE,
+    geminiModels: {
+      "gemini-flash-lite": e.STUDIO_GEMINI_MODEL_FLASH_LITE,
+      "gemini-flash": e.STUDIO_GEMINI_MODEL_FLASH,
+      "gemini-pro": e.STUDIO_GEMINI_MODEL_PRO,
+    },
+    geminiImageModel: e.STUDIO_GEMINI_IMAGE_MODEL,
+    elevenLabsApiKey: e.ELEVENLABS_API_KEY,
+    elevenLabsVoiceId: e.STUDIO_ELEVENLABS_VOICE_ID,
+    ffmpegBin: e.STUDIO_FFMPEG_BIN,
+    whisperBin: e.STUDIO_WHISPER_BIN,
+    cloudPublisherUrl: e.STUDIO_CLOUD_PUBLISHER_URL,
+    cloudPublisherToken: e.STUDIO_CLOUD_PUBLISHER_TOKEN,
+    schedulePollIntervalMs: e.STUDIO_SCHEDULE_POLL_INTERVAL_S * 1000,
+    parentEnv: env,
   };
 }
 
@@ -90,9 +153,21 @@ export interface AgentDeps {
   gate: ClaudeGate;
   settings: AgentSettings;
   logger: Logger;
-  /** Latest self-test result. */
+  /** Latest Claude self-test result. */
   health: () => ClaudeHealth;
-  /** Where caches (brand files) live. */
+  /** Latest Claude sign-in status (`worker.claude`). */
+  claudeAccount?: () => ClaudeAccount;
+  /** Latest Gemini readiness (`worker.gemini`). */
+  geminiAccount?: () => GeminiAccount;
+  /** Latest Claude subscription usage windows (`worker.usage`). */
+  usage?: UsageTracker;
+  /** Where caches and MCP work dirs live. */
   stateDir: string;
   now?: () => Date;
+  /** Test seams for Gemini, publishers & consent polling. */
+  geminiFetch?: typeof globalThis.fetch;
+  geminiCliSpawn?: typeof nodeSpawn;
+  publisherFetch?: typeof globalThis.fetch;
+  consentPollIntervalMs?: number;
+  consentTimeoutMs?: number;
 }

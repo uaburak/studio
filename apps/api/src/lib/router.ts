@@ -1,8 +1,9 @@
 import { OpenAPIHono, z } from "@hono/zod-openapi";
 import { ApiErrorBody, EntityId } from "@studio/contract";
+import type { Principal } from "../middleware/access.ts";
 import { errorBody, zodIssues } from "./errors.ts";
 
-export type AppEnv = { Bindings: Env };
+export type AppEnv = { Bindings: Env; Variables: { principal?: Principal } };
 
 /**
  * Every router shares one validation hook, so a bad body, query or path

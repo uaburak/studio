@@ -93,3 +93,65 @@ export function stepIndex(current: number, delta: number, count: number): number
   if (count <= 0) return 0;
   return Math.min(count - 1, Math.max(0, current + delta));
 }
+
+export interface SlideAssetRef {
+  rawUrl: string;
+  assetId: string;
+}
+
+const EDITOR_FALLBACK_STYLE =
+  "<style>" +
+  "html,body{margin:0;padding:0;overflow:hidden}" +
+  "[data-hidden]{visibility:hidden!important}" +
+  '[data-type="slot"]{position:relative;overflow:hidden}' +
+  '[data-type="slot"][data-slot-state="empty"]{background:repeating-linear-gradient(-45deg,rgba(120,115,105,.09),rgba(120,115,105,.09) 14px,rgba(120,115,105,.03) 14px,rgba(120,115,105,.03) 28px);box-sizing:border-box;border:3px dashed rgba(120,115,105,.45)}' +
+  '[data-type="slot"]>img[data-slot-image]{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}' +
+  '[data-type="slot"][data-slot-fit="contain"]>img[data-slot-image]{object-fit:contain}' +
+  "</style>";
+
+/**
+ * Extract `/api/assets/<id>/content` and `/media/<id>(.ext)` references from a
+ * slide's HTML so the parent page can resolve them into `blob:` URLs for the
+ * opaque `sandbox=""` preview iframe.
+ */
+export function extractSlideAssetRefs(html: string): SlideAssetRef[] {
+  const seen = new Set<string>();
+  const out: SlideAssetRef[] = [];
+  const pattern =
+    /\bsrc\s*=\s*["']((?:\/api\/assets\/([^/"'?#]+)\/content)|(?:\/media\/([^/"'.?#]+)(?:\.[a-z0-9]+)?))["']/gi;
+  let match: RegExpExecArray | null = pattern.exec(html);
+  while (match !== null) {
+    const rawUrl = match[1] ?? "";
+    const assetId = decodeURIComponent(match[2] ?? match[3] ?? "");
+    if (rawUrl && assetId && !seen.has(rawUrl)) {
+      seen.add(rawUrl);
+      out.push({ rawUrl, assetId });
+    }
+    match = pattern.exec(html);
+  }
+  return out;
+}
+
+/**
+ * Build a sandboxed editor `srcDoc` with CSP blocking scripts & network,
+ * rewriting `/media/...` and `/api/assets/...` URLs to resolved `blob:`/`data:` URLs.
+ */
+export function buildEditorSlideSrcdoc(
+  html: string,
+  resolvedUrls?: ReadonlyMap<string, string>,
+): string {
+  let rewritten = html;
+  if (resolvedUrls && resolvedUrls.size > 0) {
+    for (const [rawUrl, safeUrl] of resolvedUrls) {
+      if (safeUrl.startsWith("blob:") || safeUrl.startsWith("data:")) {
+        rewritten = rewritten
+          .split(`src="${rawUrl}"`)
+          .join(`src="${safeUrl}"`)
+          .split(`src='${rawUrl}'`)
+          .join(`src='${safeUrl}'`);
+      }
+    }
+  }
+  const base = buildSlideSrcdoc(rewritten);
+  return base.replace(RESET_STYLE, EDITOR_FALLBACK_STYLE);
+}

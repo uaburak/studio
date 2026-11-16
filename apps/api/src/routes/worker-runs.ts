@@ -9,11 +9,12 @@ import {
   RunFail,
   RunStart,
   TurnContext,
+  TurnMessageResult,
   TurnOps,
   TurnWriteResult,
 } from "@studio/contract";
 import { runChat } from "../chat/command.ts";
-import { turnContext } from "../chat/read.ts";
+import { turnContext, turnMessage } from "../chat/read.ts";
 import { createDb } from "../db/client.ts";
 import { createRouter, errors, json, jsonBody } from "../lib/router.ts";
 import { requireWorkerToken } from "../middleware/worker-auth.ts";
@@ -96,6 +97,28 @@ workerRunRoutes
     async (c) => {
       const context = await turnContext(createDb(c.env.DB), c.req.valid("param").runId);
       return c.json(context, 200);
+    },
+  )
+  .openapi(
+    createRoute({
+      method: "get",
+      path: "/api/worker/runs/{runId}/message",
+      tags,
+      security,
+      summary: "Read the run and its assistant message (no state change)",
+      description:
+        "Cheaper than `context`: what the worker polls while a question or a consent card waits " +
+        "for the owner. `message` is null before the first write.",
+      request: { params: RunParams },
+      responses: {
+        200: json(TurnMessageResult, "The run and its message."),
+        401: unauthorized,
+        404: errors[404],
+      },
+    }),
+    async (c) => {
+      const result = await turnMessage(createDb(c.env.DB), c.req.valid("param").runId);
+      return c.json(TurnMessageResult.parse(result), 200);
     },
   )
   .openapi(

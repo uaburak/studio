@@ -98,3 +98,34 @@ export const FACEBOOK_LIMITS = {
     recommendedMimeTypes: ["video/mp4", "video/quicktime"],
   },
 } as const;
+
+/**
+ * LinkedIn REST Posts / Images / Documents / Videos API. Sources:
+ * - https://learn.microsoft.com/en-us/linkedin/marketing/community-management/shares/posts-api
+ * - https://learn.microsoft.com/en-us/linkedin/marketing/community-management/shares/images-api
+ * - https://learn.microsoft.com/en-us/linkedin/marketing/community-management/shares/documents-api
+ * - https://learn.microsoft.com/en-us/linkedin/marketing/community-management/shares/videos-api
+ */
+export const LINKEDIN_LIMITS = {
+  commentary: { maxChars: 3000 },
+  title: { maxChars: 400 },
+  altText: { maxChars: 4086 },
+  image: {
+    mimeTypes: ["image/jpeg", "image/png", "image/gif"],
+    maxBytes: 36 * MiB,
+  },
+  multiImage: {
+    minItems: 2,
+    maxItems: 20,
+  },
+  document: {
+    mimeTypes: ["application/pdf"],
+    maxBytes: 100 * MiB,
+  },
+  video: {
+    mimeTypes: ["video/mp4", "video/quicktime"],
+    maxBytes: 200 * MiB,
+    minDurationMs: 3_000,
+    maxDurationMs: 30 * 60_000,
+  },
+} as const;

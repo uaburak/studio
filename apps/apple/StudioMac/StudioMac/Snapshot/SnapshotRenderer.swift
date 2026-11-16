@@ -1,6 +1,5 @@
 import AppKit
 import StudioKit
-import SwiftUI
 
 /// The approved screens, as scenes the renderer can reproduce with sample data.
 enum SnapshotScene: String, CaseIterable, Sendable {
@@ -14,19 +13,17 @@ enum SnapshotScene: String, CaseIterable, Sendable {
     case attachments = "07-ekler-ve-anma"
 }
 
-/// Renders scenes of the real SwiftUI views (sample data) into PNGs.
+/// Renders scenes of the real AppKit window and view controllers (sample data) into PNGs.
 ///
-/// Each scene is laid out in a real window (titled, unified toolbar, the same
-/// RootView the app uses) and captured with `cacheDisplay`. That path draws
-/// the view hierarchy itself, so system materials and Liquid Glass come out
-/// flattened compared to the screen; `scripts/capture-window.sh` captures the
-/// live window with the window server instead.
+/// Each scene is laid out in a real `MainWindowController` window (titled, unified toolbar,
+/// `RootViewController`) and captured with `cacheDisplay`.
 @MainActor
 enum SnapshotRenderer {
     static let size = CGSize(width: 1440, height: 900)
 
     struct Prepared {
-        let window: NSWindow
+        let windowController: MainWindowController
+        var window: NSWindow { windowController.window! }
         let model: AppModel
     }
 
@@ -35,6 +32,7 @@ enum SnapshotRenderer {
         let backend = SampleBackend(data: SampleData(now: .now), uploadDelay: .zero)
         let defaults = UserDefaults(suiteName: "studio.snapshot.\(UUID().uuidString)")!
         let settings = AppSettings(defaults: defaults, credentials: InMemoryCredentialStore(), useSampleData: true)
+        settings.appearance = dark ? .dark : .light
         let model = AppModel(settings: settings, conversationService: backend, dataService: backend)
         await model.load()
         model.currentBrandId = SampleData.mtm
@@ -50,7 +48,7 @@ enum SnapshotRenderer {
         case .chatOnly:
             model.navigate(to: .conversation(SampleData.kasimConversation))
             model.inspectorPresented = false
-            model.columnVisibility = .detailOnly
+            model.sidebarPresented = false
         case .start:
             model.inspectorPresented = false
             model.newChat.updatePlaceholder()
@@ -62,30 +60,24 @@ enum SnapshotRenderer {
         }
         await model.posts.load()
 
-        let host = NSHostingController(rootView: RootView().environment(model).environment(settings))
-        host.sceneBridgingOptions = [.toolbars, .title]
-        let window = NSWindow(
-            contentRect: CGRect(origin: .zero, size: size),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
-            backing: .buffered, defer: false)
-        window.contentViewController = host
-        window.toolbarStyle = .unified
-        window.titlebarAppearsTransparent = false
+        let windowController = MainWindowController(app: model, settings: settings, host: nil)
+        let window = windowController.window!
         window.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
         window.setContentSize(size)
         window.setFrame(CGRect(origin: CGPoint(x: 40, y: 40), size: size), display: true)
         window.isReleasedWhenClosed = false
         NSApp.setActivationPolicy(.regular)
+        windowController.showWindow(nil)
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
-        await settle(0.8)
+        await settle(0.6)
 
         switch scene {
         case .postOpen:
             if let card = model.posts.card("post-01") {
                 model.detail = PostDetailModel(app: model, card: card, sourceFrame: .zero)
             }
-            await settle(0.9)
+            await settle(0.5)
         case .attachments:
             let conversation = model.conversationModel(SampleData.hasatConversation)
             await settle(0.3)
@@ -99,13 +91,14 @@ enum SnapshotRenderer {
             let text = "Kapak için @image-2 kullan, @"
             composer.bridge?.setText(text)
             composer.bridge?.focus()
-            await settle(0.6)
+            await settle(0.4)
         default:
             break
         }
         window.setFrame(CGRect(origin: window.frame.origin, size: size), display: true)
-        await settle(0.4)
-        return Prepared(window: window, model: model)
+        window.contentView?.superview?.layoutSubtreeIfNeeded()
+        await settle(0.3)
+        return Prepared(windowController: windowController, model: model)
     }
 
     /// The whole window (title bar, toolbar, content) at 1x: exactly 1440x900 px.
@@ -158,10 +151,9 @@ enum SnapshotMode {
 
     @MainActor
     static func run() {
-        // The regular main window is not needed in snapshot mode.
         for window in NSApp.windows { window.orderOut(nil) }
         Task { @MainActor in
-            await SnapshotRenderer.settle(0.3)
+            await SnapshotRenderer.settle(0.2)
             for window in NSApp.windows { window.orderOut(nil) }
             if let dir = value(after: "--render-screenshots") {
                 let base = URL(fileURLWithPath: dir)

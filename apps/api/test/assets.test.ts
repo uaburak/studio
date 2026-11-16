@@ -1,8 +1,7 @@
-import { exports } from "cloudflare:workers";
 import { Asset, AssetList } from "@studio/contract";
 import { describe, expect, it } from "vitest";
 import { parseRange } from "../src/routes/assets.ts";
-import { api, BASE, createBrand, expectError } from "./helpers.ts";
+import { api, BASE, createBrand, expectError, localFetch } from "./helpers.ts";
 
 const PNG = new Uint8Array([
   0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
@@ -16,7 +15,7 @@ async function upload(
   const form = new FormData();
   for (const [k, v] of Object.entries(fields)) form.set(k, v);
   if (file) form.set("file", new File([file.bytes], file.name, { type: file.type }));
-  const res = await exports.default.fetch(`${BASE}/api/assets`, { method: "POST", body: form });
+  const res = await localFetch(`${BASE}/api/assets`, { method: "POST", body: form });
   return { status: res.status, body: (await res.json()) as unknown, headers: res.headers };
 }
 
@@ -50,30 +49,30 @@ describe("assets", () => {
     const got = Asset.parse((await api("GET", `/api/assets/${asset.id}`)).body);
     expect(got).toEqual(asset);
 
-    const content = await exports.default.fetch(`${BASE}/api/assets/${asset.id}/content`);
+    const content = await localFetch(`${BASE}/api/assets/${asset.id}/content`);
     expect(content.status).toBe(200);
     expect(content.headers.get("content-type")).toBe("image/png");
     expect(content.headers.get("x-content-type-options")).toBe("nosniff");
     expect(content.headers.get("content-security-policy")).toContain("sandbox");
     expect(new Uint8Array(await content.arrayBuffer())).toEqual(PNG);
 
-    const partial = await exports.default.fetch(`${BASE}/api/assets/${asset.id}/content`, {
+    const partial = await localFetch(`${BASE}/api/assets/${asset.id}/content`, {
       headers: { range: "bytes=0-3" },
     });
     expect(partial.status).toBe(206);
     expect(partial.headers.get("content-range")).toBe(`bytes 0-3/${PNG.byteLength}`);
     expect(new Uint8Array(await partial.arrayBuffer())).toEqual(PNG.subarray(0, 4));
 
-    const tail = await exports.default.fetch(`${BASE}/api/assets/${asset.id}/content`, {
+    const tail = await localFetch(`${BASE}/api/assets/${asset.id}/content`, {
       headers: { range: "bytes=-2" },
     });
     expect(tail.status).toBe(206);
     expect(new Uint8Array(await tail.arrayBuffer())).toEqual(PNG.subarray(-2));
-    const beyond = await exports.default.fetch(`${BASE}/api/assets/${asset.id}/content`, {
+    const beyond = await localFetch(`${BASE}/api/assets/${asset.id}/content`, {
       headers: { range: "bytes=999-" },
     });
     expect(beyond.status).toBe(416);
-    const cached = await exports.default.fetch(`${BASE}/api/assets/${asset.id}/content`, {
+    const cached = await localFetch(`${BASE}/api/assets/${asset.id}/content`, {
       headers: { "if-none-match": content.headers.get("etag") ?? "" },
     });
     expect(cached.status).toBe(304);

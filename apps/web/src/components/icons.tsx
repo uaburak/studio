@@ -210,6 +210,101 @@ export const IconFile = (p: IconProps) => (
   </Icon>
 );
 
+export const IconChat = (p: IconProps) => (
+  <Icon {...p}>
+    <path d="M3.5 4.5h13a1.5 1.5 0 0 1 1.5 1.5v7a1.5 1.5 0 0 1-1.5 1.5H8l-4.5 3v-3H3.5A1.5 1.5 0 0 1 2 13V6a1.5 1.5 0 0 1 1.5-1.5z" />
+    <path d="M6.5 8h7M6.5 11h4.5" />
+  </Icon>
+);
+
+export const IconSend = (p: IconProps) => (
+  <Icon {...p}>
+    <path d="M10 15.5V4.5M5.5 9L10 4.5 14.5 9" />
+  </Icon>
+);
+
+export const IconStop = (p: IconProps) => (
+  <Icon {...p}>
+    <circle cx="10" cy="10" r="7.5" />
+    <rect x="7.2" y="7.2" width="5.6" height="5.6" rx="1" fill="currentColor" stroke="none" />
+  </Icon>
+);
+
+export const IconUndo = (p: IconProps) => (
+  <Icon {...p}>
+    <path d="M4.5 7.5H12a4.5 4.5 0 1 1 0 9H8" />
+    <path d="M7.5 4.5l-3 3 3 3" />
+  </Icon>
+);
+
+export const IconRedo = (p: IconProps) => (
+  <Icon {...p}>
+    <path d="M15.5 7.5H8a4.5 4.5 0 1 0 0 9h4" />
+    <path d="M12.5 4.5l3 3-3 3" />
+  </Icon>
+);
+
+export const IconEye = (p: IconProps) => (
+  <Icon {...p}>
+    <path d="M2 10s3-5.5 8-5.5 8 5.5 8 5.5-3 5.5-8 5.5S2 10 2 10z" />
+    <circle cx="10" cy="10" r="2.3" />
+  </Icon>
+);
+
+export const IconEyeOff = (p: IconProps) => (
+  <Icon {...p}>
+    <path d="M3 3l14 14M8.5 8.7a2.2 2.2 0 0 0 2.8 2.8" />
+    <path d="M6.2 6.4C3.8 7.8 2 10 2 10s3 5.5 8 5.5c1.6 0 3-.5 4.2-1.2M11.8 4.8A8.3 8.3 0 0 0 10 4.5c5 0 8 5.5 8 5.5a14 14 0 0 1-2.2 2.9" />
+  </Icon>
+);
+
+export const IconLayers = (p: IconProps) => (
+  <Icon {...p}>
+    <path d="M10 3l7.5 4L10 11 2.5 7z" />
+    <path d="M2.5 10.5L10 14.5l7.5-4M2.5 14L10 18l7.5-4" />
+  </Icon>
+);
+
+export const IconArrowUp = (p: IconProps) => (
+  <Icon {...p}>
+    <path d="M10 15.5V4.5M5.5 9L10 4.5 14.5 9" />
+  </Icon>
+);
+
+export const IconArrowDown = (p: IconProps) => (
+  <Icon {...p}>
+    <path d="M10 4.5v11M5.5 11L10 15.5 14.5 11" />
+  </Icon>
+);
+
+export const IconRefresh = (p: IconProps) => (
+  <Icon {...p}>
+    <path d="M16.5 10a6.5 6.5 0 1 1-1.9-4.6L16.5 7" />
+    <path d="M16.5 3.5V7H13" />
+  </Icon>
+);
+
+export const IconExternal = (p: IconProps) => (
+  <Icon {...p}>
+    <path d="M11 3.5h5.5V9M16 4l-7.5 7.5" />
+    <path d="M14.5 11.5v4a1 1 0 0 1-1 1h-9a1 1 0 0 1-1-1v-9a1 1 0 0 1 1-1h4" />
+  </Icon>
+);
+
+export const IconDownload = (p: IconProps) => (
+  <Icon {...p}>
+    <path d="M10 3.5v9.5M6 9.5l4 4 4-4" />
+    <path d="M3.5 14.5v1a1.5 1.5 0 0 0 1.5 1.5h10a1.5 1.5 0 0 0 1.5-1.5v-1" />
+  </Icon>
+);
+
+export const IconKey = (p: IconProps) => (
+  <Icon {...p}>
+    <circle cx="7" cy="12" r="3.5" />
+    <path d="M9.6 9.4L16.5 2.5M14 5l2.5 2.5M12 7l2 2" />
+  </Icon>
+);
+
 export const IconPlatform = ({ platform, ...p }: IconProps & { platform: string }) => {
   if (platform === "instagram")
     return (

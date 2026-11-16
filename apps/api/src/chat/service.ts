@@ -5,6 +5,9 @@ import {
   type AttachmentPart,
   aliasBaseFor,
   autoAlias,
+  type ConsentDecisionCreate,
+  type ConsentDecisionResult,
+  type ConsentPart,
   ContentGeneratePayload,
   type Conversation,
   type ConversationAlias,
@@ -46,7 +49,7 @@ import {
   type UserMessageResult,
   utf8Length,
 } from "@studio/contract";
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, count, desc, eq, inArray } from "drizzle-orm";
 import type { BatchItem } from "drizzle-orm/batch";
 import type { z } from "zod";
 import type { Db } from "../db/client.ts";
@@ -120,6 +123,12 @@ export type ChatCommand =
       messageId: string;
       input: z.output<typeof QuestionAnswerCreate>;
     }
+  | {
+      kind: "decideConsent";
+      conversationId: string;
+      messageId: string;
+      input: z.output<typeof ConsentDecisionCreate>;
+    }
   | { kind: "cancelRun"; runId: string }
   | { kind: "updatePlan"; planId: string; input: z.output<typeof PlanUpdate> }
   | { kind: "acceptPlan"; planId: string; input: z.output<typeof PlanAccept> }
@@ -141,6 +150,7 @@ export interface ChatResults {
   updateConversation: Conversation;
   sendUserMessage: UserMessageResult;
   answerQuestion: QuestionAnswerResult;
+  decideConsent: ConsentDecisionResult;
   cancelRun: AgentRun;
   updatePlan: Plan;
   acceptPlan: Plan;
@@ -498,7 +508,10 @@ async function buildPart(
     case "text":
     case "progress":
     case "error":
+    case "tool_step":
       return input;
+    case "consent":
+      return { ...input, decidedAt: input.state === "expired" ? iso(change.now) : null };
     case "attachment": {
       const [asset] = await attachmentAssets(db, conv, [input.assetId], () => `${path}.assetId`);
       if (!asset) throw new Error("attachment lookup returned nothing");
@@ -598,7 +611,13 @@ function startTurn(
 }
 
 type RunOutcome =
-  | { status: "completed"; model?: string | undefined; usage?: RunUsage | undefined }
+  | {
+      status: "completed";
+      model?: string | undefined;
+      usage?: RunUsage | undefined;
+      /** Claude Code session of the run (stored on the conversation with the message count). */
+      session?: { id: string } | undefined;
+    }
   | { status: "failed"; error: string; model?: string | undefined; usage?: RunUsage | undefined }
   | { status: "cancelled" };
 
@@ -644,7 +663,13 @@ async function finishRun(change: Change, run: AgentRunRow, outcome: RunOutcome):
     errorText !== null ? { type: "error", message: errorText, code: null, retryable: false } : null;
 
   if (msg) {
-    const parts = [...(msg.parts as MessagePart[])];
+    // Nobody can answer a consent card once its run is over.
+    const parts = (msg.parts as MessagePart[]).map(
+      (p): MessagePart =>
+        p.type === "consent" && p.state === "pending"
+          ? { ...p, state: "expired", decidedAt: iso(now) }
+          : p,
+    );
     const deltaSeqs = [...msg.deltaSeqs];
     const last = parts.at(-1);
     if (errorPart && !(last?.type === "error" && last.message === errorText)) {
@@ -682,8 +707,24 @@ async function finishRun(change: Change, run: AgentRunRow, outcome: RunOutcome):
     change.add(db.insert(messages).values(created));
     change.emit(conv.id, { type: "message.created", message: messageRowView(created) });
   }
+  let convAfter = conv;
+  if (outcome.status === "completed" && outcome.session) {
+    // The count includes the run's own assistant message (written before complete).
+    const [row] = await db
+      .select({ n: count() })
+      .from(messages)
+      .where(eq(messages.conversationId, conv.id));
+    const session = {
+      agentSessionId: outcome.session.id,
+      agentSessionMessages: row?.n ?? 0,
+      agentSessionRunId: run.id,
+      agentSessionAt: now,
+    };
+    change.add(db.update(conversations).set(session).where(eq(conversations.id, conv.id)));
+    convAfter = { ...conv, ...session };
+  }
   change.emit(conv.id, { type: "run.updated", run: toAgentRun(next) });
-  change.emit(conv.id, { type: "conversation.updated", conversation: convView(conv, null) });
+  change.emit(conv.id, { type: "conversation.updated", conversation: convView(convAfter, null) });
 }
 
 /** Load the run's assistant message, or plan to create it (status streaming). */
@@ -826,6 +867,8 @@ export async function executeChat(
       return sendUserMessage(change, command.conversationId, command.input);
     case "answerQuestion":
       return answerQuestion(change, command.conversationId, command.messageId, command.input);
+    case "decideConsent":
+      return decideConsent(change, command.conversationId, command.messageId, command.input);
     case "cancelRun":
       return cancelRun(change, command.runId);
     case "updatePlan":
@@ -1045,6 +1088,42 @@ async function answerQuestion(
   return { message: messageRowView(updated), run: run ? toAgentRun(run) : null };
 }
 
+/** The owner allows or denies a pending consent card; the asking run reads it (no new run). */
+async function decideConsent(
+  change: Change,
+  conversationId: string,
+  messageId: string,
+  input: z.output<typeof ConsentDecisionCreate>,
+): Promise<ConsentDecisionResult> {
+  const { db, now } = change;
+  await requireConversation(db, conversationId);
+  const msg = await db.query.messages.findFirst({
+    where: and(eq(messages.id, messageId), eq(messages.conversationId, conversationId)),
+  });
+  if (!msg) throw notFound("message", messageId);
+  const parts = [...(msg.parts as MessagePart[])];
+  const index = parts.findIndex((p) => p.type === "consent" && p.consentId === input.consentId);
+  const card = parts[index] as ConsentPart | undefined;
+  if (!card) throw notFound(`message ${messageId} consent`, input.consentId);
+  const state = input.allow ? "allowed" : "denied";
+  if (card.state === state) return { message: toMessage(msg) };
+  if (card.state === "expired") {
+    throw conflict(`consent ${input.consentId} expired; ask the agent again`);
+  }
+  if (card.state !== "pending") throw conflict(`consent ${input.consentId} was already answered`);
+  const run = msg.runId ? await requireRun(db, msg.runId) : undefined;
+  if (!run || !isActiveRunStatus(run.status)) {
+    throw conflict(`the run that asked for consent ${input.consentId} is over`);
+  }
+  const decided: ConsentPart = { ...card, state, decidedAt: iso(now) };
+  parts[index] = decided;
+  const updated: MessageRow = { ...msg, parts, updatedAt: now };
+  change.add(db.update(messages).set({ parts, updatedAt: now }).where(eq(messages.id, msg.id)));
+  change.emit(conversationId, { type: "part.updated", messageId, index, part: decided });
+  await change.commit();
+  return { message: messageRowView(updated) };
+}
+
 async function cancelRun(change: Change, runId: string): Promise<AgentRun> {
   const run = await requireRun(change.db, runId);
   if (run.status === "cancelled") return toAgentRun(run);
@@ -1179,6 +1258,13 @@ async function applyOps(
       if (clash)
         throw conflict(`${at}: question id ${part.questionId} is already used in this message`);
     }
+    if (part.type === "consent") {
+      const clash = parts.some(
+        (p, i) => i !== op.index && p.type === "consent" && p.consentId === part.consentId,
+      );
+      if (clash)
+        throw conflict(`${at}: consent id ${part.consentId} is already used in this message`);
+    }
     const current = parts[op.index];
     if (!current) {
       parts.push(part);
@@ -1195,6 +1281,19 @@ async function applyOps(
     if (current.type === "question" && current.answer) {
       if (stableJson({ ...current, answer: null }) === stableJson(part)) continue;
       throw conflict(`${at}: question ${current.questionId} was already answered`);
+    }
+    if (current.type === "consent" && part.type === "consent") {
+      if (current.state !== "pending") {
+        // Decided or expired: final. A retry of the same card (or a late expiry) is a no-op.
+        if (current.consentId === part.consentId) continue;
+        throw conflict(`${at}: consent ${current.consentId} is already ${current.state}`);
+      }
+      if (
+        part.state === "pending" &&
+        stableJson({ ...current, decidedAt: null }) === stableJson(part)
+      ) {
+        continue;
+      }
     }
     if (stableJson(current) === stableJson(part)) continue; // identical: retry
     parts[op.index] = part;
@@ -1391,7 +1490,12 @@ async function completeRun(
   const run = await requireRun(change.db, runId);
   if (run.status === "completed") return toAgentRun(run);
   assertWritable(run, input.attempt);
-  await finishRun(change, run, { status: "completed", model: input.model, usage: input.usage });
+  await finishRun(change, run, {
+    status: "completed",
+    model: input.model,
+    usage: input.usage,
+    session: input.session,
+  });
   await change.commit();
   return toAgentRun(await requireRun(change.db, runId));
 }

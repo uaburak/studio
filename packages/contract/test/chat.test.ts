@@ -441,4 +441,81 @@ describe("api client: chat", () => {
     watch.close();
     expect(seen).toEqual(["conversation.snapshot", "run.updated", "presence"]);
   });
+
+  it("validates Gemini models, tool_step and consent parts, and AI worker endpoints", async () => {
+    for (const model of ["gemini-flash-lite", "gemini-flash", "gemini-pro"] as const) {
+      const msg = UserMessageCreate.parse({ text: "Merhaba", model, effort: "medium" });
+      expect(msg.model).toBe(model);
+    }
+
+    const step = MessagePart.parse({
+      type: "tool_step",
+      id: "call_1",
+      name: "propose_plan",
+      label: "İçerik planı hazırlandı",
+      state: "done",
+      summary: "8 post önerildi",
+    });
+    expect(step.type).toBe("tool_step");
+
+    const consent = MessagePart.parse({
+      type: "consent",
+      consentId: "c_1",
+      tool: "schedule_content",
+      title: "Postu zamanla",
+      detail: "Instagram · Yarın 09:00",
+      state: "pending",
+      decidedAt: null,
+    });
+    expect(consent.type).toBe("consent");
+
+    const ops = TurnOps.parse({
+      attempt: 1,
+      ops: [
+        {
+          op: "part.set",
+          index: 0,
+          part: {
+            type: "tool_step",
+            id: "call_1",
+            name: "propose_plan",
+            label: "Plan hazırlanıyor…",
+            state: "running",
+          },
+        },
+        {
+          op: "part.set",
+          index: 1,
+          part: {
+            type: "consent",
+            consentId: "c_1",
+            tool: "schedule_content",
+            title: "Postu zamanla",
+          },
+        },
+      ],
+    });
+    expect(ops.ops).toHaveLength(2);
+
+    const g = recordingFetch({
+      account: {
+        status: "ready",
+        mode: "api",
+        apiKeyConfigured: true,
+        cliVersion: null,
+        defaultModel: "gemini-2.5-flash-lite",
+        detail: "GEMINI_API_KEY hazır",
+        checkedAt: T,
+      },
+      online: true,
+      sent: 1,
+    });
+    const client = createApiClient({ baseUrl: "http://api.test", fetch: g.fetchImpl });
+    await expect(client.workers.gemini()).resolves.toMatchObject({ online: true });
+    await expect(client.workers.geminiRefresh()).resolves.toMatchObject({ sent: 1 });
+    expect(g.calls.map((c) => `${c.init?.method ?? "GET"} ${c.url}`)).toEqual([
+      "GET http://api.test/api/workers/gemini",
+      "POST http://api.test/api/workers/gemini/status",
+    ]);
+  });
 });

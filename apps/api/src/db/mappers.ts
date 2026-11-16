@@ -27,6 +27,7 @@ import type * as schema from "./schema.ts";
 
 export type BrandRow = typeof schema.brands.$inferSelect;
 export type SocialAccountRow = typeof schema.socialAccounts.$inferSelect;
+export type SocialAccountTokenRow = typeof schema.socialAccountTokens.$inferSelect;
 export type BrandProfileRow = typeof schema.brandProfiles.$inferSelect;
 export type AssetRow = typeof schema.assets.$inferSelect;
 export type ContentRow = typeof schema.contents.$inferSelect;
@@ -58,8 +59,11 @@ export function toBrand(r: BrandRow): Brand {
   };
 }
 
-export function toSocialAccount(r: SocialAccountRow): SocialAccount {
-  return {
+export function toSocialAccount(
+  r: SocialAccountRow,
+  token?: SocialAccountTokenRow | null,
+): SocialAccount {
+  const base: SocialAccount = {
     id: r.id,
     brandId: r.brandId,
     platform: r.platform,
@@ -68,6 +72,25 @@ export function toSocialAccount(r: SocialAccountRow): SocialAccount {
     status: r.status,
     createdAt: iso(r.createdAt),
     updatedAt: iso(r.updatedAt),
+  };
+  if (token === undefined) return base;
+  if (token === null) {
+    return {
+      ...base,
+      hasToken: false,
+      tokenExpiresAt: null,
+      tokenScopes: [],
+      tokenHealth: "unchecked",
+      tokenCheckedAt: null,
+    };
+  }
+  return {
+    ...base,
+    hasToken: true,
+    tokenExpiresAt: isoOrNull(token.expiresAt),
+    tokenScopes: token.scopes,
+    tokenHealth: token.health,
+    tokenCheckedAt: isoOrNull(token.checkedAt),
   };
 }
 
@@ -200,6 +223,7 @@ export function toSchedule(r: ScheduleRow): Schedule {
     contentHash: r.contentHash,
     scheduledAt: iso(r.scheduledAt),
     status: r.status,
+    ...(r.permalink !== null ? { permalink: r.permalink } : {}),
     cancelledAt: isoOrNull(r.cancelledAt),
     createdAt: iso(r.createdAt),
     updatedAt: iso(r.updatedAt),
@@ -213,6 +237,7 @@ export function toPublishLog(r: PublishLogRow): PublishLog {
     attempt: r.attempt,
     status: r.status,
     externalPostId: r.externalPostId,
+    ...(r.permalink !== null ? { permalink: r.permalink } : {}),
     error: r.error,
     startedAt: iso(r.startedAt),
     finishedAt: isoOrNull(r.finishedAt),
@@ -230,6 +255,15 @@ export function toConversation(r: ConversationRow, activeRunId: string | null): 
     status: r.status,
     activeRunId,
     lastSeq: r.lastSeq,
+    agentSession:
+      r.agentSessionId && r.agentSessionRunId && r.agentSessionAt
+        ? {
+            id: r.agentSessionId,
+            messageCount: r.agentSessionMessages ?? 0,
+            runId: r.agentSessionRunId,
+            updatedAt: iso(r.agentSessionAt),
+          }
+        : null,
     lastActivityAt: iso(r.lastActivityAt),
     createdAt: iso(r.createdAt),
     updatedAt: iso(r.updatedAt),

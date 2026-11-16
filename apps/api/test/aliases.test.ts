@@ -1,4 +1,4 @@
-import { env, exports } from "cloudflare:workers";
+import { env } from "cloudflare:workers";
 import {
   Asset,
   applyConversationStreamMessage,
@@ -14,7 +14,7 @@ import {
   UserMessageResult,
 } from "@studio/contract";
 import { describe, expect, it } from "vitest";
-import { api, BASE, createBrand, expectError } from "./helpers.ts";
+import { api, BASE, createBrand, expectError, localFetch } from "./helpers.ts";
 
 /*
  * Attachment aliases and @mentions (task A2b). Runs need no connected worker
@@ -24,7 +24,7 @@ import { api, BASE, createBrand, expectError } from "./helpers.ts";
 const AUTH = () => ({ Authorization: `Bearer ${env.WORKER_TOKEN}` });
 
 async function worker<T = unknown>(method: string, path: string, body?: unknown) {
-  const res = await exports.default.fetch(`${BASE}${path}`, {
+  const res = await localFetch(`${BASE}${path}`, {
     method,
     headers: { ...AUTH(), ...(body !== undefined ? { "content-type": "application/json" } : {}) },
     ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
@@ -52,7 +52,7 @@ async function upload(brandId: string, name = "foto.png", dims?: [number, number
     form.set("width", String(dims[0]));
     form.set("height", String(dims[1]));
   }
-  const res = await exports.default.fetch(`${BASE}/api/assets`, { method: "POST", body: form });
+  const res = await localFetch(`${BASE}/api/assets`, { method: "POST", body: form });
   expect(res.status).toBe(201);
   return Asset.parse(await res.json());
 }
@@ -127,7 +127,7 @@ describe("attachment aliases", () => {
       contentPath: `/api/assets/${a.id}/content`,
     });
     // The content path really streams the file.
-    const file = await exports.default.fetch(`${BASE}${list[0]?.contentPath}`);
+    const file = await localFetch(`${BASE}${list[0]?.contentPath}`);
     expect(file.status).toBe(200);
     expect(file.headers.get("content-type")).toContain("image/png");
     await file.arrayBuffer();
@@ -330,7 +330,7 @@ describe("worker context and stream", () => {
 
     const frames: ConversationStreamMessage[] = [];
     let state: ConversationState | null = null;
-    const res = await exports.default.fetch(`${BASE}/api/conversations/${conv.id}/stream`, {
+    const res = await localFetch(`${BASE}/api/conversations/${conv.id}/stream`, {
       headers: { Upgrade: "websocket" },
     });
     const ws = res.webSocket;
@@ -433,7 +433,7 @@ describe("worker context and stream", () => {
     );
 
     // A fresh snapshot carries the full list.
-    const snap = await exports.default.fetch(`${BASE}/api/conversations/${conv.id}/stream`, {
+    const snap = await localFetch(`${BASE}/api/conversations/${conv.id}/stream`, {
       headers: { Upgrade: "websocket" },
     });
     const ws2 = snap.webSocket;
@@ -453,7 +453,7 @@ describe("worker context and stream", () => {
   });
 
   it("documents the alias routes in OpenAPI", async () => {
-    const res = await exports.default.fetch(`${BASE}/api/openapi.json`);
+    const res = await localFetch(`${BASE}/api/openapi.json`);
     const doc = (await res.json()) as {
       paths: Record<string, unknown>;
       components: { schemas: Record<string, unknown> };

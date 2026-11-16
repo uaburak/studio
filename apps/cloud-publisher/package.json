@@ -1,0 +1,27 @@
+{
+  "name": "@studio/cloud-publisher",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Cloudflare Worker that publishes approved, scheduled posts on time while the Mac is offline.",
+  "scripts": {
+    "dev": "wrangler dev --port 8788 --ip 127.0.0.1",
+    "build": "wrangler deploy --dry-run --outdir dist",
+    "typecheck": "wrangler types --strict-vars=false --check && tsc -p tsconfig.json && tsc -p tsconfig.node.json",
+    "test": "vitest run",
+    "cf-typegen": "wrangler types --strict-vars=false"
+  },
+  "dependencies": {
+    "@studio/contract": "workspace:*",
+    "@studio/publishers": "workspace:*",
+    "hono": "catalog:",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-plugin": "catalog:",
+    "@types/node": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:",
+    "wrangler": "catalog:"
+  }
+}

@@ -1,6 +1,9 @@
 /** TanStack Query keys. Prefixes are used for invalidation after mutations. */
 export const queryKeys = {
   health: ["health"] as const,
+  presence: ["workers", "presence"] as const,
+  claude: ["workers", "claude"] as const,
+  gemini: ["workers", "gemini"] as const,
   brands: {
     all: ["brands"] as const,
     one: (id: string) => ["brands", "one", id] as const,
@@ -32,5 +35,18 @@ export const queryKeys = {
     all: ["schedules"] as const,
     list: (filters: object) => ["schedules", "list", filters] as const,
     logs: (id: string) => ["schedules", "logs", id] as const,
+  },
+  conversations: {
+    all: ["conversations"] as const,
+    list: (filters: object) => ["conversations", "list", filters] as const,
+    one: (id: string) => ["conversations", "one", id] as const,
+    messages: (id: string) => ["conversations", "messages", id] as const,
+    aliases: (id: string) => ["conversations", "aliases", id] as const,
+    runs: (id: string) => ["conversations", "runs", id] as const,
+  },
+  plans: {
+    all: ["plans"] as const,
+    list: (filters: object) => ["plans", "list", filters] as const,
+    one: (id: string) => ["plans", "one", id] as const,
   },
 };

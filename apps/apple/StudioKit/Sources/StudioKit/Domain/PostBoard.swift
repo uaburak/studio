@@ -211,7 +211,7 @@ public struct PostBoard: Sendable, Equatable {
             scheduleByContent[schedule.contentId] = schedule
         }
         var jobByContent: [EntityID: Job] = [:]
-        for job in jobs where job.type == .contentGenerate {
+        for job in jobs where job.type == .contentGenerate || job.type == .contentRender {
             guard let id = job.contentId else { continue }
             if let existing = jobByContent[id], existing.createdAt >= job.createdAt { continue }
             jobByContent[id] = job

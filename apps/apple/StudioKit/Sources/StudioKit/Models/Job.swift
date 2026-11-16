@@ -23,6 +23,8 @@ public struct JobType: RawRepresentable, Codable, Hashable, Sendable, Expressibl
     public static let contentGenerate: JobType = "content.generate"
     public static let contentRender: JobType = "content.render"
     public static let brandAnalyze: JobType = "brand.analyze"
+    public static let imageGenerate: JobType = "image.generate"
+    public static let schedulePublish: JobType = "schedule.publish"
     public static let chatTurn: JobType = "chat.turn"
 
     /// Short Turkish label for job lists.
@@ -31,6 +33,8 @@ public struct JobType: RawRepresentable, Codable, Hashable, Sendable, Expressibl
         case .contentGenerate: "Post üretimi"
         case .contentRender: "Görsel çıktısı"
         case .brandAnalyze: "Marka analizi"
+        case .imageGenerate: "AI görsel üretimi"
+        case .schedulePublish: "Zamanlı yayın"
         case .chatTurn: "Sohbet yanıtı"
         case .demoEcho: "Deneme işi"
         default: rawValue
@@ -211,17 +215,23 @@ public struct WorkerPresence: Codable, Sendable, Hashable {
     public var queueLength: Int
     /// Latest subscription usage the Mac reported; nil until it sent one.
     public var usage: WorkerUsage?
+    /// Latest Claude sign-in status the Mac reported; nil until it sent one.
+    public var claude: ClaudeAccount?
+    /// Latest Gemini API / CLI readiness the Mac reported; nil until it sent one.
+    public var gemini: GeminiAccount?
 
     public init(
         online: Bool, lastSeenAt: Date? = nil, workers: [ConnectedWorker] = [], currentJobs: [PresenceJob] = [], queueLength: Int = 0,
-        usage: WorkerUsage? = nil
+        usage: WorkerUsage? = nil, claude: ClaudeAccount? = nil, gemini: GeminiAccount? = nil
     ) {
-        self.usage = usage
         self.online = online
         self.lastSeenAt = lastSeenAt
         self.workers = workers
         self.currentJobs = currentJobs
         self.queueLength = queueLength
+        self.usage = usage
+        self.claude = claude
+        self.gemini = gemini
     }
 
     public static let offline = WorkerPresence(online: false)

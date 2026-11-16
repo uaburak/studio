@@ -1,38 +1,24 @@
 import AppKit
-import SwiftUI
 
-/// Makes the enclosing scroll view use thin overlay scroll bars (the minimal style that only
-/// appears while scrolling), regardless of the "Show scroll bars" system setting.
-struct MinimalScroller: NSViewRepresentable {
-    func makeNSView(context: Context) -> ScrollerStylingView { ScrollerStylingView() }
-    func updateNSView(_ view: ScrollerStylingView, context: Context) { view.apply() }
-
-    final class ScrollerStylingView: NSView {
-        nonisolated(unsafe) private var observer: NSObjectProtocol?
-
-        override func viewDidMoveToWindow() {
-            super.viewDidMoveToWindow()
-            apply()
-            if observer == nil {
-                observer = NotificationCenter.default.addObserver(
-                    forName: NSScroller.preferredScrollerStyleDidChangeNotification,
-                    object: nil, queue: .main
-                ) { [weak self] _ in
-                    MainActor.assumeIsolated { self?.apply() }
-                }
-            }
-        }
-
-        func apply() {
-            guard let scrollView = enclosingScrollView else { return }
-            scrollView.scrollerStyle = .overlay
-            scrollView.autohidesScrollers = true
-            scrollView.verticalScroller?.controlSize = .mini
-            scrollView.scrollerKnobStyle = .default
-        }
-
-        deinit {
-            if let observer { NotificationCenter.default.removeObserver(observer) }
-        }
+/// Configures an `NSScrollView` to use thin overlay scroll bars (the minimal style
+/// that only appears while scrolling), regardless of the system setting.
+@MainActor
+extension NSScrollView {
+    func applyMinimalScroller() {
+        scrollerStyle = .overlay
+        autohidesScrollers = true
+        verticalScroller?.controlSize = .mini
+        horizontalScroller?.controlSize = .mini
+        scrollerKnobStyle = .default
     }
+}
+
+/// Flipped document container for AppKit `NSScrollView` so content lays out top-to-bottom.
+final class FlippedDocumentView: NSView {
+    override var isFlipped: Bool { true }
+}
+
+/// Flipped clip view so short scroll content pins to the top instead of the bottom.
+final class FlippedClipView: NSClipView {
+    override var isFlipped: Bool { true }
 }

@@ -1,6 +1,7 @@
 import AppKit
+import Foundation
+import Observation
 import StudioKit
-import SwiftUI
 
 /// One open conversation: live state from the stream, the composer, actions.
 @MainActor
@@ -19,11 +20,13 @@ final class ConversationModel {
     var expandedPlans: Set<EntityID> = []
     /// Questions being answered right now (message id + question id).
     var busyQuestions: Set<String> = []
+    /// Consent cards being decided right now (message id + consent id).
+    var busyConsents: Set<String> = []
     /// Alias id whose image is being previewed (mention click).
     var previewAliasId: EntityID?
     /// Model and effort for the next turn and for plan generation; remembered per conversation.
     var agentChoice: AgentChoice {
-        didSet { if agentChoice != oldValue { app.settings.agentChoices.save(agentChoice, for: id) } }
+        didSet { if agentChoice != oldValue { app.saveAgentChoice(agentChoice, for: id) } }
     }
     private var task: Task<Void, Never>?
 
@@ -107,8 +110,24 @@ final class ConversationModel {
         message.effort = agentChoice.effort
         do {
             _ = try await app.conversationService.send(message, to: id)
-            app.settings.agentChoices.save(agentChoice, for: id)
+            app.saveAgentChoice(agentChoice, for: id)
             composer.reset()
+            error = nil
+        } catch {
+            self.error = AppModel.describe(error)
+        }
+    }
+
+    func decideConsent(message: Message, consent: ConsentPart, allow: Bool) async {
+        let key = message.id + consent.consentId
+        busyConsents.insert(key)
+        defer { busyConsents.remove(key) }
+        do {
+            _ = try await app.conversationService.decideConsent(
+                conversationId: id,
+                messageId: message.id,
+                ConsentDecisionCreate(consentId: consent.consentId, allow: allow)
+            )
             error = nil
         } catch {
             self.error = AppModel.describe(error)
@@ -211,6 +230,11 @@ final class NewChatModel {
     var error: String?
     var focusRequest = 0
 
+    var agentChoice: AgentChoice {
+        get { app?.lastAgentChoice ?? app?.settings.agentChoices.last ?? .fallback }
+        set { app?.saveAgentChoice(newValue, for: nil) }
+    }
+
     init() {
         composer.uploader = { [weak self] file, progress in
             guard let self, let app = self.app, let brandId = app.currentBrandId else {
@@ -235,14 +259,14 @@ final class NewChatModel {
         isCreating = true
         defer { isCreating = false }
         // A new chat starts with the last used model / effort and keeps it.
-        let choice = app.settings.agentChoices.last
+        let choice = agentChoice
         var message = composer.makeMessage()
         message.model = choice.model
         message.effort = choice.effort
         let title = String(message.text.trimmingCharacters(in: .whitespacesAndNewlines).prefix(60))
         do {
             let conversation = try await app.conversationService.createConversation(brandId: app.currentBrandId, title: title.isEmpty ? nil : title)
-            app.settings.agentChoices.save(choice, for: conversation.id)
+            app.saveAgentChoice(choice, for: conversation.id)
             app.conversationChanged(conversation)
             _ = try await app.conversationService.send(message, to: conversation.id)
             composer.reset()

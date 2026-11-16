@@ -16,6 +16,8 @@ public struct SampleData: Sendable {
     public var jobs: [Job]
     public var presence: WorkerPresence
     public var assets: [EntityID: Asset]
+    public var brandProfiles: [EntityID: [BrandProfile]] = [:]
+    public var publishLogs: [EntityID: [PublishLog]] = [:]
     /// Agent runs started while the sample is in use (none at start).
     public var runs: [AgentRun] = []
     /// Attachment aliases per conversation, oldest first.
@@ -49,10 +51,80 @@ public struct SampleData: Sendable {
         ]
 
         accounts = [
-            SocialAccount(id: "sa-ig", brandId: mtm, platform: .instagram, handle: "mtmagro", externalId: "1784", status: .connected, createdAt: created, updatedAt: created),
-            SocialAccount(id: "sa-fb", brandId: mtm, platform: .facebook, handle: "MTM Agro", externalId: "1022", status: .connected, createdAt: created, updatedAt: created),
-            SocialAccount(id: "sa-li", brandId: mtm, platform: .linkedin, handle: "MTM Agro", status: .pending, createdAt: created, updatedAt: created),
-            SocialAccount(id: "sa-koc-ig", brandId: "b-koc", platform: .instagram, handle: "kocchords", status: .connected, createdAt: created, updatedAt: created),
+            SocialAccount(id: "sa-ig", brandId: mtm, platform: .instagram, handle: "mtmagro", externalId: "1784", status: .connected, createdAt: created, updatedAt: created, hasToken: true, tokenExpiresAt: now.addingTimeInterval(45 * 86_400), tokenScopes: ["instagram_basic", "instagram_content_publish"], tokenHealth: .valid, tokenCheckedAt: ago(15)),
+            SocialAccount(id: "sa-fb", brandId: mtm, platform: .facebook, handle: "MTM Agro", externalId: "1022", status: .connected, createdAt: created, updatedAt: created, hasToken: true, tokenExpiresAt: now.addingTimeInterval(45 * 86_400), tokenScopes: ["pages_manage_posts", "pages_read_engagement"], tokenHealth: .valid, tokenCheckedAt: ago(15)),
+            SocialAccount(id: "sa-li", brandId: mtm, platform: .linkedin, handle: "MTM Agro", status: .pending, createdAt: created, updatedAt: created, hasToken: false, tokenHealth: .unchecked),
+            SocialAccount(id: "sa-koc-ig", brandId: "b-koc", platform: .instagram, handle: "kocchords", status: .connected, createdAt: created, updatedAt: created, hasToken: true, tokenHealth: .valid, tokenCheckedAt: ago(30)),
+        ]
+
+        brandProfiles = [
+            mtm: [
+                BrandProfile(
+                    id: "bp-mtm-1",
+                    brandId: mtm,
+                    version: 1,
+                    status: .approved,
+                    isCurrent: true,
+                    tokens: [
+                        "colors": .object([
+                            "primary": .string("#FF6A00"),
+                            "background": .string("#0A0A0A"),
+                            "surface": .string("#F4F4F5"),
+                            "text": .string("#FFFFFF"),
+                        ]),
+                        "typography": .object([
+                            "display": .string("Inter Tight"),
+                            "body": .string("Inter"),
+                        ]),
+                    ],
+                    designRules: "# Tasarım Kuralları (MTM Agro)\n\n- Koyu zemin (#0A0A0A) ve yüksek kontrastlı başlıklar kullan.\n- Ürün fotoğrafı yuvası en az %60 alan kaplamalı.\n- Vurgu rengi yalnızca tek bir odak öğesinde (#FF6A00) yer alır.",
+                    voice: "# Metin Tonu (MTM Agro)\n\n- Çiftçi ve bayiyle doğrudan, güven veren ve sade Türkçe konuş.\n- Abartılı pazarlama sıfatlarından kaçın; somut uygulama zamanı ve faydayı yaz.",
+                    approvedAt: ago(60 * 24 * 10),
+                    createdAt: created,
+                    updatedAt: ago(60 * 24 * 10)
+                ),
+                BrandProfile(
+                    id: "bp-mtm-2",
+                    brandId: mtm,
+                    version: 2,
+                    status: .draft,
+                    isCurrent: false,
+                    tokens: [
+                        "colors": .object([
+                            "primary": .string("#FF6A00"),
+                            "background": .string("#141414"),
+                            "surface": .string("#FFFFFF"),
+                            "accent": .string("#2E7D32"),
+                        ]),
+                    ],
+                    designRules: "# Tasarım Kuralları v2 (Taslak)\n\n- Kış serisi için açık/koyu dengeli kart düzeni.\n- Teknik doz tablolarında 4:5 carousel tercih et.",
+                    voice: "# Metin Tonu v2 (Taslak)\n\n- Kış hazırlığı döneminde rehber odaklı, madde işaretli kısa açıklamalar.",
+                    approvedAt: nil,
+                    createdAt: ago(120),
+                    updatedAt: ago(60)
+                ),
+            ],
+            "b-koc": [
+                BrandProfile(
+                    id: "bp-koc-1",
+                    brandId: "b-koc",
+                    version: 1,
+                    status: .approved,
+                    isCurrent: true,
+                    tokens: [
+                        "colors": .object([
+                            "primary": .string("#101010"),
+                            "accent": .string("#FF6A00"),
+                            "surface": .string("#F4F4F5"),
+                        ]),
+                    ],
+                    designRules: "# Tasarım Kuralları (Koç Chords)\n\n- Minimal tipografi ve sahne fotoğrafları.",
+                    voice: "# Metin Tonu (Koç Chords)\n\n- Samimi, müzik odaklı ve kısa duyuru dili.",
+                    approvedAt: created,
+                    createdAt: created,
+                    updatedAt: created
+                ),
+            ],
         ]
 
         func conversation(_ id: String, _ brand: String?, _ title: String, minutesAgo: Double, activeRun: String? = nil) -> Conversation {
@@ -177,7 +249,33 @@ public struct SampleData: Sendable {
             online: true, lastSeenAt: ago(0.2),
             workers: [ConnectedWorker(workerId: "burak-mbp", workerVersion: "0.1.0", capabilities: ["demo.echo", "content.generate"], connectedAt: ago(90), lastSeenAt: ago(0.2))],
             currentJobs: [PresenceJob(id: "job-bayi", type: .contentGenerate, brandId: mtm, workerId: "burak-mbp", progress: 0.4, progressMessage: "Tasarım denetleniyor", startedAt: ago(2))],
-            queueLength: 1)
+            queueLength: 1,
+            usage: WorkerUsage(
+                windows: [
+                    UsageWindow(kind: .fiveHour, usedPercent: 34, resetsAt: now.addingTimeInterval(3 * 3600), limited: false),
+                    UsageWindow(kind: .weekly, usedPercent: 62, resetsAt: now.addingTimeInterval(4 * 86_400), limited: false),
+                ],
+                source: "claude-cli",
+                observedAt: ago(1)
+            ),
+            claude: ClaudeAccount(
+                status: .signedIn,
+                email: "burak@burakkoc.net",
+                plan: "Claude Max",
+                cliVersion: "1.0.24",
+                detail: "Giriş yapıldı · Claude Max",
+                checkedAt: ago(1)
+            ),
+            gemini: GeminiAccount(
+                status: .ready,
+                mode: .api,
+                apiKeyConfigured: true,
+                cliVersion: nil,
+                defaultModel: "gemini-2.5-flash-lite",
+                detail: "GEMINI_API_KEY hazır · doğrudan API",
+                checkedAt: ago(1)
+            )
+        )
 
         // MARK: Assets
 
@@ -208,6 +306,8 @@ public struct SampleData: Sendable {
             Self.kasimConversation: [
                 user("m-k1", Self.kasimConversation, [.text("MTM için bu ayın postlarını üret, resimleri ben yükleyeceğim.")], minutesAgo: 8),
                 assistant("m-k2", Self.kasimConversation, [
+                    .toolStep(ToolStepPart(id: "ts-profile", name: "get_brand_profile", label: "Marka profili okundu", state: .done, summary: "MTM Agro · bitki besleme")),
+                    .toolStep(ToolStepPart(id: "ts-plan", name: "propose_plan", label: "İçerik planı hazırlandı", state: .done, summary: "12 post · Kasım")),
                     .text("Kasım için 12 post hazırladım. 6 tanesinde görsel yerini boş bıraktım."),
                     .planProposal(planId: Self.kasimPlan),
                 ], minutesAgo: 6, run: "run-kasim"),
@@ -215,6 +315,7 @@ public struct SampleData: Sendable {
             Self.lansmanConversation: [
                 user("m-l1", Self.lansmanConversation, [.text("Venta Borinc lansmanı için üç post hazırlayalım.")], minutesAgo: 75),
                 assistant("m-l2", Self.lansmanConversation, [
+                    .toolStep(ToolStepPart(id: "ts-lansman", name: "list_contents", label: "Mevcut içerikler incelendi", state: .done, summary: "Kasım takvimi")),
                     .text("Lansman için üç post öneriyorum: duyuru, ürün detayı ve bayi listesi. Başlamadan önce bir şeyi netleştirelim."),
                     .question(QuestionPart(
                         questionId: "launch-date", prompt: "Lansman hangi gün yayına girsin?", mode: .single,
@@ -233,13 +334,18 @@ public struct SampleData: Sendable {
                     return message
                 }(),
                 assistant("m-h2", Self.hasatConversation, [
+                    .toolStep(ToolStepPart(id: "ts-assets", name: "inspect_assets", label: "Görseller incelendi", state: .done, summary: "@image, @image-1")),
                     .text("Tamam. Kapak postunu @image ile, saklama ipucunu @image-1 ile hazırlıyorum."),
                     .progress(ProgressPart(stepId: "posts", label: "Postlar hazırlanıyor", state: .done, current: 4, total: 4)),
                 ], minutesAgo: 60 * 26, run: "run-hasat"),
             ],
             "c-bayi": [
-                user("m-b1", "c-bayi", [.text("Bayilere kasım kampanyası için kısa bir duyuru yaz.")], minutesAgo: 60 * 50 + 5),
-                assistant("m-b2", "c-bayi", [.text("Değerli bayimiz, kasım boyunca Venta Borinc siparişlerinde ikinci paletten itibaren yüzde 5 indirim uyguluyoruz. Ayrıntılar için bölge sorumlunuzla görüşebilirsiniz.")], minutesAgo: 60 * 50, run: "run-bayi"),
+                user("m-b1", "c-bayi", [.text("Bayilere kasım kampanyası için kısa bir duyuru yaz ve onaya sun.")], minutesAgo: 60 * 50 + 5),
+                assistant("m-b2", "c-bayi", [
+                    .toolStep(ToolStepPart(id: "ts-draft", name: "draft_caption", label: "Duyuru metni hazırlandı", state: .done)),
+                    .text("Değerli bayimiz, kasım boyunca Venta Borinc siparişlerinde ikinci paletten itibaren yüzde 5 indirim uyguluyoruz. Ayrıntılar için bölge sorumlunuzla görüşebilirsiniz."),
+                    .consent(ConsentPart(consentId: "consent-bayi-1", tool: "approve_content", title: "Postu onayla", detail: "Bayi buluşması · Instagram, Facebook", state: .pending)),
+                ], minutesAgo: 60 * 50, run: "run-bayi"),
             ],
         ]
     }

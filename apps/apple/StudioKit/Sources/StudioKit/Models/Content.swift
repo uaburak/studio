@@ -205,6 +205,7 @@ public struct Schedule: Codable, Sendable, Hashable, Identifiable {
     public var contentHash: String
     public var scheduledAt: Date
     public var status: ScheduleStatus
+    public var permalink: String?
     public var cancelledAt: Date?
     public var createdAt: Date
     public var updatedAt: Date
@@ -212,7 +213,7 @@ public struct Schedule: Codable, Sendable, Hashable, Identifiable {
     public init(
         id: EntityID, contentId: EntityID, brandId: EntityID, platform: Platform, socialAccountId: EntityID,
         versionId: EntityID, contentHash: String, scheduledAt: Date, status: ScheduleStatus,
-        cancelledAt: Date? = nil, createdAt: Date, updatedAt: Date
+        permalink: String? = nil, cancelledAt: Date? = nil, createdAt: Date, updatedAt: Date
     ) {
         self.id = id
         self.contentId = contentId
@@ -223,9 +224,45 @@ public struct Schedule: Codable, Sendable, Hashable, Identifiable {
         self.contentHash = contentHash
         self.scheduledAt = scheduledAt
         self.status = status
+        self.permalink = permalink
         self.cancelledAt = cancelledAt
         self.createdAt = createdAt
         self.updatedAt = updatedAt
+    }
+}
+
+public enum PublishLogStatus: String, OpenEnum {
+    case started, succeeded, failed
+    case unknown
+}
+
+public struct PublishLog: Codable, Sendable, Hashable, Identifiable {
+    public var id: EntityID
+    public var scheduleId: EntityID
+    public var attempt: Int
+    public var status: PublishLogStatus
+    public var externalPostId: String?
+    public var permalink: String?
+    public var error: String?
+    public var startedAt: Date
+    public var finishedAt: Date?
+    public var createdAt: Date
+
+    public init(
+        id: EntityID, scheduleId: EntityID, attempt: Int = 1, status: PublishLogStatus,
+        externalPostId: String? = nil, permalink: String? = nil, error: String? = nil,
+        startedAt: Date, finishedAt: Date? = nil, createdAt: Date
+    ) {
+        self.id = id
+        self.scheduleId = scheduleId
+        self.attempt = attempt
+        self.status = status
+        self.externalPostId = externalPostId
+        self.permalink = permalink
+        self.error = error
+        self.startedAt = startedAt
+        self.finishedAt = finishedAt
+        self.createdAt = createdAt
     }
 }
 

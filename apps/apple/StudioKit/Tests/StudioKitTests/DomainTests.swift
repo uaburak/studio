@@ -214,4 +214,38 @@ struct SampleBackendTests {
         #expect(state.openPlan?.items.count == 12)
         #expect(state.messages.count == 2)
     }
+
+    @Test func decidesConsentAndHandlesSlashUsage() async throws {
+        let backend = SampleBackend(uploadDelay: .zero)
+        // Sample presence carries ready Gemini + Claude accounts.
+        let presence = try await backend.presence()
+        #expect(presence.gemini?.status == .ready)
+        #expect(presence.claude?.status == .signedIn)
+
+        // Decide pending consent in c-bayi.
+        let decided = try await backend.decideConsent(
+            conversationId: "c-bayi", messageId: "m-b2",
+            ConsentDecisionCreate(consentId: "consent-bayi-1", allow: true)
+        )
+        let consent = try #require(decided.message.parts.compactMap { if case .consent(let c) = $0 { c } else { nil } }.first)
+        #expect(consent.state == .allowed)
+        #expect(consent.decidedAt != nil)
+
+        // Deciding a second time is rejected (409).
+        await #expect(throws: StudioAPIError.self) {
+            _ = try await backend.decideConsent(
+                conversationId: "c-bayi", messageId: "m-b2",
+                ConsentDecisionCreate(consentId: "consent-bayi-1", allow: false)
+            )
+        }
+
+        // /usage returns an instant usage & connection summary without leaving an active run.
+        let conv = try await backend.createConversation(brandId: SampleData.mtm, title: nil)
+        let usageTurn = try await backend.send(OutgoingMessage(text: "/usage", model: .geminiFlashLite, effort: .medium), to: conv.id)
+        #expect(usageTurn.run.status == .completed)
+        let state = try #require(await backend.state(of: conv.id))
+        #expect(state.activeRun == nil)
+        #expect(state.messages.count == 2)
+        #expect(state.messages.last?.plainText.contains("Gemini:") == true)
+    }
 }

@@ -9,6 +9,7 @@ import { ToastProvider } from "./components/toast.tsx";
 import { BrandDetailPage } from "./features/brands/BrandDetailPage.tsx";
 import { BrandsPage } from "./features/brands/BrandsPage.tsx";
 import { CalendarPage } from "./features/calendar/CalendarPage.tsx";
+import { ChatPage } from "./features/chat/ChatPage.tsx";
 import { ContentDetailPage } from "./features/contents/ContentDetailPage.tsx";
 import { ContentsPage } from "./features/contents/ContentsPage.tsx";
 import { JobDetailPage } from "./features/jobs/JobDetailPage.tsx";
@@ -16,6 +17,7 @@ import { JobsPage } from "./features/jobs/JobsPage.tsx";
 import { MediaPage } from "./features/media/MediaPage.tsx";
 import { AppShell } from "./features/shell/AppShell.tsx";
 import { BrandProvider } from "./lib/brand-context.tsx";
+import { LiveJobsProvider } from "./lib/live-jobs.tsx";
 import { ThemeProvider } from "./lib/theme.tsx";
 
 export function createQueryClient(): QueryClient {
@@ -46,7 +48,9 @@ export function AppProviders({
       <QueryClientProvider client={queryClient}>
         <ThemeProvider>
           <ToastProvider>
-            <BrandProvider>{children}</BrandProvider>
+            <BrandProvider>
+              <LiveJobsProvider>{children}</LiveJobsProvider>
+            </BrandProvider>
           </ToastProvider>
         </ThemeProvider>
       </QueryClientProvider>
@@ -81,6 +85,9 @@ export const routes: RouteObject[] = [
     errorElement: <RouteError />,
     children: [
       { index: true, element: <Navigate to="/icerikler" replace /> },
+      { path: "chat", element: <ChatPage /> },
+      { path: "chat/:conversationId", element: <ChatPage /> },
+      { path: "sohbet", element: <Navigate to="/chat" replace /> },
       { path: "icerikler", element: <ContentsPage /> },
       { path: "icerikler/:contentId", element: <ContentDetailPage /> },
       { path: "markalar", element: <BrandsPage /> },

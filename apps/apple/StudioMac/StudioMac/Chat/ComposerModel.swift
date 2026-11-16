@@ -1,6 +1,7 @@
 import AppKit
+import Foundation
+import Observation
 import StudioKit
-import SwiftUI
 
 /// A mention candidate for the `@` popover.
 struct MentionSuggestion: Identifiable, Equatable {

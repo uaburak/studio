@@ -4,7 +4,7 @@ import { useState } from "react";
 import { Link } from "react-router";
 import { useApi } from "../../api.ts";
 import { Dialog } from "../../components/dialog.tsx";
-import { IconPlatform } from "../../components/icons.tsx";
+import { IconExternal, IconPlatform } from "../../components/icons.tsx";
 import { StatusBadge } from "../../components/page.tsx";
 import { ErrorState, InlineError, Notice } from "../../components/states.tsx";
 import { useToast } from "../../components/toast.tsx";
@@ -61,6 +61,7 @@ export function ScheduleDetailDialog({
   };
 
   const cancellable = schedule?.status === "pending";
+  const accountConnected = account.data?.status === "connected";
 
   return (
     <Dialog
@@ -102,10 +103,14 @@ export function ScheduleDetailDialog({
             </span>
           </div>
 
-          {schedule.status === "pending" && (
+          {schedule.status === "pending" && !accountConnected && (
             <Notice tone="warn">
-              <strong>Henüz otomatik paylaşılmayacak.</strong> {SCHEDULE_STATUS.pending.hint}
+              <strong>Henüz otomatik paylaşılmayacak.</strong> Hedef hesap henüz bağlı değil; zamanı
+              gelmeden hesap bağlantısını ve token doğrulamasını tamamlayın.
             </Notice>
+          )}
+          {schedule.status === "pending" && accountConnected && (
+            <Notice tone="info">Zamanı geldiğinde bağlı hesaptan otomatik yayınlanacak.</Notice>
           )}
           {confirming && (
             <Notice tone="neutral">
@@ -149,6 +154,23 @@ export function ScheduleDetailDialog({
                   </Link>
                 ),
               },
+              ...(schedule.permalink
+                ? [
+                    {
+                      label: "Yayın bağlantısı",
+                      value: (
+                        <a
+                          href={schedule.permalink}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex items-center gap-1 font-medium text-accent hover:underline"
+                        >
+                          Paylaşımı görüntüle <IconExternal size={14} />
+                        </a>
+                      ),
+                    },
+                  ]
+                : []),
               { label: "Sürüm hash'i", value: <Mono>{shortHash(schedule.contentHash)}</Mono> },
               ...(schedule.cancelledAt
                 ? [{ label: "İptal", value: formatDateTime(schedule.cancelledAt, timeZone) }]
@@ -175,6 +197,16 @@ export function ScheduleDetailDialog({
                       <span className="font-mono text-[12px] text-ink-3">#{log.attempt}</span>
                       <StatusBadge meta={PUBLISH_LOG_STATUS[log.status]} />
                       <span className="text-ink-3">{formatDateTime(log.startedAt, timeZone)}</span>
+                      {log.permalink && (
+                        <a
+                          href={log.permalink}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="ml-auto inline-flex items-center gap-1 text-xs font-medium text-accent hover:underline"
+                        >
+                          Bağlantı <IconExternal size={12} />
+                        </a>
+                      )}
                     </div>
                     {log.externalPostId && <Mono className="mt-1 block">{log.externalPostId}</Mono>}
                     {log.error && <p className="mt-1 text-bad">{log.error}</p>}

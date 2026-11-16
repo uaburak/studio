@@ -8,6 +8,7 @@ import { useBrandName } from "../../lib/brand-context.tsx";
 import { formatDateTime } from "../../lib/datetime.ts";
 import { formatPercent, prettyJson } from "../../lib/format.ts";
 import { JOB_STATUS, JOB_TYPE_LABELS } from "../../lib/labels.ts";
+import { CancelJobButton, useLiveJobs } from "../../lib/live-jobs.tsx";
 import { queryKeys } from "../../lib/query-keys.ts";
 import { isActiveJob } from "./JobsPage.tsx";
 
@@ -15,15 +16,21 @@ export function JobDetailPage() {
   const { jobId = "" } = useParams();
   const api = useApi();
   const brandName = useBrandName();
+  const { streamStatus, jobsById, presence } = useLiveJobs();
   const query = useQuery({
     queryKey: queryKeys.jobs.one(jobId),
     queryFn: ({ signal }) => api.jobs.get(jobId, { signal }),
-    refetchInterval: (q) => (q.state.data && isActiveJob(q.state.data) ? 2000 : false),
+    refetchInterval: (q) =>
+      streamStatus !== "open" && q.state.data && isActiveJob(q.state.data) ? 2000 : false,
   });
 
-  if (query.isPending) return <SkeletonRows rows={4} />;
-  if (query.error) return <ErrorState error={query.error} onRetry={() => void query.refetch()} />;
-  const job = query.data;
+  const liveJob = jobsById.get(jobId);
+  const job = liveJob ?? query.data;
+
+  if (!job && query.isPending) return <SkeletonRows rows={4} />;
+  if (!job && query.error)
+    return <ErrorState error={query.error} onRetry={() => void query.refetch()} />;
+  if (!job) return null;
 
   return (
     <>
@@ -31,24 +38,38 @@ export function JobDetailPage() {
         back={{ to: "/isler", label: "İşler" }}
         eyebrow={<Mono>{job.id}</Mono>}
         title={JOB_TYPE_LABELS[job.type]}
-        actions={<StatusBadge meta={JOB_STATUS[job.status]} className="h-8 px-3 text-[13px]" />}
+        actions={
+          <div className="flex flex-wrap items-center gap-2">
+            <StatusBadge meta={JOB_STATUS[job.status]} className="h-8 px-3 text-[13px]" />
+            <CancelJobButton job={job} size="md" />
+          </div>
+        }
       />
 
       <div className="grid gap-6 lg:grid-cols-[360px_minmax(0,1fr)]">
         <Card className="flex flex-col gap-5 self-start p-5 sm:p-6">
           {job.status === "queued" && (
-            <Notice tone="info">
-              Sırada: Mac worker bu işi alınca “Çalışıyor”a geçer. Üretim hattı henüz bağlı olmadığı
-              için sonuç üretilmeyecek.
+            <Notice tone={presence?.online === false ? "warn" : "info"}>
+              {presence?.online === false
+                ? "Mac şu an çevrimdışı. Mac worker bağlandığında bu iş otomatik başlar."
+                : "Sırada: Mac worker bu işi aldığında “Çalışıyor” durumuna geçer."}
             </Notice>
           )}
           {job.progress !== undefined && (
-            <div className="flex items-center gap-3">
-              <Progress value={job.progress} label="İlerleme" />
-              <span className="font-mono text-[12px] text-ink-2">
-                {formatPercent(job.progress)}
-              </span>
+            <div className="flex flex-col gap-1.5">
+              <div className="flex items-center gap-3">
+                <Progress value={job.progress} label="İlerleme" />
+                <span className="font-mono text-[12px] text-ink-2 tabular-nums">
+                  {formatPercent(job.progress)}
+                </span>
+              </div>
+              {job.progressMessage && (
+                <p className="text-[13px] text-ink-2">{job.progressMessage}</p>
+              )}
             </div>
+          )}
+          {job.progress === undefined && job.progressMessage && (
+            <p className="text-[13px] text-ink-2">{job.progressMessage}</p>
           )}
           <KeyValue
             items={[
@@ -67,6 +88,15 @@ export function JobDetailPage() {
                   "—"
                 ),
               },
+              ...(job.workerId ? [{ label: "Worker", value: <Mono>{job.workerId}</Mono> }] : []),
+              ...(job.attempts !== undefined
+                ? [
+                    {
+                      label: "Deneme",
+                      value: `${job.attempts}${job.maxAttempts ? ` / ${job.maxAttempts}` : ""}`,
+                    },
+                  ]
+                : []),
               { label: "Oluşturuldu", value: formatDateTime(job.createdAt) },
               { label: "Başladı", value: job.startedAt ? formatDateTime(job.startedAt) : "—" },
               { label: "Bitti", value: job.finishedAt ? formatDateTime(job.finishedAt) : "—" },

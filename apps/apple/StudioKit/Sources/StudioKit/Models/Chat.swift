@@ -18,13 +18,16 @@ public struct Conversation: Codable, Sendable, Hashable, Identifiable {
     public var activeRunId: EntityID?
     /// Sequence number of the last stream event (0 = none yet).
     public var lastSeq: Int
+    /// Claude Code session of the last completed agent turn.
+    public var agentSession: AgentSession?
     public var lastActivityAt: Date
     public var createdAt: Date
     public var updatedAt: Date
 
     public init(
         id: EntityID, brandId: EntityID?, title: String, status: ConversationStatus = .active,
-        activeRunId: EntityID? = nil, lastSeq: Int = 0, lastActivityAt: Date, createdAt: Date, updatedAt: Date
+        activeRunId: EntityID? = nil, lastSeq: Int = 0, agentSession: AgentSession? = nil,
+        lastActivityAt: Date, createdAt: Date, updatedAt: Date
     ) {
         self.id = id
         self.brandId = brandId
@@ -32,6 +35,7 @@ public struct Conversation: Codable, Sendable, Hashable, Identifiable {
         self.status = status
         self.activeRunId = activeRunId
         self.lastSeq = lastSeq
+        self.agentSession = agentSession
         self.lastActivityAt = lastActivityAt
         self.createdAt = createdAt
         self.updatedAt = updatedAt
@@ -221,6 +225,8 @@ public enum MessagePart: Sendable, Hashable, Codable {
     case question(QuestionPart)
     case progress(ProgressPart)
     case error(ErrorPart)
+    case toolStep(ToolStepPart)
+    case consent(ConsentPart)
     /// A part type this build does not know yet; kept so indexes stay aligned.
     case unknown(type: String)
 
@@ -237,6 +243,8 @@ public enum MessagePart: Sendable, Hashable, Codable {
         case "question": self = .question(try QuestionPart(from: decoder))
         case "progress": self = .progress(try ProgressPart(from: decoder))
         case "error": self = .error(try ErrorPart(from: decoder))
+        case "tool_step": self = .toolStep(try ToolStepPart(from: decoder))
+        case "consent": self = .consent(try ConsentPart(from: decoder))
         default: self = .unknown(type: type)
         }
     }
@@ -252,6 +260,8 @@ public enum MessagePart: Sendable, Hashable, Codable {
         case .question(let part): try part.encode(to: encoder)
         case .progress(let part): try part.encode(to: encoder)
         case .error(let part): try part.encode(to: encoder)
+        case .toolStep(let part): try part.encode(to: encoder)
+        case .consent(let part): try part.encode(to: encoder)
         case .unknown: break
         }
     }
@@ -265,6 +275,8 @@ public enum MessagePart: Sendable, Hashable, Codable {
         case .question: "question"
         case .progress: "progress"
         case .error: "error"
+        case .toolStep: "tool_step"
+        case .consent: "consent"
         case .unknown(let type): type
         }
     }

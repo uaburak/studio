@@ -8,8 +8,9 @@ import {
   type Plan,
   TURN_CONTEXT_MESSAGES,
   type TurnContext,
+  type TurnMessageResult,
 } from "@studio/contract";
-import { and, asc, desc, eq, gt, inArray, ne, notInArray } from "drizzle-orm";
+import { and, asc, count, desc, eq, gt, inArray, ne, notInArray } from "drizzle-orm";
 import type { Db } from "../db/client.ts";
 import {
   type AgentRunRow,
@@ -187,17 +188,19 @@ async function attachedAssets(db: Db, list: Message[]): Promise<Asset[]> {
 export async function turnContext(db: Db, runId: string): Promise<TurnContext> {
   const run = await requireRun(db, runId);
   const conv = await requireConversation(db, run.conversationId);
-  const [{ messages: list, hasMore }, brand, profile, openPlan, assistant] = await Promise.all([
-    latestMessages(db, conv.id, TURN_CONTEXT_MESSAGES),
-    conv.brandId ? db.query.brands.findFirst({ where: eq(brands.id, conv.brandId) }) : undefined,
-    conv.brandId
-      ? db.query.brandProfiles.findFirst({
-          where: and(eq(brandProfiles.brandId, conv.brandId), eq(brandProfiles.isCurrent, true)),
-        })
-      : undefined,
-    openPlanOf(db, conv.id),
-    assistantMessageOf(db, run.id),
-  ]);
+  const [{ messages: list, hasMore }, brand, profile, openPlan, assistant, total] =
+    await Promise.all([
+      latestMessages(db, conv.id, TURN_CONTEXT_MESSAGES),
+      conv.brandId ? db.query.brands.findFirst({ where: eq(brands.id, conv.brandId) }) : undefined,
+      conv.brandId
+        ? db.query.brandProfiles.findFirst({
+            where: and(eq(brandProfiles.brandId, conv.brandId), eq(brandProfiles.isCurrent, true)),
+          })
+        : undefined,
+      openPlanOf(db, conv.id),
+      assistantMessageOf(db, run.id),
+      messageCountOf(db, conv.id),
+    ]);
   return {
     run: toAgentRun(run),
     conversation: await conversationView(db, conv),
@@ -209,7 +212,24 @@ export async function turnContext(db: Db, runId: string): Promise<TurnContext> {
     openPlan,
     assistantMessage: assistant ? toMessage(assistant) : null,
     aliases: (await loadAliases(db, conv.id)).map(toTurnAlias),
+    messageCount: total,
   };
+}
+
+/** Messages in a conversation (all of them). */
+export async function messageCountOf(db: Db, conversationId: string): Promise<number> {
+  const [row] = await db
+    .select({ n: count() })
+    .from(messages)
+    .where(eq(messages.conversationId, conversationId));
+  return row?.n ?? 0;
+}
+
+/** The run and its assistant message (the worker polls it while a question or consent waits). */
+export async function turnMessage(db: Db, runId: string): Promise<TurnMessageResult> {
+  const run = await requireRun(db, runId);
+  const message = await assistantMessageOf(db, runId);
+  return { run: toAgentRun(run), message: message ? toMessage(message) : null };
 }
 
 /** State for `conversation.snapshot` (presence is added by the Hub). */

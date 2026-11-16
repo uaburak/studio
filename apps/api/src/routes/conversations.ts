@@ -3,6 +3,8 @@ import {
   ACTIVE_RUN_STATUSES,
   AgentRunList,
   AgentRunListQuery,
+  ConsentDecisionCreate,
+  ConsentDecisionResult,
   Conversation,
   ConversationAlias,
   ConversationAliasList,
@@ -297,6 +299,36 @@ conversationRoutes
         input: c.req.valid("json"),
       });
       return c.json(QuestionAnswerResult.parse(result), 200);
+    },
+  )
+  .openapi(
+    createRoute({
+      method: "post",
+      path: "/api/conversations/{id}/messages/{messageId}/consent",
+      tags,
+      summary: "Allow once / deny a consent card of the running agent",
+      description:
+        "The agent waits on a `consent` part before an action that needs the owner's go (schedule, " +
+        "approve). `allow: true` lets it go ahead once; `false` denies it. Final: repeating the same " +
+        "decision is a no-op, a different one is 409, and an `expired` card (not answered in time, " +
+        "or its run ended) is 409. Unlike a question, a decision never starts a new run.",
+      request: { params: MessageParams, body: jsonBody(ConsentDecisionCreate) },
+      responses: {
+        200: json(ConsentDecisionResult, "Recorded."),
+        400: errors[400],
+        404: errors[404],
+        409: errors[409],
+      },
+    }),
+    async (c) => {
+      const { id, messageId } = c.req.valid("param");
+      const result = await runChat(c.env, {
+        kind: "decideConsent",
+        conversationId: id,
+        messageId,
+        input: c.req.valid("json"),
+      });
+      return c.json(ConsentDecisionResult.parse(result), 200);
     },
   )
   .openapi(

@@ -43,6 +43,27 @@
       "when": 1794834676445,
       "tag": "0005_run_model_effort",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1794835909769,
+      "tag": "0006_devices",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "6",
+      "when": 1794836479144,
+      "tag": "0007_agent_session",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1794849426170,
+      "tag": "0008_token_vault",
+      "breakpoints": true
     }
   ]
 }

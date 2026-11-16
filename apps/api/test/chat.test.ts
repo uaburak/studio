@@ -1,5 +1,5 @@
 import { abortAllDurableObjects, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
-import { env, exports } from "cloudflare:workers";
+import { env } from "cloudflare:workers";
 import {
   AgentRun,
   AgentRunStatus,
@@ -37,14 +37,14 @@ import {
 } from "@studio/contract";
 import { beforeEach, describe, expect, it } from "vitest";
 import { ENUMS } from "../src/db/schema.ts";
-import { api, BASE, createBrand, expectError } from "./helpers.ts";
+import { api, BASE, createBrand, expectError, localFetch } from "./helpers.ts";
 
 const hub = () => env.HUB.getByName("main");
 const AUTH = () => ({ Authorization: `Bearer ${env.WORKER_TOKEN}` });
 
 /** Worker-side call to the turn API (bearer token). */
 async function worker<T = unknown>(method: string, path: string, body?: unknown) {
-  const res = await exports.default.fetch(`${BASE}${path}`, {
+  const res = await localFetch(`${BASE}${path}`, {
     method,
     headers: { ...AUTH(), ...(body !== undefined ? { "content-type": "application/json" } : {}) },
     ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
@@ -58,7 +58,7 @@ async function worker<T = unknown>(method: string, path: string, body?: unknown)
 
 /** A WebSocket opened through the Worker, with an inbox of decoded frames. */
 async function openSocket<M>(path: string, decode: (raw: unknown) => M, headers = {}) {
-  const res = await exports.default.fetch(`${BASE}${path}`, {
+  const res = await localFetch(`${BASE}${path}`, {
     headers: { Upgrade: "websocket", ...headers },
   });
   if (res.status !== 101) throw new Error(`upgrade failed: ${res.status} ${await res.text()}`);
@@ -166,7 +166,7 @@ async function uploadAsset(brandId: string): Promise<Asset> {
   const form = new FormData();
   form.set("brandId", brandId);
   form.set("file", new File([PNG], "tarla.png", { type: "image/png" }));
-  const res = await exports.default.fetch(`${BASE}/api/assets`, { method: "POST", body: form });
+  const res = await localFetch(`${BASE}/api/assets`, { method: "POST", body: form });
   expect(res.status).toBe(201);
   return Asset.parse(await res.json());
 }
@@ -297,7 +297,7 @@ describe("schema", () => {
   });
 
   it("documents the chat routes in OpenAPI", async () => {
-    const res = await exports.default.fetch(`${BASE}/api/openapi.json`);
+    const res = await localFetch(`${BASE}/api/openapi.json`);
     const doc = (await res.json()) as { paths: Record<string, unknown> };
     for (const path of [
       "/api/conversations",
@@ -889,10 +889,8 @@ describe("rules and edge cases", () => {
     future.ws.close(1000);
     run.worker.ws.close(1000);
 
-    expect(
-      (await exports.default.fetch(`${BASE}/api/conversations/${conv.id}/stream`)).status,
-    ).toBe(426);
-    const missing = await exports.default.fetch(`${BASE}/api/conversations/nope/stream`, {
+    expect((await localFetch(`${BASE}/api/conversations/${conv.id}/stream`)).status).toBe(426);
+    const missing = await localFetch(`${BASE}/api/conversations/nope/stream`, {
       headers: { Upgrade: "websocket" },
     });
     expect(missing.status).toBe(404);
@@ -1129,10 +1127,10 @@ describe("rules and edge cases", () => {
   it("requires the worker token on the turn API", async () => {
     const conv = await newConversation();
     const sent = await sendOk(conv.id);
-    const noToken = await exports.default.fetch(`${BASE}/api/worker/runs/${sent.run.id}/context`);
+    const noToken = await localFetch(`${BASE}/api/worker/runs/${sent.run.id}/context`);
     expect(noToken.status).toBe(401);
     expect(noToken.headers.get("www-authenticate")).toBe("Bearer");
-    const wrong = await exports.default.fetch(`${BASE}/api/worker/runs/${sent.run.id}/context`, {
+    const wrong = await localFetch(`${BASE}/api/worker/runs/${sent.run.id}/context`, {
       headers: { Authorization: "Bearer nope" },
     });
     expect(wrong.status).toBe(401);

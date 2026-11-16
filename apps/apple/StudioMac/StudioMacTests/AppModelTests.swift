@@ -165,7 +165,33 @@ struct AppModelTests {
         #expect(UsagePopover.usedText(UsageWindow(kind: .weekly, limited: true)) == "Sınıra ulaşıldı")
         #expect(UsagePopover.usedText(UsageWindow(kind: .other)) == "—")
         #expect(AgentEffort.knownCases.map(\.displayName) == ["Düşük", "Orta", "Yüksek", "Çok yüksek"])
-        #expect(AgentModel.knownCases.map(\.displayName) == ["Opus", "Sonnet", "Haiku"])
+        #expect(AgentModel.knownCases.map(\.displayName) == ["Opus", "Sonnet", "Haiku", "Gemini Flash-Lite", "Gemini Flash", "Gemini Pro"])
+        #expect(AgentChoice.fallback.model == .geminiFlashLite)
+    }
+
+    @Test func decidesConsentAndReflectsInConversationState() async throws {
+        let (app, _) = await makeApp()
+        let conversation = app.conversationModel("c-bayi")
+        await waitUntil { conversation.state != nil }
+
+        let message = try #require(conversation.messages.first { $0.id == "m-b2" })
+        let pending = try #require(message.parts.compactMap { if case .consent(let c) = $0 { c } else { nil } }.first)
+        #expect(pending.state == .pending)
+
+        await conversation.decideConsent(message: message, consent: pending, allow: true)
+        #expect(conversation.error == nil)
+
+        await waitUntil {
+            guard let msg = conversation.messages.first(where: { $0.id == "m-b2" }) else { return false }
+            let card = msg.parts.compactMap { part -> ConsentPart? in
+                if case .consent(let c) = part { return c }
+                return nil
+            }.first
+            return card?.state == .allowed
+        }
+        let updated = try #require(conversation.messages.first { $0.id == "m-b2" })
+        let allowed = try #require(updated.parts.compactMap { if case .consent(let c) = $0 { c } else { nil } }.first)
+        #expect(allowed.state == .allowed)
     }
 
     @Test func postsCountsAndApproveAll() async throws {

@@ -59,6 +59,28 @@ export type VideoMedia = z.infer<typeof VideoMedia>;
 export const AnyMedia = z.union([ImageMedia, VideoMedia]);
 export type AnyMedia = z.infer<typeof AnyMedia>;
 
+export const DocumentSource = VideoSource;
+export type DocumentSource = z.infer<typeof DocumentSource>;
+
+export const DocumentMedia = z
+  .object({
+    kind: z.literal("document"),
+    url: PublicUrl.optional(),
+    source: DocumentSource.optional(),
+    title: z.string().min(1).optional(),
+    mimeType: z.string().min(1).optional(),
+    bytes: z.number().int().nonnegative().optional(),
+  })
+  .refine((d) => d.url !== undefined || d.source !== undefined, {
+    message: "url or source is required",
+    path: ["url"],
+  })
+  .refine((d) => d.source?.type !== "upload" || d.bytes !== undefined, {
+    message: "bytes is required for upload sources",
+    path: ["bytes"],
+  });
+export type DocumentMedia = z.infer<typeof DocumentMedia>;
+
 const IgUserTag = z.object({
   username: z.string().min(1),
   x: z.number().min(0).max(1).optional(),
@@ -156,6 +178,56 @@ export const FacebookStoryRequest = z.object({
   isAiGenerated: z.boolean().optional(),
 });
 
+const AuthorUrn = z
+  .string()
+  .regex(/^urn:li:[A-Za-z]+:\S+$/, "expected a LinkedIn URN (e.g. urn:li:person:...)");
+
+const LiCommon = {
+  /** LinkedIn author URN, e.g. `urn:li:person:...` or `urn:li:organization:...`. */
+  authorUrn: AuthorUrn,
+};
+
+export const LinkedInTextRequest = z.object({
+  kind: z.literal("linkedin.text"),
+  ...LiCommon,
+  commentary: z.string().min(1),
+});
+export type LinkedInTextRequest = z.infer<typeof LinkedInTextRequest>;
+
+export const LinkedInImageRequest = z.object({
+  kind: z.literal("linkedin.image"),
+  ...LiCommon,
+  image: ImageMedia,
+  commentary: z.string().optional(),
+});
+export type LinkedInImageRequest = z.infer<typeof LinkedInImageRequest>;
+
+export const LinkedInMultiImageRequest = z.object({
+  kind: z.literal("linkedin.multi_image"),
+  ...LiCommon,
+  images: z.array(ImageMedia),
+  commentary: z.string().optional(),
+});
+export type LinkedInMultiImageRequest = z.infer<typeof LinkedInMultiImageRequest>;
+
+export const LinkedInDocumentRequest = z.object({
+  kind: z.literal("linkedin.document"),
+  ...LiCommon,
+  document: DocumentMedia,
+  title: z.string().min(1),
+  commentary: z.string().optional(),
+});
+export type LinkedInDocumentRequest = z.infer<typeof LinkedInDocumentRequest>;
+
+export const LinkedInVideoRequest = z.object({
+  kind: z.literal("linkedin.video"),
+  ...LiCommon,
+  video: VideoMedia,
+  title: z.string().optional(),
+  commentary: z.string().optional(),
+});
+export type LinkedInVideoRequest = z.infer<typeof LinkedInVideoRequest>;
+
 export const InstagramRequest = z.discriminatedUnion("kind", [
   InstagramImageRequest,
   InstagramCarouselRequest,
@@ -173,6 +245,15 @@ export const FacebookRequest = z.discriminatedUnion("kind", [
 ]);
 export type FacebookRequest = z.infer<typeof FacebookRequest>;
 
+export const LinkedInRequest = z.discriminatedUnion("kind", [
+  LinkedInTextRequest,
+  LinkedInImageRequest,
+  LinkedInMultiImageRequest,
+  LinkedInDocumentRequest,
+  LinkedInVideoRequest,
+]);
+export type LinkedInRequest = z.infer<typeof LinkedInRequest>;
+
 export const PublishRequest = z.discriminatedUnion("kind", [
   InstagramImageRequest,
   InstagramCarouselRequest,
@@ -183,13 +264,20 @@ export const PublishRequest = z.discriminatedUnion("kind", [
   FacebookVideoRequest,
   FacebookReelRequest,
   FacebookStoryRequest,
+  LinkedInTextRequest,
+  LinkedInImageRequest,
+  LinkedInMultiImageRequest,
+  LinkedInDocumentRequest,
+  LinkedInVideoRequest,
 ]);
 export type PublishRequest = z.infer<typeof PublishRequest>;
 export type PublishKind = PublishRequest["kind"];
-export type PublishPlatform = "instagram" | "facebook";
+export type PublishPlatform = "instagram" | "facebook" | "linkedin";
 
 export function platformOf(kind: PublishKind): PublishPlatform {
-  return kind.startsWith("instagram.") ? "instagram" : "facebook";
+  if (kind.startsWith("instagram.")) return "instagram";
+  if (kind.startsWith("facebook.")) return "facebook";
+  return "linkedin";
 }
 
 /** A non-fatal problem: something Meta dropped, or something we could not confirm. */

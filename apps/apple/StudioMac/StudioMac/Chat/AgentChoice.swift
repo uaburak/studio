@@ -6,7 +6,7 @@ struct AgentChoice: Equatable, Sendable {
     var model: AgentModel
     var effort: AgentEffort
 
-    static let fallback = AgentChoice(model: .opus, effort: .medium)
+    static let fallback = AgentChoice(model: .geminiFlashLite, effort: .medium)
 }
 
 /// Remembers the choice per conversation, and the last one used (the default

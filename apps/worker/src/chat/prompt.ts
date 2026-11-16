@@ -1,29 +1,33 @@
 /**
- * Prompt for the chat agent: a Turkish-speaking social media studio agent that
- * answers, plans a period's posts as structured data, or asks one question.
- * The system prompt is static (cache-friendly); everything about this turn goes
- * into the user message as tagged context blocks.
+ * Prompt & context builders for the Wecra-style tool-using Studio chat agent:
+ * a Turkish-speaking social media strategist that streams natural prose and
+ * orchestrates plans, questions, content inspections, approvals, and schedules
+ * through Studio's tool registry.
  */
 import type { Brand, Message, Plan, TurnAlias, TurnContext } from "@studio/contract";
+import { latestUserMessage } from "./images.ts";
 
-export const CHAT_SYSTEM_PROMPT = `Sen Studio'nun içerik ajanısın. Studio, tek kişinin (stüdyo sahibinin) kendi markaları ve müşterileri için sosyal medya içeriği ürettiği bir masaüstü uygulamasıdır. Stüdyo sahibi sana sohbetten Türkçe yazar; sen deneyimli bir sosyal medya stratejisti ve Türkçe metin yazarı gibi çalışırsın.
+export const CHAT_SYSTEM_PROMPT = `Sen Studio'nun içerik ve sosyal medya ajanısın. Studio, stüdyo sahibinin kendi markaları ve müşterileri için sosyal medya içeriği planladığı, ürettiği ve yayınladığı masaüstü uygulamasıdır. Stüdyo sahibi sana Türkçe yazar; sen deneyimli bir sosyal medya stratejisti ve Türkçe metin yazarı gibi doğal, net ve akıcı çalışırsın.
 
-## Görevin
-Her turda kullanıcının son mesajını anla ve şu üç şeyden birini yap:
-1. **plan**: Kullanıcı bir dönem (ör. "bu ay", "kasım ayı", "önümüzdeki iki hafta") için post istiyor ya da planlamasını istiyorsa içerik planı öner. Açık bir plan varsa ve kullanıcı onu değiştirmek istiyorsa planın tamamını yeniden ver; yeni plan eskisinin yerine geçer.
-2. **question**: Plan yapmak için gerçekten gerekli bir bilgi eksikse (ör. hangi marka olduğu anlaşılmıyor) tek ve net bir soru sor; mümkünse seçenek ver. Makul bir varsayımla ilerleyebiliyorsan soru sorma; varsayımını yanıtta söyle.
-3. **none**: Yalnızca yanıt gerekiyorsa (soru, sohbet, açıklama).
-
-## Yanıt (reply)
-- Türkçe, kısa ve doğal yaz: 2-6 cümle. Emoji kullanma. Gerekirse kısa madde işaretleri kullanabilirsin.
-- Plan önerdiysen planın fikrini, kaç post olduğunu, hangi postta hangi görselin (@takma ad) kullanılacağını ve kullanıcının hangi görselleri yüklemesi gerektiğini özetle. Kalemleri tek tek sayma; plan kartı ayrıca gösteriliyor.
-- Sonraki adımı söyle (ör. "Planı onaylarsan postları üretirim.").
-- Marka profili yoksa ya da geçiciyse (provisional) bunu açıkça belirt.
+## Çalışma biçimin (Wecra tarzı araçlı sohbet)
+- Kullanıcıya doğrudan, doğal Türkçe ile yanıt ver (2-6 cümle; gerekirse kısa madde işaretleri; emoji kullanma; asla ham JSON yazdırma).
+- İşlem yaparken uygun Studio aracını (tool) çağır:
+  - **Marka işlemleri**: \`list_brands\`, \`create_brand\`, \`get_brand_profile\`, \`analyze_brand\`, \`set_conversation_brand\` (konuşmanın markası henüz yoksa ve marka netse bağla).
+  - **İçerik planlama**: Kullanıcı bir dönem (ör. "bu ay", "kasım ayı", "önümüzdeki iki hafta") için post planlaması istediğinde ya da açık planı revize etmek istediğinde \`propose_plan\` aracını çağır. Plan kartı sohbete otomatik eklendiği için kalemleri düz metinde tek tek listeleme; stratejiyi, kaç post olduğunu, hangi görsellerin (@takma ad) kullanıldığını ve sonraki adımı özetle.
+  - **Görsel üretimi, yuva doldurma ve PDF dışa aktarım**: \`generate_ai_image\` (Gemini ile yapay zekâ görseli üretir; ürün ambalajı referansı varsa \`preserveProductLabel: true\` kullan), \`fill_post_slot\` (bir postun görsel yuvasını @takma ad veya assetId ile doldurup yeniden render eder), \`export_content_pdf\` (LinkedIn carousel için çok sayfalı PDF üretir).
+  - **Eksik bilgi sorusu**: Plan veya işlem için kritik bir bilgi eksikse (ör. birden fazla marka varken hangisi olduğu belirsizse) \`ask_question\` aracını çağırarak etkileşimli seçenek kartı göster. Makul bir varsayımla ilerleyebiliyorsan soru sorma; varsayımını yanıtta belirt.
+  - **Post ve hesap inceleme**: Üretilmiş postları, slaytları, onay durumunu veya bağlı sosyal hesapları görmek için \`list_contents\`, \`get_content\`, \`list_social_accounts\` araçlarını kullan.
+  - **İzin gerektiren işlemler (Consent kartları)**:
+    - \`accept_and_generate_plan\`: Açık planı kabul eder ve post tasarımlarının üretimini (\`content.generate\`) başlatır.
+    - \`approve_content\`: Bir postun mevcut tasarım sürümünü yayına onaylar.
+    - \`schedule_content\`: Onaylanmış bir postu bağlı sosyal medya hesabında ileri bir UTC tarih/saate zamanlar.
+    - \`publish_now\`: Bir postu bağlı sosyal medya hesabında hemen yayınlar (\`schedule.publish\`).
+    Bu dört aracı çağırdığında stüdyo sahibine otomatik olarak "İzin ver / Reddet" kartı gösterilir ve yanıtı beklenir. Kullanıcı reddederse (\`denied_by_owner\`) veya süre dolarsa (\`expired\`) bunu kısaca belirt, aynı turda tekrar zorlama.
 
 ## Plan kuralları
 - Dönem: istenen ay ise ayın ilk ve son günü (YYYY-MM-DD). Tarihler dönemin içinde olmalı. İçinde bulunduğumuz ay planlanıyorsa geçmiş günlere post koyma; yarından itibaren dağıt.
 - Kullanıcı sayı belirtmediyse bir ay için 8-12 post öner; haftada 2-3 post, hafta içine yayılmış.
-- İçerik türü: "post" (tek görsel), "carousel" (3-6 slaytlık kaydırmalı) ya da ara sıra "story". Reels/video şimdilik desteklenmiyor; planlama.
+- İçerik türü: "post" (tek görsel), "carousel" (3-6 slaytlık kaydırmalı), "story" ya da "reel" (9:16 dikey video).
 - Platform: kullanıcı ya da marka başka bir şey söylemiyorsa ["instagram"].
 - Her kalem için: kısa Türkçe başlık; brief'te postun ana mesajı, ne gösterdiği, metin yönü ve varsa çağrı (2-4 cümle); içerik sütunu (pillar, ör. "ürün tanıtımı", "uygulama ipuçları", "marka hikâyesi", "mevsimsel"); görsel yuvası beklentisi ve görsel tarifi.
 - Görsel yuvası (imageSlot): kullanıcının yüklediği ya da yükleyeceği fotoğraf kullanılacaksa "user_upload"; yalnızca kullanıcı yapay zekâ görseli isterse "ai_generate"; tipografik/grafik postlarda "none". imageBrief, fotoğrafın ne göstermesi gerektiğini anlatır; "none" kalemlerinde boş bırak. Tasarım motoru ikon ya da illüstrasyon çizmez: brief'lerde ikon, çizim, illüstrasyon isteme; tipografik postları yazı, renk alanları ve marka öğeleriyle tarif et.
@@ -32,17 +36,13 @@ Her turda kullanıcının son mesajını anla ve şu üç şeyden birini yap:
 
 ## Doğruluk
 - Marka hakkında yalnızca verilen marka profilindeki ve bilgilerdeki (facts) gerçekleri kullan. Ürün adı, rakam, doz, yüzde, fiyat, kampanya, sertifika, verim ya da başka bir iddia uydurma. Bilgi yoksa brief'i genel tut ya da kullanıcıya sor.
+- Marka profili yoksa ya da geçiciyse (provisional) bunu yanıtta açıkça belirt.
 - Profilde yasaklanan iddiaları (forbidden) brief'lere yazma.
 - Tarih ve gün hesaplarını <bugun> bilgisine göre yap.
 
 ## Görseller ve @takma adlar
 - Kullanıcı sohbete eklediği dosyalara @takma adla (ör. @image, @image-1) atıf yapar. <takma_adlar> listesi geçerli adları verir. Son mesajda eklenen ya da anılan görseller sana ayrıca gösterilir; neyi gösterdiklerine bakarak planla.
-- Takma adları listede yazdığı gibi kullan; olmayan bir ad uydurma.
-
-## Yapamadıkların
-Paylaşım yapamaz, zamanlayamaz, şu an yapay zekâ görseli üretemezsin ("ai_generate" kalemlerinde yuva şimdilik boş kalır). Bunlar istenirse kısaca söyle.
-
-Yanıtını yalnızca istenen JSON yapısıyla ver.`;
+- Takma adları listede yazdığı gibi kullan; olmayan bir ad uydurma.`;
 
 const DAYS = ["Pazar", "Pazartesi", "Salı", "Çarşamba", "Perşembe", "Cuma", "Cumartesi"];
 
@@ -100,6 +100,12 @@ export function messageText(message: Message, aliases: readonly TurnAlias[]): st
         out.push(`[soru: ${part.prompt} | cevap: ${answer}]`);
         break;
       }
+      case "tool_step":
+        out.push(`[araç: ${part.name} — ${part.label}${part.summary ? ` (${part.summary})` : ""}]`);
+        break;
+      case "consent":
+        out.push(`[izin kartı: ${part.title} — ${part.state}]`);
+        break;
       case "error":
         out.push(`[hata: ${part.message}]`);
         break;
@@ -174,8 +180,30 @@ export interface ChatPromptInput {
   maxTranscriptChars?: number;
 }
 
-/** The context text block of the user message. */
-export function buildChatContext(input: ChatPromptInput): string {
+function formatAliasesBlock(
+  aliases: readonly TurnAlias[],
+  images: readonly ChatImageNote[],
+): string {
+  if (aliases.length === 0) return "<takma_adlar>(bu konuşmada henüz ek yok)</takma_adlar>";
+  const shown = new Map(images.map((i) => [i.alias, i]));
+  const rows = aliases.map((a) => {
+    const img = shown.get(a.alias);
+    const size = a.width && a.height ? `${a.width}x${a.height}` : "boyut bilinmiyor";
+    const status = img?.attached
+      ? "son mesajda; görüntüsü ekte"
+      : img?.note
+        ? img.note
+        : "daha önce eklendi; bu turda gösterilmiyor";
+    const old = a.previousAliases.length
+      ? ` (eski adları: ${a.previousAliases.map((p) => `@${p}`).join(", ")})`
+      : "";
+    return `- @${a.alias}${old}: ${a.kind}, ${a.mimeType}, ${size}${a.filename ? `, ${a.filename}` : ""} — ${status}`;
+  });
+  return `<takma_adlar>\n${rows.join("\n")}\n</takma_adlar>`;
+}
+
+/** Metadata blocks (`<bugun>`, `<marka>`, `<marka_profili>`, `<takma_adlar>`, `<acik_plan>`) without transcript. */
+export function buildConversationMetadataBlock(input: ChatPromptInput): string {
   const { context } = input;
   const aliases = context.aliases ?? [];
   const blocks: string[] = [`<bugun>${todayLine(input.now)}</bugun>`];
@@ -187,7 +215,7 @@ export function buildChatContext(input: ChatPromptInput): string {
   } else {
     const list = input.brands.map((b) => `- ${b.name} (slug: ${b.slug}, id: ${b.id})`).join("\n");
     blocks.push(
-      `<marka>\nBu konuşmanın henüz markası yok. Kullanıcının kastettiği marka aşağıdaki listeden açıkça anlaşılıyorsa plan.brandId alanına o markanın id'sini yaz; anlaşılmıyorsa hangi marka olduğunu sor (seçenek olarak listeyi ver).\n${list || "(kayıtlı marka yok: kullanıcıdan önce marka eklemesini iste)"}\n</marka>`,
+      `<marka>\nBu konuşmanın henüz markası yok. Kullanıcının kastettiği marka aşağıdaki listeden açıkça anlaşılıyorsa \`set_conversation_brand\` veya \`propose_plan(brandId)\` ile o markanın id'sini kullan; anlaşılmıyorsa \`ask_question\` ile hangi marka olduğunu sor.\n${list || "(kayıtlı marka yok: kullanıcıdan önce marka eklemesini iste)"}\n</marka>`,
     );
   }
 
@@ -214,35 +242,43 @@ export function buildChatContext(input: ChatPromptInput): string {
     );
   }
 
-  if (aliases.length > 0) {
-    const shown = new Map(input.images.map((i) => [i.alias, i]));
-    const rows = aliases.map((a) => {
-      const img = shown.get(a.alias);
-      const size = a.width && a.height ? `${a.width}x${a.height}` : "boyut bilinmiyor";
-      const status = img?.attached
-        ? "son mesajda; görüntüsü ekte"
-        : img?.note
-          ? img.note
-          : "daha önce eklendi; bu turda gösterilmiyor";
-      const old = a.previousAliases.length
-        ? ` (eski adları: ${a.previousAliases.map((p) => `@${p}`).join(", ")})`
-        : "";
-      return `- @${a.alias}${old}: ${a.kind}, ${a.mimeType}, ${size}${a.filename ? `, ${a.filename}` : ""} — ${status}`;
-    });
-    blocks.push(`<takma_adlar>\n${rows.join("\n")}\n</takma_adlar>`);
-  } else {
-    blocks.push("<takma_adlar>(bu konuşmada henüz ek yok)</takma_adlar>");
-  }
+  blocks.push(formatAliasesBlock(aliases, input.images));
 
   if (context.openPlan) {
     blocks.push(`<acik_plan>\n${planSummary(context.openPlan)}\n</acik_plan>`);
   }
 
-  blocks.push(
-    `<konusma>\n${transcript(context, aliases, input.maxTranscriptChars ?? 24_000) || "(boş)"}\n</konusma>`,
-  );
-  blocks.push(
-    "Yukarıdaki konuşmanın son mesajına yanıt ver. Yanıtın JSON yapısında: önce reply, sonra action ve gerekiyorsa plan ya da question.",
-  );
+  return blocks.join("\n\n");
+}
+
+/** Full context text block (metadata + transcript) for a fresh session or CLI call. */
+export function buildChatContext(input: ChatPromptInput): string {
+  const { context } = input;
+  const aliases = context.aliases ?? [];
+  const meta = buildConversationMetadataBlock(input);
+  const conv = `<konusma>\n${transcript(context, aliases, input.maxTranscriptChars ?? 24_000) || "(boş)"}\n</konusma>`;
+  const tail =
+    "Yukarıdaki konuşmanın son mesajına Türkçe yanıt ver; gerekiyorsa uygun Studio araçlarını (propose_plan, ask_question, list_contents, accept_and_generate_plan vb.) kullan.";
+  return `${meta}\n\n${conv}\n\n${tail}`;
+}
+
+/** Incremental turn prompt when resuming an active Claude Code session (`--resume`). */
+export function buildIncrementalChatPrompt(input: {
+  context: TurnContext;
+  now: Date;
+  images: readonly ChatImageNote[];
+}): string {
+  const { context } = input;
+  const aliases = context.aliases ?? [];
+  const blocks: string[] = [`<bugun>${todayLine(input.now)}</bugun>`];
+  if (aliases.length > 0) {
+    blocks.push(formatAliasesBlock(aliases, input.images));
+  }
+  if (context.openPlan) {
+    blocks.push(`<acik_plan>\n${planSummary(context.openPlan)}\n</acik_plan>`);
+  }
+  const latest = latestUserMessage(context);
+  const text = latest ? messageText(latest, aliases) : "";
+  blocks.push(`<yeni_mesaj>\n${text || "(ek)"}\n</yeni_mesaj>`);
   return blocks.join("\n\n");
 }

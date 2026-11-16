@@ -1,5 +1,8 @@
 import { DurableObject } from "cloudflare:workers";
 import {
+  type ClaudeAccount,
+  type ClaudeCommand,
+  type ClaudeControl,
   CONVERSATION_REPLAY_LIMIT,
   type ConversationStreamMessage,
   decodeMessage,
@@ -8,6 +11,9 @@ import {
   encodeConversationStreamMessage,
   encodeJobStreamMessage,
   encodeMessage,
+  type GeminiAccount,
+  type GeminiCommand,
+  type GeminiControl,
   type HubToWorkerMessage,
   isTerminalJobStatus,
   type Job,
@@ -73,6 +79,10 @@ export type CancelJobResult =
 const LAST_SEEN_KEY = "presence:lastSeenAt";
 /** Latest `worker.usage` report (subscription limits), shown in presence as `usage`. */
 const USAGE_KEY = "presence:usage";
+/** Latest `worker.claude` report (the Mac's Claude sign-in), shown in presence as `claude`. */
+const CLAUDE_KEY = "presence:claude";
+/** Latest `worker.gemini` report (the Mac's Gemini readiness), shown in presence as `gemini`. */
+const GEMINI_KEY = "presence:gemini";
 
 /**
  * Hub — the job dispatcher (one instance, "main").
@@ -298,6 +308,49 @@ export class Hub extends DurableObject<Env> {
     return this.workerSockets().length;
   }
 
+  /**
+   * The Mac's Claude sign-in (A5). With a command, forward it to every
+   * connected worker (`worker.command`); they answer with `worker.claude`.
+   */
+  async claudeControl(command?: ClaudeCommand): Promise<ClaudeControl> {
+    return this.serial(async () => {
+      const workers = this.workerSockets().filter((w) => !w.att.draining);
+      let sent = 0;
+      if (command) {
+        for (const { ws } of workers) {
+          try {
+            sendWorker(ws, { type: "worker.command", command });
+            sent++;
+          } catch {
+            // closing
+          }
+        }
+      }
+      const account = (await this.ctx.storage.get<ClaudeAccount>(CLAUDE_KEY)) ?? null;
+      return { account, online: workers.length > 0, sent };
+    });
+  }
+
+  /** The Mac's Gemini readiness. With a command, asks connected workers to re-check. */
+  async geminiControl(command?: GeminiCommand): Promise<GeminiControl> {
+    return this.serial(async () => {
+      const workers = this.workerSockets().filter((w) => !w.att.draining);
+      let sent = 0;
+      if (command) {
+        for (const { ws } of workers) {
+          try {
+            sendWorker(ws, { type: "worker.command", command });
+            sent++;
+          } catch {
+            // closing
+          }
+        }
+      }
+      const account = (await this.ctx.storage.get<GeminiAccount>(GEMINI_KEY)) ?? null;
+      return { account, online: workers.length > 0, sent };
+    });
+  }
+
   // --- worker messages -----------------------------------------------------------
 
   private async onWorkerMessage(
@@ -403,6 +456,16 @@ export class Hub extends DurableObject<Env> {
           observedAt: message.observedAt,
         };
         await this.ctx.storage.put(USAGE_KEY, usage);
+        await this.broadcastPresence();
+        return;
+      }
+      case "worker.claude": {
+        await this.ctx.storage.put(CLAUDE_KEY, message.account);
+        await this.broadcastPresence();
+        return;
+      }
+      case "worker.gemini": {
+        await this.ctx.storage.put(GEMINI_KEY, message.account);
         await this.broadcastPresence();
         return;
       }
@@ -639,11 +702,13 @@ export class Hub extends DurableObject<Env> {
 
   private async computePresence(exclude?: WebSocket): Promise<WorkerPresence> {
     const workers = this.workerSockets().filter(({ ws }) => ws !== exclude);
-    const [running, queueLength, stored, usage] = await Promise.all([
+    const [running, queueLength, stored, usage, claude, gemini] = await Promise.all([
       this.store.running(),
       this.store.queueLength(),
       this.ctx.storage.get<number>(LAST_SEEN_KEY),
       this.ctx.storage.get<WorkerUsage>(USAGE_KEY),
+      this.ctx.storage.get<ClaudeAccount>(CLAUDE_KEY),
+      this.ctx.storage.get<GeminiAccount>(GEMINI_KEY),
     ]);
     const lastSeen = Math.max(stored ?? 0, ...workers.map((w) => w.att.lastSeenAt));
     return {
@@ -672,6 +737,8 @@ export class Hub extends DurableObject<Env> {
       }),
       queueLength,
       ...(usage ? { usage } : {}),
+      ...(claude ? { claude } : {}),
+      ...(gemini ? { gemini } : {}),
     };
   }
 

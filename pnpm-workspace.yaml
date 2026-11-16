@@ -4,6 +4,7 @@ packages:
   - apps/web
   - apps/api
   - apps/worker
+  - apps/cloud-publisher
   - packages/*
 
 # Single source of truth for dependency versions. Packages reference these

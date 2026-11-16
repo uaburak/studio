@@ -89,6 +89,134 @@ struct DecodingTests {
         #expect(finished.effort == nil)
     }
 
+    @Test func toolStepsConsentsGeminiModelsAndWorkerControls() throws {
+        // AgentModel Gemini cases & helpers
+        #expect(AgentModel.geminiCases == [.geminiFlashLite, .geminiFlash, .geminiPro])
+        #expect(AgentModel.claudeCases == [.opus, .sonnet, .haiku])
+        #expect(AgentModel.geminiFlashLite.isGemini == true)
+        #expect(AgentModel.geminiFlashLite.rawValue == "gemini-flash-lite")
+        #expect(AgentModel.geminiFlashLite.displayName == "Gemini Flash-Lite")
+        #expect(AgentModel.opus.isGemini == false)
+
+        // Message with tool_step and consent parts round-trips cleanly
+        let messageJSON = """
+        {
+          "id": "m-agent",
+          "conversationId": "c1",
+          "role": "assistant",
+          "status": "complete",
+          "runId": "r1",
+          "parts": [
+            {
+              "type": "tool_step",
+              "id": "step-1",
+              "name": "propose_plan",
+              "label": "İçerik planı hazırlandı",
+              "state": "done",
+              "summary": "12 post"
+            },
+            {
+              "type": "consent",
+              "consentId": "con-1",
+              "tool": "schedule_post",
+              "title": "Postu zamanla",
+              "detail": "Venta Borinc · 20 Kasım 09:00",
+              "state": "pending",
+              "decidedAt": null
+            }
+          ],
+          "createdAt": "2026-11-16T10:00:00.000Z",
+          "updatedAt": "2026-11-16T10:00:00.000Z"
+        }
+        """
+        let decoded = try StudioJSON.decoder().decode(Message.self, from: Data(messageJSON.utf8))
+        #expect(decoded.parts.count == 2)
+        #expect(decoded.parts[0].typeName == "tool_step")
+        #expect(decoded.parts[1].typeName == "consent")
+        guard case .toolStep(let step) = decoded.parts[0],
+              case .consent(let consent) = decoded.parts[1] else {
+            Issue.record("expected toolStep and consent parts")
+            return
+        }
+        #expect(step.id == "step-1")
+        #expect(step.state == .done)
+        #expect(step.summary == "12 post")
+        #expect(consent.consentId == "con-1")
+        #expect(consent.state == .pending)
+        #expect(consent.decidedAt == nil)
+
+        let reencoded = try StudioJSON.encoder().encode(decoded)
+        let roundTripped = try StudioJSON.decoder().decode(Message.self, from: reencoded)
+        #expect(roundTripped == decoded)
+
+        // Conversation with agentSession
+        let convJSON = """
+        {
+          "id": "c1",
+          "brandId": "b1",
+          "title": "Test",
+          "status": "active",
+          "activeRunId": null,
+          "lastSeq": 5,
+          "agentSession": {
+            "id": "sess-123",
+            "messageCount": 4,
+            "runId": "r1",
+            "updatedAt": "2026-11-16T10:05:00.000Z"
+          },
+          "lastActivityAt": "2026-11-16T10:05:00.000Z",
+          "createdAt": "2026-11-16T10:00:00.000Z",
+          "updatedAt": "2026-11-16T10:05:00.000Z"
+        }
+        """
+        let conv = try StudioJSON.decoder().decode(Conversation.self, from: Data(convJSON.utf8))
+        #expect(conv.agentSession?.id == "sess-123")
+        #expect(conv.agentSession?.messageCount == 4)
+
+        // ClaudeControl & GeminiControl + WorkerPresence accounts
+        let claudeJSON = """
+        {
+          "account": {
+            "status": "signing_in",
+            "email": null,
+            "plan": null,
+            "cliVersion": "1.0.24",
+            "loginUrl": "https://claude.ai/oauth/authorize?code=abc",
+            "detail": "Tarayıcıda giriş bekleniyor…",
+            "checkedAt": "2026-11-16T14:00:00.000Z"
+          },
+          "online": true,
+          "sent": 1
+        }
+        """
+        let claude = try StudioJSON.decoder().decode(ClaudeControl.self, from: Data(claudeJSON.utf8))
+        #expect(claude.account?.status == .signingIn)
+        #expect(claude.account?.loginUrl == "https://claude.ai/oauth/authorize?code=abc")
+        #expect(claude.online == true)
+        #expect(claude.sent == 1)
+
+        let geminiJSON = """
+        {
+          "account": {
+            "status": "ready",
+            "mode": "both",
+            "apiKeyConfigured": true,
+            "cliVersion": "0.8.2",
+            "defaultModel": "gemini-2.5-flash-lite",
+            "detail": "GEMINI_API_KEY + CLI hazır",
+            "checkedAt": "2026-11-16T14:00:00.000Z"
+          },
+          "online": true,
+          "sent": 0
+        }
+        """
+        let gemini = try StudioJSON.decoder().decode(GeminiControl.self, from: Data(geminiJSON.utf8))
+        #expect(gemini.account?.status == .ready)
+        #expect(gemini.account?.mode == .both)
+        #expect(gemini.account?.apiKeyConfigured == true)
+        #expect(gemini.account?.defaultModel == "gemini-2.5-flash-lite")
+    }
+
     @Test func conversationsMessagesAliases() throws {
         let conversations = try Fixture.decode(Page<Conversation>.self, "conversation-list").items
         #expect(conversations.first?.title == "Kasım planı")

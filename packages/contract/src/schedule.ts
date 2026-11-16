@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { EntityId, PageQuery, Platform, pageOf, Timestamp } from "./common.ts";
-import { ContentHash } from "./content.ts";
+import { Content, ContentHash, ContentVersion } from "./content.ts";
+import { SocialAccount } from "./social-account.ts";
 
 /**
  * Schedule lifecycle. This task only creates and cancels schedules; the
@@ -33,6 +34,7 @@ export const Schedule = z
     /** Publish time, UTC. */
     scheduledAt: Timestamp,
     status: ScheduleStatus,
+    permalink: z.string().nullable().optional(),
     cancelledAt: Timestamp.nullable(),
     createdAt: Timestamp,
     updatedAt: Timestamp,
@@ -83,6 +85,7 @@ export const PublishLog = z
     attempt: z.number().int().min(1),
     status: PublishLogStatus,
     externalPostId: z.string().nullable(),
+    permalink: z.string().nullable().optional(),
     error: z.string().nullable(),
     startedAt: Timestamp,
     finishedAt: Timestamp.nullable(),
@@ -96,3 +99,43 @@ export type PublishLogListQuery = z.input<typeof PublishLogListQuery>;
 
 export const PublishLogList = pageOf(PublishLog, "PublishLogList");
 export type PublishLogList = z.infer<typeof PublishLogList>;
+
+// --- Worker schedule execution -----------------------------------------------
+
+export const WorkerDueSchedulesQuery = z
+  .object({
+    before: Timestamp.optional(),
+    limit: z.coerce.number().int().min(1).max(200).default(100),
+  })
+  .meta({ id: "WorkerDueSchedulesQuery" });
+export type WorkerDueSchedulesQuery = z.input<typeof WorkerDueSchedulesQuery>;
+
+export const WorkerDueSchedules = z
+  .object({
+    items: z.array(Schedule),
+  })
+  .meta({ id: "WorkerDueSchedules" });
+export type WorkerDueSchedules = z.infer<typeof WorkerDueSchedules>;
+
+export const WorkerScheduleCredentials = z
+  .object({
+    schedule: Schedule,
+    account: SocialAccount,
+    content: Content,
+    version: ContentVersion,
+    accessToken: z.string().nullable(),
+  })
+  .meta({ id: "WorkerScheduleCredentials" });
+export type WorkerScheduleCredentials = z.infer<typeof WorkerScheduleCredentials>;
+
+export const WorkerScheduleOutcome = z
+  .object({
+    status: z.enum(["publishing", "published", "failed"]),
+    attempt: z.number().int().min(1).default(1),
+    externalPostId: z.string().max(256).nullable().optional(),
+    permalink: z.string().max(2000).nullable().optional(),
+    error: z.string().max(4000).nullable().optional(),
+    accountNeedsReauth: z.boolean().default(false),
+  })
+  .meta({ id: "WorkerScheduleOutcome" });
+export type WorkerScheduleOutcome = z.input<typeof WorkerScheduleOutcome>;

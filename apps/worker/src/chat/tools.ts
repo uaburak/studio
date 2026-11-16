@@ -1,0 +1,1800 @@
+/**
+ * Shared, provider-agnostic Studio chat tools.
+ *
+ * Used identically by:
+ * - Direct Gemini API (`functionDeclarations` -> `StudioToolExecutor.execute`),
+ * - Claude Code CLI (via local MCP bridge `mcp__studio__*`),
+ * - Gemini CLI (via local MCP bridge).
+ *
+ * Every call emits a `tool_step` part (`running` -> `done` / `error`) on the
+ * assistant message. Destructive / publishing actions emit a `consent` card
+ * (`state: "pending"`) and poll `workerTurns.message(runId)` until the owner
+ * allows or denies it, or the 5-minute consent window expires.
+ */
+import {
+  type AgentEffort,
+  ApiError,
+  ContentStatus,
+  ContentType,
+  computeContentHash,
+  type Plan,
+  Platform,
+  slugify,
+} from "@studio/contract";
+import { z } from "zod";
+import type { StudioApi } from "../api.ts";
+import { abortableSleep } from "../claude/gate.ts";
+import type { Logger } from "../log.ts";
+import { silentLogger } from "../log.ts";
+import { profileFacts } from "./prompt.ts";
+import {
+  CHAT_CONTENT_TYPES,
+  CHAT_PLATFORMS,
+  convertPlan,
+  type KnownAlias,
+  toQuestionPart,
+} from "./schema.ts";
+import { RunClosedError, type TurnWriter } from "./writer.ts";
+
+export interface ToolJsonSchema {
+  type: "object" | "string" | "number" | "integer" | "boolean" | "array";
+  description?: string;
+  properties?: Record<string, ToolJsonSchema>;
+  required?: readonly string[];
+  items?: ToolJsonSchema;
+  enum?: readonly string[];
+}
+
+export interface StudioToolDefinition {
+  name: string;
+  description: string;
+  inputSchema: ToolJsonSchema;
+}
+
+export const DEFAULT_CONSENT_POLL_MS = 400;
+export const DEFAULT_CONSENT_TIMEOUT_MS = 5 * 60_000;
+
+export const STUDIO_TOOLS: readonly StudioToolDefinition[] = [
+  {
+    name: "list_brands",
+    description:
+      "Stüdyodaki aktif markaları listeler (id, ad, slug, varsayılan dil). Konuşmanın markası yoksa veya marka seçmek gerektiğinde kullan.",
+    inputSchema: {
+      type: "object",
+      properties: {},
+    },
+  },
+  {
+    name: "get_brand_profile",
+    description:
+      "Bir markanın ayrıntılarını ve onaylı marka profilini (ses tonu, tasarım kuralları, gerçekler/facts) okur.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        brandId: {
+          type: "string",
+          description: "Marka id'si (boş bırakılırsa konuşmanın markası kullanılır).",
+        },
+      },
+    },
+  },
+  {
+    name: "set_conversation_brand",
+    description:
+      "Henüz markası olmayan bir konuşmaya marka bağlar (yalnızca konuşmanın markası boşken bir kez çağrılabilir).",
+    inputSchema: {
+      type: "object",
+      required: ["brandId"],
+      properties: {
+        brandId: {
+          type: "string",
+          description: "Bağlanacak markanın id'si ya da slug'ı.",
+        },
+      },
+    },
+  },
+  {
+    name: "propose_plan",
+    description:
+      "Belirli bir dönem (hafta/ay) için içerik planı önerir ya da açık planı günceller. Sohbete etkileşimli plan kartı ekler.",
+    inputSchema: {
+      type: "object",
+      required: ["title", "periodStart", "periodEnd", "summary", "items"],
+      properties: {
+        brandId: {
+          type: "string",
+          description: "Konuşmanın henüz markası yoksa seçilen markanın id'si.",
+        },
+        title: {
+          type: "string",
+          description: "Plan başlığı, ör. 'MTM Agro — Kasım 2026'.",
+        },
+        periodStart: {
+          type: "string",
+          description: "Başlangıç tarihi (YYYY-MM-DD).",
+        },
+        periodEnd: {
+          type: "string",
+          description: "Bitiş tarihi (YYYY-MM-DD).",
+        },
+        summary: {
+          type: "string",
+          description: "Planın stratejik özeti.",
+        },
+        items: {
+          type: "array",
+          description: "Plandaki post kalemleri (en az 1, en çok 60).",
+          items: {
+            type: "object",
+            required: ["platforms", "contentType", "title", "brief"],
+            properties: {
+              date: {
+                type: "string",
+                description: "Planlanan yayın günü (YYYY-MM-DD).",
+              },
+              platforms: {
+                type: "array",
+                items: { type: "string", enum: CHAT_PLATFORMS },
+                description: "Hedef platformlar (instagram, facebook, linkedin).",
+              },
+              contentType: {
+                type: "string",
+                enum: CHAT_CONTENT_TYPES,
+                description: "İçerik türü (post, carousel, story).",
+              },
+              title: { type: "string", description: "Kısa Türkçe başlık." },
+              brief: {
+                type: "string",
+                description: "Postun ana mesajı, metin yönü ve varsa çağrı (2-4 cümle).",
+              },
+              pillar: {
+                type: "string",
+                description: "İçerik sütunu (ör. ürün tanıtımı, uygulama ipuçları).",
+              },
+              imageSlot: {
+                type: "string",
+                enum: ["none", "user_upload", "ai_generate"],
+                description: "Görsel yuvası beklentisi.",
+              },
+              imageBrief: {
+                type: "string",
+                description: "Görselin ne göstermesi gerektiği (none ise boş).",
+              },
+              imageAliases: {
+                type: "array",
+                items: { type: "string" },
+                description: "Kullanıcının istediği @takma adlar (@ olmadan).",
+              },
+            },
+          },
+        },
+      },
+    },
+  },
+  {
+    name: "ask_question",
+    description:
+      "Kullanıcıdan eksik ve kritik bir bilgi almak için sohbete etkileşimli soru/seçenek kartı ekler.",
+    inputSchema: {
+      type: "object",
+      required: ["prompt", "mode"],
+      properties: {
+        prompt: { type: "string", description: "Sorulacak net Türkçe soru." },
+        mode: {
+          type: "string",
+          enum: ["single", "multiple", "text"],
+          description: "single: tek seçim, multiple: çoklu seçim, text: serbest metin.",
+        },
+        options: {
+          type: "array",
+          description: "Seçenekler (single/multiple modunda en az 2 seçenek).",
+          items: {
+            type: "object",
+            required: ["id", "label"],
+            properties: {
+              id: { type: "string", description: "Kısa anahtar (a-z0-9_-)." },
+              label: { type: "string", description: "Seçenek metni." },
+              description: { type: "string", description: "İsteğe bağlı açıklama." },
+            },
+          },
+        },
+        allowText: {
+          type: "boolean",
+          description: "Seçeneklerin yanında serbest metin cevabına da izin verilsin mi.",
+        },
+      },
+    },
+  },
+  {
+    name: "list_contents",
+    description: "Markanın son postlarını / içeriklerini durumlarıyla birlikte listeler.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        brandId: { type: "string", description: "Marka id'si (boşsa konuşmanın markası)." },
+        status: {
+          type: "string",
+          enum: [
+            "draft",
+            "in_review",
+            "approved",
+            "scheduled",
+            "publishing",
+            "published",
+            "failed",
+          ],
+        },
+        type: { type: "string", enum: ["post", "carousel", "story", "reel"] },
+        limit: {
+          type: "integer",
+          description: "En fazla kaç içerik dönsün (1..100, varsayılan 20).",
+        },
+      },
+    },
+  },
+  {
+    name: "get_content",
+    description:
+      "Tek bir postu ve mevcut tasarım sürümünü (slaytlar, başlık, caption, onay durumu) okur.",
+    inputSchema: {
+      type: "object",
+      required: ["contentId"],
+      properties: {
+        contentId: { type: "string", description: "İçerik id'si." },
+        version: { type: "integer", description: "Belirli bir sürüm numarası (boşsa son sürüm)." },
+      },
+    },
+  },
+  {
+    name: "list_social_accounts",
+    description: "Markaya bağlı sosyal medya hesaplarını listeler.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        brandId: { type: "string", description: "Marka id'si (boşsa konuşmanın markası)." },
+        platform: { type: "string", enum: CHAT_PLATFORMS },
+      },
+    },
+  },
+  {
+    name: "accept_and_generate_plan",
+    description:
+      "Açık içerik planını kabul eder ve post tasarımlarının üretimini başlatır. Kullanıcıya izin (consent) kartı gösterir ve yanıtını bekler.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        planId: {
+          type: "string",
+          description: "Plan id'si (boşsa konuşmadaki açık plan kullanılır).",
+        },
+        skipItemIds: {
+          type: "array",
+          items: { type: "string" },
+          description: "Atlanacak plan kalemi id'leri.",
+        },
+        itemIds: {
+          type: "array",
+          items: { type: "string" },
+          description: "Yalnızca belirli kalemleri üretmek için kalem id'leri.",
+        },
+        instructions: {
+          type: "string",
+          description: "Tasarım üretimi için ek yönerge.",
+        },
+      },
+    },
+  },
+  {
+    name: "approve_content",
+    description:
+      "Bir postun son tasarım sürümünü yayına onaylar. Kullanıcıya izin (consent) kartı gösterir ve yanıtını bekler.",
+    inputSchema: {
+      type: "object",
+      required: ["contentId"],
+      properties: {
+        contentId: { type: "string", description: "Onaylanacak içerik id'si." },
+      },
+    },
+  },
+  {
+    name: "schedule_content",
+    description:
+      "Onaylanmış bir postu bağlı sosyal medya hesabında ileri bir tarihe zamanlar. Kullanıcıya izin (consent) kartı gösterir ve yanıtını bekler.",
+    inputSchema: {
+      type: "object",
+      required: ["contentId", "socialAccountId", "scheduledAt"],
+      properties: {
+        contentId: { type: "string", description: "Zamanlanacak onaylı içerik id'si." },
+        socialAccountId: { type: "string", description: "Sosyal medya hesabı id'si." },
+        scheduledAt: {
+          type: "string",
+          description: "Yayın zamanı (UTC ISO 8601, ör. '2026-11-20T09:00:00Z').",
+        },
+        platform: {
+          type: "string",
+          enum: CHAT_PLATFORMS,
+          description: "Hesabın platformu (opsiyonel).",
+        },
+      },
+    },
+  },
+  {
+    name: "create_brand",
+    description:
+      "Yeni bir marka oluşturur (ad, isteğe bağlı slug ve varsayılan dil). Konuşmanın henüz markası yoksa otomatik olarak bu konuşmaya bağlar.",
+    inputSchema: {
+      type: "object",
+      required: ["name"],
+      properties: {
+        name: { type: "string", description: "Marka adı, ör. 'MTM Agro'." },
+        slug: {
+          type: "string",
+          description: "URL uyumlu kısa ad (ör. 'mtm-agro'). Boş bırakılırsa addan türetilir.",
+        },
+        defaultLanguage: {
+          type: "string",
+          description: "Varsayılan içerik dili (ör. 'tr' veya 'en'; varsayılan 'tr').",
+        },
+      },
+    },
+  },
+  {
+    name: "analyze_brand",
+    description:
+      "Markanın yüklenen varlıklarını (logo, font, görseller), örnek postlarını ve onaylı içerik/düzenleme geçmişini analiz ederek yeni bir marka profili (brand.json, DESIGN.md, VOICE.md) üretimi (`brand.analyze`) başlatır.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        brandId: {
+          type: "string",
+          description: "Marka id'si ya da slug'ı (boşsa konuşmanın markası).",
+        },
+        notes: {
+          type: "string",
+          description: "Marka tonu, renkler veya kurallar hakkında ek notlar.",
+        },
+        includeApprovedContentFeedback: {
+          type: "boolean",
+          description:
+            "Onaylı/yayınlanmış postlar ve kullanıcı düzeltmeleri geri beslensin mi (varsayılan true).",
+        },
+        autoApprove: {
+          type: "boolean",
+          description:
+            "Üretilen marka profili otomatik olarak aktif/onaylı yapılsın mı (varsayılan false).",
+        },
+      },
+    },
+  },
+  {
+    name: "generate_ai_image",
+    description:
+      "Gemini görsel modeliyle yapay zekâ görseli üretir (`image.generate`). Ürün ambalajı referans görseli varsa `preserveProductLabel: true` ile Türkçe etiket yazılarını piksel hassasiyetiyle korur ve isteğe bağlı olarak doğrudan bir postun görsel yuvasına yerleştirir.",
+    inputSchema: {
+      type: "object",
+      required: ["prompt"],
+      properties: {
+        brandId: { type: "string", description: "Marka id'si (boşsa konuşmanın markası)." },
+        prompt: { type: "string", description: "Üretilecek sahnenin detaylı tarifi." },
+        aspectRatio: {
+          type: "string",
+          enum: ["4:5", "9:16", "1:1"],
+          description: "Görsel oranı (varsayılan '4:5').",
+        },
+        imageSize: {
+          type: "string",
+          enum: ["1K", "2K"],
+          description: "Çözünürlük (varsayılan '2K').",
+        },
+        referenceAliases: {
+          type: "array",
+          items: { type: "string" },
+          description: "Sohbetteki referans görsel @takma adları (@ olmadan ya da @ ile).",
+        },
+        referenceAssetIds: {
+          type: "array",
+          items: { type: "string" },
+          description: "Doğrudan referans varlık (asset) id'leri.",
+        },
+        preserveProductLabel: {
+          type: "boolean",
+          description:
+            "Referans ürün ambalajındaki küçük Türkçe yazıları ve etiketi bozmadan korumak için true.",
+        },
+        targetContentId: {
+          type: "string",
+          description: "Üretilen görselin otomatik yerleştirileceği post id'si (opsiyonel).",
+        },
+        targetSlotId: {
+          type: "string",
+          description: "Hedef posttaki görsel yuvası katman id'si (`data-layer`, opsiyonel).",
+        },
+      },
+    },
+  },
+  {
+    name: "fill_post_slot",
+    description:
+      "Bir postun görsel yuvasını (`data-layer`) sohbetteki @takma ad veya `assetId` ile doldurur ve yeni sürüm oluşturup JPEG olarak render eder (`content.render`).",
+    inputSchema: {
+      type: "object",
+      required: ["contentId"],
+      properties: {
+        contentId: { type: "string", description: "Görsel yuvası doldurulacak post id'si." },
+        slotId: { type: "string", description: "Görsel yuvasının `data-layer` kimliği." },
+        alias: {
+          type: "string",
+          description: "Sohbetteki görsel @takma adı (ör. 'image' veya '@image').",
+        },
+        assetId: { type: "string", description: "Doğrudan görsel varlık (asset) id'si." },
+        slotAssignments: {
+          type: "object",
+          description: "Birden fazla yuva için `{ [slotLayerId]: assetId_veya_@alias }` eşlemesi.",
+        },
+      },
+    },
+  },
+  {
+    name: "export_content_pdf",
+    description:
+      "Bir post veya LinkedIn carousel içeriğini çok sayfalı PDF belgesi olarak dışa aktarır (`content.render` `format: 'pdf'`).",
+    inputSchema: {
+      type: "object",
+      required: ["contentId"],
+      properties: {
+        contentId: { type: "string", description: "PDF'e aktarılacak içerik id'si." },
+        version: {
+          type: "integer",
+          description: "Belirli sürüm numarası (opsiyonel, varsayılan son sürüm).",
+        },
+      },
+    },
+  },
+  {
+    name: "publish_now",
+    description:
+      "Bir postu bağlı sosyal medya hesabında hemen yayınlar (`schedule.publish`). Kullanıcıya izin (consent) kartı gösterir ve yanıtını bekler.",
+    inputSchema: {
+      type: "object",
+      required: ["contentId", "socialAccountId"],
+      properties: {
+        contentId: { type: "string", description: "Yayınlanacak içerik id'si." },
+        socialAccountId: { type: "string", description: "Yayınlanacak sosyal medya hesabı id'si." },
+        platform: {
+          type: "string",
+          enum: CHAT_PLATFORMS,
+          description: "Hesabın platformu (opsiyonel).",
+        },
+        scheduleId: {
+          type: "string",
+          description: "Mevcut bir zamanlama kaydı varsa id'si (opsiyonel).",
+        },
+      },
+    },
+  },
+];
+
+// --- input schemas -------------------------------------------------------------------------
+
+const trimmed = (max: number) => z.string().transform((s) => s.trim().slice(0, max));
+
+const ProposePlanInput = z.object({
+  brandId: z.string().trim().min(1).optional(),
+  title: trimmed(200),
+  periodStart: z.iso.date(),
+  periodEnd: z.iso.date(),
+  summary: trimmed(20_000).default(""),
+  items: z
+    .array(
+      z.object({
+        date: z.string().nullable().optional(),
+        platforms: z.array(z.enum(CHAT_PLATFORMS)).min(1),
+        contentType: z.enum(CHAT_CONTENT_TYPES),
+        title: trimmed(200),
+        brief: trimmed(20_000).default(""),
+        pillar: trimmed(120).optional(),
+        imageSlot: z.enum(["none", "user_upload", "ai_generate"]).default("none"),
+        imageBrief: trimmed(3_800).optional(),
+        imageAliases: z.array(z.string()).default([]),
+      }),
+    )
+    .min(1),
+});
+
+const AskQuestionInput = z.object({
+  prompt: trimmed(2_000),
+  mode: z.enum(["single", "multiple", "text"]),
+  options: z
+    .array(
+      z.object({
+        id: z.string(),
+        label: trimmed(200),
+        description: z.string().optional(),
+      }),
+    )
+    .default([]),
+  allowText: z.boolean().default(false),
+});
+
+const ListContentsInput = z.object({
+  brandId: z.string().trim().min(1).optional(),
+  status: ContentStatus.optional(),
+  type: ContentType.optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(20),
+});
+
+const GetContentInput = z.object({
+  contentId: z.string().trim().min(1),
+  version: z.coerce.number().int().min(1).optional(),
+});
+
+const ListSocialAccountsInput = z.object({
+  brandId: z.string().trim().min(1).optional(),
+  platform: Platform.optional(),
+});
+
+const AcceptGeneratePlanInput = z.object({
+  planId: z.string().trim().min(1).optional(),
+  skipItemIds: z.array(z.string().min(1)).default([]),
+  itemIds: z.array(z.string().min(1)).optional(),
+  instructions: z.string().max(4_000).optional(),
+});
+
+const ApproveContentInput = z.object({
+  contentId: z.string().trim().min(1),
+});
+
+const ScheduleContentInput = z.object({
+  contentId: z.string().trim().min(1),
+  socialAccountId: z.string().trim().min(1),
+  scheduledAt: z.iso.datetime(),
+  platform: Platform.optional(),
+});
+
+const CreateBrandInput = z.object({
+  name: trimmed(120).refine((s) => s.length >= 1, "Marka adı boş olamaz"),
+  slug: z.string().trim().min(2).max(64).optional(),
+  defaultLanguage: z.string().trim().min(2).max(16).default("tr"),
+});
+
+const AnalyzeBrandInput = z.object({
+  brandId: z.string().trim().min(1).optional(),
+  notes: z.string().max(10_000).optional(),
+  includeApprovedContentFeedback: z.boolean().default(true),
+  autoApprove: z.boolean().default(false),
+});
+
+const GenerateAiImageInput = z.object({
+  brandId: z.string().trim().min(1).optional(),
+  prompt: trimmed(4_000).refine((s) => s.length >= 1, "Görsel tarifi (prompt) boş olamaz"),
+  aspectRatio: z.enum(["4:5", "9:16", "1:1"]).default("4:5"),
+  imageSize: z.enum(["1K", "2K"]).default("2K"),
+  referenceAliases: z.array(z.string()).default([]),
+  referenceAssetIds: z.array(z.string().trim().min(1)).default([]),
+  preserveProductLabel: z.boolean().default(false),
+  targetContentId: z.string().trim().min(1).optional(),
+  targetSlotId: z.string().trim().min(1).max(128).optional(),
+});
+
+const FillPostSlotInput = z.object({
+  contentId: z.string().trim().min(1),
+  slotId: z.string().trim().min(1).optional(),
+  alias: z.string().trim().min(1).optional(),
+  assetId: z.string().trim().min(1).optional(),
+  slotAssignments: z.record(z.string(), z.string()).optional(),
+});
+
+const ExportContentPdfInput = z.object({
+  contentId: z.string().trim().min(1),
+  version: z.coerce.number().int().min(1).optional(),
+});
+
+const PublishNowInput = z.object({
+  contentId: z.string().trim().min(1),
+  socialAccountId: z.string().trim().min(1),
+  platform: Platform.optional(),
+  scheduleId: z.string().trim().min(1).optional(),
+});
+
+// --- executor ------------------------------------------------------------------------------
+
+export interface StudioToolExecutionResult {
+  data: Record<string, unknown>;
+  isError: boolean;
+}
+
+export interface StudioToolOutcome {
+  action: "none" | "plan" | "question";
+  planId?: string;
+  planItems?: number;
+  planNotes?: string[];
+  toolCalls: string[];
+}
+
+export interface StudioToolExecutorOptions {
+  api: StudioApi;
+  writer: TurnWriter;
+  runId: string;
+  conversationId: string;
+  initialBrandId: string | null;
+  initialOpenPlan: Plan | null;
+  aliases: readonly KnownAlias[];
+  signal: AbortSignal;
+  logger?: Logger;
+  /** Passed to `plans.generate` when the chat run picked a Claude model/effort. */
+  generationChoice?: {
+    model?: "opus" | "sonnet" | "haiku" | undefined;
+    effort?: AgentEffort | undefined;
+  };
+  consentPollIntervalMs?: number;
+  consentTimeoutMs?: number;
+  now?: () => Date;
+  sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
+}
+
+export class StudioToolExecutor {
+  private brandId: string | null;
+  private openPlan: Plan | null;
+  private stepSeq = 0;
+  private questionSeq = 0;
+  private consentSeq = 0;
+  private readonly logger: Logger;
+  private readonly now: () => Date;
+  private readonly sleep: (ms: number, signal?: AbortSignal) => Promise<void>;
+  readonly outcome: StudioToolOutcome = {
+    action: "none",
+    toolCalls: [],
+  };
+
+  constructor(private readonly options: StudioToolExecutorOptions) {
+    this.brandId = options.initialBrandId;
+    this.openPlan = options.initialOpenPlan;
+    this.logger = options.logger ?? silentLogger;
+    this.now = options.now ?? (() => new Date());
+    this.sleep = options.sleep ?? abortableSleep;
+  }
+
+  toolNames(): string[] {
+    return STUDIO_TOOLS.map((t) => t.name);
+  }
+
+  mcpTools(): StudioToolDefinition[] {
+    return [...STUDIO_TOOLS];
+  }
+
+  geminiFunctionDeclarations(): {
+    name: string;
+    description: string;
+    parameters: ToolJsonSchema;
+  }[] {
+    return STUDIO_TOOLS.map((t) => ({
+      name: t.name,
+      description: t.description,
+      parameters: t.inputSchema,
+    }));
+  }
+
+  async execute(
+    rawName: string,
+    rawArgs: unknown,
+    rawCallId?: string,
+  ): Promise<StudioToolExecutionResult> {
+    const name = rawName.replace(/^mcp__studio__/, "");
+    const args =
+      rawArgs && typeof rawArgs === "object" && !Array.isArray(rawArgs)
+        ? (rawArgs as Record<string, unknown>)
+        : {};
+    this.outcome.toolCalls.push(name);
+    const stepId = this.makeStepId(rawCallId);
+
+    switch (name) {
+      case "list_brands":
+        return this.runSafe(stepId, name, "Markalar listeleniyor…", "Markalar okundu", () =>
+          this.listBrands(),
+        );
+      case "get_brand_profile":
+        return this.runSafe(stepId, name, "Marka profili okunuyor…", "Marka profili okundu", () =>
+          this.getBrandProfile(args),
+        );
+      case "set_conversation_brand":
+        return this.runSafe(
+          stepId,
+          name,
+          "Sohbet markası ayarlanıyor…",
+          "Sohbet markası ayarlandı",
+          () => this.setConversationBrand(args),
+        );
+      case "propose_plan":
+        return this.runSafe(
+          stepId,
+          name,
+          "İçerik planı hazırlanıyor…",
+          "İçerik planı hazırlandı",
+          () => this.proposePlan(args),
+        );
+      case "ask_question":
+        return this.runSafe(stepId, name, "Soru hazırlanıyor…", "Soru eklendi", () =>
+          this.askQuestion(args),
+        );
+      case "list_contents":
+        return this.runSafe(stepId, name, "Postlar listeleniyor…", "Postlar okundu", () =>
+          this.listContents(args),
+        );
+      case "get_content":
+        return this.runSafe(stepId, name, "Post inceleniyor…", "Post incelendi", () =>
+          this.getContent(args),
+        );
+      case "list_social_accounts":
+        return this.runSafe(
+          stepId,
+          name,
+          "Sosyal hesaplar kontrol ediliyor…",
+          "Sosyal hesaplar okundu",
+          () => this.listSocialAccounts(args),
+        );
+      case "create_brand":
+        return this.runSafe(stepId, name, "Marka oluşturuluyor…", "Marka oluşturuldu", () =>
+          this.createBrand(args),
+        );
+      case "analyze_brand":
+        return this.runSafe(
+          stepId,
+          name,
+          "Marka analizi başlatılıyor…",
+          "Marka analizi kuyruğa alındı",
+          () => this.analyzeBrand(args),
+        );
+      case "generate_ai_image":
+        return this.runSafe(
+          stepId,
+          name,
+          "AI görsel üretimi başlatılıyor…",
+          "AI görsel üretimi kuyruğa alındı",
+          () => this.generateAiImage(args),
+        );
+      case "fill_post_slot":
+        return this.runSafe(
+          stepId,
+          name,
+          "Görsel yuvası dolduruluyor…",
+          "Görsel yuvası doldurma kuyruğa alındı",
+          () => this.fillPostSlot(args),
+        );
+      case "export_content_pdf":
+        return this.runSafe(
+          stepId,
+          name,
+          "PDF dışa aktarımı başlatılıyor…",
+          "PDF dışa aktarımı kuyruğa alındı",
+          () => this.exportContentPdf(args),
+        );
+      case "accept_and_generate_plan":
+        return this.acceptAndGeneratePlan(stepId, args);
+      case "approve_content":
+        return this.approveContent(stepId, args);
+      case "schedule_content":
+        return this.scheduleContent(stepId, args);
+      case "publish_now":
+        return this.publishNow(stepId, args);
+      default:
+        return {
+          data: { ok: false, error: `Bilinmeyen araç: ${name}` },
+          isError: true,
+        };
+    }
+  }
+
+  // --- safe tools --------------------------------------------------------------------------
+
+  private async runSafe(
+    stepId: string,
+    name: string,
+    runningLabel: string,
+    doneLabel: string,
+    fn: () => Promise<{ data: Record<string, unknown>; summary: string | null }>,
+  ): Promise<StudioToolExecutionResult> {
+    this.options.signal.throwIfAborted();
+    const stepIndex = await this.options.writer.setPart({
+      type: "tool_step",
+      id: stepId,
+      name,
+      label: runningLabel,
+      state: "running",
+      summary: null,
+    });
+    try {
+      const { data, summary } = await fn();
+      await this.options.writer.setPart(
+        {
+          type: "tool_step",
+          id: stepId,
+          name,
+          label: doneLabel,
+          state: "done",
+          summary: summary ? summary.slice(0, 300) : null,
+        },
+        stepIndex,
+      );
+      return { data, isError: false };
+    } catch (error) {
+      if (this.options.signal.aborted || error instanceof RunClosedError) throw error;
+      const msg = error instanceof Error ? error.message : String(error);
+      this.logger.warn(`tool ${name} failed: ${msg}`);
+      await this.options.writer.setPart(
+        {
+          type: "tool_step",
+          id: stepId,
+          name,
+          label: runningLabel,
+          state: "error",
+          summary: msg.slice(0, 300),
+        },
+        stepIndex,
+      );
+      return { data: { ok: false, error: msg.slice(0, 1_000) }, isError: true };
+    }
+  }
+
+  private async listBrands() {
+    const res = await this.options.api.client.brands.list(
+      { status: "active", limit: 100 },
+      { signal: this.options.signal },
+    );
+    const brands = res.items.map((b) => ({
+      id: b.id,
+      name: b.name,
+      slug: b.slug,
+      defaultLanguage: b.defaultLanguage,
+    }));
+    const summary = brands.length === 0 ? "Aktif marka yok" : `${brands.length} aktif marka`;
+    return { data: { ok: true, brands }, summary };
+  }
+
+  private async getBrandProfile(args: Record<string, unknown>) {
+    const rawId =
+      typeof args.brandId === "string" && args.brandId.trim() ? args.brandId.trim() : null;
+    const targetId = rawId ?? this.brandId;
+    if (!targetId) {
+      throw new Error("Marka seçilmedi; brandId verin veya önce list_brands ile markaları okuyun.");
+    }
+    const brand = await this.resolveBrand(targetId);
+    let profile = null;
+    try {
+      profile = await this.options.api.client.brandProfiles.current(brand.id, {
+        signal: this.options.signal,
+      });
+    } catch (error) {
+      if (!(error instanceof ApiError && error.status === 404)) throw error;
+    }
+    const summary = profile
+      ? `${brand.name} (sürüm ${profile.version})`
+      : `${brand.name} (onaylı profil yok)`;
+    const pf = profile ? profileFacts(profile.tokens) : null;
+    return {
+      data: {
+        ok: true,
+        brand: {
+          id: brand.id,
+          name: brand.name,
+          slug: brand.slug,
+          defaultLanguage: brand.defaultLanguage,
+        },
+        profile: profile
+          ? {
+              version: profile.version,
+              status: profile.status,
+              provisional: pf?.provisional ?? false,
+              voice: profile.voice,
+              designRules: profile.designRules,
+              facts: pf?.facts ?? null,
+            }
+          : null,
+      },
+      summary,
+    };
+  }
+
+  private async setConversationBrand(args: Record<string, unknown>) {
+    const raw = typeof args.brandId === "string" ? args.brandId.trim() : "";
+    if (!raw) throw new Error("brandId gerekli.");
+    const brand = await this.resolveBrand(raw);
+    const updated = await this.options.api.client.conversations.update(
+      this.options.conversationId,
+      { brandId: brand.id },
+      { signal: this.options.signal },
+    );
+    this.brandId = updated.brandId;
+    return {
+      data: {
+        ok: true,
+        conversationId: updated.id,
+        brandId: updated.brandId,
+        brandName: brand.name,
+      },
+      summary: brand.name,
+    };
+  }
+
+  private async proposePlan(args: Record<string, unknown>) {
+    const parsed = ProposePlanInput.safeParse(args);
+    if (!parsed.success) {
+      throw new Error(`Geçersiz plan verisi: ${z.prettifyError(parsed.error).slice(0, 300)}`);
+    }
+    const input = parsed.data;
+    let explicitBrandId: string | undefined;
+    if (!this.brandId) {
+      if (input.brandId) {
+        const brand = await this.resolveBrand(input.brandId);
+        explicitBrandId = brand.id;
+      } else {
+        const active = (
+          await this.options.api.client.brands.list(
+            { status: "active", limit: 100 },
+            { signal: this.options.signal },
+          )
+        ).items;
+        if (active.length === 1 && active[0]) {
+          explicitBrandId = active[0].id;
+        } else {
+          throw new Error(
+            "Konuşmanın henüz markası yok; brandId belirtin ya da ask_question ile hangi marka olduğunu sorun.",
+          );
+        }
+      }
+    }
+    const { plan, notes } = convertPlan(input, {
+      aliases: this.options.aliases,
+      ...(explicitBrandId ? { brandId: explicitBrandId } : {}),
+    });
+    if (notes.length > 0) {
+      this.logger.info(`plan fixes (${this.options.runId}): ${notes.join("; ")}`);
+    }
+    const saved = await this.options.writer.putPlan(plan);
+    this.openPlan = saved.plan;
+    this.brandId = saved.plan.brandId;
+    this.outcome.action = "plan";
+    this.outcome.planId = saved.plan.id;
+    this.outcome.planItems = saved.plan.items.length;
+    if (notes.length > 0) this.outcome.planNotes = notes;
+    return {
+      data: {
+        ok: true,
+        planId: saved.plan.id,
+        brandId: saved.plan.brandId,
+        revision: saved.plan.revision,
+        status: saved.plan.status,
+        itemCount: saved.plan.items.length,
+        periodStart: saved.plan.periodStart,
+        periodEnd: saved.plan.periodEnd,
+        notes,
+      },
+      summary: `${saved.plan.items.length} post önerildi`,
+    };
+  }
+
+  private async askQuestion(args: Record<string, unknown>) {
+    const parsed = AskQuestionInput.safeParse(args);
+    if (!parsed.success) {
+      throw new Error(`Geçersiz soru verisi: ${z.prettifyError(parsed.error).slice(0, 300)}`);
+    }
+    const n = ++this.questionSeq;
+    const suffix = this.options.runId.replace(/[^A-Za-z0-9_-]/g, "").slice(-8) || "run";
+    const questionId = n === 1 ? `q-${suffix}` : `q-${suffix}-${n}`;
+    const part = toQuestionPart(parsed.data, questionId);
+    if (!part) throw new Error("Soru metni boş olamaz.");
+    await this.options.writer.setPart(part);
+    if (this.outcome.action === "none") this.outcome.action = "question";
+    return {
+      data: {
+        ok: true,
+        questionId: part.questionId,
+        mode: part.mode,
+        optionCount: part.options?.length ?? 0,
+      },
+      summary: part.prompt.slice(0, 140),
+    };
+  }
+
+  private async listContents(args: Record<string, unknown>) {
+    const parsed = ListContentsInput.parse(args);
+    const brandId = parsed.brandId ?? this.brandId ?? undefined;
+    const res = await this.options.api.client.contents.list(
+      {
+        ...(brandId ? { brandId } : {}),
+        ...(parsed.status ? { status: parsed.status } : {}),
+        ...(parsed.type ? { type: parsed.type } : {}),
+        limit: parsed.limit,
+      },
+      { signal: this.options.signal },
+    );
+    const contents = res.items.map((c) => ({
+      id: c.id,
+      brandId: c.brandId,
+      type: c.type,
+      title: c.title,
+      status: c.status,
+      targetPlatforms: c.targetPlatforms,
+      caption: c.caption.slice(0, 300),
+      currentVersion: c.currentVersion,
+      approval: c.approval,
+      updatedAt: c.updatedAt,
+    }));
+    const summary = contents.length === 0 ? "Kayıtlı post yok" : `${contents.length} post okundu`;
+    return { data: { ok: true, contents }, summary };
+  }
+
+  private async getContent(args: Record<string, unknown>) {
+    const parsed = GetContentInput.parse(args);
+    const content = await this.options.api.client.contents.get(parsed.contentId, {
+      signal: this.options.signal,
+    });
+    const verNum = parsed.version ?? content.currentVersion?.version;
+    const version = verNum
+      ? await this.options.api.client.contents.versions.get(parsed.contentId, verNum, {
+          signal: this.options.signal,
+        })
+      : null;
+    const summary = `${content.title} (${content.status}${version ? `, s${version.version}` : ""})`;
+    return {
+      data: {
+        ok: true,
+        content,
+        version: version
+          ? {
+              id: version.id,
+              version: version.version,
+              origin: version.origin,
+              contentHash: version.contentHash,
+              slideCount: version.slideCount,
+              note: version.note,
+              slides: version.slides.map((s, i) => ({
+                index: i + 1,
+                width: s.width,
+                height: s.height,
+                renderedAssetId: s.renderedAssetId,
+                htmlPreview: s.html.slice(0, 1_500),
+              })),
+            }
+          : null,
+      },
+      summary,
+    };
+  }
+
+  private async listSocialAccounts(args: Record<string, unknown>) {
+    const parsed = ListSocialAccountsInput.parse(args);
+    const brandId = parsed.brandId ?? this.brandId ?? undefined;
+    const res = await this.options.api.client.socialAccounts.list(
+      {
+        ...(brandId ? { brandId } : {}),
+        ...(parsed.platform ? { platform: parsed.platform } : {}),
+        limit: 100,
+      },
+      { signal: this.options.signal },
+    );
+    const summary =
+      res.items.length === 0 ? "Sosyal hesap yok" : `${res.items.length} sosyal hesap`;
+    return { data: { ok: true, accounts: res.items }, summary };
+  }
+
+  // --- consent-gated tools -----------------------------------------------------------------
+
+  private async acceptAndGeneratePlan(
+    stepId: string,
+    args: Record<string, unknown>,
+  ): Promise<StudioToolExecutionResult> {
+    const tool = "accept_and_generate_plan";
+    const runningLabel = "Plan onayı ve üretim bekleniyor…";
+    const doneLabel = "Plan onaylandı ve üretim başlatıldı";
+    const stepIndex = await this.options.writer.setPart({
+      type: "tool_step",
+      id: stepId,
+      name: tool,
+      label: runningLabel,
+      state: "running",
+      summary: "Kullanıcı izni bekleniyor…",
+    });
+
+    try {
+      const parsed = AcceptGeneratePlanInput.parse(args);
+      const planId = parsed.planId ?? this.openPlan?.id;
+      if (!planId) {
+        throw new Error("Bu konuşmada onaylanacak açık bir plan bulunamadı.");
+      }
+      let plan = await this.options.api.client.plans.get(planId, { signal: this.options.signal });
+      if (!["proposed", "draft", "accepted"].includes(plan.status)) {
+        throw new Error(`Plan durumu onay için uygun değil: ${plan.status}`);
+      }
+      const skipSet = new Set(parsed.skipItemIds);
+      const count = plan.items.filter((i) => !skipSet.has(i.id)).length;
+      const detail = `${plan.title || `${plan.periodStart} – ${plan.periodEnd}`} (${count} post kabul edilecek ve tasarım üretimi kuyruğa alınacak)`;
+
+      const decision = await this.awaitConsent({
+        tool,
+        title: "Planı onayla ve post üretimini başlat",
+        detail,
+        stepId,
+        stepIndex,
+        doneLabel,
+      });
+      if (!decision.allowed) {
+        return { data: decision, isError: false };
+      }
+
+      if (plan.status !== "accepted") {
+        plan = await this.options.api.client.plans.accept(
+          plan.id,
+          { revision: plan.revision, skipItemIds: parsed.skipItemIds },
+          { signal: this.options.signal },
+        );
+      }
+      const choice = this.options.generationChoice;
+      const gen = await this.options.api.client.plans.generate(
+        plan.id,
+        {
+          ...(parsed.itemIds?.length ? { itemIds: parsed.itemIds } : {}),
+          ...(parsed.instructions ? { instructions: parsed.instructions } : {}),
+          ...(choice?.model ? { model: choice.model } : {}),
+          ...(choice?.effort ? { effort: choice.effort } : {}),
+        },
+        { signal: this.options.signal },
+      );
+      this.openPlan = gen.plan;
+      await this.options.writer.setPart(
+        {
+          type: "tool_step",
+          id: stepId,
+          name: tool,
+          label: doneLabel,
+          state: "done",
+          summary: `${gen.jobs.length} post üretimi başlatıldı`,
+        },
+        stepIndex,
+      );
+      return {
+        data: {
+          allowed: true,
+          ok: true,
+          planId: gen.plan.id,
+          status: gen.plan.status,
+          queuedJobs: gen.jobs.length,
+          jobIds: gen.jobs.map((j) => j.id),
+        },
+        isError: false,
+      };
+    } catch (error) {
+      return this.failStep(stepId, tool, runningLabel, stepIndex, error);
+    }
+  }
+
+  private async approveContent(
+    stepId: string,
+    args: Record<string, unknown>,
+  ): Promise<StudioToolExecutionResult> {
+    const tool = "approve_content";
+    const runningLabel = "Post yayına onaylanıyor…";
+    const doneLabel = "Post yayına onaylandı";
+    const stepIndex = await this.options.writer.setPart({
+      type: "tool_step",
+      id: stepId,
+      name: tool,
+      label: runningLabel,
+      state: "running",
+      summary: "Kullanıcı izni bekleniyor…",
+    });
+
+    try {
+      const parsed = ApproveContentInput.parse(args);
+      const content = await this.options.api.client.contents.get(parsed.contentId, {
+        signal: this.options.signal,
+      });
+      if (!content.currentVersion) {
+        throw new Error("Bu postun henüz üretilmiş bir tasarım sürümü yok.");
+      }
+      const detail = `"${content.title}" (sürüm ${content.currentVersion.version}, ${content.targetPlatforms.join(", ") || content.type}) yayına onaylanacak.`;
+
+      const decision = await this.awaitConsent({
+        tool,
+        title: "Postu yayına onayla",
+        detail,
+        stepId,
+        stepIndex,
+        doneLabel,
+      });
+      if (!decision.allowed) {
+        return { data: decision, isError: false };
+      }
+
+      const fresh = await this.options.api.client.contents.get(parsed.contentId, {
+        signal: this.options.signal,
+      });
+      if (!fresh.currentVersion) {
+        throw new Error("Postun aktif sürümü bulunamadı.");
+      }
+      let hash = fresh.currentVersion.contentHash;
+      if (!hash) {
+        const ver = await this.options.api.client.contents.versions.get(
+          parsed.contentId,
+          fresh.currentVersion.version,
+          { signal: this.options.signal },
+        );
+        hash = await computeContentHash(ver.slides);
+      }
+      const approved = await this.options.api.client.contents.approve(parsed.contentId, hash, {
+        signal: this.options.signal,
+      });
+      await this.options.writer.setPart(
+        {
+          type: "tool_step",
+          id: stepId,
+          name: tool,
+          label: doneLabel,
+          state: "done",
+          summary: `${approved.title} onaylandı`,
+        },
+        stepIndex,
+      );
+      return {
+        data: {
+          allowed: true,
+          ok: true,
+          contentId: approved.id,
+          status: approved.status,
+          approval: approved.approval,
+        },
+        isError: false,
+      };
+    } catch (error) {
+      return this.failStep(stepId, tool, runningLabel, stepIndex, error);
+    }
+  }
+
+  private async scheduleContent(
+    stepId: string,
+    args: Record<string, unknown>,
+  ): Promise<StudioToolExecutionResult> {
+    const tool = "schedule_content";
+    const runningLabel = "Post zamanlanıyor…";
+    const doneLabel = "Post zamanlandı";
+    const stepIndex = await this.options.writer.setPart({
+      type: "tool_step",
+      id: stepId,
+      name: tool,
+      label: runningLabel,
+      state: "running",
+      summary: "Kullanıcı izni bekleniyor…",
+    });
+
+    try {
+      const parsed = ScheduleContentInput.parse(args);
+      const [content, account] = await Promise.all([
+        this.options.api.client.contents.get(parsed.contentId, { signal: this.options.signal }),
+        this.options.api.client.socialAccounts.get(parsed.socialAccountId, {
+          signal: this.options.signal,
+        }),
+      ]);
+      const detail = `"${content.title}" postu ${account.handle} (${account.platform}) hesabında ${parsed.scheduledAt} zamanında yayınlanacak.`;
+
+      const decision = await this.awaitConsent({
+        tool,
+        title: "Postu zamanla",
+        detail,
+        stepId,
+        stepIndex,
+        doneLabel,
+      });
+      if (!decision.allowed) {
+        return { data: decision, isError: false };
+      }
+
+      const schedule = await this.options.api.client.schedules.create(
+        {
+          contentId: parsed.contentId,
+          socialAccountId: parsed.socialAccountId,
+          ...(parsed.platform ? { platform: parsed.platform } : {}),
+          scheduledAt: parsed.scheduledAt,
+        },
+        { signal: this.options.signal },
+      );
+      await this.options.writer.setPart(
+        {
+          type: "tool_step",
+          id: stepId,
+          name: tool,
+          label: doneLabel,
+          state: "done",
+          summary: `${schedule.platform} · ${schedule.scheduledAt}`,
+        },
+        stepIndex,
+      );
+      return {
+        data: {
+          allowed: true,
+          ok: true,
+          schedule,
+        },
+        isError: false,
+      };
+    } catch (error) {
+      return this.failStep(stepId, tool, runningLabel, stepIndex, error);
+    }
+  }
+
+  private async createBrand(args: Record<string, unknown>) {
+    const parsed = CreateBrandInput.parse(args);
+    const derivedSlug = parsed.slug ? slugify(parsed.slug) : slugify(parsed.name);
+    const created = await this.options.api.client.brands.create(
+      {
+        name: parsed.name,
+        ...(derivedSlug.length >= 2 ? { slug: derivedSlug } : {}),
+        defaultLanguage: parsed.defaultLanguage,
+      },
+      { signal: this.options.signal },
+    );
+
+    if (!this.brandId) {
+      await this.options.api.client.conversations
+        .update(
+          this.options.conversationId,
+          { brandId: created.id },
+          { signal: this.options.signal },
+        )
+        .catch(() => undefined);
+      this.brandId = created.id;
+    }
+
+    return {
+      data: {
+        ok: true,
+        brand: created,
+        attachedToConversation: this.brandId === created.id,
+      },
+      summary: `${created.name} (${created.slug})`,
+    };
+  }
+
+  private async analyzeBrand(args: Record<string, unknown>) {
+    const parsed = AnalyzeBrandInput.parse(args);
+    const targetRef = parsed.brandId ?? this.brandId;
+    if (!targetRef) {
+      throw new Error("Marka seçilmedi; brandId belirtin ya da önce marka oluşturun.");
+    }
+    const brand = await this.resolveBrand(targetRef);
+    const job = await this.options.api.client.jobs.create(
+      {
+        type: "brand.analyze",
+        brandId: brand.id,
+        payload: {
+          ...(parsed.notes ? { notes: parsed.notes } : {}),
+          includeApprovedContentFeedback: parsed.includeApprovedContentFeedback,
+          autoApprove: parsed.autoApprove,
+        },
+      },
+      { signal: this.options.signal },
+    );
+    return {
+      data: {
+        ok: true,
+        jobId: job.id,
+        brandId: brand.id,
+        brandName: brand.name,
+        status: job.status,
+      },
+      summary: `${brand.name} analizi (${job.id})`,
+    };
+  }
+
+  private async resolveAliasToAssetId(rawAlias: string): Promise<string> {
+    const cleaned = rawAlias.trim().replace(/^@/, "").toLowerCase();
+    const list = (
+      await this.options.api.client.conversations.aliases.list(this.options.conversationId, {
+        signal: this.options.signal,
+      })
+    ).items;
+    const match = list.find(
+      (a) =>
+        a.alias.toLowerCase() === cleaned ||
+        a.previousAliases.some((old) => old.toLowerCase() === cleaned),
+    );
+    if (!match) {
+      throw new Error(`Görsel takma adı bulunamadı: @${cleaned}`);
+    }
+    return match.assetId;
+  }
+
+  private async generateAiImage(args: Record<string, unknown>) {
+    const parsed = GenerateAiImageInput.parse(args);
+    let brandId = parsed.brandId ? (await this.resolveBrand(parsed.brandId)).id : this.brandId;
+    if (!brandId && parsed.targetContentId) {
+      const targetContent = await this.options.api.client.contents.get(parsed.targetContentId, {
+        signal: this.options.signal,
+      });
+      brandId = targetContent.brandId;
+    }
+    if (!brandId) {
+      throw new Error("Görsel üretimi için marka seçilmedi; brandId belirtin.");
+    }
+
+    const referenceAssetIds: string[] = [...parsed.referenceAssetIds];
+    for (const aliasName of parsed.referenceAliases) {
+      const assetId = await this.resolveAliasToAssetId(aliasName);
+      if (!referenceAssetIds.includes(assetId)) referenceAssetIds.push(assetId);
+    }
+
+    const job = await this.options.api.client.jobs.create(
+      {
+        type: "image.generate",
+        brandId,
+        payload: {
+          prompt: parsed.prompt,
+          aspectRatio: parsed.aspectRatio,
+          imageSize: parsed.imageSize,
+          referenceAssetIds,
+          preserveProductLabel: parsed.preserveProductLabel,
+          ...(parsed.targetContentId ? { targetContentId: parsed.targetContentId } : {}),
+          ...(parsed.targetSlotId ? { targetSlotId: parsed.targetSlotId } : {}),
+        },
+      },
+      { signal: this.options.signal },
+    );
+
+    return {
+      data: {
+        ok: true,
+        jobId: job.id,
+        brandId,
+        status: job.status,
+        referenceAssetIds,
+        preserveProductLabel: parsed.preserveProductLabel,
+        ...(parsed.targetContentId ? { targetContentId: parsed.targetContentId } : {}),
+        ...(parsed.targetSlotId ? { targetSlotId: parsed.targetSlotId } : {}),
+      },
+      summary: `AI görsel işi (${job.id})`,
+    };
+  }
+
+  private async fillPostSlot(args: Record<string, unknown>) {
+    const parsed = FillPostSlotInput.parse(args);
+    const content = await this.options.api.client.contents.get(parsed.contentId, {
+      signal: this.options.signal,
+    });
+
+    const slotAssignments: Record<string, string> = {};
+    if (parsed.slotAssignments) {
+      for (const [slotKey, val] of Object.entries(parsed.slotAssignments)) {
+        if (val.startsWith("@")) {
+          slotAssignments[slotKey] = await this.resolveAliasToAssetId(val);
+        } else {
+          slotAssignments[slotKey] = val;
+        }
+      }
+    }
+    if (parsed.slotId) {
+      if (parsed.assetId) {
+        slotAssignments[parsed.slotId] = parsed.assetId;
+      } else if (parsed.alias) {
+        slotAssignments[parsed.slotId] = await this.resolveAliasToAssetId(parsed.alias);
+      }
+    }
+
+    if (Object.keys(slotAssignments).length === 0) {
+      throw new Error(
+        "Doldurulacak görsel yuvası belirtilmedi (`slotId` + `alias`/`assetId` ya da `slotAssignments` verin).",
+      );
+    }
+
+    const job = await this.options.api.client.jobs.create(
+      {
+        type: "content.render",
+        brandId: content.brandId,
+        contentId: content.id,
+        payload: {
+          format: "jpeg",
+          slotAssignments,
+        },
+      },
+      { signal: this.options.signal },
+    );
+
+    return {
+      data: {
+        ok: true,
+        jobId: job.id,
+        contentId: content.id,
+        slotAssignments,
+        status: job.status,
+      },
+      summary: `${content.title} (${Object.keys(slotAssignments).join(", ")})`,
+    };
+  }
+
+  private async exportContentPdf(args: Record<string, unknown>) {
+    const parsed = ExportContentPdfInput.parse(args);
+    const content = await this.options.api.client.contents.get(parsed.contentId, {
+      signal: this.options.signal,
+    });
+    const job = await this.options.api.client.jobs.create(
+      {
+        type: "content.render",
+        brandId: content.brandId,
+        contentId: content.id,
+        payload: {
+          format: "pdf",
+          ...(parsed.version ? { version: parsed.version } : {}),
+        },
+      },
+      { signal: this.options.signal },
+    );
+    return {
+      data: {
+        ok: true,
+        jobId: job.id,
+        contentId: content.id,
+        format: "pdf",
+        status: job.status,
+      },
+      summary: `${content.title} PDF (${job.id})`,
+    };
+  }
+
+  private async publishNow(
+    stepId: string,
+    args: Record<string, unknown>,
+  ): Promise<StudioToolExecutionResult> {
+    const tool = "publish_now";
+    const runningLabel = "Anında yayın onayı bekleniyor…";
+    const doneLabel = "Yayın başlatıldı";
+    const stepIndex = await this.options.writer.setPart({
+      type: "tool_step",
+      id: stepId,
+      name: tool,
+      label: runningLabel,
+      state: "running",
+      summary: "Kullanıcı izni bekleniyor…",
+    });
+
+    try {
+      const parsed = PublishNowInput.parse(args);
+      const [content, account] = await Promise.all([
+        this.options.api.client.contents.get(parsed.contentId, { signal: this.options.signal }),
+        this.options.api.client.socialAccounts.get(parsed.socialAccountId, {
+          signal: this.options.signal,
+        }),
+      ]);
+      if (!content.currentVersion) {
+        throw new Error("Bu postun henüz yayınlanacak bir tasarım sürümü yok.");
+      }
+
+      const detail = `"${content.title}" postu ${account.handle} (${account.platform}) hesabında hemen yayınlanacak.`;
+      const decision = await this.awaitConsent({
+        tool,
+        title: "Postu şimdi yayınla",
+        detail,
+        stepId,
+        stepIndex,
+        doneLabel,
+      });
+      if (!decision.allowed) {
+        return { data: decision, isError: false };
+      }
+
+      let fresh = await this.options.api.client.contents.get(parsed.contentId, {
+        signal: this.options.signal,
+      });
+      if (!fresh.currentVersion) {
+        throw new Error("Postun aktif sürümü bulunamadı.");
+      }
+      if (fresh.status === "draft" || fresh.status === "in_review") {
+        let hash = fresh.currentVersion.contentHash;
+        if (!hash) {
+          const ver = await this.options.api.client.contents.versions.get(
+            parsed.contentId,
+            fresh.currentVersion.version,
+            { signal: this.options.signal },
+          );
+          hash = await computeContentHash(ver.slides);
+        }
+        fresh = await this.options.api.client.contents.approve(parsed.contentId, hash, {
+          signal: this.options.signal,
+        });
+      }
+
+      const schedule = parsed.scheduleId
+        ? await this.options.api.client.schedules.get(parsed.scheduleId, {
+            signal: this.options.signal,
+          })
+        : await this.options.api.client.schedules.create(
+            {
+              contentId: fresh.id,
+              socialAccountId: account.id,
+              ...(parsed.platform ? { platform: parsed.platform } : {}),
+              scheduledAt: new Date(this.now().getTime() + 5_000).toISOString(),
+            },
+            { signal: this.options.signal },
+          );
+
+      const job = await this.options.api.client.jobs.create(
+        {
+          type: "schedule.publish",
+          brandId: fresh.brandId,
+          contentId: fresh.id,
+          payload: { scheduleId: schedule.id },
+        },
+        { signal: this.options.signal },
+      );
+
+      await this.options.writer.setPart(
+        {
+          type: "tool_step",
+          id: stepId,
+          name: tool,
+          label: doneLabel,
+          state: "done",
+          summary: `${account.handle} (${schedule.platform}) · ${job.id}`,
+        },
+        stepIndex,
+      );
+
+      return {
+        data: {
+          allowed: true,
+          ok: true,
+          schedule,
+          jobId: job.id,
+        },
+        isError: false,
+      };
+    } catch (error) {
+      return this.failStep(stepId, tool, runningLabel, stepIndex, error);
+    }
+  }
+
+  private async awaitConsent(input: {
+    tool: string;
+    title: string;
+    detail: string | null;
+    stepId: string;
+    stepIndex: number;
+    doneLabel: string;
+  }): Promise<{ allowed: true } | { allowed: false; reason: "denied_by_owner" | "expired" }> {
+    const suffix = this.options.runId.replace(/[^A-Za-z0-9_-]/g, "").slice(-8) || "run";
+    const consentId = `consent-${suffix}-${++this.consentSeq}`;
+    const consentIndex = await this.options.writer.setPart({
+      type: "consent",
+      consentId,
+      tool: input.tool,
+      title: input.title,
+      detail: input.detail,
+      state: "pending",
+    });
+
+    const pollMs = this.options.consentPollIntervalMs ?? DEFAULT_CONSENT_POLL_MS;
+    const timeoutMs = this.options.consentTimeoutMs ?? DEFAULT_CONSENT_TIMEOUT_MS;
+    const deadline = this.now().getTime() + timeoutMs;
+
+    for (;;) {
+      this.options.signal.throwIfAborted();
+      const remaining = deadline - this.now().getTime();
+      if (remaining <= 0) {
+        await this.options.writer.setPart(
+          {
+            type: "consent",
+            consentId,
+            tool: input.tool,
+            title: input.title,
+            detail: input.detail,
+            state: "expired",
+          },
+          consentIndex,
+        );
+        await this.options.writer.setPart(
+          {
+            type: "tool_step",
+            id: input.stepId,
+            name: input.tool,
+            label: input.doneLabel,
+            state: "done",
+            summary: "Onay süresi doldu",
+          },
+          input.stepIndex,
+        );
+        return { allowed: false, reason: "expired" };
+      }
+
+      await this.sleep(Math.min(pollMs, remaining), this.options.signal);
+
+      const snapshot = await this.options.api.client.workerTurns.message(this.options.runId, {
+        signal: this.options.signal,
+      });
+      if (
+        snapshot.run.status === "cancelled" ||
+        snapshot.run.status === "failed" ||
+        snapshot.run.status === "completed"
+      ) {
+        throw new RunClosedError(`run ${this.options.runId} is ${snapshot.run.status}`);
+      }
+      const card = snapshot.message?.parts.find(
+        (p) => p.type === "consent" && p.consentId === consentId,
+      );
+      if (card?.type !== "consent" || card.state === "pending") continue;
+      if (card.state === "allowed") return { allowed: true };
+      if (card.state === "denied") {
+        await this.options.writer.setPart(
+          {
+            type: "tool_step",
+            id: input.stepId,
+            name: input.tool,
+            label: input.doneLabel,
+            state: "done",
+            summary: "Kullanıcı izin vermedi",
+          },
+          input.stepIndex,
+        );
+        return { allowed: false, reason: "denied_by_owner" };
+      }
+      // Already marked expired server-side
+      await this.options.writer.setPart(
+        {
+          type: "tool_step",
+          id: input.stepId,
+          name: input.tool,
+          label: input.doneLabel,
+          state: "done",
+          summary: "Onay süresi doldu",
+        },
+        input.stepIndex,
+      );
+      return { allowed: false, reason: "expired" };
+    }
+  }
+
+  private async failStep(
+    stepId: string,
+    tool: string,
+    runningLabel: string,
+    stepIndex: number,
+    error: unknown,
+  ): Promise<StudioToolExecutionResult> {
+    if (this.options.signal.aborted || error instanceof RunClosedError) throw error;
+    const msg = error instanceof Error ? error.message : String(error);
+    this.logger.warn(`tool ${tool} failed: ${msg}`);
+    await this.options.writer.setPart(
+      {
+        type: "tool_step",
+        id: stepId,
+        name: tool,
+        label: runningLabel,
+        state: "error",
+        summary: msg.slice(0, 300),
+      },
+      stepIndex,
+    );
+    return { data: { ok: false, error: msg.slice(0, 1_000) }, isError: true };
+  }
+
+  private async resolveBrand(idOrSlug: string) {
+    try {
+      return await this.options.api.client.brands.get(idOrSlug, { signal: this.options.signal });
+    } catch (error) {
+      if (!(error instanceof ApiError && error.status === 404)) throw error;
+      const list = await this.options.api.client.brands.list(
+        { status: "active", limit: 100 },
+        { signal: this.options.signal },
+      );
+      const found = list.items.find(
+        (b) => b.id === idOrSlug || b.slug.toLowerCase() === idOrSlug.toLowerCase(),
+      );
+      if (!found) throw new Error(`Marka bulunamadı: ${idOrSlug}`);
+      return found;
+    }
+  }
+
+  private makeStepId(rawCallId: string | undefined): string {
+    const seq = ++this.stepSeq;
+    if (rawCallId) {
+      const cleaned = rawCallId.replace(/[^A-Za-z0-9_.:-]/g, "_").slice(0, 48);
+      if (cleaned) return `${cleaned}-${seq}`;
+    }
+    return `step-${seq}`;
+  }
+}

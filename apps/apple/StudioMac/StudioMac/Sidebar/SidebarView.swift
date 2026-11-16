@@ -1,173 +1,535 @@
+import AppKit
 import StudioKit
-import SwiftUI
 
-/// Left sidebar: Yeni sohbet, Ara, Postlar, Takvim; brands with their
-/// conversations as collapsible groups; the user row at the bottom.
-struct SidebarView: View {
-    @Environment(AppModel.self) private var app
+/// Pure AppKit left sidebar (`NSSplitViewItem(sidebarWithViewController:)`):
+/// - Uses a native `.sourceList` `NSTableView` for macOS sidebar styling & keyboard navigation
+/// - Top actions: Yeni sohbet (`+`), Ara (`magnifyingglass`), Postlar (`square.grid.2x2`), Takvim (`calendar`, "yakında")
+/// - Collapsible brand sections with conversation rows (orange dot when `activeRunId != nil`, right-click archive)
+/// - Bottom `UserRowView` (`● Burak` appearance menu + Settings gear).
+final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTableViewDelegate {
+    private unowned let app: AppModel
+    private unowned let settings: AppSettings
 
-    var body: some View {
-        @Bindable var app = app
-        List(selection: $app.sidebarSelection) {
-            Section {
-                Button { app.startNewChat() } label: {
-                    Label("Yeni sohbet", systemImage: "plus")
-                }
-                .buttonStyle(.plain)
-                .help("Yeni sohbet (⌘N)")
+    private let scrollView = NSScrollView()
+    private let tableView = SidebarTableView()
+    private var rows: [Row] = []
+    private var isSyncingSelection = false
+    private var observation: ObservationToken?
 
-                Button { app.searchPresented = true } label: {
-                    Label("Ara", systemImage: "magnifyingglass")
-                }
-                .buttonStyle(.plain)
-                .help("Sohbetlerde ve postlarda ara (⌘K)")
+    private enum Row: Equatable {
+        case actionNewChat
+        case actionSearch
+        case posts
+        case calendar
+        case media
+        case spacer
+        case brandHeader(Brand, expanded: Bool)
+        case conversation(Conversation)
+        case emptyBrand(EntityID)
+        case actionNewBrand
+        case unbrandedHeader
+        case loadError(String)
+    }
 
-                Label("Postlar", systemImage: "square.grid.2x2")
-                    .tag(SidebarItem.posts)
+    init(app: AppModel, settings: AppSettings) {
+        self.app = app
+        self.settings = settings
+        super.init(nibName: nil, bundle: nil)
+    }
 
-                Label {
-                    HStack {
-                        Text("Takvim")
-                        Spacer()
-                        Text("yakında").font(Theme.smallFont).foregroundStyle(Theme.textTertiary)
-                    }
-                } icon: {
-                    Image(systemName: "calendar")
-                }
-                .foregroundStyle(Theme.textTertiary)
-                .selectionDisabled()
-                .help("Takvim ekranı henüz tasarlanmadı. Zamanlanan postlar Postlar ekranında görünür.")
-            }
+    required init?(coder: NSCoder) { fatalError("not used") }
 
-            ForEach(app.sidebarBrands) { brand in
-                BrandGroup(brand: brand, conversations: app.conversations(of: brand.id))
-            }
-            if !app.unbrandedConversations.isEmpty {
-                Section {
-                    ForEach(app.unbrandedConversations) { conversation in
-                        ConversationRow(conversation: conversation)
-                    }
-                } header: {
-                    Text("Markasız")
-                }
-            }
-            if let error = app.loadError {
-                Section {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text(error).font(Theme.smallFont).foregroundStyle(Theme.textSecondary)
-                        Button("Yeniden dene") { Task { await app.load() } }
-                            .buttonStyle(.pillSecondary)
-                    }
-                    .selectionDisabled()
-                }
-            }
+    override func loadView() {
+        let root = NSView()
+        root.translatesAutoresizingMaskIntoConstraints = false
+
+        let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("main"))
+        column.resizingMask = .autoresizingMask
+        tableView.addTableColumn(column)
+        tableView.headerView = nil
+        tableView.style = .sourceList
+        tableView.backgroundColor = .clear
+        tableView.rowSizeStyle = .custom
+        tableView.intercellSpacing = NSSize(width: 0, height: 2)
+        tableView.floatsGroupRows = false
+        tableView.dataSource = self
+        tableView.delegate = self
+        tableView.onArchiveConversation = { [weak self] convId in
+            guard let self else { return }
+            Task { await self.app.conversationModel(convId).archive() }
         }
-        .listStyle(.sidebar)
-        .font(Theme.rowFont)
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            UserRow()
+
+        scrollView.drawsBackground = false
+        scrollView.borderType = .noBorder
+        scrollView.hasVerticalScroller = true
+        scrollView.automaticallyAdjustsContentInsets = true
+        scrollView.documentView = tableView
+        scrollView.translatesAutoresizingMaskIntoConstraints = false
+        scrollView.applyMinimalScroller()
+
+        let userRow = SidebarUserRowView(app: app, settings: settings)
+
+        root.addSubview(scrollView)
+        root.addSubview(userRow)
+
+        NSLayoutConstraint.activate([
+            scrollView.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+            scrollView.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            scrollView.topAnchor.constraint(equalTo: root.topAnchor),
+            scrollView.bottomAnchor.constraint(equalTo: userRow.topAnchor),
+
+            userRow.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+            userRow.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            userRow.bottomAnchor.constraint(equalTo: root.bottomAnchor),
+        ])
+
+        self.view = root
+    }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        observation = observe { [weak self] in
+            self?.reloadSidebar()
         }
     }
-}
 
-/// `MTM Agro ⌄` and its conversations.
-private struct BrandGroup: View {
-    @Environment(AppModel.self) private var app
-    var brand: Brand
-    var conversations: [Conversation]
-
-    var body: some View {
-        let expanded = app.expandedBrands.contains(brand.id)
-        Section {
+    private func buildRows() -> [Row] {
+        var list: [Row] = [
+            .actionNewChat,
+            .actionSearch,
+            .posts,
+            .calendar,
+            .media,
+        ]
+        for brand in app.sidebarBrands {
+            list.append(.spacer)
+            let expanded = app.expandedBrands.contains(brand.id)
+            list.append(.brandHeader(brand, expanded: expanded))
             if expanded {
-                ForEach(conversations) { conversation in
-                    ConversationRow(conversation: conversation)
-                }
-                if conversations.isEmpty {
-                    Text("Henüz sohbet yok")
-                        .font(Theme.captionFont)
-                        .foregroundStyle(Theme.textTertiary)
-                        .selectionDisabled()
+                let convs = app.conversations(of: brand.id)
+                if convs.isEmpty {
+                    list.append(.emptyBrand(brand.id))
+                } else {
+                    for conv in convs { list.append(.conversation(conv)) }
                 }
             }
-        } header: {
-            Button {
-                withAnimation(.snappy(duration: 0.2)) { app.toggleBrand(brand.id) }
-            } label: {
-                HStack(spacing: 4) {
-                    Text(brand.name)
-                    Image(systemName: expanded ? "chevron.down" : "chevron.right")
-                        .font(.system(size: 8, weight: .semibold))
-                }
-                .font(Theme.captionFont)
-                .foregroundStyle(Theme.textSecondary)
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("\(brand.name), \(expanded ? "daralt" : "genişlet")")
         }
+        list.append(.spacer)
+        list.append(.actionNewBrand)
+        let unbranded = app.unbrandedConversations
+        if !unbranded.isEmpty {
+            list.append(.spacer)
+            list.append(.unbrandedHeader)
+            for conv in unbranded { list.append(.conversation(conv)) }
+        }
+        if let err = app.loadError {
+            list.append(.spacer)
+            list.append(.loadError(err))
+        }
+        return list
+    }
+
+    private func reloadSidebar() {
+        let next = buildRows()
+        let selection = app.sidebarSelection
+        if next != rows {
+            rows = next
+            tableView.rowConversationIds = rows.map {
+                if case .conversation(let c) = $0 { return c.id }
+                return nil
+            }
+            isSyncingSelection = true
+            tableView.reloadData()
+            isSyncingSelection = false
+        }
+        syncSelection(to: selection)
+    }
+
+    private func syncSelection(to item: SidebarItem?) {
+        isSyncingSelection = true
+        defer { isSyncingSelection = false }
+        guard let item else {
+            tableView.deselectAll(nil)
+            return
+        }
+        let targetIndex = rows.firstIndex { row in
+            switch (row, item) {
+            case (.posts, .posts): true
+            case (.calendar, .calendar): true
+            case (.media, .media): true
+            case (.conversation(let c), .conversation(let id)): c.id == id
+            default: false
+            }
+        }
+        if let targetIndex {
+            if tableView.selectedRow != targetIndex {
+                tableView.selectRowIndexes(IndexSet(integer: targetIndex), byExtendingSelection: false)
+            }
+        } else {
+            tableView.deselectAll(nil)
+        }
+    }
+
+    // MARK: NSTableViewDataSource / Delegate
+
+    func numberOfRows(in tableView: NSTableView) -> Int { rows.count }
+
+    func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
+        switch rows[row] {
+        case .spacer: 10
+        case .brandHeader, .unbrandedHeader: 24
+        case .loadError: 62
+        default: 28
+        }
+    }
+
+    func tableView(_ tableView: NSTableView, shouldSelectRow row: Int) -> Bool {
+        guard rows.indices.contains(row) else { return false }
+        switch rows[row] {
+        case .actionNewChat:
+            app.startNewChat()
+            return false
+        case .actionSearch:
+            app.searchPresented = true
+            return false
+        case .actionNewBrand:
+            app.newBrandPresented = true
+            return false
+        case .brandHeader(let brand, _):
+            app.toggleBrand(brand.id)
+            return false
+        case .posts, .calendar, .media, .conversation:
+            return true
+        case .spacer, .emptyBrand, .unbrandedHeader, .loadError:
+            return false
+        }
+    }
+
+    func tableViewSelectionDidChange(_ notification: Notification) {
+        guard !isSyncingSelection else { return }
+        let idx = tableView.selectedRow
+        guard rows.indices.contains(idx) else { return }
+        switch rows[idx] {
+        case .posts:
+            app.sidebarSelection = .posts
+        case .calendar:
+            app.sidebarSelection = .calendar
+        case .media:
+            app.sidebarSelection = .media
+        case .conversation(let conv):
+            app.sidebarSelection = .conversation(conv.id)
+        default:
+            break
+        }
+    }
+
+    func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
+        let item = rows[row]
+        switch item {
+        case .spacer:
+            return NSView()
+
+        case .actionNewChat:
+            return makeIconLabelCell(symbol: "plus", title: "Yeni sohbet", help: "Yeni sohbet (⌘N)")
+
+        case .actionSearch:
+            return makeIconLabelCell(symbol: "magnifyingglass", title: "Ara", help: "Sohbetlerde ve postlarda ara (⌘K)")
+
+        case .posts:
+            return makeIconLabelCell(symbol: "square.grid.2x2", title: "Postlar", help: "Postlar (⇧⌘P)")
+
+        case .calendar:
+            return makeIconLabelCell(symbol: "calendar", title: "Takvim", help: "Yayın takvimi (⇧⌘K)")
+
+        case .media:
+            return makeIconLabelCell(symbol: "photo.on.rectangle.angled", title: "Medya", help: "Medya kütüphanesi ve AI görsel üretimi (⇧⌘M)")
+
+        case .actionNewBrand:
+            return makeIconLabelCell(symbol: "plus.circle", title: "Yeni Marka…", muted: false, help: "Yeni müşteri markası ekle")
+
+        case .brandHeader(let brand, let expanded):
+            return makeBrandHeaderCell(brand: brand, expanded: expanded)
+
+        case .unbrandedHeader:
+            let cell = NSTableCellView()
+            let label = NSTextField.styledLabel("Markasız", font: Theme.captionFont, color: Theme.textSecondary)
+            label.translatesAutoresizingMaskIntoConstraints = false
+            cell.addSubview(label)
+            NSLayoutConstraint.activate([
+                label.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 6),
+                label.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
+            ])
+            return cell
+
+        case .emptyBrand:
+            let cell = NSTableCellView()
+            let label = NSTextField.styledLabel("Henüz sohbet yok", font: Theme.captionFont, color: Theme.textTertiary)
+            label.translatesAutoresizingMaskIntoConstraints = false
+            cell.addSubview(label)
+            NSLayoutConstraint.activate([
+                label.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 8),
+                label.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
+            ])
+            return cell
+
+        case .conversation(let conv):
+            return makeConversationCell(conv)
+
+        case .loadError(let message):
+            let cell = NSTableCellView()
+            let lbl = NSTextField.styledLabel(message, font: Theme.smallFont, color: Theme.textSecondary, wraps: true)
+            let btn = PillButton(title: "Yeniden dene", kind: .secondary, height: 22) { [weak app] in
+                guard let app else { return }
+                Task { await app.load() }
+            }
+            let stack = NSStackView(views: [lbl, btn])
+            stack.orientation = .vertical
+            stack.alignment = .leading
+            stack.spacing = 6
+            stack.translatesAutoresizingMaskIntoConstraints = false
+            cell.addSubview(stack)
+            NSLayoutConstraint.activate([
+                stack.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 6),
+                stack.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -6),
+                stack.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
+            ])
+            return cell
+        }
+    }
+
+    private func makeIconLabelCell(symbol: String, title: String, trailingText: String? = nil, muted: Bool = false, help: String?) -> NSView {
+        let cell = NSTableCellView()
+        cell.toolTip = help
+
+        let icon = NSImageView()
+        icon.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)?
+            .withSymbolConfiguration(.init(pointSize: 13, weight: .regular))
+        icon.contentTintColor = muted ? Theme.textTertiary : Theme.textSecondary
+        icon.translatesAutoresizingMaskIntoConstraints = false
+        icon.widthAnchor.constraint(equalToConstant: 18).isActive = true
+
+        let label = NSTextField.styledLabel(title, font: Theme.rowFont, color: muted ? Theme.textTertiary : Theme.textPrimary)
+        label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        cell.textField = label
+
+        let spacer = NSView()
+        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+
+        var views: [NSView] = [icon, label, spacer]
+        if let trailingText {
+            views.append(NSTextField.styledLabel(trailingText, font: Theme.smallFont, color: Theme.textTertiary))
+        }
+
+        let row = NSStackView(views: views)
+        row.orientation = .horizontal
+        row.alignment = .centerY
+        row.spacing = 8
+        row.translatesAutoresizingMaskIntoConstraints = false
+        cell.addSubview(row)
+
+        NSLayoutConstraint.activate([
+            row.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 6),
+            row.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -8),
+            row.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
+        ])
+        return cell
+    }
+
+    private func makeBrandHeaderCell(brand: Brand, expanded: Bool) -> NSView {
+        let cell = BrandHeaderCellView { [weak app] in
+            app?.toggleBrand(brand.id)
+        }
+        cell.setAccessibilityLabel("\(brand.name), \(expanded ? "daralt" : "genişlet")")
+
+        let label = NSTextField.styledLabel(brand.name, font: Theme.captionFont, color: Theme.textSecondary)
+        let chevron = NSImageView()
+        chevron.image = NSImage(systemSymbolName: expanded ? "chevron.down" : "chevron.right", accessibilityDescription: nil)?
+            .withSymbolConfiguration(.init(pointSize: 8, weight: .semibold))
+        chevron.contentTintColor = Theme.textSecondary
+
+        let row = NSStackView(views: [label, chevron])
+        row.orientation = .horizontal
+        row.alignment = .centerY
+        row.spacing = 4
+        row.translatesAutoresizingMaskIntoConstraints = false
+        cell.addSubview(row)
+
+        NSLayoutConstraint.activate([
+            row.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 6),
+            row.trailingAnchor.constraint(lessThanOrEqualTo: cell.trailingAnchor, constant: -8),
+            row.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
+        ])
+        return cell
+    }
+
+    private func makeConversationCell(_ conversation: Conversation) -> NSView {
+        let cell = NSTableCellView()
+        let label = NSTextField.styledLabel(conversation.displayTitle, font: Theme.rowFont, color: Theme.textPrimary)
+        label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        cell.textField = label
+
+        let spacer = NSView()
+        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+
+        var views: [NSView] = [label, spacer]
+        if conversation.activeRunId != nil {
+            let dot = StatusDotView(color: Theme.accent)
+            dot.toolTip = "Yanıt bekleniyor"
+            views.append(dot)
+        }
+
+        let row = NSStackView(views: views)
+        row.orientation = .horizontal
+        row.alignment = .centerY
+        row.spacing = 6
+        row.translatesAutoresizingMaskIntoConstraints = false
+        cell.addSubview(row)
+
+        NSLayoutConstraint.activate([
+            row.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 8),
+            row.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -8),
+            row.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
+        ])
+        return cell
     }
 }
 
-private struct ConversationRow: View {
-    @Environment(AppModel.self) private var app
-    var conversation: Conversation
+private final class BrandHeaderCellView: NSTableCellView {
+    private let onClick: () -> Void
 
-    var body: some View {
-        HStack(spacing: 6) {
-            Text(conversation.displayTitle)
-                .lineLimit(1)
-                .truncationMode(.tail)
-            Spacer(minLength: 0)
-            if conversation.activeRunId != nil {
-                StatusDot(color: Theme.accent)
-                    .help("Yanıt bekleniyor")
-            }
-        }
-        .tag(SidebarItem.conversation(conversation.id))
-        .contextMenu {
-            Button("Sohbeti arşivle") { Task { await app.conversationModel(conversation.id).archive() } }
-        }
+    init(onClick: @escaping () -> Void) {
+        self.onClick = onClick
+        super.init(frame: .zero)
+    }
+
+    required init?(coder: NSCoder) { fatalError("not used") }
+
+    override func mouseDown(with event: NSEvent) {
+        onClick()
     }
 }
 
-/// `● Burak  ⚙` with the appearance switch one click away.
-private struct UserRow: View {
-    @Environment(AppModel.self) private var app
-    @Environment(AppSettings.self) private var settings
+private final class SidebarTableView: NSTableView {
+    var rowConversationIds: [EntityID?] = []
+    var onArchiveConversation: ((EntityID) -> Void)?
 
-    var body: some View {
-        HStack(spacing: 10) {
-            Menu {
-                Section("Görünüm") {
-                    ForEach(AppearancePreference.allCases) { option in
-                        Toggle(isOn: Binding(get: { settings.appearance == option }, set: { if $0 { settings.appearance = option } })) {
-                            Label(option.label, systemImage: option.symbol)
-                        }
-                    }
-                }
-                Divider()
-                Button("Ayarlar…") { app.settingsPresented = true }
-            } label: {
-                HStack(spacing: 10) {
-                    Circle().fill(Theme.accent).frame(width: 20, height: 20)
-                    Text("Burak").font(.system(size: 13, weight: .medium)).foregroundStyle(Theme.textPrimary)
-                }
-            }
-            .menuStyle(.button)
-            .buttonStyle(.plain)
-            .menuIndicator(.hidden)
-            .fixedSize()
-            .help("Görünüm ve ayarlar")
-            Spacer()
-            Button { app.settingsPresented = true } label: {
-                Image(systemName: "gearshape")
-                    .font(.system(size: 13))
-            }
-            .buttonStyle(GlyphButtonStyle())
-            .help("Ayarlar (⌘,)")
+    override func menu(for event: NSEvent) -> NSMenu? {
+        let point = convert(event.locationInWindow, from: nil)
+        let row = self.row(at: point)
+        guard row >= 0, row < rowConversationIds.count, let convId = rowConversationIds[row] else { return nil }
+        let menu = NSMenu()
+        let item = NSMenuItem(title: "Sohbeti arşivle", action: #selector(archiveClicked(_:)), keyEquivalent: "")
+        item.target = self
+        item.representedObject = convId
+        menu.addItem(item)
+        return menu
+    }
+
+    @objc private func archiveClicked(_ sender: NSMenuItem) {
+        guard let convId = sender.representedObject as? EntityID else { return }
+        onArchiveConversation?(convId)
+    }
+}
+
+// MARK: - Bottom User Row (`● Burak  ⚙`)
+
+private final class SidebarUserRowView: NSView {
+    private unowned let app: AppModel
+    private unowned let settings: AppSettings
+    private let userButton = NSControl()
+
+    init(app: AppModel, settings: AppSettings) {
+        self.app = app
+        self.settings = settings
+        super.init(frame: .zero)
+        translatesAutoresizingMaskIntoConstraints = false
+
+        let avatar = StatusDotView(color: Theme.accent, size: 20)
+        let nameLabel = NSTextField.styledLabel("Burak", font: NSFont.systemFont(ofSize: 13, weight: .medium), color: Theme.textPrimary)
+
+        let profileControl = SidebarUserMenuTrigger { [weak self] anchor in
+            self?.showUserMenu(from: anchor)
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
+        profileControl.toolTip = "Görünüm ve ayarlar"
+        let profileStack = NSStackView(views: [avatar, nameLabel])
+        profileStack.orientation = .horizontal
+        profileStack.alignment = .centerY
+        profileStack.spacing = 10
+        profileStack.translatesAutoresizingMaskIntoConstraints = false
+        profileControl.addSubview(profileStack)
+        NSLayoutConstraint.activate([
+            profileStack.leadingAnchor.constraint(equalTo: profileControl.leadingAnchor),
+            profileStack.trailingAnchor.constraint(equalTo: profileControl.trailingAnchor),
+            profileStack.topAnchor.constraint(equalTo: profileControl.topAnchor),
+            profileStack.bottomAnchor.constraint(equalTo: profileControl.bottomAnchor),
+        ])
+
+        let spacer = NSView()
+        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+
+        let gear = GlyphButton(symbol: "gearshape", size: 13) { [weak app] in
+            app?.settingsPresented = true
+        }
+        gear.toolTip = "Ayarlar (⌘,)"
+        gear.setAccessibilityLabel("Ayarlar")
+
+        let row = NSStackView(views: [profileControl, spacer, gear])
+        row.orientation = .horizontal
+        row.alignment = .centerY
+        row.spacing = 10
+        row.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(row)
+
+        NSLayoutConstraint.activate([
+            row.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
+            row.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14),
+            row.topAnchor.constraint(equalTo: topAnchor, constant: 10),
+            row.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -10),
+        ])
+    }
+
+    required init?(coder: NSCoder) { fatalError("not used") }
+
+    private func showUserMenu(from anchor: NSView) {
+        let menu = NSMenu()
+        menu.addItem(.sectionHeader(title: "Görünüm"))
+        for option in AppearancePreference.allCases {
+            let item = NSMenuItem(title: option.label, action: #selector(pickAppearance(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = option.rawValue
+            item.image = NSImage(systemSymbolName: option.symbol, accessibilityDescription: nil)
+            item.state = settings.appearance == option ? .on : .off
+            menu.addItem(item)
+        }
+        menu.addItem(.separator())
+        let settingsItem = NSMenuItem(title: "Ayarlar…", action: #selector(openSettings), keyEquivalent: "")
+        settingsItem.target = self
+        menu.addItem(settingsItem)
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: anchor.bounds.height + 4), in: anchor)
+    }
+
+    @objc private func pickAppearance(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String, let pref = AppearancePreference(rawValue: raw) else { return }
+        settings.appearance = pref
+    }
+
+    @objc private func openSettings() {
+        app.settingsPresented = true
+    }
+}
+
+private final class SidebarUserMenuTrigger: NSControl {
+    private let onClick: (NSView) -> Void
+
+    init(onClick: @escaping (NSView) -> Void) {
+        self.onClick = onClick
+        super.init(frame: .zero)
+        translatesAutoresizingMaskIntoConstraints = false
+    }
+
+    required init?(coder: NSCoder) { fatalError("not used") }
+
+    override func mouseDown(with event: NSEvent) {
+        onClick(self)
     }
 }

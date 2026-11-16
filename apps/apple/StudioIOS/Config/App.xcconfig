@@ -1,0 +1,14 @@
+// Studio.app (iOS / iPadOS)
+
+PRODUCT_NAME = Studio
+PRODUCT_MODULE_NAME = StudioIOS
+PRODUCT_BUNDLE_IDENTIFIER = net.burakkoc.studio.ios
+
+GENERATE_INFOPLIST_FILE = YES
+INFOPLIST_FILE = Config/StudioIOS-Info.plist
+INFOPLIST_KEY_CFBundleDisplayName = Studio
+INFOPLIST_KEY_UILaunchScreen_Generation = YES
+INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = UIInterfaceOrientationPortrait
+INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight
+
+LD_RUNPATH_SEARCH_PATHS = $(inherited) @executable_path/Frameworks

@@ -16,7 +16,9 @@ export const Platform = z.enum(["instagram", "facebook", "linkedin"]).meta({ id:
 export type Platform = z.infer<typeof Platform>;
 
 /** Model family the user picked for a chat turn or a generation (the worker maps it to a model id). */
-export const AgentModel = z.enum(["opus", "sonnet", "haiku"]).meta({ id: "AgentModel" });
+export const AgentModel = z
+  .enum(["opus", "sonnet", "haiku", "gemini-flash-lite", "gemini-flash", "gemini-pro"])
+  .meta({ id: "AgentModel" });
 export type AgentModel = z.infer<typeof AgentModel>;
 
 /** Reasoning effort the user picked for a chat turn or a generation. */
@@ -38,6 +40,9 @@ export const ErrorCode = z
     "hash_mismatch",
     "payload_too_large",
     "unsupported_media_type",
+    "unauthorized",
+    "forbidden",
+    "rate_limited",
     "internal_error",
   ])
   .meta({ id: "ErrorCode" });
@@ -51,6 +56,9 @@ export const ERROR_STATUS = {
   hash_mismatch: 409,
   payload_too_large: 413,
   unsupported_media_type: 415,
+  unauthorized: 401,
+  forbidden: 403,
+  rate_limited: 429,
   internal_error: 500,
 } as const satisfies Record<ErrorCode, number>;
 

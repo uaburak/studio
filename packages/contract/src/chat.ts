@@ -1,4 +1,12 @@
 import { z } from "zod";
+import {
+  AgentSession,
+  ConsentPart,
+  ConsentPartInput,
+  RunSessionInput,
+  ToolStepPart,
+  ToolStepPartInput,
+} from "./agent.ts";
 import { Asset, AssetKind } from "./asset.ts";
 import { Brand } from "./brand.ts";
 import { BrandProfile } from "./brand-profile.ts";
@@ -73,6 +81,12 @@ export const Conversation = z
     activeRunId: EntityId.nullable(),
     /** Sequence number of the last stream event (0 = none yet). */
     lastSeq: z.number().int().min(0),
+    /**
+     * Claude Code session of the last completed agent turn (task A5); the
+     * worker continues it while nothing else was said since. Always sent by
+     * the server (null when there is none).
+     */
+    agentSession: AgentSession.nullable().optional(),
     lastActivityAt: Timestamp,
     createdAt: Timestamp,
     updatedAt: Timestamp,
@@ -125,7 +139,17 @@ export const MessageStatus = z
 export type MessageStatus = z.infer<typeof MessageStatus>;
 
 export const MessagePartType = z
-  .enum(["text", "attachment", "plan_proposal", "content_ref", "question", "progress", "error"])
+  .enum([
+    "text",
+    "attachment",
+    "plan_proposal",
+    "content_ref",
+    "question",
+    "progress",
+    "error",
+    "tool_step",
+    "consent",
+  ])
   .meta({ id: "MessagePartType" });
 export type MessagePartType = z.infer<typeof MessagePartType>;
 
@@ -242,6 +266,8 @@ export const MessagePart = z
     QuestionPart,
     ProgressPart,
     ErrorPart,
+    ToolStepPart,
+    ConsentPart,
   ])
   .meta({ id: "MessagePart" });
 export type MessagePart = z.infer<typeof MessagePart>;
@@ -337,6 +363,8 @@ export const MessagePartInput = z
     QuestionPartInput,
     ProgressPartInput,
     ErrorPartInput,
+    ToolStepPartInput,
+    ConsentPartInput,
   ])
   .meta({ id: "MessagePartInput" });
 export type MessagePartInput = z.input<typeof MessagePartInput>;
@@ -593,6 +621,11 @@ export const TurnContext = z
      * Always sent by the server.
      */
     aliases: z.array(TurnAlias).optional(),
+    /**
+     * Number of messages in the whole conversation (also those before
+     * `messages`), for the agent session check. Always sent by the server.
+     */
+    messageCount: z.number().int().min(0).optional(),
   })
   .meta({ id: "TurnContext" });
 export type TurnContext = z.infer<typeof TurnContext>;
@@ -685,6 +718,12 @@ export const RunComplete = z
     attempt: RunAttempt.optional(),
     model: z.string().max(200).optional(),
     usage: RunUsage.optional(),
+    /**
+     * The Claude Code session the run used; stored on the conversation as
+     * `agentSession` (with the message count after this run) so the next turn
+     * can continue it.
+     */
+    session: RunSessionInput.optional(),
   })
   .meta({ id: "RunComplete" });
 export type RunComplete = z.input<typeof RunComplete>;
@@ -699,3 +738,15 @@ export const RunFail = z
   })
   .meta({ id: "RunFail" });
 export type RunFail = z.input<typeof RunFail>;
+
+/** `GET /api/worker/runs/{runId}/message`: the run and its assistant message (null before the first write). */
+export const TurnMessageResult = z
+  .object({ run: AgentRun, message: Message.nullable() })
+  .meta({ id: "TurnMessageResult" });
+export type TurnMessageResult = z.infer<typeof TurnMessageResult>;
+
+/** Answer of `POST /api/conversations/{id}/messages/{messageId}/consent`. */
+export const ConsentDecisionResult = z
+  .object({ message: Message })
+  .meta({ id: "ConsentDecisionResult" });
+export type ConsentDecisionResult = z.infer<typeof ConsentDecisionResult>;

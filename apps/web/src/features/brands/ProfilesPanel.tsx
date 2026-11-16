@@ -1,9 +1,9 @@
-import type { BrandProfile } from "@studio/contract";
+import type { AgentEffort, AgentModel, BrandProfile } from "@studio/contract";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useState } from "react";
+import { type FormEvent, useEffect, useState } from "react";
 import { fetchAllPages, useApi } from "../../api.ts";
-import { ConfirmDialog } from "../../components/dialog.tsx";
-import { IconCheck, IconEdit, IconPlus } from "../../components/icons.tsx";
+import { ConfirmDialog, Dialog } from "../../components/dialog.tsx";
+import { IconCheck, IconEdit, IconPlus, IconSparkle } from "../../components/icons.tsx";
 import { StatusBadge } from "../../components/page.tsx";
 import { EmptyState, ErrorState, InlineError, SkeletonRows } from "../../components/states.tsx";
 import { useToast } from "../../components/toast.tsx";
@@ -11,15 +11,19 @@ import {
   Badge,
   Button,
   Card,
+  Checkbox,
   CodeBlock,
   cx,
   Field,
+  FilterSelect,
+  Progress,
   SectionTitle,
   Textarea,
 } from "../../components/ui.tsx";
 import { formatDateTime } from "../../lib/datetime.ts";
-import { prettyJson } from "../../lib/format.ts";
-import { PROFILE_STATUS } from "../../lib/labels.ts";
+import { formatPercent, prettyJson } from "../../lib/format.ts";
+import { AGENT_EFFORT_OPTIONS, AGENT_MODEL_OPTIONS, PROFILE_STATUS } from "../../lib/labels.ts";
+import { CancelJobButton, useLiveJobs } from "../../lib/live-jobs.tsx";
 import {
   extractColorTokens,
   extractFontTokens,
@@ -35,15 +39,18 @@ type Mode =
 
 /**
  * Brand profile versions (PLAN.md §6): view tokens / design rules / voice,
- * edit drafts, create a new draft from any version, approve, see "current".
+ * edit drafts, create a new draft from any version, trigger `brand.analyze`,
+ * approve, see "current".
  */
 export function ProfilesPanel({ brandId }: { brandId: string }) {
   const api = useApi();
   const qc = useQueryClient();
   const toast = useToast();
+  const { jobsById } = useLiveJobs();
   const [selected, setSelected] = useState<number | null>(null);
   const [mode, setMode] = useState<Mode>({ kind: "view" });
   const [confirmApprove, setConfirmApprove] = useState(false);
+  const [analyzeOpen, setAnalyzeOpen] = useState(false);
 
   const query = useQuery({
     queryKey: queryKeys.profiles.all(brandId),
@@ -59,6 +66,13 @@ export function ProfilesPanel({ brandId }: { brandId: string }) {
     setMode({ kind: "view" });
   }, [brandId]);
 
+  const activeAnalyzeJob = [...jobsById.values()].find(
+    (j) =>
+      j.brandId === brandId &&
+      j.type === "brand.analyze" &&
+      (j.status === "queued" || j.status === "running"),
+  );
+
   const approve = useMutation({
     mutationFn: (version: number) => api.brandProfiles.approve(brandId, version),
     onSuccess: (p) => {
@@ -73,21 +87,53 @@ export function ProfilesPanel({ brandId }: { brandId: string }) {
     <Card className="p-5 sm:p-6">
       <SectionTitle
         action={
-          profiles.length > 0 &&
           mode.kind === "view" && (
-            <Button
-              size="sm"
-              variant="secondary"
-              icon={<IconPlus size={16} />}
-              onClick={() => setMode({ kind: "new", from: profile })}
-            >
-              Yeni sürüm
-            </Button>
+            <div className="flex flex-wrap items-center gap-2">
+              <Button
+                size="sm"
+                variant="accent"
+                icon={<IconSparkle size={15} />}
+                onClick={() => setAnalyzeOpen(true)}
+              >
+                AI ile analiz et
+              </Button>
+              {profiles.length > 0 && (
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  icon={<IconPlus size={16} />}
+                  onClick={() => setMode({ kind: "new", from: profile })}
+                >
+                  Yeni sürüm
+                </Button>
+              )}
+            </div>
           )
         }
       >
         Marka profili
       </SectionTitle>
+
+      {activeAnalyzeJob && (
+        <div className="mt-4 flex flex-col gap-2 rounded-2xl bg-surface-2 p-3.5 ring-1 ring-line">
+          <div className="flex items-center justify-between gap-2 text-xs">
+            <span className="font-medium text-ink">
+              {activeAnalyzeJob.progressMessage ?? "Marka profili analiz ediliyor…"}
+            </span>
+            <div className="flex items-center gap-2">
+              {activeAnalyzeJob.progress !== undefined && (
+                <span className="font-mono text-ink-2">
+                  {formatPercent(activeAnalyzeJob.progress)}
+                </span>
+              )}
+              <CancelJobButton job={activeAnalyzeJob} size="sm" />
+            </div>
+          </div>
+          {activeAnalyzeJob.progress !== undefined && (
+            <Progress value={activeAnalyzeJob.progress} label="Marka analizi ilerlemesi" />
+          )}
+        </div>
+      )}
 
       {query.isPending ? (
         <SkeletonRows rows={3} className="mt-4" />
@@ -100,17 +146,26 @@ export function ProfilesPanel({ brandId }: { brandId: string }) {
           <EmptyState
             title="Profil henüz yok"
             action={
-              <Button
-                variant="primary"
-                icon={<IconPlus size={18} />}
-                onClick={() => setMode({ kind: "new", from: null })}
-              >
-                İlk sürümü oluştur
-              </Button>
+              <div className="flex flex-wrap justify-center gap-2">
+                <Button
+                  variant="accent"
+                  icon={<IconSparkle size={18} />}
+                  onClick={() => setAnalyzeOpen(true)}
+                >
+                  AI ile analiz et
+                </Button>
+                <Button
+                  variant="primary"
+                  icon={<IconPlus size={18} />}
+                  onClick={() => setMode({ kind: "new", from: null })}
+                >
+                  İlk sürümü oluştur
+                </Button>
+              </div>
             }
           >
-            Renkler, fontlar, tasarım kuralları ve ses tonu burada sürümlenir. Onaylanmamış profil
-            üretimde kullanılmaz.
+            Renkler, fontlar, tasarım kuralları (DESIGN.md) ve ses tonu (VOICE.md) burada
+            sürümlenir. Onaylanmamış profil üretimde kullanılmaz.
           </EmptyState>
         </div>
       ) : (
@@ -200,7 +255,185 @@ export function ProfilesPanel({ brandId }: { brandId: string }) {
           confirmLabel={profile.status === "approved" ? "Güncel yap" : "Onayla"}
         />
       )}
+
+      <BrandAnalyzeDialog
+        open={analyzeOpen}
+        onClose={() => setAnalyzeOpen(false)}
+        brandId={brandId}
+      />
     </Card>
+  );
+}
+
+function BrandAnalyzeDialog({
+  open,
+  onClose,
+  brandId,
+}: {
+  open: boolean;
+  onClose: () => void;
+  brandId: string;
+}) {
+  const api = useApi();
+  const qc = useQueryClient();
+  const toast = useToast();
+  const [notes, setNotes] = useState("");
+  const [sampleCaptions, setSampleCaptions] = useState("");
+  const [includeFeedback, setIncludeFeedback] = useState(true);
+  const [autoApprove, setAutoApprove] = useState(false);
+  const [model, setModel] = useState<AgentModel | "">("");
+  const [effort, setEffort] = useState<AgentEffort | "">("");
+
+  useEffect(() => {
+    if (!open) return;
+    setNotes("");
+    setSampleCaptions("");
+    setIncludeFeedback(true);
+    setAutoApprove(false);
+  }, [open]);
+
+  const analyze = useMutation({
+    mutationFn: () => {
+      const samplePosts = sampleCaptions
+        .split(/\n{2,}/)
+        .map((c) => c.trim())
+        .filter(Boolean)
+        .slice(0, 30)
+        .map((caption) => ({ caption }));
+      return api.jobs.create({
+        type: "brand.analyze",
+        brandId,
+        payload: {
+          ...(notes.trim() ? { notes: notes.trim() } : {}),
+          samplePosts,
+          includeApprovedContentFeedback: includeFeedback,
+          autoApprove,
+          ...(model ? { model } : {}),
+          ...(effort ? { effort } : {}),
+        },
+      });
+    },
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: queryKeys.jobs.all });
+      toast.success(
+        "Marka analizi başlatıldı",
+        "Mac worker postları ve notları inceleyip yeni bir profil taslağı oluşturacak.",
+      );
+      onClose();
+    },
+  });
+
+  const submit = (e: FormEvent) => {
+    e.preventDefault();
+    analyze.mutate();
+  };
+
+  return (
+    <Dialog
+      open={open}
+      onClose={() => {
+        analyze.reset();
+        onClose();
+      }}
+      title="AI ile Marka Profili Çıkar"
+      description="Geçmiş paylaşımlar, notlar ve onayladığınız tasarımlardan renk/font belirteçleri, DESIGN.md ve VOICE.md üretir."
+      size="lg"
+      footer={
+        <>
+          <Button variant="ghost" onClick={onClose}>
+            Vazgeç
+          </Button>
+          <Button
+            type="submit"
+            form="brand-analyze-form"
+            variant="accent"
+            icon={<IconSparkle size={16} />}
+            loading={analyze.isPending}
+          >
+            Analizi başlat
+          </Button>
+        </>
+      }
+    >
+      <form id="brand-analyze-form" onSubmit={submit} className="flex flex-col gap-4">
+        <Field
+          label="Marka notları ve yönlendirmeler"
+          optional
+          hint="Marka kimliği, renk tercihleri, rakiplerden farkı veya Figma notları."
+        >
+          {(p) => (
+            <Textarea
+              {...p}
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+              rows={4}
+              placeholder="ör. Tarımsal bitki besleme markası; teknik açıdan güvenilir, abartısız Türkçe, koyu yeşil ve sıcak kağıt zemin…"
+            />
+          )}
+        </Field>
+
+        <Field
+          label="Örnek paylaşım metinleri (isteğe bağlı)"
+          optional
+          hint="Her paylaşımı boş bir satırla ayırarak yapıştırabilirsiniz (LinkedIn dışa aktarımı veya Instagram postları)."
+        >
+          {(p) => (
+            <Textarea
+              {...p}
+              value={sampleCaptions}
+              onChange={(e) => setSampleCaptions(e.target.value)}
+              rows={4}
+              placeholder="Örnek post 1 metni…&#10;&#10;Örnek post 2 metni…"
+            />
+          )}
+        </Field>
+
+        <div className="flex flex-wrap gap-2">
+          <FilterSelect
+            label="Analiz modeli"
+            value={model}
+            onChange={(e) => setModel(e.target.value as AgentModel | "")}
+          >
+            <option value="">Varsayılan model</option>
+            {AGENT_MODEL_OPTIONS.map((m) => (
+              <option key={m.value} value={m.value}>
+                {m.label}
+              </option>
+            ))}
+          </FilterSelect>
+          <FilterSelect
+            label="Çaba düzeyi"
+            value={effort}
+            onChange={(e) => setEffort(e.target.value as AgentEffort | "")}
+          >
+            <option value="">Varsayılan çaba</option>
+            {AGENT_EFFORT_OPTIONS.map((ef) => (
+              <option key={ef.value} value={ef.value}>
+                {ef.label}
+              </option>
+            ))}
+          </FilterSelect>
+        </div>
+
+        <Checkbox
+          checked={includeFeedback}
+          onChange={setIncludeFeedback}
+          description="Daha önce onayladığınız içerikleri ve elle yaptığınız düzenlemeleri kurallara yansıtır."
+        >
+          Onaylanan içerik geri bildirimlerini dahil et
+        </Checkbox>
+
+        <Checkbox
+          checked={autoApprove}
+          onChange={setAutoApprove}
+          description="Kapalıysa taslak oluşturulur; inceledikten sonra onaylarsınız."
+        >
+          Üretilen profili otomatik onayla
+        </Checkbox>
+
+        <InlineError error={analyze.error} />
+      </form>
+    </Dialog>
   );
 }
 
@@ -303,11 +536,15 @@ function ProfileView({
       )}
 
       <TextSection
-        title="Tasarım kuralları"
+        title="Tasarım kuralları (DESIGN.md)"
         text={profile.designRules}
         empty="Tasarım kuralı yazılmamış."
       />
-      <TextSection title="Ses tonu" text={profile.voice} empty="Ses tonu tanımlanmamış." />
+      <TextSection
+        title="Ses tonu (VOICE.md)"
+        text={profile.voice}
+        empty="Ses tonu tanımlanmamış."
+      />
 
       <details className="group">
         <summary className="text-[13px] font-medium text-ink-2 hover:text-ink">

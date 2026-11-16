@@ -2,7 +2,7 @@
  * One headless Claude call on the owner's subscription (the A3 recipe):
  * spawn `claude -p` with an allow-listed environment and locked-down flags,
  * send one stream-json user message (text + base64 images), stream deltas,
- * and read the final `result` line (structured output, usage, cost estimate).
+ * and read the final `result` line (structured output, session_id, usage, cost estimate).
  */
 import { type ChildProcess, spawn as nodeSpawn } from "node:child_process";
 import { createWriteStream, type WriteStream } from "node:fs";
@@ -48,8 +48,16 @@ export interface ClaudeCallOptions {
   streamField?: string;
   /** Newly decoded text of `streamField`. Concatenated, the calls equal the final value. */
   onFieldDelta?: (text: string) => void;
-  /** Text deltas of a plain (schema-less) answer. */
+  /** Text deltas of a plain (schema-less) or tool-using answer. */
   onTextDelta?: (text: string) => void;
+  /** Keep the session on disk so a later turn can `--resume` it. */
+  persistSession?: boolean;
+  /** Continue an earlier Claude Code session (`--resume`). */
+  resumeSessionId?: string;
+  /** Path to MCP config JSON file (`--mcp-config`). */
+  mcpConfigFile?: string;
+  /** Allowed MCP tools (`--allowedTools`). */
+  allowedTools?: readonly string[];
 }
 
 export interface ClaudeCallResult {
@@ -59,6 +67,8 @@ export interface ClaudeCallResult {
   text: string;
   model: string | undefined;
   cliVersion: string | undefined;
+  /** Claude Code session id (when reported by `init` or `result`). */
+  sessionId?: string | undefined;
   usage: ClaudeUsage;
   rateLimit: RateLimitInfo | undefined;
 }
@@ -109,6 +119,10 @@ export async function runClaude(
     model: options.model ?? runnerOptions.defaultModel,
     effort: options.effort,
     partialMessages: wantsStream,
+    ...(options.persistSession !== undefined ? { persistSession: options.persistSession } : {}),
+    ...(options.resumeSessionId ? { resumeSessionId: options.resumeSessionId } : {}),
+    ...(options.mcpConfigFile ? { mcpConfigFile: options.mcpConfigFile } : {}),
+    ...(options.allowedTools ? { allowedTools: options.allowedTools } : {}),
   });
   const env = buildClaudeEnv(runnerOptions.parentEnv ?? process.env, runnerOptions.env);
   let log: WriteStream | undefined;
@@ -167,9 +181,11 @@ function execute(input: ExecuteInput): Promise<ClaudeCallResult> {
         : undefined;
     let jsonBlockIndex: number | null = null;
     let emittedField = "";
-    let emittedText = "";
+    let sawStreamTextDelta = false;
+    let lastTurnEmittedText = "";
     let initModel: string | undefined;
     let cliVersion: string | undefined;
+    let initSessionId: string | undefined;
     let rateLimit: RateLimitInfo | undefined;
     let rejectedLimit: RateLimitInfo | undefined;
     let result: Record<string, unknown> | undefined;
@@ -219,6 +235,9 @@ function execute(input: ExecuteInput): Promise<ClaudeCallResult> {
       } catch {
         return; // not JSON (should not happen with stream-json); ignored
       }
+      if (typeof event.session_id === "string" && event.session_id) {
+        initSessionId ??= event.session_id;
+      }
       switch (event.type) {
         case "system":
           if (event.subtype === "init") {
@@ -262,6 +281,10 @@ function execute(input: ExecuteInput): Promise<ClaudeCallResult> {
 
     const handleStreamEvent = (ev: Record<string, unknown> | undefined) => {
       if (!ev) return;
+      if (ev.type === "message_start") {
+        lastTurnEmittedText = "";
+        return;
+      }
       if (ev.type === "content_block_start") {
         const block = ev.content_block as { type?: string; name?: string } | undefined;
         if (block?.type === "tool_use" && block.name === "StructuredOutput") {
@@ -276,7 +299,8 @@ function execute(input: ExecuteInput): Promise<ClaudeCallResult> {
           emitField(field.push(delta.partial_json));
         }
       } else if (delta?.type === "text_delta" && typeof delta.text === "string") {
-        emittedText += delta.text;
+        sawStreamTextDelta = true;
+        lastTurnEmittedText += delta.text;
         options.onTextDelta?.(delta.text);
       }
     };
@@ -360,16 +384,23 @@ function execute(input: ExecuteInput): Promise<ClaudeCallResult> {
         }
       }
       const text = typeof final.result === "string" ? final.result : "";
-      if (options.onTextDelta && !options.schema && text.startsWith(emittedText)) {
-        const rest = text.slice(emittedText.length);
-        if (rest) options.onTextDelta(rest);
+      if (options.onTextDelta && !options.schema && text) {
+        if (!sawStreamTextDelta) {
+          options.onTextDelta(text);
+        } else if (text.startsWith(lastTurnEmittedText)) {
+          const rest = text.slice(lastTurnEmittedText.length);
+          if (rest) options.onTextDelta(rest);
+        }
       }
+      const sessionId =
+        typeof final.session_id === "string" && final.session_id ? final.session_id : initSessionId;
       finish(() =>
         resolve({
           output,
           text,
           model: firstModel(final.modelUsage) ?? initModel,
           cliVersion,
+          ...(sessionId ? { sessionId } : {}),
           usage: readUsage(final, wallMs),
           rateLimit,
         }),

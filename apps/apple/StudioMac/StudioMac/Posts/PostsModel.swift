@@ -1,6 +1,7 @@
 import AppKit
+import Foundation
+import Observation
 import StudioKit
-import SwiftUI
 
 /// The posts screen: one brand's month of posts from the contents API.
 @MainActor
@@ -111,8 +112,7 @@ final class PostsModel {
     /// Upload progress of slot images dropped on grid cards, by content id.
     private(set) var slotUploads: [EntityID: Double] = [:]
 
-    /// Upload an image for a card's empty slot. The slot-fill pipeline does not
-    /// exist yet: the post shows "Görsel yüklendi" until a new version fills it.
+    /// Upload an image for a card's empty slot and immediately trigger `content.render` (`slotAssignments`).
     func uploadSlotImage(card: PostCard, url: URL) {
         guard let app else { return }
         let image: ImportedImage
@@ -122,16 +122,18 @@ final class PostsModel {
         }
         let id = card.id
         let version = card.content.currentVersion?.version
+        let slotId = card.slots.first(where: \.isEmpty)?.layerId ?? card.slots.first?.layerId ?? "photo"
         slotUploads[id] = 0
         Task {
             do {
                 let asset = try await app.dataService.uploadImage(image.file, brandId: card.content.brandId) { progress in
                     Task { @MainActor in if self.slotUploads[id] != nil { self.slotUploads[id] = progress } }
                 }
-                slotUploads[id] = nil
                 app.images.seed(image.thumbnail, for: asset.id)
                 app.pendingImages.save(PendingSlotImage(contentId: id, assetId: asset.id, forVersion: version, uploadedAt: .now))
-                rebuild(contents: board.cards.map(\.content))
+                _ = try await app.dataService.fillSlotAndRender(contentId: id, slotId: slotId, assetId: asset.id)
+                slotUploads[id] = nil
+                await load()
             } catch {
                 slotUploads[id] = nil
                 self.error = "\(card.title): \(AppModel.describe(error))"

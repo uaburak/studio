@@ -1,111 +1,272 @@
+import AppKit
+import QuartzCore
 import StudioKit
-import SwiftUI
 import UniformTypeIdentifiers
 
-/// The pill composer: attachment chips, the text view, attach / dictate / send.
-/// Floats over the conversation on Liquid Glass; the `@` suggestions morph out of it.
-struct ComposerView: View {
-    @Bindable var model: ComposerModel
-    var focusRequest: Int = 0
-    var isBusy: Bool = false
-    /// When set, the send button becomes a stop button that cancels the active run.
-    var onStop: (() -> Void)?
+/// Pure AppKit floating Liquid Glass composer:
+/// - `@` mention autocomplete glass popup above the field
+/// - horizontal attachment chip strip (upload progress, double-click rename, retry, remove)
+/// - `+` attach, auto-growing `ComposerEditor`, mic dictation, send (`return`) / stop (`stop.fill`)
+/// - drag-and-drop image/file support.
+final class ComposerControlView: NSView {
+    let model: ComposerModel
+    weak var imageStore: ImageStore?
+    let editor: ComposerEditor
+
+    var isBusy: Bool = false { didSet { refreshControls() } }
+    var onStop: (() -> Void)? { didSet { refreshControls() } }
     var onSend: () -> Void
 
-    @Namespace private var glass
-    @State private var isTargeted = false
+    private let mergeContainer = GlassMergeContainerView(spacing: 10)
+    private let suggestionGlass = GlassContainerView(cornerRadius: 18)
+    private let suggestionStack = NSStackView()
 
-    var body: some View {
-        GlassEffectContainer(spacing: 10) {
-            VStack(spacing: 8) {
-                if model.isSuggesting {
-                    MentionSuggestionList(model: model)
-                        .glassEffect(Theme.floatingGlass, in: .rect(cornerRadius: 18))
-                        .glassEffectID("suggestions", in: glass)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                field
-                    .glassEffect(Theme.floatingGlass.interactive(), in: .rect(cornerRadius: Theme.composerHeight / 2))
-                    .glassEffectID("composer", in: glass)
-            }
+    private let composerGlass = GlassContainerView(cornerRadius: Theme.composerHeight / 2, interactive: true)
+    private let borderOverlay = ComposerBorderOverlayView()
+    private let fieldStack = NSStackView()
+    private let draftsScroll = NSScrollView()
+    private let draftsDocument = NSView()
+    private let draftsRow = NSStackView()
+    private let errorsStack = NSStackView()
+
+    private let attachButton = GlyphButton(symbol: "plus", size: 14)
+    private let dictateButton = GlyphButton(symbol: "mic", size: 13)
+    private let actionButton = GlyphButton(symbol: "return", size: 13)
+
+    private var observation: ObservationToken?
+    private var renderedDrafts: [ComposerModel.Draft] = []
+    private var renderedSuggestions: [MentionSuggestion] = []
+    private var renderedSuggestionIndex: Int = -1
+
+    init(
+        model: ComposerModel,
+        imageStore: ImageStore?,
+        onStop: (() -> Void)? = nil,
+        onSend: @escaping () -> Void
+    ) {
+        self.model = model
+        self.imageStore = imageStore
+        self.onStop = onStop
+        self.onSend = onSend
+        self.editor = ComposerEditor(model: model)
+        super.init(frame: .zero)
+        translatesAutoresizingMaskIntoConstraints = false
+
+        editor.onSubmit = { [weak self] in self?.submit() }
+        editor.onImages = { [weak model] images, errors in
+            model?.errors = errors
+            model?.add(images)
         }
-        // Glass normally dims when the window loses key status (e.g. Settings open);
-        // keep the composer rendered as if the window were active so it never changes colour.
-        .environment(\.controlActiveState, .key)
-        .animation(.snappy(duration: 0.22), value: model.isSuggesting)
-        .onDrop(of: [.fileURL, .image], isTargeted: $isTargeted) { providers in
-            loadDropped(providers)
-            return true
+
+        buildUI()
+        registerForDraggedTypes([.fileURL, .png, .tiff, NSPasteboard.PasteboardType(UTType.jpeg.identifier)])
+
+        observation = observe { [weak self] in
+            self?.syncFromModel()
         }
     }
 
-    private var field: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            if !model.drafts.isEmpty {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 8) {
-                        ForEach(model.drafts) { draft in
-                            AttachmentChip(model: model, draft: draft)
-                        }
-                    }
-                    .padding(.horizontal, 2)
-                }
-                .scrollClipDisabled()
-            }
-            ForEach(model.errors, id: \.self) { message in
-                Text(message).font(Theme.smallFont).foregroundStyle(Theme.textSecondary)
-            }
-            HStack(alignment: .bottom, spacing: 10) {
-                Button(action: pick) {
-                    Image(systemName: "plus").font(.system(size: 14, weight: .regular))
-                }
-                .buttonStyle(GlyphButtonStyle())
-                .disabled(!model.canAttach)
-                .help(model.attachDisabledReason ?? "Görsel ekle (yapıştır ya da sürükle de olur)")
-                .accessibilityLabel("Görsel ekle")
+    required init?(coder: NSCoder) { fatalError("not used") }
 
-                ComposerTextView(model: model, focusRequest: focusRequest, onSubmit: submit) { images, errors in
-                    model.errors = errors
-                    model.add(images)
-                }
-                .padding(.bottom, 1)
+    private func buildUI() {
+        // Suggestion popup (above composer)
+        suggestionStack.orientation = .vertical
+        suggestionStack.alignment = .leading
+        suggestionStack.spacing = 2
+        suggestionStack.translatesAutoresizingMaskIntoConstraints = false
+        suggestionGlass.contentContainer.addSubview(suggestionStack)
+        suggestionGlass.isHidden = true
+        NSLayoutConstraint.activate([
+            suggestionGlass.widthAnchor.constraint(equalToConstant: 300),
+            suggestionStack.leadingAnchor.constraint(equalTo: suggestionGlass.contentContainer.leadingAnchor, constant: 6),
+            suggestionStack.trailingAnchor.constraint(equalTo: suggestionGlass.contentContainer.trailingAnchor, constant: -6),
+            suggestionStack.topAnchor.constraint(equalTo: suggestionGlass.contentContainer.topAnchor, constant: 6),
+            suggestionStack.bottomAnchor.constraint(equalTo: suggestionGlass.contentContainer.bottomAnchor, constant: -6),
+        ])
 
-                Button(action: dictate) {
-                    Image(systemName: "mic").font(.system(size: 13))
-                }
-                .buttonStyle(GlyphButtonStyle())
-                .help("Dikte et (sistem dikte özelliği)")
-                .accessibilityLabel("Dikte et")
+        // Drafts horizontal strip
+        draftsRow.orientation = .horizontal
+        draftsRow.alignment = .centerY
+        draftsRow.spacing = 8
+        draftsRow.translatesAutoresizingMaskIntoConstraints = false
 
-                if let onStop {
-                    Button(action: onStop) {
-                        Image(systemName: "stop.fill").font(.system(size: 10))
-                    }
-                    .buttonStyle(GlyphButtonStyle())
-                    .help("Yanıtı durdur")
-                    .accessibilityLabel("Yanıtı durdur")
-                } else {
-                    Button(action: submit) {
-                        if isBusy {
-                            ProgressView().controlSize(.small)
-                        } else {
-                            Image(systemName: "return").font(.system(size: 13))
-                        }
-                    }
-                    .buttonStyle(GlyphButtonStyle())
-                    .disabled(!model.canSend || isBusy)
-                    .help(model.sendBlockedReason ?? "Gönder (↩), yeni satır (⇧↩)")
-                    .accessibilityLabel("Gönder")
-                }
+        draftsDocument.translatesAutoresizingMaskIntoConstraints = false
+        draftsDocument.addSubview(draftsRow)
+
+        draftsScroll.translatesAutoresizingMaskIntoConstraints = false
+        draftsScroll.drawsBackground = false
+        draftsScroll.borderType = .noBorder
+        draftsScroll.hasHorizontalScroller = false
+        draftsScroll.hasVerticalScroller = false
+        draftsScroll.documentView = draftsDocument
+        draftsScroll.isHidden = true
+        NSLayoutConstraint.activate([
+            draftsScroll.heightAnchor.constraint(equalToConstant: 42),
+            draftsRow.leadingAnchor.constraint(equalTo: draftsDocument.leadingAnchor, constant: 2),
+            draftsRow.trailingAnchor.constraint(equalTo: draftsDocument.trailingAnchor, constant: -2),
+            draftsRow.topAnchor.constraint(equalTo: draftsDocument.topAnchor),
+            draftsRow.bottomAnchor.constraint(equalTo: draftsDocument.bottomAnchor),
+            draftsDocument.heightAnchor.constraint(equalTo: draftsScroll.heightAnchor),
+        ])
+
+        // Errors stack
+        errorsStack.orientation = .vertical
+        errorsStack.alignment = .leading
+        errorsStack.spacing = 2
+        errorsStack.isHidden = true
+
+        // Input bar
+        attachButton.onAction = { [weak self] in self?.pickImages() }
+        attachButton.setAccessibilityLabel("Görsel ekle")
+
+        dictateButton.onAction = { [weak self] in self?.dictate() }
+        dictateButton.toolTip = "Dikte et (sistem dikte özelliği)"
+        dictateButton.setAccessibilityLabel("Dikte et")
+
+        actionButton.onAction = { [weak self] in self?.performPrimaryAction() }
+
+        let inputRow = NSStackView(views: [attachButton, editor.scrollView, dictateButton, actionButton])
+        inputRow.orientation = .horizontal
+        inputRow.alignment = .bottom
+        inputRow.spacing = 10
+        inputRow.translatesAutoresizingMaskIntoConstraints = false
+
+        fieldStack.orientation = .vertical
+        fieldStack.alignment = .leading
+        fieldStack.spacing = 8
+        fieldStack.translatesAutoresizingMaskIntoConstraints = false
+        fieldStack.addArrangedSubview(draftsScroll)
+        fieldStack.addArrangedSubview(errorsStack)
+        fieldStack.addArrangedSubview(inputRow)
+
+        composerGlass.contentContainer.addSubview(fieldStack)
+        borderOverlay.translatesAutoresizingMaskIntoConstraints = false
+        composerGlass.addSubview(borderOverlay)
+
+        NSLayoutConstraint.activate([
+            composerGlass.heightAnchor.constraint(greaterThanOrEqualToConstant: Theme.composerHeight),
+            fieldStack.leadingAnchor.constraint(equalTo: composerGlass.contentContainer.leadingAnchor, constant: 12),
+            fieldStack.trailingAnchor.constraint(equalTo: composerGlass.contentContainer.trailingAnchor, constant: -12),
+            fieldStack.topAnchor.constraint(equalTo: composerGlass.contentContainer.topAnchor, constant: 10),
+            fieldStack.bottomAnchor.constraint(equalTo: composerGlass.contentContainer.bottomAnchor, constant: -10),
+            inputRow.widthAnchor.constraint(equalTo: fieldStack.widthAnchor),
+            draftsScroll.widthAnchor.constraint(equalTo: fieldStack.widthAnchor),
+            borderOverlay.leadingAnchor.constraint(equalTo: composerGlass.leadingAnchor),
+            borderOverlay.trailingAnchor.constraint(equalTo: composerGlass.trailingAnchor),
+            borderOverlay.topAnchor.constraint(equalTo: composerGlass.topAnchor),
+            borderOverlay.bottomAnchor.constraint(equalTo: composerGlass.bottomAnchor),
+        ])
+
+        let outerStack = NSStackView(views: [suggestionGlass, composerGlass])
+        outerStack.orientation = .vertical
+        outerStack.alignment = .leading
+        outerStack.spacing = 8
+        outerStack.translatesAutoresizingMaskIntoConstraints = false
+
+        mergeContainer.contentContainer.addSubview(outerStack)
+        addSubview(mergeContainer)
+
+        NSLayoutConstraint.activate([
+            mergeContainer.leadingAnchor.constraint(equalTo: leadingAnchor),
+            mergeContainer.trailingAnchor.constraint(equalTo: trailingAnchor),
+            mergeContainer.topAnchor.constraint(equalTo: topAnchor),
+            mergeContainer.bottomAnchor.constraint(equalTo: bottomAnchor),
+            outerStack.leadingAnchor.constraint(equalTo: mergeContainer.contentContainer.leadingAnchor),
+            outerStack.trailingAnchor.constraint(equalTo: mergeContainer.contentContainer.trailingAnchor),
+            outerStack.topAnchor.constraint(equalTo: mergeContainer.contentContainer.topAnchor),
+            outerStack.bottomAnchor.constraint(equalTo: mergeContainer.contentContainer.bottomAnchor),
+            composerGlass.widthAnchor.constraint(equalTo: outerStack.widthAnchor),
+        ])
+    }
+
+    private func syncFromModel() {
+        // Drafts
+        let drafts = model.drafts
+        if drafts != renderedDrafts {
+            renderedDrafts = drafts
+            draftsRow.arrangedSubviews.forEach {
+                draftsRow.removeArrangedSubview($0)
+                $0.removeFromSuperview()
             }
+            for draft in drafts {
+                let chip = AttachmentChipView(model: model, draft: draft)
+                draftsRow.addArrangedSubview(chip)
+            }
+            draftsScroll.isHidden = drafts.isEmpty
         }
-        .padding(.leading, 12)
-        .padding(.trailing, 12)
-        .padding(.vertical, 10)
-        .frame(minHeight: Theme.composerHeight)
-        .overlay {
-            RoundedRectangle(cornerRadius: Theme.composerHeight / 2, style: .continuous)
-                .strokeBorder(isTargeted ? Theme.textSecondary : Theme.hairline, style: StrokeStyle(lineWidth: 1, dash: isTargeted ? [4, 3] : []))
+
+        // Errors
+        let errors = model.errors
+        errorsStack.arrangedSubviews.forEach {
+            errorsStack.removeArrangedSubview($0)
+            $0.removeFromSuperview()
+        }
+        for err in errors {
+            errorsStack.addArrangedSubview(NSTextField.styledLabel(err, font: Theme.smallFont, color: Theme.textSecondary, wraps: true))
+        }
+        errorsStack.isHidden = errors.isEmpty
+
+        // Suggestions
+        let suggestions = model.suggestions
+        let idx = model.suggestionIndex
+        let suggesting = model.isSuggesting
+        suggestionGlass.isHidden = !suggesting
+        if suggesting && (suggestions != renderedSuggestions || idx != renderedSuggestionIndex) {
+            renderedSuggestions = suggestions
+            renderedSuggestionIndex = idx
+            rebuildSuggestions(suggestions, selectedIndex: idx)
+        } else if !suggesting {
+            renderedSuggestions = []
+            renderedSuggestionIndex = -1
+        }
+
+        refreshControls()
+    }
+
+    private func rebuildSuggestions(_ suggestions: [MentionSuggestion], selectedIndex: Int) {
+        suggestionStack.arrangedSubviews.forEach {
+            suggestionStack.removeArrangedSubview($0)
+            $0.removeFromSuperview()
+        }
+        for (index, suggestion) in suggestions.enumerated() {
+            let row = MentionSuggestionRowView(
+                suggestion: suggestion,
+                selected: index == selectedIndex,
+                imageStore: imageStore
+            ) { [weak model] in
+                model?.choose(suggestion)
+            }
+            suggestionStack.addArrangedSubview(row)
+            row.widthAnchor.constraint(equalTo: suggestionStack.widthAnchor).isActive = true
+        }
+    }
+
+    private func refreshControls() {
+        attachButton.isEnabled = model.canAttach
+        attachButton.toolTip = model.attachDisabledReason ?? "Görsel ekle (yapıştır ya da sürükle de olur)"
+
+        if onStop != nil {
+            actionButton.showsSpinner = false
+            actionButton.symbolName = "stop.fill"
+            actionButton.pointSize = 10
+            actionButton.isEnabled = true
+            actionButton.toolTip = "Yanıtı durdur"
+            actionButton.setAccessibilityLabel("Yanıtı durdur")
+        } else {
+            actionButton.symbolName = "return"
+            actionButton.pointSize = 13
+            actionButton.showsSpinner = isBusy
+            actionButton.isEnabled = model.canSend && !isBusy
+            actionButton.toolTip = model.sendBlockedReason ?? "Gönder (↩), yeni satır (⇧↩)"
+            actionButton.setAccessibilityLabel("Gönder")
+        }
+    }
+
+    private func performPrimaryAction() {
+        if let onStop {
+            onStop()
+        } else {
+            submit()
         }
     }
 
@@ -114,7 +275,7 @@ struct ComposerView: View {
         onSend()
     }
 
-    private func pick() {
+    private func pickImages() {
         let urls = ImageImport.pick()
         if !urls.isEmpty { model.addFiles(urls) }
     }
@@ -124,158 +285,348 @@ struct ComposerView: View {
         NSApp.sendAction(Selector(("startDictation:")), to: nil, from: nil)
     }
 
-    private func loadDropped(_ providers: [NSItemProvider]) {
-        for provider in providers {
-            if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
-                _ = provider.loadObject(ofClass: URL.self) { url, _ in
-                    guard let url else { return }
-                    Task { @MainActor in model.addFiles([url]) }
-                }
-            } else if provider.canLoadObject(ofClass: NSImage.self) {
-                _ = provider.loadDataRepresentation(forTypeIdentifier: UTType.image.identifier) { data, _ in
-                    guard let data else { return }
-                    Task { @MainActor in
-                        if let image = try? ImageImport.from(data: data, filename: "surüklenen.png") { model.add([image]) }
-                    }
-                }
-            }
-        }
+    // MARK: Drag & Drop
+
+    override func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation {
+        guard ImageImport.pasteboardHasImages(sender.draggingPasteboard) else { return [] }
+        borderOverlay.isDropTargeted = true
+        return .copy
+    }
+
+    override func draggingExited(_ sender: (any NSDraggingInfo)?) {
+        borderOverlay.isDropTargeted = false
+    }
+
+    override func draggingEnded(_ sender: any NSDraggingInfo) {
+        borderOverlay.isDropTargeted = false
+    }
+
+    override func performDragOperation(_ sender: any NSDraggingInfo) -> Bool {
+        borderOverlay.isDropTargeted = false
+        let (images, errors) = ImageImport.images(from: sender.draggingPasteboard)
+        guard !images.isEmpty || !errors.isEmpty else { return false }
+        model.errors = errors
+        model.add(images)
+        return true
     }
 }
 
-/// A removable thumbnail with its alias (renamable inline) and upload state.
-private struct AttachmentChip: View {
-    let model: ComposerModel
-    let draft: ComposerModel.Draft
-    @State private var editing = false
-    @State private var name = ""
-    @State private var problem: String?
-    @FocusState private var focused: Bool
+// MARK: - Composer Border Overlay
 
-    var body: some View {
-        HStack(spacing: 8) {
-            ZStack {
-                Image(nsImage: draft.thumbnail)
-                    .resizable()
-                    .aspectRatio(contentMode: .fill)
-                    .frame(width: 30, height: 30)
-                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                switch draft.state {
-                case .uploading(let progress):
-                    RoundedRectangle(cornerRadius: 8, style: .continuous).fill(.black.opacity(0.35))
-                    ProgressView(value: progress)
-                        .progressViewStyle(.circular)
-                        .controlSize(.mini)
-                        .tint(.white)
-                case .failed:
-                    RoundedRectangle(cornerRadius: 8, style: .continuous).fill(.black.opacity(0.45))
-                    Image(systemName: "exclamationmark").font(.system(size: 11, weight: .bold)).foregroundStyle(.white)
-                case .uploaded:
-                    EmptyView()
-                }
-            }
-            .frame(width: 30, height: 30)
+private final class ComposerBorderOverlayView: NSView {
+    private let shapeLayer = CAShapeLayer()
 
-            VStack(alignment: .leading, spacing: 1) {
-                if editing {
-                    TextField("ad", text: $name)
-                        .textFieldStyle(.plain)
-                        .font(.system(size: 12, weight: .medium))
-                        .frame(width: 96)
-                        .focused($focused)
-                        .onSubmit(commit)
-                        .onExitCommand { editing = false; problem = nil }
-                } else {
-                    Text("@" + draft.alias)
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(Theme.textPrimary)
-                        .onTapGesture(count: 2, perform: beginEditing)
-                        .help("Adını değiştirmek için çift tıkla")
-                }
-                Group {
-                    switch draft.state {
-                    case .uploading(let progress): Text("Yükleniyor %\(Int(progress * 100))")
-                    case .uploaded: Text(problem ?? "Hazır")
-                    case .failed(let message): Text(message).lineLimit(1).help(message)
-                    }
-                }
-                .font(.system(size: 10))
-                .foregroundStyle(Theme.textSecondary)
-                if let problem, editing {
-                    Text(problem).font(.system(size: 10)).foregroundStyle(Theme.textSecondary)
-                }
-            }
+    var isDropTargeted = false {
+        didSet { updateBorder() }
+    }
 
-            if case .failed = draft.state {
-                Button { model.retry(draft.id) } label: { Image(systemName: "arrow.clockwise").font(.system(size: 10, weight: .semibold)) }
-                    .buttonStyle(GlyphButtonStyle())
-                    .help("Yeniden dene")
-                    .accessibilityLabel("Yüklemeyi yeniden dene")
-            }
-            Button { model.remove(draft.id) } label: { Image(systemName: "xmark").font(.system(size: 9, weight: .semibold)) }
-                .buttonStyle(GlyphButtonStyle())
-                .help("Kaldır")
-                .accessibilityLabel("@\(draft.alias) görselini kaldır")
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        layer?.addSublayer(shapeLayer)
+        shapeLayer.fillColor = nil
+        shapeLayer.lineWidth = 1
+    }
+
+    required init?(coder: NSCoder) { fatalError("not used") }
+
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    override func layout() {
+        super.layout()
+        updateBorder()
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        updateBorder()
+    }
+
+    private func updateBorder() {
+        let inset = bounds.insetBy(dx: 0.5, dy: 0.5)
+        guard inset.width > 0, inset.height > 0 else { return }
+        let radius = min(Theme.composerHeight / 2, inset.height / 2)
+        shapeLayer.frame = bounds
+        shapeLayer.path = CGPath(roundedRect: inset, cornerWidth: radius, cornerHeight: radius, transform: nil)
+        shapeLayer.strokeColor = resolvedCGColor(isDropTargeted ? Theme.textSecondary : Theme.hairline)
+        shapeLayer.lineDashPattern = isDropTargeted ? [4, 3] : nil
+    }
+}
+
+// MARK: - AttachmentChipView
+
+private final class AttachmentChipView: ThemedView, NSTextFieldDelegate {
+    private let model: ComposerModel
+    private let draft: ComposerModel.Draft
+
+    private let aliasLabel = NSTextField(labelWithString: "")
+    private let editField = NSTextField()
+    private let statusLabel = NSTextField(labelWithString: "")
+    private var editing = false
+    private var problem: String?
+
+    init(model: ComposerModel, draft: ComposerModel.Draft) {
+        self.model = model
+        self.draft = draft
+        super.init(frame: .zero)
+        translatesAutoresizingMaskIntoConstraints = false
+        backgroundColor = Theme.fill
+
+        // Thumbnail
+        let thumbContainer = NSView()
+        thumbContainer.translatesAutoresizingMaskIntoConstraints = false
+        thumbContainer.wantsLayer = true
+        thumbContainer.layer?.cornerRadius = 8
+        thumbContainer.layer?.cornerCurve = .continuous
+        thumbContainer.layer?.masksToBounds = true
+
+        let thumbView = AssetImageView(store: nil, contentMode: .fill, cornerRadius: 8)
+        thumbView.localImage = draft.thumbnail
+        thumbView.translatesAutoresizingMaskIntoConstraints = false
+        thumbContainer.addSubview(thumbView)
+        NSLayoutConstraint.activate([
+            thumbContainer.widthAnchor.constraint(equalToConstant: 30),
+            thumbContainer.heightAnchor.constraint(equalToConstant: 30),
+            thumbView.leadingAnchor.constraint(equalTo: thumbContainer.leadingAnchor),
+            thumbView.trailingAnchor.constraint(equalTo: thumbContainer.trailingAnchor),
+            thumbView.topAnchor.constraint(equalTo: thumbContainer.topAnchor),
+            thumbView.bottomAnchor.constraint(equalTo: thumbContainer.bottomAnchor),
+        ])
+
+        switch draft.state {
+        case .uploading:
+            let dim = ThemedView()
+            dim.backgroundColor = NSColor.black.withAlphaComponent(0.35)
+            dim.translatesAutoresizingMaskIntoConstraints = false
+            let spinner = NSProgressIndicator()
+            spinner.style = .spinning
+            spinner.controlSize = .mini
+            spinner.appearance = NSAppearance(named: .darkAqua)
+            spinner.startAnimation(nil)
+            spinner.translatesAutoresizingMaskIntoConstraints = false
+            thumbContainer.addSubview(dim)
+            thumbContainer.addSubview(spinner)
+            NSLayoutConstraint.activate([
+                dim.leadingAnchor.constraint(equalTo: thumbContainer.leadingAnchor),
+                dim.trailingAnchor.constraint(equalTo: thumbContainer.trailingAnchor),
+                dim.topAnchor.constraint(equalTo: thumbContainer.topAnchor),
+                dim.bottomAnchor.constraint(equalTo: thumbContainer.bottomAnchor),
+                spinner.centerXAnchor.constraint(equalTo: thumbContainer.centerXAnchor),
+                spinner.centerYAnchor.constraint(equalTo: thumbContainer.centerYAnchor),
+            ])
+        case .failed:
+            let dim = ThemedView()
+            dim.backgroundColor = NSColor.black.withAlphaComponent(0.45)
+            dim.translatesAutoresizingMaskIntoConstraints = false
+            let icon = NSImageView()
+            icon.image = NSImage(systemSymbolName: "exclamationmark", accessibilityDescription: nil)?
+                .withSymbolConfiguration(.init(pointSize: 11, weight: .bold))
+            icon.contentTintColor = .white
+            icon.translatesAutoresizingMaskIntoConstraints = false
+            thumbContainer.addSubview(dim)
+            thumbContainer.addSubview(icon)
+            NSLayoutConstraint.activate([
+                dim.leadingAnchor.constraint(equalTo: thumbContainer.leadingAnchor),
+                dim.trailingAnchor.constraint(equalTo: thumbContainer.trailingAnchor),
+                dim.topAnchor.constraint(equalTo: thumbContainer.topAnchor),
+                dim.bottomAnchor.constraint(equalTo: thumbContainer.bottomAnchor),
+                icon.centerXAnchor.constraint(equalTo: thumbContainer.centerXAnchor),
+                icon.centerYAnchor.constraint(equalTo: thumbContainer.centerYAnchor),
+            ])
+        case .uploaded:
+            break
         }
-        .padding(.leading, 4)
-        .padding(.trailing, 2)
-        .padding(.vertical, 4)
-        .background(Capsule().fill(Theme.fill))
-        .contextMenu {
-            Button("Yeniden adlandır") { beginEditing() }
-            Button("Kaldır") { model.remove(draft.id) }
+
+        // Alias + status stack
+        aliasLabel.stringValue = "@" + draft.alias
+        aliasLabel.font = NSFont.systemFont(ofSize: 12, weight: .medium)
+        aliasLabel.textColor = Theme.textPrimary
+        aliasLabel.toolTip = "Adını değiştirmek için çift tıkla"
+        let doubleClick = NSClickGestureRecognizer(target: self, action: #selector(handleDoubleClick))
+        doubleClick.numberOfClicksRequired = 2
+        aliasLabel.addGestureRecognizer(doubleClick)
+
+        editField.isBordered = false
+        editField.drawsBackground = false
+        editField.focusRingType = .none
+        editField.font = NSFont.systemFont(ofSize: 12, weight: .medium)
+        editField.textColor = Theme.textPrimary
+        editField.placeholderString = "ad"
+        editField.delegate = self
+        editField.isHidden = true
+        editField.translatesAutoresizingMaskIntoConstraints = false
+        editField.widthAnchor.constraint(equalToConstant: 96).isActive = true
+
+        statusLabel.font = NSFont.systemFont(ofSize: 10)
+        statusLabel.textColor = Theme.textSecondary
+        statusLabel.lineBreakMode = .byTruncatingTail
+        updateStatusLabel()
+
+        let textStack = NSStackView(views: [aliasLabel, editField, statusLabel])
+        textStack.orientation = .vertical
+        textStack.alignment = .leading
+        textStack.spacing = 1
+
+        var rowViews: [NSView] = [thumbContainer, textStack]
+        if case .failed = draft.state {
+            let retryBtn = GlyphButton(symbol: "arrow.clockwise", size: 10, weight: .semibold, diameter: 22) { [weak model] in
+                model?.retry(draft.id)
+            }
+            retryBtn.toolTip = "Yeniden dene"
+            retryBtn.setAccessibilityLabel("Yüklemeyi yeniden dene")
+            rowViews.append(retryBtn)
+        }
+        let removeBtn = GlyphButton(symbol: "xmark", size: 9, weight: .semibold, diameter: 22) { [weak model] in
+            model?.remove(draft.id)
+        }
+        removeBtn.toolTip = "Kaldır"
+        removeBtn.setAccessibilityLabel("@\(draft.alias) görselini kaldır")
+        rowViews.append(removeBtn)
+
+        let row = NSStackView(views: rowViews)
+        row.orientation = .horizontal
+        row.alignment = .centerY
+        row.spacing = 6
+        row.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(row)
+
+        NSLayoutConstraint.activate([
+            heightAnchor.constraint(equalToConstant: 38),
+            row.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 4),
+            row.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -4),
+            row.centerYAnchor.constraint(equalTo: centerYAnchor),
+        ])
+
+        let menu = NSMenu()
+        let renameItem = NSMenuItem(title: "Yeniden adlandır", action: #selector(handleDoubleClick), keyEquivalent: "")
+        renameItem.target = self
+        let removeItem = NSMenuItem(title: "Kaldır", action: #selector(removeDraft), keyEquivalent: "")
+        removeItem.target = self
+        menu.addItem(renameItem)
+        menu.addItem(removeItem)
+        self.menu = menu
+    }
+
+    required init?(coder: NSCoder) { fatalError("not used") }
+
+    override func layout() {
+        super.layout()
+        cornerRadius = bounds.height / 2
+    }
+
+    private func updateStatusLabel() {
+        if let problem {
+            statusLabel.stringValue = problem
+            return
+        }
+        switch draft.state {
+        case .uploading(let progress):
+            statusLabel.stringValue = "Yükleniyor %\(Int(progress * 100))"
+        case .uploaded:
+            statusLabel.stringValue = "Hazır"
+        case .failed(let message):
+            statusLabel.stringValue = message
+            statusLabel.toolTip = message
         }
     }
 
-    private func beginEditing() {
-        name = draft.alias
-        problem = nil
+    @objc private func handleDoubleClick() {
         editing = true
-        focused = true
+        problem = nil
+        editField.stringValue = draft.alias
+        aliasLabel.isHidden = true
+        editField.isHidden = false
+        window?.makeFirstResponder(editField)
     }
 
-    private func commit() {
-        if let message = model.rename(draft.id, to: name) {
-            problem = message
-        } else {
-            problem = nil
+    @objc private func removeDraft() {
+        model.remove(draft.id)
+    }
+
+    func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+        if commandSelector == #selector(NSResponder.insertNewline(_:)) {
+            commitRename()
+            return true
+        }
+        if commandSelector == #selector(NSResponder.cancelOperation(_:)) {
             editing = false
+            problem = nil
+            editField.isHidden = true
+            aliasLabel.isHidden = false
+            updateStatusLabel()
+            return true
+        }
+        return false
+    }
+
+    private func commitRename() {
+        if let err = model.rename(draft.id, to: editField.stringValue) {
+            problem = err
+            updateStatusLabel()
+        } else {
+            editing = false
+            problem = nil
+            editField.isHidden = true
+            aliasLabel.isHidden = false
+            updateStatusLabel()
         }
     }
 }
 
-/// The `@` autocomplete list: this conversation's aliases with thumbnails.
-private struct MentionSuggestionList: View {
-    let model: ComposerModel
+// MARK: - MentionSuggestionRowView
 
-    var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            ForEach(Array(model.suggestions.enumerated()), id: \.element.id) { index, suggestion in
-                Button { model.choose(suggestion) } label: {
-                    HStack(spacing: 10) {
-                        Group {
-                            switch suggestion.thumbnail {
-                            case .local(let image): Image(nsImage: image).resizable().aspectRatio(contentMode: .fill)
-                            case .asset(let id): AssetImage(assetId: id)
-                            }
-                        }
-                        .frame(width: 26, height: 26)
-                        .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
-                        Text("@" + suggestion.alias).font(.system(size: 13, weight: .medium)).foregroundStyle(Theme.textPrimary)
-                        Spacer()
-                        if suggestion.isDraft {
-                            Text("bu mesajda").font(Theme.smallFont).foregroundStyle(Theme.textSecondary)
-                        }
-                    }
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 5)
-                    .background(Capsule().fill(index == model.suggestionIndex ? Theme.fillStrong : .clear))
-                    .contentShape(Capsule())
-                }
-                .buttonStyle(.plain)
-            }
+private final class MentionSuggestionRowView: ThemedView {
+    private let onPick: () -> Void
+
+    init(suggestion: MentionSuggestion, selected: Bool, imageStore: ImageStore?, onPick: @escaping () -> Void) {
+        self.onPick = onPick
+        super.init(frame: .zero)
+        translatesAutoresizingMaskIntoConstraints = false
+        backgroundColor = selected ? Theme.fillStrong : nil
+
+        let thumb = AssetImageView(store: imageStore, contentMode: .fill, cornerRadius: 7)
+        switch suggestion.thumbnail {
+        case .local(let img): thumb.localImage = img
+        case .asset(let id): thumb.assetId = id
         }
-        .padding(6)
-        .frame(width: 300, alignment: .leading)
+        thumb.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            thumb.widthAnchor.constraint(equalToConstant: 26),
+            thumb.heightAnchor.constraint(equalToConstant: 26),
+        ])
+
+        let nameLabel = NSTextField.styledLabel("@" + suggestion.alias, font: NSFont.systemFont(ofSize: 13, weight: .medium), color: Theme.textPrimary)
+        let spacer = NSView()
+        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+
+        var views: [NSView] = [thumb, nameLabel, spacer]
+        if suggestion.isDraft {
+            views.append(NSTextField.styledLabel("bu mesajda", font: Theme.smallFont, color: Theme.textSecondary))
+        }
+
+        let row = NSStackView(views: views)
+        row.orientation = .horizontal
+        row.alignment = .centerY
+        row.spacing = 10
+        row.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(row)
+
+        NSLayoutConstraint.activate([
+            heightAnchor.constraint(equalToConstant: 36),
+            row.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
+            row.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
+            row.centerYAnchor.constraint(equalTo: centerYAnchor),
+        ])
+    }
+
+    required init?(coder: NSCoder) { fatalError("not used") }
+
+    override func layout() {
+        super.layout()
+        cornerRadius = bounds.height / 2
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        onPick()
     }
 }

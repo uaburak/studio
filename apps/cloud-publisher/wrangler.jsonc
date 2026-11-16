@@ -1,0 +1,43 @@
+// Studio cloud publisher — the only Studio component that runs in the cloud.
+// It receives publish orders from the Mac and publishes them on time.
+//
+// NOT DEPLOYED. Nothing here exists on Cloudflare yet: the R2 bucket must be
+// created and the secrets set first (see README.md, "Kurulum"). Do not run
+// `wrangler deploy` / `wrangler login` from an agent session.
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "studio-cloud-publisher",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-11-13",
+  "observability": { "enabled": true },
+  // Do not send Wrangler usage telemetry from this project.
+  "send_metrics": false,
+
+  "vars": {
+    // Origin Meta downloads media from (signed URLs). Set to the deployed
+    // hostname, e.g. https://publisher.burakkoc.net or the workers.dev URL.
+    "PUBLIC_BASE_URL": "http://127.0.0.1:8788"
+  },
+
+  // PUBLISHER_TOKEN: bearer secret shared with the Mac.
+  // TOKEN_ENCRYPTION_KEY: base64 of 32 random bytes (AES-256-GCM, access tokens at rest).
+  // MEDIA_URL_SECRET: HMAC key for signed media URLs.
+  // Optional, not listed: META_APP_SECRET (appsecret_proof when "Require App Secret" is on).
+  "secrets": { "required": ["PUBLISHER_TOKEN", "TOKEN_ENCRYPTION_KEY", "MEDIA_URL_SECRET"] },
+
+  // Rendered media for orders. Instagram pulls them through /media/* signed URLs.
+  "r2_buckets": [{ "binding": "MEDIA", "bucket_name": "studio-publisher-media" }],
+
+  // One Scheduler instance holds every order (SQLite storage) and wakes
+  // itself with an alarm at the next due time.
+  "durable_objects": {
+    "bindings": [{ "name": "SCHEDULER", "class_name": "Scheduler" }]
+  },
+  "exports": {
+    "Scheduler": { "type": "durable-object", "storage": "sqlite" }
+  },
+
+  // Watchdog only: the alarm is the primary wake-up. Every 5 minutes the cron
+  // pokes the Scheduler so a lost alarm can never strand a due post.
+  "triggers": { "crons": ["*/5 * * * *"] }
+}

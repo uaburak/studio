@@ -167,10 +167,9 @@ export function CalendarPage() {
         }
       />
 
-      <Notice tone="warn">
-        <strong>Otomatik yayın henüz yok (Faz 3).</strong> Takvimdeki kayıtlar planı tutar; zamanı
-        gelince hiçbir şey paylaşılmaz.{" "}
-        {pendingCount > 0 && `Bu ay ${pendingCount} bekleyen zamanlama var.`}
+      <Notice tone="info">
+        Onaylı içerikler seçilen saatte bağlı sosyal hesaplardan yayınlanır.{" "}
+        {pendingCount > 0 && <strong>Bu ay {pendingCount} bekleyen zamanlama var.</strong>}
       </Notice>
 
       <div className="mt-6 mb-4 flex flex-wrap items-center gap-3">

@@ -158,17 +158,29 @@ describe("AgentRuntime announcements", () => {
     });
   }
 
-  it("announces the Claude job types only while Claude can be used", async () => {
+  it("announces the AI job types only while Claude or Gemini can be used, keeping render/publish active", async () => {
     let state: ClaudeHealth = { state: "unauthenticated", message: "yok", checkedAt: NOW };
     const r = runtime(() => state);
     let changes = 0;
     await r.start(() => changes++);
-    expect(r.capabilities(["demo.echo"])).toEqual(["demo.echo"]);
+    expect(r.capabilities(["demo.echo"])).toEqual([
+      "demo.echo",
+      "content.render",
+      "schedule.publish",
+    ]);
     expect(r.versionSuffix()).toBe("+claude.unauthenticated");
 
     state = { state: "ok", message: "ok", checkedAt: NOW };
     await r.check();
-    expect(r.capabilities(["demo.echo"])).toEqual(["demo.echo", "chat.turn", "content.generate"]);
+    expect(r.capabilities(["demo.echo"])).toEqual([
+      "demo.echo",
+      "content.render",
+      "schedule.publish",
+      "chat.turn",
+      "content.generate",
+      "brand.analyze",
+      "image.generate",
+    ]);
     expect(r.versionSuffix()).toBe("");
     expect(changes).toBe(2);
 
@@ -176,18 +188,25 @@ describe("AgentRuntime announcements", () => {
     const until = new Date(Date.now() + 600_000);
     state = { state: "limited", message: "sınır", checkedAt: NOW, resetsAt: until.toISOString() };
     await r.check();
-    expect(r.capabilities([])).toEqual(["chat.turn", "content.generate"]);
+    expect(r.capabilities([])).toEqual([
+      "content.render",
+      "schedule.publish",
+      "chat.turn",
+      "content.generate",
+      "brand.analyze",
+      "image.generate",
+    ]);
     expect(r.gate.status().parkedUntil?.getTime()).toBe(until.getTime());
 
-    // An auth error seen by a real job takes them off again.
+    // An auth error seen by a real job takes AI types off again while keeping non-AI types.
     r.markUnauthenticated("401");
-    expect(r.capabilities([])).toEqual([]);
+    expect(r.capabilities([])).toEqual(["content.render", "schedule.publish"]);
     await r.stop();
   });
 });
 
 describe("worker with an agent runtime", () => {
-  it("announces Claude types, re-announces on health changes and reports usage to the hub", async () => {
+  it("announces AI & media types, re-announces on health changes and reports usage to the hub", async () => {
     const config = loadConfig({ STUDIO_WORKER_ID: "mac", STUDIO_STATE_DIR: stateDir() });
     let state: ClaudeHealth = { state: "ok", message: "ok", checkedAt: NOW };
     const agent = new AgentRuntime({
@@ -221,7 +240,15 @@ describe("worker with an agent runtime", () => {
     fake.last()?.simulateOpen();
     expect(fake.last()?.sent[0]).toMatchObject({
       type: "hello",
-      capabilities: ["demo.echo", "chat.turn", "content.generate"],
+      capabilities: [
+        "demo.echo",
+        "content.render",
+        "schedule.publish",
+        "chat.turn",
+        "content.generate",
+        "brand.analyze",
+        "image.generate",
+      ],
       workerVersion: "0.1.0",
     });
 
@@ -237,14 +264,14 @@ describe("worker with an agent runtime", () => {
       ],
     });
 
-    // Login lost: reconnect without the Claude types; the latest usage is sent again on connect.
+    // Login lost: reconnect without the AI types; render & publish stay active.
     state = { state: "unauthenticated", message: "yok", checkedAt: NOW };
     await agent.check();
     const second = fake.last();
     second?.simulateOpen();
     expect(second?.sent[0]).toMatchObject({
       type: "hello",
-      capabilities: ["demo.echo"],
+      capabilities: ["demo.echo", "content.render", "schedule.publish"],
       workerVersion: "0.1.0+claude.unauthenticated",
     });
     expect(second?.sent.some((m) => m.type === "worker.usage")).toBe(true);

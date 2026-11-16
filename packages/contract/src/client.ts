@@ -1,4 +1,5 @@
 import type { z } from "zod";
+import { ClaudeControl, type ConsentDecisionCreate, GeminiControl } from "./agent.ts";
 import { Asset, AssetList, type AssetListQuery, type AssetUploadFields } from "./asset.ts";
 import {
   Brand,
@@ -18,6 +19,7 @@ import {
   AgentRun,
   AgentRunList,
   type AgentRunListQuery,
+  ConsentDecisionResult,
   Conversation,
   type ConversationCreate,
   ConversationList,
@@ -32,6 +34,7 @@ import {
   type RunComplete,
   type RunFail,
   TurnContext,
+  TurnMessageResult,
   type TurnOps,
   TurnWriteResult,
   type UserMessageCreate,
@@ -61,6 +64,7 @@ import {
   type ContentVersionListQuery,
   type ContentVersionUpdate,
 } from "./content.ts";
+import { Device, DeviceList, type PairingClaim, PairingCode, PairingResult } from "./device.ts";
 import { HealthResponse } from "./health.ts";
 import {
   Job,
@@ -88,12 +92,20 @@ import {
   type ScheduleCreate,
   ScheduleList,
   type ScheduleListQuery,
+  WorkerDueSchedules,
+  type WorkerDueSchedulesQuery,
+  WorkerScheduleCredentials,
+  type WorkerScheduleOutcome,
 } from "./schedule.ts";
 import {
+  type LinkedInConnectInput,
+  type MetaDiscoverInput,
+  MetaDiscoverResult,
   SocialAccount,
   type SocialAccountCreate,
   SocialAccountList,
   type SocialAccountListQuery,
+  type SocialAccountTokenPut,
   type SocialAccountUpdate,
 } from "./social-account.ts";
 
@@ -397,6 +409,29 @@ export function createApiClient(options: ApiClientOptions = {}) {
           json: input,
           init,
         }),
+      putToken: (id: string, input: SocialAccountTokenPut, init?: RequestInit) =>
+        call(SocialAccount, `/api/social-accounts/${enc(id)}/token`, {
+          method: "PUT",
+          json: input,
+          init,
+        }),
+      checkToken: (id: string, init?: RequestInit) =>
+        call(SocialAccount, `/api/social-accounts/${enc(id)}/check`, {
+          method: "POST",
+          init,
+        }),
+      discoverMeta: (input: MetaDiscoverInput, init?: RequestInit) =>
+        call(MetaDiscoverResult, "/api/social-accounts/meta/discover", {
+          method: "POST",
+          json: input,
+          init,
+        }),
+      connectLinkedIn: (input: LinkedInConnectInput, init?: RequestInit) =>
+        call(SocialAccount, "/api/social-accounts/linkedin/connect", {
+          method: "POST",
+          json: input,
+          init,
+        }),
     },
 
     assets: {
@@ -497,6 +532,39 @@ export function createApiClient(options: ApiClientOptions = {}) {
     workers: {
       /** Is the Mac worker online, what is it running, how long is the queue. */
       presence: (init?: RequestInit) => call(WorkerPresence, "/api/workers/presence", { init }),
+      /** The Mac's Claude sign-in as the worker last reported it. */
+      claude: (init?: RequestInit) => call(ClaudeControl, "/api/workers/claude", { init }),
+      /**
+       * Ask the worker to start `claude auth login` (the sign-in page opens in
+       * the Mac's browser; the Mac itself only). Follow presence `claude`.
+       */
+      claudeLogin: (init?: RequestInit) =>
+        call(ClaudeControl, "/api/workers/claude/login", { method: "POST", init }),
+      /** Ask the worker to read `claude auth status` again. */
+      claudeRefresh: (init?: RequestInit) =>
+        call(ClaudeControl, "/api/workers/claude/status", { method: "POST", init }),
+      /** The Mac's Gemini API / CLI readiness as the worker last reported it. */
+      gemini: (init?: RequestInit) => call(GeminiControl, "/api/workers/gemini", { init }),
+      /** Ask the worker to re-check Gemini API key / CLI readiness. */
+      geminiRefresh: (init?: RequestInit) =>
+        call(GeminiControl, "/api/workers/gemini/status", { method: "POST", init }),
+    },
+
+    pairing: {
+      /** New 6-digit code (the Mac itself only; invalidates the previous unused code). */
+      createCode: (init?: RequestInit) =>
+        call(PairingCode, "/api/pairing/codes", { method: "POST", init }),
+      /** Phone side: trade a code for a device token (public, rate-limited). */
+      claim: (input: PairingClaim, init?: RequestInit) =>
+        call(PairingResult, "/api/pairing/claim", { method: "POST", json: input, init }),
+    },
+
+    devices: {
+      /** Paired devices, newest first (the Mac itself only). */
+      list: (init?: RequestInit) => call(DeviceList, "/api/devices", { init }),
+      /** Revoke a device: its token stops working immediately. */
+      revoke: (id: string, init?: RequestInit) =>
+        call(Device, `/api/devices/${enc(id)}/revoke`, { method: "POST", init }),
     },
 
     schedules: {
@@ -551,6 +619,18 @@ export function createApiClient(options: ApiClientOptions = {}) {
           call(
             QuestionAnswerResult,
             `/api/conversations/${enc(conversationId)}/messages/${enc(messageId)}/answer`,
+            { method: "POST", json: input, init },
+          ),
+        /** Allow once / deny a `consent` card while its run waits for it. */
+        consent: (
+          conversationId: string,
+          messageId: string,
+          input: ConsentDecisionCreate,
+          init?: RequestInit,
+        ) =>
+          call(
+            ConsentDecisionResult,
+            `/api/conversations/${enc(conversationId)}/messages/${enc(messageId)}/consent`,
             { method: "POST", json: input, init },
           ),
       },
@@ -638,6 +718,9 @@ export function createApiClient(options: ApiClientOptions = {}) {
         }),
       context: (runId: string, init?: RequestInit) =>
         call(TurnContext, `/api/worker/runs/${enc(runId)}/context`, { init }),
+      /** The run and its assistant message only (cheap; for waiting on an answer). */
+      message: (runId: string, init?: RequestInit) =>
+        call(TurnMessageResult, `/api/worker/runs/${enc(runId)}/message`, { init }),
       ops: (runId: string, input: TurnOps, init?: RequestInit) =>
         call(TurnWriteResult, `/api/worker/runs/${enc(runId)}/ops`, {
           method: "POST",
@@ -658,6 +741,19 @@ export function createApiClient(options: ApiClientOptions = {}) {
         }),
       fail: (runId: string, input: RunFail, init?: RequestInit) =>
         call(AgentRun, `/api/worker/runs/${enc(runId)}/fail`, {
+          method: "POST",
+          json: input,
+          init,
+        }),
+    },
+
+    workerSchedules: {
+      due: (query?: WorkerDueSchedulesQuery, init?: RequestInit) =>
+        call(WorkerDueSchedules, "/api/worker/schedules/due", { query: q(query), init }),
+      credentials: (id: string, init?: RequestInit) =>
+        call(WorkerScheduleCredentials, `/api/worker/schedules/${enc(id)}/credentials`, { init }),
+      outcome: (id: string, input: WorkerScheduleOutcome, init?: RequestInit) =>
+        call(Schedule, `/api/worker/schedules/${enc(id)}/outcome`, {
           method: "POST",
           json: input,
           init,

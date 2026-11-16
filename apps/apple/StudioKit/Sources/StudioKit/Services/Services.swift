@@ -18,6 +18,7 @@ public protocol ConversationService: Sendable {
     /// Send a user message; the server starts an agent run (a `chat.turn` job).
     func send(_ message: OutgoingMessage, to conversationId: EntityID) async throws -> UserMessageResult
     func answer(conversationId: EntityID, messageId: EntityID, _ answer: QuestionAnswerCreate) async throws -> QuestionAnswerResult
+    func decideConsent(conversationId: EntityID, messageId: EntityID, _ decision: ConsentDecisionCreate) async throws -> ConsentDecisionResult
     func cancelRun(_ runId: EntityID) async throws -> AgentRun
     /// Every attachment alias of the conversation, oldest first.
     func aliases(conversationId: EntityID) async throws -> [ConversationAlias]
@@ -34,13 +35,35 @@ public protocol ConversationService: Sendable {
 /// Everything else the screens read and change: brands, accounts, posts,
 /// schedules, jobs, presence, asset bytes.
 public protocol StudioDataService: Sendable {
+    // Brands & profiles
     func brands() async throws -> [Brand]
+    func createBrand(_ input: BrandCreate) async throws -> Brand
+    func updateBrand(_ id: EntityID, _ input: BrandUpdate) async throws -> Brand
+    func brandProfiles(brandId: EntityID) async throws -> [BrandProfile]
+    func currentBrandProfile(brandId: EntityID) async throws -> BrandProfile?
+    func createBrandProfile(brandId: EntityID, _ input: BrandProfileCreate) async throws -> BrandProfile
+    func updateBrandProfile(brandId: EntityID, version: Int, _ input: BrandProfileUpdate) async throws -> BrandProfile
+    func approveBrandProfile(brandId: EntityID, version: Int) async throws -> BrandProfile
+    func analyzeBrand(brandId: EntityID, notes: String?) async throws -> Job
+
+    // Social accounts & OAuth / Token vault
     func socialAccounts(brandId: EntityID?) async throws -> [SocialAccount]
+    func createSocialAccount(_ input: SocialAccountCreate) async throws -> SocialAccount
+    func updateSocialAccount(_ id: EntityID, _ input: SocialAccountUpdate) async throws -> SocialAccount
+    func putSocialAccountToken(id: EntityID, _ input: SocialAccountTokenPut) async throws -> SocialAccount
+    func checkSocialAccountToken(id: EntityID) async throws -> SocialAccount
+    func discoverMetaAccounts(_ input: MetaDiscoverInput) async throws -> MetaDiscoverResult
+    func connectLinkedInAccount(_ input: LinkedInConnectInput) async throws -> SocialAccount
+
+    // Contents, versions, rendering & export
     func contents(brandId: EntityID) async throws -> [Content]
     func content(_ id: EntityID) async throws -> Content
     func version(contentId: EntityID, version: Int) async throws -> ContentVersion
+    func versions(contentId: EntityID) async throws -> [ContentVersionSummary]
     func plans(brandId: EntityID) async throws -> [Plan]
     func schedules(brandId: EntityID) async throws -> [Schedule]
+    func cancelSchedule(_ id: EntityID) async throws -> Schedule
+    func scheduleLogs(scheduleId: EntityID) async throws -> [PublishLog]
     /// Replace the caption (revokes an approval on the server).
     func updateCaption(contentId: EntityID, caption: String) async throws -> Content
     /// Approve by the hash of the version the user looked at.
@@ -48,9 +71,28 @@ public protocol StudioDataService: Sendable {
     func createSchedule(_ input: ScheduleCreate) async throws -> Schedule
     /// Ask the generator for a new version with `instructions` (a `content.generate` job).
     func requestEdit(of content: Content, instructions: String) async throws -> Job
+    func fillSlotAndRender(contentId: EntityID, slotId: String, assetId: EntityID) async throws -> Job
+    func patchLayersAndRender(contentId: EntityID, patches: [SlideLayerPatch]) async throws -> Job
+    func exportContent(contentId: EntityID, format: String) async throws -> Job
+
+    // Assets & AI image generation
+    func assets(brandId: EntityID?, kind: AssetKind?) async throws -> [Asset]
+    func uploadAsset(_ file: UploadFile, brandId: EntityID, kind: AssetKind?, progress: @escaping @Sendable (Double) -> Void) async throws -> Asset
     func uploadImage(_ file: UploadFile, brandId: EntityID, progress: @escaping @Sendable (Double) -> Void) async throws -> Asset
+    func generateAIImage(
+        brandId: EntityID, prompt: String, aspectRatio: String, imageSize: String,
+        referenceAssetIds: [EntityID], preserveProductLabel: Bool,
+        targetContentId: EntityID?, targetSlotId: String?
+    ) async throws -> Job
     func imageData(assetId: EntityID) async throws -> Data
+
+    // Presence, AI providers & jobs
     func presence() async throws -> WorkerPresence
+    func claudeControl() async throws -> ClaudeControl
+    func claudeLogin() async throws -> ClaudeControl
+    func claudeRefresh() async throws -> ClaudeControl
+    func geminiControl() async throws -> GeminiControl
+    func geminiRefresh() async throws -> GeminiControl
     func jobs(brandId: EntityID?) async throws -> [Job]
     /// Live jobs + presence (all brands).
     func jobFeed() -> AsyncStream<JobFeedEvent>
@@ -145,6 +187,10 @@ public struct RemoteConversationService: ConversationService {
         try await client.answerQuestion(conversationId: conversationId, messageId: messageId, answer)
     }
 
+    public func decideConsent(conversationId: EntityID, messageId: EntityID, _ decision: ConsentDecisionCreate) async throws -> ConsentDecisionResult {
+        try await client.decideConsent(conversationId: conversationId, messageId: messageId, decision)
+    }
+
     public func cancelRun(_ runId: EntityID) async throws -> AgentRun {
         try await client.cancelRun(runId)
     }
@@ -185,7 +231,23 @@ public struct RemoteStudioDataService: StudioDataService {
     }
 
     public func brands() async throws -> [Brand] { try await client.brands() }
+    public func createBrand(_ input: BrandCreate) async throws -> Brand { try await client.createBrand(input) }
+    public func updateBrand(_ id: EntityID, _ input: BrandUpdate) async throws -> Brand { try await client.updateBrand(id, input) }
+    public func brandProfiles(brandId: EntityID) async throws -> [BrandProfile] { try await client.brandProfiles(brandId: brandId) }
+    public func currentBrandProfile(brandId: EntityID) async throws -> BrandProfile? { try await client.currentBrandProfile(brandId: brandId) }
+    public func createBrandProfile(brandId: EntityID, _ input: BrandProfileCreate) async throws -> BrandProfile { try await client.createBrandProfile(brandId: brandId, input) }
+    public func updateBrandProfile(brandId: EntityID, version: Int, _ input: BrandProfileUpdate) async throws -> BrandProfile { try await client.updateBrandProfile(brandId: brandId, version: version, input) }
+    public func approveBrandProfile(brandId: EntityID, version: Int) async throws -> BrandProfile { try await client.approveBrandProfile(brandId: brandId, version: version) }
+    public func analyzeBrand(brandId: EntityID, notes: String?) async throws -> Job { try await client.analyzeBrand(brandId: brandId, notes: notes) }
+
     public func socialAccounts(brandId: EntityID?) async throws -> [SocialAccount] { try await client.socialAccounts(brandId: brandId) }
+    public func createSocialAccount(_ input: SocialAccountCreate) async throws -> SocialAccount { try await client.createSocialAccount(input) }
+    public func updateSocialAccount(_ id: EntityID, _ input: SocialAccountUpdate) async throws -> SocialAccount { try await client.updateSocialAccount(id, input) }
+    public func putSocialAccountToken(id: EntityID, _ input: SocialAccountTokenPut) async throws -> SocialAccount { try await client.putSocialAccountToken(id: id, input) }
+    public func checkSocialAccountToken(id: EntityID) async throws -> SocialAccount { try await client.checkSocialAccountToken(id: id) }
+    public func discoverMetaAccounts(_ input: MetaDiscoverInput) async throws -> MetaDiscoverResult { try await client.discoverMetaAccounts(input) }
+    public func connectLinkedInAccount(_ input: LinkedInConnectInput) async throws -> SocialAccount { try await client.connectLinkedInAccount(input) }
+
     public func contents(brandId: EntityID) async throws -> [Content] { try await client.contents(brandId: brandId) }
     public func content(_ id: EntityID) async throws -> Content { try await client.content(id) }
 
@@ -193,8 +255,14 @@ public struct RemoteStudioDataService: StudioDataService {
         try await client.contentVersion(contentId: contentId, version: version)
     }
 
+    public func versions(contentId: EntityID) async throws -> [ContentVersionSummary] {
+        try await client.versions(contentId: contentId)
+    }
+
     public func plans(brandId: EntityID) async throws -> [Plan] { try await client.plans(brandId: brandId) }
     public func schedules(brandId: EntityID) async throws -> [Schedule] { try await client.schedules(brandId: brandId) }
+    public func cancelSchedule(_ id: EntityID) async throws -> Schedule { try await client.cancelSchedule(id) }
+    public func scheduleLogs(scheduleId: EntityID) async throws -> [PublishLog] { try await client.scheduleLogs(scheduleId: scheduleId) }
 
     public func updateCaption(contentId: EntityID, caption: String) async throws -> Content {
         try await client.updateContent(contentId, ContentUpdate(caption: caption))
@@ -219,12 +287,49 @@ public struct RemoteStudioDataService: StudioDataService {
         return try await client.createJob(JobCreate(type: .contentGenerate, payload: payload, brandId: content.brandId, contentId: content.id))
     }
 
+    public func fillSlotAndRender(contentId: EntityID, slotId: String, assetId: EntityID) async throws -> Job {
+        try await client.fillSlotAndRender(contentId: contentId, slotId: slotId, assetId: assetId)
+    }
+
+    public func patchLayersAndRender(contentId: EntityID, patches: [SlideLayerPatch]) async throws -> Job {
+        try await client.patchLayersAndRender(contentId: contentId, patches: patches)
+    }
+
+    public func exportContent(contentId: EntityID, format: String) async throws -> Job {
+        try await client.exportContent(contentId: contentId, format: format)
+    }
+
+    public func assets(brandId: EntityID?, kind: AssetKind?) async throws -> [Asset] {
+        try await client.assets(brandId: brandId, kind: kind)
+    }
+
+    public func uploadAsset(_ file: UploadFile, brandId: EntityID, kind: AssetKind?, progress: @escaping @Sendable (Double) -> Void) async throws -> Asset {
+        try await client.uploadAsset(file, brandId: brandId, kind: kind, progress: progress)
+    }
+
     public func uploadImage(_ file: UploadFile, brandId: EntityID, progress: @escaping @Sendable (Double) -> Void) async throws -> Asset {
         try await client.uploadAsset(file, brandId: brandId, kind: .image, progress: progress)
     }
 
+    public func generateAIImage(
+        brandId: EntityID, prompt: String, aspectRatio: String, imageSize: String,
+        referenceAssetIds: [EntityID], preserveProductLabel: Bool,
+        targetContentId: EntityID?, targetSlotId: String?
+    ) async throws -> Job {
+        try await client.generateAIImage(
+            brandId: brandId, prompt: prompt, aspectRatio: aspectRatio, imageSize: imageSize,
+            referenceAssetIds: referenceAssetIds, preserveProductLabel: preserveProductLabel,
+            targetContentId: targetContentId, targetSlotId: targetSlotId
+        )
+    }
+
     public func imageData(assetId: EntityID) async throws -> Data { try await client.assetData(assetId) }
     public func presence() async throws -> WorkerPresence { try await client.presence() }
+    public func claudeControl() async throws -> ClaudeControl { try await client.claudeControl() }
+    public func claudeLogin() async throws -> ClaudeControl { try await client.claudeLogin() }
+    public func claudeRefresh() async throws -> ClaudeControl { try await client.claudeRefresh() }
+    public func geminiControl() async throws -> GeminiControl { try await client.geminiControl() }
+    public func geminiRefresh() async throws -> GeminiControl { try await client.geminiRefresh() }
     public func jobs(brandId: EntityID?) async throws -> [Job] { try await client.jobs(brandId: brandId) }
 
     public func jobFeed() -> AsyncStream<JobFeedEvent> {

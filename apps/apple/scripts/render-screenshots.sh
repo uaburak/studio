@@ -1,6 +1,6 @@
 #!/bin/sh
 # Renders every approved screen (+ the attachments/mentions scene) from the
-# real SwiftUI views with sample data, in light and dark, and captures each
+# real AppKit views with sample data, in light and dark, and captures each
 # window with the window server (so Liquid Glass and materials are real),
 # into apps/apple/docs/screenshots/{light,dark}/ at 1440x900.
 #

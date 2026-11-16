@@ -1,18 +1,28 @@
 import AppKit
+import Foundation
+import Observation
 import StudioKit
-import SwiftUI
 
 /// What the detail column shows.
 enum Route: Hashable {
     case newChat
     case conversation(EntityID)
     case posts
+    case calendar
+    case media
 }
 
 /// Sidebar list selection (native `List(selection:)`).
 enum SidebarItem: Hashable {
     case posts
+    case calendar
+    case media
     case conversation(EntityID)
+}
+
+struct BrandProfileTarget: Equatable {
+    var brandId: EntityID
+    var startAnalysis: Bool = false
 }
 
 /// Root state of the window. Talks to StudioKit services only.
@@ -37,7 +47,7 @@ final class AppModel {
     private(set) var route: Route = .newChat
     private var back: [Route] = []
     private var forward: [Route] = []
-    var columnVisibility: NavigationSplitViewVisibility = .all
+    var sidebarPresented = true
     var inspectorPresented = true
     var expandedBrands: Set<EntityID> = []
     /// Brand for a new chat and the posts screen.
@@ -45,13 +55,21 @@ final class AppModel {
     var searchPresented = false
     /// Settings open as an in-window sheet, not a separate window.
     var settingsPresented = false
+    var newBrandPresented = false
+    var brandProfileTarget: BrandProfileTarget?
+    var accountConnectTarget: AccountConnectTarget?
+    var aiGeneratorTarget: AIGeneratorTarget?
     /// The last sidebar navigation came from the keyboard (do not steal focus).
     private(set) var navigatedByKeyboard = false
+    /// Last selected model / effort across the app (used by Start screen and new conversations).
+    private(set) var lastAgentChoice: AgentChoice
 
     // Screens
     private(set) var conversationModels: [EntityID: ConversationModel] = [:]
     let newChat: NewChatModel
     let posts: PostsModel
+    let calendar: CalendarModel
+    let media: MediaModel
     let images: ImageStore
     var detail: PostDetailModel?
     var banner: String?
@@ -61,6 +79,7 @@ final class AppModel {
 
     init(settings: AppSettings, conversationService: (any ConversationService)? = nil, dataService: (any StudioDataService)? = nil) {
         self.settings = settings
+        self.lastAgentChoice = settings.agentChoices.last
         if let conversationService, let dataService {
             self.conversationService = conversationService
             self.dataService = dataService
@@ -79,13 +98,17 @@ final class AppModel {
         images = ImageStore()
         newChat = NewChatModel()
         posts = PostsModel()
+        calendar = CalendarModel()
+        media = MediaModel()
         images.app = self
         newChat.app = self
         posts.app = self
+        calendar.app = self
+        media.app = self
     }
 
     /// Rebuild the services after the server address or access key changed.
-    func reconnect() {
+    func reconnect(reload: Bool = true) {
         guard !isSample else { return }
         let client = settings.makeClient()
         conversationService = RemoteConversationService(client: client)
@@ -93,7 +116,7 @@ final class AppModel {
         conversationModels.values.forEach { $0.stop() }
         conversationModels = [:]
         images.clear()
-        Task { await load() }
+        if reload { Task { await load() } }
     }
 
     // MARK: Loading
@@ -123,6 +146,20 @@ final class AppModel {
         if let list = try? await conversationService.conversations() { conversations = list }
     }
 
+    func refreshAccounts() async {
+        if let list = try? await dataService.socialAccounts(brandId: nil) { accounts = list }
+    }
+
+    @discardableResult
+    func createNewBrand(name: String, slug: String? = nil) async throws -> Brand {
+        let created = try await dataService.createBrand(BrandCreate(name: name, slug: slug))
+        brands.append(created)
+        currentBrandId = created.id
+        expandedBrands.insert(created.id)
+        newChat.updatePlaceholder()
+        return created
+    }
+
     private func startJobFeed() {
         feedTask?.cancel()
         let stream = dataService.jobFeed()
@@ -130,8 +167,17 @@ final class AppModel {
             for await event in stream {
                 guard let self else { return }
                 self.jobBoard.apply(event)
-                if case .message(.jobUpdated(let job)) = event, job.type == .contentGenerate || job.type == .contentRender {
-                    self.posts.jobChanged(job)
+                if case .message(.jobUpdated(let job)) = event {
+                    if job.type == .contentGenerate || job.type == .contentRender {
+                        self.posts.jobChanged(job)
+                        if self.detail?.content.id == job.contentId, job.status.isTerminal {
+                            Task { await self.detail?.reloadVersionsAndContent() }
+                        }
+                    } else if job.type == .imageGenerate {
+                        self.media.jobChanged(job)
+                    } else if job.type == .schedulePublish, job.status.isTerminal {
+                        Task { await self.calendar.load() }
+                    }
                 }
             }
         }
@@ -181,6 +227,8 @@ final class AppModel {
         switch route {
         case .newChat: "Yeni sohbet"
         case .posts: "Postlar"
+        case .calendar: "Takvim"
+        case .media: "Medya"
         case .conversation(let id): conversations.first { $0.id == id }?.displayTitle ?? "Sohbet"
         }
     }
@@ -191,6 +239,8 @@ final class AppModel {
         get {
             switch route {
             case .posts: .posts
+            case .calendar: .calendar
+            case .media: .media
             case .conversation(let id): .conversation(id)
             case .newChat: nil
             }
@@ -200,6 +250,8 @@ final class AppModel {
             navigatedByKeyboard = NSApp.currentEvent?.type == .keyDown
             switch newValue {
             case .posts: navigate(to: .posts)
+            case .calendar: navigate(to: .calendar)
+            case .media: navigate(to: .media)
             case .conversation(let id): navigate(to: .conversation(id))
             case nil: break
             }
@@ -247,6 +299,10 @@ final class AppModel {
         let value = args[index + 1]
         if value == "posts" {
             navigate(to: .posts)
+        } else if value == "calendar" {
+            navigate(to: .calendar)
+        } else if value == "media" {
+            navigate(to: .media)
         } else if value.hasPrefix("conversation:") {
             let title = String(value.dropFirst("conversation:".count))
             if let match = conversations.first(where: { $0.title == title }) { navigate(to: .conversation(match.id)) }
@@ -267,11 +323,16 @@ final class AppModel {
     }
 
     func toggleSidebar() {
-        withAnimation { columnVisibility = columnVisibility == .detailOnly ? .all : .detailOnly }
+        sidebarPresented.toggle()
     }
 
     func toggleInspector() {
-        withAnimation { inspectorPresented.toggle() }
+        inspectorPresented.toggle()
+    }
+
+    func saveAgentChoice(_ choice: AgentChoice, for conversationId: EntityID?) {
+        settings.agentChoices.save(choice, for: conversationId)
+        lastAgentChoice = choice
     }
 
     func toggleBrand(_ id: EntityID) {

@@ -38,6 +38,9 @@ public enum Platform: String, OpenEnum {
 /// Model family the user picks for a turn or a generation (`AgentModel` in common.ts).
 public enum AgentModel: String, OpenEnum {
     case opus, sonnet, haiku
+    case geminiFlashLite = "gemini-flash-lite"
+    case geminiFlash = "gemini-flash"
+    case geminiPro = "gemini-pro"
     case unknown
 
     public var displayName: String {
@@ -45,9 +48,22 @@ public enum AgentModel: String, OpenEnum {
         case .opus: "Opus"
         case .sonnet: "Sonnet"
         case .haiku: "Haiku"
+        case .geminiFlashLite: "Gemini Flash-Lite"
+        case .geminiFlash: "Gemini Flash"
+        case .geminiPro: "Gemini Pro"
         case .unknown: "Bilinmeyen model"
         }
     }
+
+    public var isGemini: Bool {
+        switch self {
+        case .geminiFlashLite, .geminiFlash, .geminiPro: true
+        case .opus, .sonnet, .haiku, .unknown: false
+        }
+    }
+
+    public static var claudeCases: [AgentModel] { [.opus, .sonnet, .haiku] }
+    public static var geminiCases: [AgentModel] { [.geminiFlashLite, .geminiFlash, .geminiPro] }
 }
 
 /// Reasoning effort the user picks for a turn or a generation (`AgentEffort` in common.ts).
@@ -75,6 +91,9 @@ public enum APIErrorCode: String, OpenEnum {
     case hashMismatch = "hash_mismatch"
     case payloadTooLarge = "payload_too_large"
     case unsupportedMediaType = "unsupported_media_type"
+    case unauthorized
+    case forbidden
+    case rateLimited = "rate_limited"
     case internalError = "internal_error"
     case unknown
 }

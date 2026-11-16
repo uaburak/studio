@@ -3,8 +3,10 @@
  * - Text deltas are buffered and sent about every 250 ms (the API asks for batching),
  *   split into ≤ 16 KiB deltas, with per-part `seq` from 1 (a retried request is
  *   skipped by the server, so network retries are safe).
- * - All writes go through one queue, so parts land in order.
- * - Part indexes are allocated here; the server's message tells where the plan card went.
+ * - Multi-part interleaving: when non-text parts (`tool_step`, `consent`, `plan_proposal`,
+ *   `question`, `progress`) are appended after streamed text, buffered text is flushed
+ *   first and subsequent `appendText` calls open a new text part with its own `seq` from 1.
+ * - All writes go through one queue, so parts land in execution order.
  */
 import {
   ApiError,
@@ -62,8 +64,8 @@ export function splitUtf8(text: string, maxBytes: number): string[] {
 }
 
 export class TurnWriter {
-  private nextIndex: number;
-  private textIndex: number | null = null;
+  private nextPartIndex: number;
+  private activeTextIndex: number | null = null;
   private textSeq = 0;
   private buffer = "";
   private timer: ReturnType<typeof setTimeout> | undefined;
@@ -75,16 +77,16 @@ export class TurnWriter {
   lastMessage: Message | undefined;
 
   constructor(private readonly options: TurnWriterOptions) {
-    this.nextIndex = options.initialParts ?? 0;
+    this.nextPartIndex = options.initialParts ?? 0;
     this.logger = options.logger ?? silentLogger;
   }
 
   /** Index the next appended part will get. */
   get partCount(): number {
-    return this.nextIndex;
+    return this.nextPartIndex;
   }
 
-  /** Append streamed text to the current text part (a new one is opened when needed). */
+  /** Append streamed text to the active trailing text part (or a new text part when needed). */
   appendText(text: string): void {
     if (!text) return;
     this.buffer += text;
@@ -98,11 +100,11 @@ export class TurnWriter {
     }
   }
 
-  /** Later text goes into a new text part (e.g. after a progress part). */
+  /** Later text goes into a new text part (e.g. after a boundary). */
   endTextPart(): void {
     if (this.buffer) void this.flush().catch(() => undefined);
-    this.enqueue(async () => {
-      this.textIndex = null;
+    void this.enqueue(async () => {
+      this.activeTextIndex = null;
       this.textSeq = 0;
     });
   }
@@ -115,11 +117,11 @@ export class TurnWriter {
     this.buffer = "";
     if (text) {
       await this.enqueue(async () => {
-        if (this.textIndex === null) {
-          this.textIndex = this.nextIndex++;
+        if (this.activeTextIndex === null || this.activeTextIndex !== this.nextPartIndex - 1) {
+          this.activeTextIndex = this.nextPartIndex++;
           this.textSeq = 0;
         }
-        const index = this.textIndex;
+        const index = this.activeTextIndex;
         const ops: TurnOp[] = splitUtf8(text, MAX_TEXT_DELTA_BYTES - 64).map((piece) => ({
           op: "text.delta",
           index,
@@ -136,15 +138,22 @@ export class TurnWriter {
     if (this.failure) throw this.failure;
   }
 
-  /** Append a part (or replace the part at `index`). Returns its index. */
+  /** Append a part (or replace the part at `index`). Flushes buffered text first. */
   async setPart(part: MessagePartInput, index?: number): Promise<number> {
     await this.flush();
     let at = index ?? -1;
     await this.enqueue(async () => {
       if (at < 0) {
-        at = this.nextIndex++;
-        // A text part after this one must be a new part.
-        this.textIndex = null;
+        at = this.nextPartIndex++;
+        this.activeTextIndex = null;
+        this.textSeq = 0;
+      } else if (at >= this.nextPartIndex) {
+        this.nextPartIndex = at + 1;
+        this.activeTextIndex = null;
+        this.textSeq = 0;
+      } else if (at === this.activeTextIndex) {
+        // Replaced via part.set rather than text.delta; do not resume delta seqs on it.
+        this.activeTextIndex = null;
         this.textSeq = 0;
       }
       await this.send([{ op: "part.set", index: at, part }]);
@@ -157,6 +166,7 @@ export class TurnWriter {
     await this.flush();
     let result: PlanProposalResult | undefined;
     await this.enqueue(async () => {
+      const before = this.nextPartIndex;
       result = await this.retry(() =>
         this.options.api.client.workerTurns.putPlan(
           this.options.runId,
@@ -165,15 +175,21 @@ export class TurnWriter {
         ),
       );
       this.lastMessage = result.message;
-      this.nextIndex = Math.max(this.nextIndex, result.message.parts.length);
-      this.textIndex = null;
-      this.textSeq = 0;
+      this.nextPartIndex = Math.max(this.nextPartIndex, result.message.parts.length);
+      if (this.nextPartIndex > before || this.activeTextIndex !== this.nextPartIndex - 1) {
+        this.activeTextIndex = null;
+        this.textSeq = 0;
+      }
     });
     if (this.failure) throw this.failure;
     return result as PlanProposalResult;
   }
 
-  async complete(model: string | undefined, usage: RunUsage | undefined): Promise<void> {
+  async complete(
+    model: string | undefined,
+    usage: RunUsage | undefined,
+    session?: { id: string },
+  ): Promise<void> {
     await this.flush();
     await this.retry(() =>
       this.options.api.client.workerTurns.complete(
@@ -182,6 +198,7 @@ export class TurnWriter {
           attempt: this.options.attempt,
           ...(model ? { model } : {}),
           ...(usage ? { usage } : {}),
+          ...(session ? { session } : {}),
         },
         this.init(),
       ),

@@ -1,15 +1,22 @@
 import type {
+  AgentEffort,
+  AgentModel,
   AssetKind,
   AssetSource,
   BrandProfileStatus,
+  ClaudeAccountStatus,
   ContentType,
   ContentVersionOrigin,
+  GeminiAccountStatus,
+  ImageSlotExpectation,
   JobStatus,
   JobType,
+  PlanStatus,
   Platform,
   PublishLogStatus,
   ScheduleStatus,
   SocialAccountStatus,
+  TokenHealthStatus,
 } from "@studio/contract";
 
 /** Visual tone of a status; maps to the `.tint-*` classes in index.css. */
@@ -52,6 +59,7 @@ export const ASSET_KIND_LABELS: Record<AssetKind, string> = {
   image: "Görsel",
   video: "Video",
   audio: "Ses",
+  document: "Belge",
   font: "Font",
   logo: "Logo",
   other: "Diğer",
@@ -68,6 +76,8 @@ export const JOB_TYPE_LABELS: Record<JobType, string> = {
   "content.generate": "İçerik üretimi",
   "content.render": "Render",
   "brand.analyze": "Marka analizi",
+  "image.generate": "Görsel üretimi",
+  "schedule.publish": "Zamanlı yayın",
   "demo.echo": "Deneme (echo)",
 };
 
@@ -83,7 +93,7 @@ export const SCHEDULE_STATUS: Record<ScheduleStatus, StatusMeta> = {
   pending: {
     label: "Zamanlandı",
     tone: "info",
-    hint: "Otomatik yayın henüz yok (Faz 3). Bu kayıt yalnızca planı tutar; şu an hiçbir şey paylaşılmaz.",
+    hint: "Zamanı geldiğinde bağlı hesaptan otomatik yayınlanır.",
   },
   publishing: { label: "Yayınlanıyor", tone: "warn" },
   published: { label: "Yayınlandı", tone: "good" },
@@ -101,16 +111,96 @@ export const ACCOUNT_STATUS: Record<SocialAccountStatus, StatusMeta> = {
   pending: {
     label: "Bağlantı bekliyor",
     tone: "warn",
-    hint: "Hesap kayıtlı; yetkilendirme (Faz 3) henüz yapılmadı.",
+    hint: "Hesap kayıtlı; yayın için token girin ya da platform bağlantısını tamamlayın.",
   },
   connected: { label: "Bağlı", tone: "good" },
   needs_reauth: { label: "Yeniden bağlanmalı", tone: "bad" },
   disabled: { label: "Devre dışı", tone: "neutral" },
 };
 
+export const TOKEN_HEALTH_STATUS: Record<TokenHealthStatus, StatusMeta> = {
+  valid: { label: "Token sağlıklı", tone: "good" },
+  expiring_soon: {
+    label: "Süresi yaklaşıyor",
+    tone: "warn",
+    hint: "Token yakında sona erecek; yeniden yetkilendirin.",
+  },
+  invalid: {
+    label: "Token geçersiz",
+    tone: "bad",
+    hint: "Token süresi dolmuş ya da iptal edilmiş.",
+  },
+  missing_scopes: {
+    label: "Eksik izin",
+    tone: "bad",
+    hint: "Yayın için gerekli platform izinleri eksik.",
+  },
+  unchecked: { label: "Kontrol edilmedi", tone: "neutral" },
+};
+
 export const PROFILE_STATUS: Record<BrandProfileStatus, StatusMeta> = {
   draft: { label: "Taslak", tone: "warn" },
   approved: { label: "Onaylı", tone: "good" },
+};
+
+export const AGENT_MODEL_OPTIONS: readonly { value: AgentModel; label: string; group: string }[] = [
+  { value: "gemini-flash-lite", label: "Gemini Flash-Lite", group: "Gemini" },
+  { value: "gemini-flash", label: "Gemini Flash", group: "Gemini" },
+  { value: "gemini-pro", label: "Gemini Pro", group: "Gemini" },
+  { value: "opus", label: "Opus", group: "Claude" },
+  { value: "sonnet", label: "Sonnet", group: "Claude" },
+  { value: "haiku", label: "Haiku", group: "Claude" },
+];
+
+export const AGENT_MODEL_LABELS: Record<AgentModel, string> = {
+  "gemini-flash-lite": "Gemini Flash-Lite",
+  "gemini-flash": "Gemini Flash",
+  "gemini-pro": "Gemini Pro",
+  opus: "Opus",
+  sonnet: "Sonnet",
+  haiku: "Haiku",
+};
+
+export const AGENT_EFFORT_OPTIONS: readonly { value: AgentEffort; label: string }[] = [
+  { value: "low", label: "Düşük" },
+  { value: "medium", label: "Orta" },
+  { value: "high", label: "Yüksek" },
+  { value: "xhigh", label: "Çok yüksek" },
+];
+
+export const AGENT_EFFORT_LABELS: Record<AgentEffort, string> = {
+  low: "Düşük",
+  medium: "Orta",
+  high: "Yüksek",
+  xhigh: "Çok yüksek",
+};
+
+export const PLAN_STATUS: Record<PlanStatus, StatusMeta> = {
+  draft: { label: "Taslak", tone: "neutral" },
+  proposed: { label: "Önerildi", tone: "accent" },
+  accepted: { label: "Kabul edildi", tone: "good" },
+  rejected: { label: "Reddedildi", tone: "bad" },
+  superseded: { label: "Yenilendi", tone: "neutral" },
+};
+
+export const IMAGE_SLOT_LABELS: Record<ImageSlotExpectation, string> = {
+  none: "Görsel yok",
+  user_upload: "Fotoğraf yuvası",
+  ai_generate: "AI görsel",
+};
+
+export const CLAUDE_STATUS_LABELS: Record<ClaudeAccountStatus, StatusMeta> = {
+  signed_in: { label: "Claude bağlı", tone: "good" },
+  signing_in: { label: "Giriş yapılıyor…", tone: "warn" },
+  signed_out: { label: "Claude oturumu kapalı", tone: "warn" },
+  not_installed: { label: "Claude CLI kurulu değil", tone: "bad" },
+  error: { label: "Claude hatası", tone: "bad" },
+};
+
+export const GEMINI_STATUS_LABELS: Record<GeminiAccountStatus, StatusMeta> = {
+  ready: { label: "Gemini hazır", tone: "good" },
+  not_configured: { label: "Gemini yapılandırılmadı", tone: "warn" },
+  error: { label: "Gemini hatası", tone: "bad" },
 };
 
 export const LANGUAGE_OPTIONS = [

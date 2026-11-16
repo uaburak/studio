@@ -1,106 +1,62 @@
 # Studio — Apple uygulamaları
 
-Native macOS uygulaması (`StudioMac`) ve iOS ile paylaşılacak arayüzsüz çekirdek (`StudioKit`).
+Native macOS uygulaması (`StudioMac`, %100 AppKit), native iOS uygulaması (`StudioIOS`, %100 UIKit) ve paylaşılan arayüzsüz çekirdek (`StudioKit`).
 Swift 6 dil modu (tam katı eşzamanlılık), üçüncü taraf bağımlılık yok. Arayüz Türkçe.
 
 ## Yapı
 
 | Klasör | İçerik |
 | --- | --- |
-| `StudioKit/` | Swift paketi (macOS 26+, iOS 26+). Arayüz yok; iOS uygulaması olduğu gibi kullanacak. |
-| `StudioKit/Sources/StudioKit/Models` | `packages/contract` aynası: marka, hesap, varlık, içerik/sürüm, zamanlama, iş, presence, sohbet (mesaj parçaları), plan, akış çerçeveleri, `ConversationState` (sözleşmedeki reducer'ın birebir portu) |
-| `.../Networking` | `APIClient` (async/await, tek hata türü `StudioAPIError`, ayarlanabilir adres), `AuthProvider` (Cloudflare Access servis anahtarı, Anahtar Zinciri), çok parçalı yükleme + ilerleme |
+| `StudioKit/` | Swift paketi (macOS 26+, iOS 26+). Arayüz yok; hem macOS hem iOS uygulaması doğrudan kullanır. |
+| `StudioKit/Sources/StudioKit/Models` | `packages/contract` aynası: marka, marka profili, sosyal hesap & OAuth jeton sağlığı, varlık (`image`, `video`, `document`, `audio`), içerik/sürüm, zamanlama & yayın günlükleri, iş (`image.generate`, `schedule.publish` dahil), presence, sohbet, plan, akış çerçeveleri, `ConversationState` |
+| `.../Networking` | `APIClient` (async/await, tek hata türü `StudioAPIError`, ayarlanabilir adres), `AuthProvider` (Cloudflare Access + cihaz eşleştirme Bearer jetonu, Anahtar Zinciri), çok parçalı yükleme + ilerleme |
 | `.../Streams` | `JobStream` (yeniden bağlanma, üstel bekleme, HTTP yoklama yedeği), `ConversationStream` (`?after=seq` ile kaldığı yerden devam, boşlukta yeniden bağlanma) |
-| `.../Domain` | İçerik hash'i (`computeContentHash` ile bit bit aynı), görsel yuvası tarayıcı (HTML çalıştırmadan öznitelik okur), post panosu (durum, filtre, sayılar, onaylanabilir hash), takma ad ve `@anma` kuralları (sunucudaki `scanAliasTokens`/`resolveAliasMentions` portu, UTF-16 ofsetler), Türkçe tarih biçimleri |
+| `.../Domain` | İçerik hash'i (`computeContentHash` ile bit bit aynı), görsel yuvası tarayıcı (`Slots`), HTML katman tarayıcı ve yama üretici (`SlideLayers`), post panosu, takma ad ve `@anma` kuralları, Türkçe tarih biçimleri |
 | `.../Services` | `ConversationService` ve `StudioDataService` protokolleri; gerçek API uygulamaları (`RemoteConversationService`, `RemoteStudioDataService`); mesajın tel biçimi tek yerde (`MessageWire`) |
-| `.../Sample` | `SampleBackend`: bellekte, taslaklarla aynı Türkçe örnek veri. Yalnızca önizleme, test ve ekran görüntüsü için. |
-| `StudioMac/` | macOS uygulaması. `StudioMac.xcodeproj` betikle üretilir (aşağıda). |
-| `scripts/` | proje üretimi, yerel API'ye örnek veri, fixture yakalama, ekran görüntüsü betikleri |
+| `.../Sample` | `SampleBackend`: bellekte, taslaklarla aynı Türkçe örnek veri (önizleme, test ve ekran görüntüsü için). |
+| `StudioMac/` | macOS masaüstü uygulaması (%100 AppKit). Yerel API + Worker + Cloudflare Tunnel (`cloudflared`) gözetmeni içerir. |
+| `StudioIOS/` | iPhone/iPad uzaktan kumanda uygulaması (%100 UIKit). Sohbet, Postlar, Takvim ve Ayarlar (kod ile eşleştirme + uzaktan tünel bağlantısı). |
+| `scripts/` | `generate-project.sh` (macOS), `generate-ios-project.sh` (iOS), yerel API'ye örnek veri, fixture yakalama, ekran görüntüsü betikleri |
 
 ## Proje üretimi ve derleme
 
-Xcode projesi elle değil, sabit şablondan üretilir (Xcode 16+ dosya sistemiyle eşzamanlı gruplar; dosya ekleyince proje
-değişmez; ayarlar `StudioMac/Config/*.xcconfig` içinde; aynı girdi aynı çıktıyı verir):
+Xcode projeleri elle değil, sabit şablonlardan üretilir (Xcode 16+ dosya sistemiyle eşzamanlı gruplar; ayarlar `Config/*.xcconfig` içinde):
 
 ```sh
 apps/apple/scripts/generate-project.sh
+apps/apple/scripts/generate-ios-project.sh
 ```
 
 ```sh
 # StudioKit
-cd apps/apple/StudioKit
-swift build
-swift test
+swift test --package-path apps/apple/StudioKit
 
-# macOS uygulaması
-cd apps/apple/StudioMac
-xcodebuild -project StudioMac.xcodeproj -scheme StudioMac -configuration Debug -derivedDataPath build/DerivedData build
-xcodebuild -project StudioMac.xcodeproj -scheme StudioMac -configuration Debug -derivedDataPath build/DerivedData test
-open build/DerivedData/Build/Products/Debug/Studio.app
+# macOS uygulaması (StudioMac)
+xcodebuild -project apps/apple/StudioMac/StudioMac.xcodeproj -scheme StudioMac -configuration Debug build
+xcodebuild -project apps/apple/StudioMac/StudioMac.xcodeproj -scheme StudioMac -configuration Debug test
+
+# iOS uygulaması (StudioIOS)
+xcodebuild -project apps/apple/StudioIOS/StudioIOS.xcodeproj -scheme StudioIOS -configuration Debug -destination 'generic/platform=iOS Simulator' build-for-testing
 ```
 
-Uygulama: `Studio.app`, paket kimliği yer tutucu `net.burakkoc.studio.mac`, hedef macOS 27.0, imza "yerelde çalıştır"
-(geliştirici hesabı yok). Şimdilik sandbox kapalı (yerel geliştirme sunucusu); dağıtımdan önce açılmalı.
+## Ekranlar ve yetenekler
 
-## Sunucuya bağlama
+### `StudioMac` (AppKit)
+- **Sohbet**: Canlı akış, araç adımları, yetki onay kartı (`consent`), soru kartı, plan kartı ("Onayla ve üret"), ekli görseller ve `@takma-ad` tamamlama.
+- **Postlar & Post Detayı**: Gerçek yuva doldurma (`fillSlotAndRender`), boş yuvalarda **"AI ile Yuvayı Doldur…"**, **"Detaylar" | "Katmanlar"** sekmeleri (`SlideLayerScanner` ile metin/görünürlük katman düzenleme ve yeniden render), sürüm seçici (`v1`, `v2`…), çoklu slayt geçişi, Reels için `AVPlayerView` video oynatma, JPEG ve LinkedIn PDF Carousel dışa aktarma (`NSSavePanel`).
+- **Takvim (`⇧⌘K`)**: Aylık 7 sütunlu ızgara (`Pzt..Paz`), durum noktaları (`Zamanlandı`, `Yayınlandı`, `Onaylandı`, `Hata`), seçili gün/ay listesi, yayın bağlantısı açma ve bekleyen zamanlamayı iptal etme.
+- **Medya Kütüphanesi (`⇧⌘M`)**: Tür filtreleri (`Tümü`, `Görseller`, `Videolar`, `Belgeler (PDF)`), sürükle-bırak yükleme ve **"AI Görsel Üret"** sayfası (oran, 1K/2K çözünürlük, referans ürün fotoğrafı ve **"Ürün etiketini bozmadan koru"**).
+- **Marka & Sosyal Hesaplar**: Yeni marka oluşturma (`+ Yeni Marka…`), `BrandProfileSheetController` (`DESIGN.md` / `VOICE.md` düzenleme, sürüm onaylama, AI marka analizi) ve `AccountConnectSheetController` (Meta sayfa/IG keşfi, doğrudan jeton kasası, LinkedIn OAuth bağlantısı, jeton sağlık kontrolü).
+- **Yerel Sunucu & Uzaktan Erişim (Ayarlar → Bu Mac)**: gömülü API + Worker süreç gözetimi, 6 haneli telefon eşleştirme kodu üretimi ve `cloudflared` tünel yönetimi (`social.burakkoc.net`).
 
-Varsayılan adres `http://127.0.0.1:8787` (`pnpm --filter @studio/api dev`). Değiştirmek için Ayarlar (⌘,) → Sunucu, ya da
-tek açılış için: `Studio -studio.serverURL http://127.0.0.1:8790`. Cloudflare Access kurulunca servis anahtarı (Client ID /
-Secret) Ayarlar'dan girilir, Anahtar Zinciri'nde saklanır ve her isteğe (WebSocket dahil) `CF-Access-Client-*` başlıkları
-olarak eklenir.
+### `StudioIOS` (UIKit)
+- **4 Sekmeli `UITabBarController`**: `Sohbet`, `Postlar`, `Takvim`, `Ayarlar`.
+- **Sohbet**: Marka seçici, sohbet listesi, canlı ajan akışı, plan/soru/izin kartları, `PHPickerViewController` ile fotoğraf ekleme.
+- **Postlar & Post Detayı**: Filtreli `UICollectionView` ızgarası, tam hash doğrulamalı onaylama, slayt geçişi, açıklama/etiket düzenleme, `UIDatePicker` ile zamanlama ve revizyon isteme.
+- **Takvim**: Aylık ızgara + zamanlanmış post listesi, yayın bağlantısı ve iptal aksiyonu.
+- **Ayarlar & Eşleştirme**: Mac'teki 6 haneli kod ile eşleştirme (`PairingSheetViewController`), Anahtar Zinciri Bearer jetonu, Uzaktan Kumanda (`https://social.burakkoc.net`) anahtarı ve görünüm seçimi.
 
-Sunucu olmadan denemek için örnek veri: `Studio -StudioSampleData YES` (varsayılan değildir).
+## Kısayollar (`StudioMac`)
 
-Yerel API'yi gerçekçi verilerle doldurmak (yalnızca 127.0.0.1/localhost kabul eder):
-
-```sh
-STUDIO_API_URL=http://127.0.0.1:8787 STUDIO_SEED_WORKER_TOKEN=<o API'nin WORKER_TOKEN'ı> apps/apple/scripts/seed-local-api.sh
-```
-
-Token verilirse betik sohbet ajanının yerine geçip asistan yanıtlarını, planı ve postları worker turn API'si ile yazar
-(ajan henüz yok). Token yoksa yalnızca kullanıcı mesajları oluşur ve çalıştırmalar sırada kalır.
-
-## Canlı olan / örnek olan
-
-| Ekran parçası | Kaynak |
-| --- | --- |
-| Kenar çubuğu: markalar, sohbetler | Gerçek API (`/api/brands`, `/api/conversations`) |
-| Sohbet: mesajlar, plan kartı, soru kartı, ilerleme, hata | Gerçek API + canlı sohbet akışı (`/api/conversations/{id}/stream`) |
-| Mesaj gönderme, ekli görseller, takma adlar, `@anma` | Gerçek API (`attachments[{assetId, alias}]`, `mentions`, `/aliases`, yeniden adlandırma) |
-| "Onayla ve üret" | `POST /api/plans/{id}/accept` (görülen revizyonla) + `/generate` |
-| Postlar: kartlar, filtre, onay çubuğu | Gerçek API (`/api/contents`, sürümler, planlar, zamanlamalar); onay, uygulamanın yeniden hesapladığı hash ile |
-| Açılan post: açıklama/etiket düzenleme, Onayla, Zamanla | Gerçek API (`PATCH` içerik, `approve`, `/api/schedules`) |
-| "Neyi değiştireyim?" | `content.generate` işi (talimat + `baseVersion`); Mac'teki üretici olmadığı için sırada bekler |
-| Sağ panel: marka, hesaplar, işler, "Mac hazır / çevrimdışı" | Gerçek API + iş akışı (`/api/jobs/stream`, kopunca HTTP yoklama) |
-| Görsel yuvasına sürükle-bırak | Varlık olarak yüklenir; yuva doldurma hattı olmadığı için "Görsel yüklendi" bekleme durumu gösterilir |
-
-Bilerek kapalı/etiketli olanlar: **Takvim** ("yakında", tasarımı onaylanmadı), hesap **Bağla** (Meta bağlantısı Faz 3;
-tıklanınca açıklama çıkar), zamanlama kaydedilir ama yayın motoru yok (popover'da yazıyor). Sohbet ajanı (`chat.turn`)
-henüz yok: gönderilen mesajın çalıştırması sırada kalır ve sohbette "Mac sırada bekliyor" yazar.
-
-## Kısayollar
-
-⌘N yeni sohbet · ⌘K ara · ⌃⌘S kenar çubuğu · ⌥⌘I sağ panel · ⌘[ / ⌘] geri / ileri · ⇧⌘P postlar ·
+⌘N yeni sohbet · ⌘K ara · ⌃⌘S kenar çubuğu · ⌥⌘I sağ panel · ⌘[ / ⌘] geri / ileri · ⇧⌘P postlar · ⇧⌘K takvim · ⇧⌘M medya ·
 ⇧⌘L görünüm (Sistem → Açık → Koyu) · ⌘↩ açık postu onayla · composer'da ↩ gönder, ⇧↩ yeni satır, `@` takma ad öner.
-
-## Görünüm
-
-Varsayılan sistem ayarını izler. Ayarlar → Görünüm, kullanıcı satırı menüsü ve Görünüm menüsü (Sistem / Açık / Koyu);
-seçim saklanır, yeniden başlatmadan uygulanır. Renkler `Design/Theme.swift` içinde açık/koyu çiftleri olarak tanımlı.
-
-## Testler
-
-- `StudioKit` (Swift Testing): çalışan yerel API'den yakalanan yanıtların çözülmesi (`Tests/StudioKitTests/Fixtures`,
-  yenilemek için `scripts/capture-fixtures.sh`), URLProtocol taklidiyle istemci, hata eşleme, çok parçalı yükleme,
-  yeniden bağlanma/geri çekilme/yoklama yedeği/seq ile devam, reducer, takma ad ve anma kuralları, hash, örnek arka uç.
-  `STUDIO_LIVE_API_URL=http://127.0.0.1:8787 swift test` ile çalışan yerel API'ye karşı uçtan uca testler de koşar
-  (veri değiştirir; yalnızca yerel adres kabul edilir).
-- `StudioMacTests`: uygulama modelleri (gezinme, composer takma adları ve yükleme kapısı, yeni sohbet, onay, açıklama),
-  AppKit composer (anma jetonu, öneri, Return). Ekran görüntüsü testi pencere açtığı için varsayılan olarak kapalı
-  (`STUDIO_RENDER_SCREENSHOTS=1`).
-
-## iOS uygulaması neyi kullanacak
-
-`StudioKit`'in tamamı: modeller, `APIClient`, akışlar, `ConversationService`/`StudioDataService`, post panosu, takma ad/anma
-kuralları, hash doğrulama, `SampleBackend` (önizlemeler). macOS'a özgü olan yalnızca `StudioMac/` içindeki görünümler,
-AppKit composer metin görünümü ve görsel içe aktarma.

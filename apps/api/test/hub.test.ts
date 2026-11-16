@@ -4,7 +4,7 @@ import {
   runDurableObjectAlarm,
   runInDurableObject,
 } from "cloudflare:test";
-import { env, exports } from "cloudflare:workers";
+import { env } from "cloudflare:workers";
 import {
   decodeJobStreamMessage,
   decodeMessage,
@@ -17,13 +17,13 @@ import {
   type WorkerToHubMessage,
 } from "@studio/contract";
 import { beforeEach, describe, expect, it } from "vitest";
-import { api, BASE, createBrand, expectError } from "./helpers.ts";
+import { api, BASE, createBrand, expectError, localFetch } from "./helpers.ts";
 
 const hub = () => env.HUB.getByName("main");
 
 /** A WebSocket opened through the Worker, with an inbox of decoded frames. */
 async function openSocket<M>(path: string, decode: (raw: unknown) => M, headers = {}) {
-  const res = await exports.default.fetch(`${BASE}${path}`, {
+  const res = await localFetch(`${BASE}${path}`, {
     headers: { Upgrade: "websocket", ...headers },
   });
   if (res.status !== 101) throw new Error(`upgrade failed: ${res.status} ${await res.text()}`);
@@ -139,11 +139,11 @@ beforeEach(async () => {
 
 describe("worker authentication", () => {
   it("rejects a missing or wrong token and accepts the right one", async () => {
-    const noToken = await exports.default.fetch(`${BASE}/api/hub`, {
+    const noToken = await localFetch(`${BASE}/api/hub`, {
       headers: { Upgrade: "websocket" },
     });
     expect(noToken.status).toBe(401);
-    const wrong = await exports.default.fetch(`${BASE}/api/hub`, {
+    const wrong = await localFetch(`${BASE}/api/hub`, {
       headers: { Upgrade: "websocket", Authorization: "Bearer nope" },
     });
     expect(wrong.status).toBe(401);
@@ -568,13 +568,13 @@ describe("client stream", () => {
   });
 
   it("validates the stream filter", async () => {
-    const notUpgrade = await exports.default.fetch(`${BASE}/api/jobs/stream`);
+    const notUpgrade = await localFetch(`${BASE}/api/jobs/stream`);
     expect(notUpgrade.status).toBe(426);
-    const missing = await exports.default.fetch(`${BASE}/api/jobs/stream?jobId=nope`, {
+    const missing = await localFetch(`${BASE}/api/jobs/stream?jobId=nope`, {
       headers: { Upgrade: "websocket" },
     });
     expect(missing.status).toBe(404);
-    const both = await exports.default.fetch(`${BASE}/api/jobs/stream?jobId=a&brandId=b`, {
+    const both = await localFetch(`${BASE}/api/jobs/stream?jobId=a&brandId=b`, {
       headers: { Upgrade: "websocket" },
     });
     expect(both.status).toBe(400);

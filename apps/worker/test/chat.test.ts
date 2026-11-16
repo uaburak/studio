@@ -1,4 +1,5 @@
-import { mkdtempSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
@@ -20,10 +21,11 @@ import {
   toQuestionPart,
 } from "../src/chat/schema.ts";
 import { createChatTurnHandler } from "../src/chat/turn.ts";
-import { splitUtf8 } from "../src/chat/writer.ts";
+import { splitUtf8, TurnWriter } from "../src/chat/writer.ts";
 import { ClaudeError, ClaudeUsageLimitError } from "../src/claude/errors.ts";
 import { ClaudeGate } from "../src/claude/gate.ts";
 import type { ClaudeCallOptions, ClaudeCallResult, ClaudeRunner } from "../src/claude/runner.ts";
+import { UsageTracker } from "../src/claude/usage.ts";
 import { silentLogger } from "../src/log.ts";
 import type { JobContext } from "../src/registry.ts";
 import { createFakeApi, fakeBrand, fakeRun, NOW } from "./fake-api.ts";
@@ -93,6 +95,7 @@ function turnContext(overrides: Partial<TurnContext> = {}): TurnContext {
       status: "active",
       activeRunId: "run_1",
       lastSeq: 3,
+      agentSession: null,
       lastActivityAt: NOW,
       createdAt: NOW,
       updatedAt: NOW,
@@ -120,13 +123,14 @@ function turnContext(overrides: Partial<TurnContext> = {}): TurnContext {
     openPlan: null,
     assistantMessage: null,
     aliases: [alias()],
+    messageCount: 1,
     ...overrides,
   };
 }
 
 const planOutput = {
   reply:
-    "Kasım için 4 postluk bir plan hazırladım. Ürün postunda @image kullanacağım; diğer görselleri sen yükleyeceksin. Profil geçici.",
+    "Kasım için 3 postluk bir plan hazırladım. Ürün postunda @image kullanacağım; diğer görselleri sen yükleyeceksin. Profil geçici.",
   action: "plan",
   plan: {
     title: "MTM Agro — Kasım 2026",
@@ -171,12 +175,13 @@ const planOutput = {
   },
 };
 
-function result(output: unknown, overrides: Partial<ClaudeCallResult> = {}): ClaudeCallResult {
+function result(text: string, overrides: Partial<ClaudeCallResult> = {}): ClaudeCallResult {
   return {
-    output,
-    text: JSON.stringify(output),
+    output: null,
+    text,
     model: "claude-opus-5-5",
     cliVersion: "2.1.292",
+    sessionId: "sess_abc123",
     usage: {
       inputTokens: 12,
       outputTokens: 900,
@@ -192,19 +197,87 @@ function result(output: unknown, overrides: Partial<ClaudeCallResult> = {}): Cla
   };
 }
 
-/** A runner that streams `reply` in a few pieces like the CLI does. */
-function streamingRunner(
-  output: Record<string, unknown>,
+/** Invoke the turn's real `studio-mcp.mjs` stdio MCP server as a child process! */
+async function callMcpStdioTool(
+  mcpConfigFile: string,
+  toolName: string,
+  toolArgs: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  const cfg = JSON.parse(readFileSync(mcpConfigFile, "utf8")) as {
+    mcpServers: {
+      studio: { command: string; args: string[]; env: Record<string, string> };
+    };
+  };
+  const srv = cfg.mcpServers.studio;
+  return new Promise((resolve, reject) => {
+    const child = spawn(srv.command, srv.args, {
+      env: { ...process.env, ...srv.env },
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    const responses: Record<string, unknown>[] = [];
+    let buf = "";
+    child.stdout.setEncoding("utf8");
+    child.stdout.on("data", (chunk: string) => {
+      buf += chunk;
+      const lines = buf.split("\n");
+      buf = lines.pop() ?? "";
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        const msg = JSON.parse(line) as Record<string, unknown>;
+        responses.push(msg);
+        if (msg.id === 2) {
+          child.stdin.end();
+        }
+      }
+    });
+    child.on("error", reject);
+    child.on("close", () => {
+      const callRes = responses.find((r) => r.id === 2) as
+        | { result?: { content?: { text?: string }[] } }
+        | undefined;
+      const rawText = callRes?.result?.content?.[0]?.text ?? "{}";
+      resolve(JSON.parse(rawText) as Record<string, unknown>);
+    });
+    child.stdin.write(
+      `${JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2024-11-05" } })}\n`,
+    );
+    child.stdin.write(
+      `${JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" })}\n`,
+    );
+    child.stdin.write(
+      `${JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: toolName, arguments: toolArgs } })}\n`,
+    );
+  });
+}
+
+/** Wecra-style tool-using runner: streams intro text -> calls MCP tool -> streams summary text. */
+function toolUsingRunner(
+  spec: {
+    intro?: string;
+    tool?: { name: string; args: Record<string, unknown> };
+    outro: string;
+    sessionId?: string;
+  },
   seen: ClaudeCallOptions[] = [],
 ): ClaudeRunner {
   return async (options) => {
     seen.push(options);
-    const reply = String(output.reply ?? "");
-    for (let i = 0; i < reply.length; i += 17) {
-      options.onFieldDelta?.(reply.slice(i, i + 17));
+    if (spec.intro) {
+      for (let i = 0; i < spec.intro.length; i += 15) {
+        options.onTextDelta?.(spec.intro.slice(i, i + 15));
+        await new Promise((r) => setTimeout(r, 1));
+      }
+    }
+    if (spec.tool && options.mcpConfigFile) {
+      await callMcpStdioTool(options.mcpConfigFile, spec.tool.name, spec.tool.args);
+    }
+    for (let i = 0; i < spec.outro.length; i += 17) {
+      options.onTextDelta?.(spec.outro.slice(i, i + 17));
       await new Promise((r) => setTimeout(r, 1));
     }
-    return result(output);
+    return result(spec.outro, {
+      ...(spec.sessionId !== undefined ? { sessionId: spec.sessionId } : {}),
+    });
   };
 }
 
@@ -250,6 +323,85 @@ function jobContext(signal = new AbortController().signal) {
   return { ctx, progress };
 }
 
+describe("TurnWriter multi-part interleaving", () => {
+  it("interleaves text -> tool_step -> consent -> text with independent seq counters", async () => {
+    const { api, state } = createFakeApi();
+    const writer = new TurnWriter({ api, runId: "run_1", attempt: 1 });
+
+    writer.appendText("Planı kontrol ");
+    writer.appendText("ediyorum.");
+    const stepIdx = await writer.setPart({
+      type: "tool_step",
+      id: "step_1",
+      name: "accept_and_generate_plan",
+      label: "Plan onayı bekleniyor…",
+      state: "running",
+      summary: null,
+    });
+    const consentIdx = await writer.setPart({
+      type: "consent",
+      consentId: "c_1",
+      tool: "accept_and_generate_plan",
+      title: "Planı onayla ve post üretimini başlat",
+      detail: "3 post üretilecek",
+      state: "pending",
+    });
+    // Updating step_1 in place must not shift part indexes.
+    await writer.setPart(
+      {
+        type: "tool_step",
+        id: "step_1",
+        name: "accept_and_generate_plan",
+        label: "Plan onaylandı ve üretim başlatıldı",
+        state: "done",
+        summary: "3 post üretimi başlatıldı",
+      },
+      stepIdx,
+    );
+    writer.appendText("Üretim ");
+    await writer.flush();
+    writer.appendText("başladı!");
+    await writer.complete("claude-opus-5-5", { inputTokens: 5, outputTokens: 10 }, { id: "s_9" });
+
+    expect([stepIdx, consentIdx]).toEqual([1, 2]);
+    expect(state.parts).toEqual([
+      { type: "text", text: "Planı kontrol ediyorum." },
+      {
+        type: "tool_step",
+        id: "step_1",
+        name: "accept_and_generate_plan",
+        label: "Plan onaylandı ve üretim başlatıldı",
+        state: "done",
+        summary: "3 post üretimi başlatıldı",
+      },
+      {
+        type: "consent",
+        consentId: "c_1",
+        tool: "accept_and_generate_plan",
+        title: "Planı onayla ve post üretimini başlat",
+        detail: "3 post üretilecek",
+        state: "pending",
+        decidedAt: null,
+      },
+      { type: "text", text: "Üretim başladı!" },
+    ]);
+
+    const part0Deltas = state.opsCalls
+      .flat()
+      .filter((op) => op.op === "text.delta" && op.index === 0);
+    const part3Deltas = state.opsCalls
+      .flat()
+      .filter((op) => op.op === "text.delta" && op.index === 3);
+    expect(part0Deltas.map((d) => (d.op === "text.delta" ? d.seq : 0))).toEqual([1]);
+    expect(part3Deltas.map((d) => (d.op === "text.delta" ? d.seq : 0))).toEqual([1, 2]);
+    expect(state.completed[0]).toMatchObject({
+      attempt: 1,
+      model: "claude-opus-5-5",
+      session: { id: "s_9" },
+    });
+  });
+});
+
 describe("chat output schema and plan conversion", () => {
   it("validates the model output and converts the plan for PUT plan", () => {
     const out = ChatTurnOutput.parse(planOutput);
@@ -288,7 +440,6 @@ describe("chat output schema and plan conversion", () => {
       aliases: [alias({ alias: "kapak", previousAliases: ["urun"] })],
     });
     expect(plan.items[0]?.imageBrief).toBe("@kapak ön planda");
-    // A mention inside punctuation (as the model wrote it in the e2e run) is not added twice.
     const again = convertPlan(
       {
         ...planOutput.plan,
@@ -454,12 +605,25 @@ describe("prompt context", () => {
   });
 });
 
-describe("chat.turn handler", () => {
-  it("streams the reply, proposes the plan and completes the run", async () => {
+describe("chat.turn handler (Wecra-style tools, MCP bridge & sessions)", () => {
+  it("streams text before & after MCP propose_plan, interleaves tool_step + plan_proposal, and stores sessionId", async () => {
     const { api, state } = createFakeApi({ context: turnContext() });
     state.assets.set("asset_photo", { bytes: await png(), contentType: "image/png" });
     const seen: ClaudeCallOptions[] = [];
-    const handler = createChatTurnHandler(deps(api, streamingRunner(planOutput, seen)));
+    const handler = createChatTurnHandler(
+      deps(
+        api,
+        toolUsingRunner(
+          {
+            intro: "Kasım planını hazırlıyorum.",
+            tool: { name: "propose_plan", args: planOutput.plan },
+            outro: planOutput.reply,
+            sessionId: "sess_plan_1",
+          },
+          seen,
+        ),
+      ),
+    );
     const { ctx, progress } = jobContext();
 
     const out = await handler.run({ conversationId: "conv_1", runId: "run_1" }, ctx);
@@ -469,21 +633,27 @@ describe("chat.turn handler", () => {
       planId: "plan_1",
       planItems: 3,
       images: ["image"],
+      provider: "claude",
     });
-    // Reply streamed as text deltas of part 0, seq 1..n, nothing else in between.
-    const deltas = state.opsCalls.flat().filter((op) => op.op === "text.delta");
-    expect(deltas.length).toBeGreaterThan(0);
-    expect(deltas.map((d) => (d.op === "text.delta" ? d.seq : 0))).toEqual(
-      deltas.map((_, i) => i + 1),
-    );
-    expect(state.parts[0]).toEqual({ type: "text", text: planOutput.reply });
-    expect(state.parts[1]).toEqual({ type: "plan_proposal", planId: "plan_1" });
+    // Parts interleaved in exact execution order: text -> tool_step -> plan_proposal -> text
+    expect(state.parts.map((p) => p.type)).toEqual(["text", "tool_step", "plan_proposal", "text"]);
+    expect(state.parts[0]).toEqual({ type: "text", text: "Kasım planını hazırlıyorum." });
+    expect(state.parts[1]).toMatchObject({
+      type: "tool_step",
+      name: "propose_plan",
+      label: "İçerik planı hazırlandı",
+      state: "done",
+      summary: "3 post önerildi",
+    });
+    expect(state.parts[2]).toEqual({ type: "plan_proposal", planId: "plan_1" });
+    expect(state.parts[3]).toEqual({ type: "text", text: planOutput.reply });
     expect(state.plans[0]?.items[0]?.imageBrief).toBe("@image — Ürün ambalajı fotoğrafı");
     expect(state.plans[0]).not.toHaveProperty("brandId");
     expect(state.completed).toEqual([
       {
         attempt: 1,
         model: "claude-opus-5-5",
+        session: { id: "sess_plan_1" },
         usage: expect.objectContaining({
           model: "claude-opus-5-5",
           requestedModel: "opus",
@@ -495,16 +665,129 @@ describe("chat.turn handler", () => {
         }),
       },
     ]);
-    // Defaults when the run names nothing: opus / medium.
-    expect([seen[0]?.model, seen[0]?.effort]).toEqual(["opus", "medium"]);
+    expect([seen[0]?.model, seen[0]?.effort, seen[0]?.persistSession]).toEqual([
+      "opus",
+      "medium",
+      true,
+    ]);
+    expect(seen[0]?.allowedTools).toContain("mcp__studio__propose_plan");
     expect(state.failed).toEqual([]);
-    // The model saw the context, the label and the image itself.
     const content = seen[0]?.content ?? [];
     expect(content[0]?.type === "text" && content[0].text).toContain("<takma_adlar>");
     expect(content.some((b) => b.type === "image")).toBe(true);
-    expect(content.some((b) => b.type === "text" && b.text.startsWith("Görsel @image"))).toBe(true);
-    expect(seen[0]?.streamField).toBe("reply");
     expect(progress.at(-1)).toEqual([1, "Tamamlandı"]);
+  });
+
+  it("resumes an existing Claude session with incremental prompt and falls back to full context on stale session", async () => {
+    const resumedCtx = turnContext({
+      conversation: {
+        ...turnContext().conversation,
+        agentSession: {
+          id: "sess_prev",
+          messageCount: 2,
+          runId: "run_0",
+          updatedAt: NOW,
+        },
+      },
+      messageCount: 3,
+      messages: [
+        userMessage({ id: "msg_old", parts: [{ type: "text", text: "Eski mesaj" }], mentions: [] }),
+        {
+          id: "msg_old_asst",
+          conversationId: "conv_1",
+          role: "assistant",
+          status: "complete",
+          runId: "run_0",
+          parts: [{ type: "text", text: "Eski yanıt" }],
+          mentions: [],
+          createdAt: NOW,
+          updatedAt: NOW,
+        },
+        userMessage({
+          id: "msg_1",
+          parts: [{ type: "text", text: "İkinci postu değiştirelim" }],
+          mentions: [],
+        }),
+      ],
+    });
+    const { api, state } = createFakeApi({ context: resumedCtx });
+    const seen: ClaudeCallOptions[] = [];
+    let attemptNum = 0;
+    const runner: ClaudeRunner = async (opts) => {
+      attemptNum++;
+      seen.push(opts);
+      if (attemptNum === 1) {
+        throw new ClaudeError("process", "No conversation found with session ID: sess_prev");
+      }
+      opts.onTextDelta?.("Tam bağlamla yenilendi.");
+      return result("Tam bağlamla yenilendi.", { sessionId: "sess_fresh" });
+    };
+    const out = await createChatTurnHandler(deps(api, runner)).run(
+      { conversationId: "conv_1", runId: "run_1" },
+      jobContext().ctx,
+    );
+
+    expect(seen).toHaveLength(2);
+    // First attempt tried --resume with incremental prompt (no old transcript)
+    expect(seen[0]?.resumeSessionId).toBe("sess_prev");
+    const firstPrompt = seen[0]?.content[0]?.type === "text" ? seen[0].content[0].text : "";
+    expect(firstPrompt).toContain("<yeni_mesaj>");
+    expect(firstPrompt).not.toContain("Eski yanıt");
+
+    // Second attempt retried without --resume and included full transcript
+    expect(seen[1]?.resumeSessionId).toBeUndefined();
+    const secondPrompt = seen[1]?.content[0]?.type === "text" ? seen[1].content[0].text : "";
+    expect(secondPrompt).toContain("Eski yanıt");
+    expect(out.resumedSession).toBeUndefined();
+    expect(state.completed[0]).toMatchObject({ session: { id: "sess_fresh" } });
+  });
+
+  it("handles /usage and /kullanım slash commands directly in Turkish markdown", async () => {
+    const usage = new UsageTracker(null);
+    usage.update({
+      source: "rate_limit_event",
+      observedAt: NOW,
+      windows: [
+        {
+          kind: "five_hour",
+          usedPercent: 84,
+          resetsAt: "2026-11-16T14:00:00.000Z",
+          limited: false,
+        },
+      ],
+    });
+    const ctx = turnContext({
+      messages: [userMessage({ parts: [{ type: "text", text: "/kullanım" }], mentions: [] })],
+    });
+    const { api, state } = createFakeApi({ context: ctx });
+    let modelCalled = false;
+    const d = deps(api, async () => {
+      modelCalled = true;
+      return result("");
+    });
+    d.usage = usage;
+    d.geminiAccount = () => ({
+      status: "ready",
+      mode: "api",
+      apiKeyConfigured: true,
+      cliVersion: null,
+      defaultModel: "gemini-2.5-flash-lite",
+      detail: "GEMINI_API_KEY hazır · doğrudan API (gemini-2.5-flash-lite)",
+      checkedAt: NOW,
+    });
+
+    const out = await createChatTurnHandler(d).run(
+      { conversationId: "conv_1", runId: "run_1" },
+      jobContext().ctx,
+    );
+
+    expect(modelCalled).toBe(false);
+    expect(out.provider).toBe("system");
+    const writtenText = state.parts[0]?.type === "text" ? state.parts[0].text : "";
+    expect(writtenText).toContain("AI Durumu ve Kullanım Özeti");
+    expect(writtenText).toContain("%84 kullanıldı");
+    expect(writtenText).toContain("gemini-2.5-flash-lite");
+    expect(state.completed).toHaveLength(1);
   });
 
   it("uses the model and effort picked for the run", async () => {
@@ -512,10 +795,9 @@ describe("chat.turn handler", () => {
     const { api, state } = createFakeApi({ context: turnContext({ run }) });
     state.assets.set("asset_photo", { bytes: await png(), contentType: "image/png" });
     const seen: ClaudeCallOptions[] = [];
-    const out = await createChatTurnHandler(deps(api, streamingRunner(planOutput, seen))).run(
-      { conversationId: "conv_1", runId: "run_1" },
-      jobContext().ctx,
-    );
+    const out = await createChatTurnHandler(
+      deps(api, toolUsingRunner({ outro: "Tamam." }, seen)),
+    ).run({ conversationId: "conv_1", runId: "run_1" }, jobContext().ctx);
     expect([seen[0]?.model, seen[0]?.effort]).toEqual(["sonnet", "high"]);
     expect(out.effort).toBe("high");
     expect(state.completed[0]).toMatchObject({
@@ -524,25 +806,31 @@ describe("chat.turn handler", () => {
     });
   });
 
-  it("asks a question part when the model needs information", async () => {
+  it("asks a question part via MCP ask_question when the model needs information", async () => {
     const { api, state } = createFakeApi({ context: turnContext() });
-    const output = {
-      reply: "Hangi ay için planlayayım?",
-      action: "question",
-      question: {
-        prompt: "Hangi ay?",
-        mode: "single",
-        options: [
-          { id: "kasim", label: "Kasım" },
-          { id: "aralik", label: "Aralık" },
-        ],
-        allowText: true,
-      },
-    };
-    const handler = createChatTurnHandler(deps(api, streamingRunner(output)));
+    const handler = createChatTurnHandler(
+      deps(
+        api,
+        toolUsingRunner({
+          tool: {
+            name: "ask_question",
+            args: {
+              prompt: "Hangi ay?",
+              mode: "single",
+              options: [
+                { id: "kasim", label: "Kasım" },
+                { id: "aralik", label: "Aralık" },
+              ],
+              allowText: true,
+            },
+          },
+          outro: "Hangi ay için planlayayım?",
+        }),
+      ),
+    );
     const out = await handler.run({ conversationId: "conv_1", runId: "run_1" }, jobContext().ctx);
     expect(out.action).toBe("question");
-    expect(state.parts[1]).toMatchObject({ type: "question", prompt: "Hangi ay?", mode: "single" });
+    expect(state.parts.some((p) => p.type === "question" && p.prompt === "Hangi ay?")).toBe(true);
     expect(state.plans).toEqual([]);
     expect(state.completed).toHaveLength(1);
   });
@@ -559,9 +847,22 @@ describe("chat.turn handler", () => {
       ],
     });
     const { api, state } = createFakeApi({ context, brands });
-    const output = { ...planOutput, plan: { ...planOutput.plan, brandId: "brand_1" } };
     const seen: ClaudeCallOptions[] = [];
-    const handler = createChatTurnHandler(deps(api, streamingRunner(output, seen)));
+    const handler = createChatTurnHandler(
+      deps(
+        api,
+        toolUsingRunner(
+          {
+            tool: {
+              name: "propose_plan",
+              args: { ...planOutput.plan, brandId: "brand_1" },
+            },
+            outro: planOutput.reply,
+          },
+          seen,
+        ),
+      ),
+    );
     await handler.run({ conversationId: "conv_1", runId: "run_1" }, jobContext().ctx);
     expect(state.plans[0]?.brandId).toBe("brand_1");
     const first = seen[0]?.content[0];
@@ -572,7 +873,7 @@ describe("chat.turn handler", () => {
     const { api, state } = createFakeApi({ context: turnContext() });
     state.assets.set("asset_photo", { bytes: await png(), contentType: "image/png" });
     let calls = 0;
-    const inner = streamingRunner(planOutput);
+    const inner = toolUsingRunner({ outro: planOutput.reply });
     const runner: ClaudeRunner = async (options) => {
       calls++;
       if (calls === 1) {
@@ -592,16 +893,12 @@ describe("chat.turn handler", () => {
       state: "done",
       label: "Claude kullanım sınırı doldu",
     });
-    const sets = state.opsCalls.flat().filter((op) => op.op === "part.set");
-    expect(
-      sets.map((s) => (s.op === "part.set" && s.part.type === "progress" ? s.part.state : "")),
-    ).toEqual(["pending", "done"]);
     expect(state.parts[1]).toEqual({ type: "text", text: planOutput.reply });
     expect(progress.some(([, m]) => m?.startsWith("Claude kullanım sınırı doldu"))).toBe(true);
     expect(state.completed).toHaveLength(1);
   });
 
-  it("fails the run with a Turkish message when the output is unusable", async () => {
+  it("fails the run with a Turkish message when Claude fails", async () => {
     const { api, state } = createFakeApi({ context: turnContext() });
     const runner: ClaudeRunner = async () => {
       throw new ClaudeError("output", "no structured output");
@@ -633,7 +930,7 @@ describe("chat.turn handler", () => {
     const controller = new AbortController();
     const runner: ClaudeRunner = (options) =>
       new Promise((_resolve, reject) => {
-        options.onFieldDelta?.("Yazıyor");
+        options.onTextDelta?.("Yazıyor");
         options.signal?.addEventListener("abort", () => reject(options.signal?.reason));
         setTimeout(() => controller.abort(new Error("job cancelled")), 5);
       });
@@ -645,23 +942,33 @@ describe("chat.turn handler", () => {
     expect(state.failed).toEqual([]);
   });
 
-  it("refuses to call Claude when the self-test found no login", async () => {
-    const { api, state } = createFakeApi({ context: turnContext() });
+  it("refuses to call Claude when unauthenticated and suggests Gemini if Gemini is ready", async () => {
+    const run = fakeRun({ model: "sonnet" });
+    const { api, state } = createFakeApi({ context: turnContext({ run }) });
     let called = false;
     const d = deps(api, async () => {
       called = true;
-      return result({});
+      return result("");
     });
     d.health = () => ({
       state: "unauthenticated",
-      message: "Claude oturumu yok/süresi doldu",
+      message: "Claude oturumu yok/süresi doldu.",
+      checkedAt: NOW,
+    });
+    d.geminiAccount = () => ({
+      status: "ready",
+      mode: "api",
+      apiKeyConfigured: true,
+      cliVersion: null,
+      defaultModel: "gemini-2.5-flash-lite",
+      detail: "hazır",
       checkedAt: NOW,
     });
     await expect(
       createChatTurnHandler(d).run({ conversationId: "conv_1", runId: "run_1" }, jobContext().ctx),
-    ).rejects.toThrow("Claude oturumu yok");
+    ).rejects.toThrow("Gemini Flash-Lite");
     expect(called).toBe(false);
-    expect(state.failed).toEqual([{ attempt: 1, error: "Claude oturumu yok/süresi doldu" }]);
+    expect((state.failed[0] as { error: string }).error).toContain("Gemini Flash-Lite");
   });
 });
 

@@ -1,22 +1,29 @@
 import { useQuery } from "@tanstack/react-query";
-import type { ComponentType, SVGProps } from "react";
-import { NavLink, Outlet, useLocation } from "react-router";
+import { type ComponentType, type SVGProps, useState } from "react";
+import { Link, NavLink, Outlet, useLocation } from "react-router";
 import { useApi } from "../../api.ts";
+import { Dialog } from "../../components/dialog.tsx";
 import {
   IconBrands,
   IconCalendar,
+  IconChat,
   IconChevronDown,
   IconContents,
   IconJobs,
   IconMedia,
   IconMonitor,
   IconMoon,
+  IconRefresh,
   IconSun,
 } from "../../components/icons.tsx";
 import { BrandMark } from "../../components/page.tsx";
-import { cx } from "../../components/ui.tsx";
+import { Badge, Button, cx, KeyValue, Mono, Progress } from "../../components/ui.tsx";
 import { describeHealth } from "../../health-view.ts";
 import { useBrands } from "../../lib/brand-context.tsx";
+import { formatDateTime } from "../../lib/datetime.ts";
+import { formatPercent } from "../../lib/format.ts";
+import { JOB_TYPE_LABELS } from "../../lib/labels.ts";
+import { CancelJobButton, useLiveJobs } from "../../lib/live-jobs.tsx";
 import { queryKeys } from "../../lib/query-keys.ts";
 import { type ThemePreference, useTheme } from "../../lib/theme.tsx";
 
@@ -27,6 +34,7 @@ interface NavItem {
 }
 
 export const NAV_ITEMS: NavItem[] = [
+  { to: "/chat", label: "Sohbet", icon: IconChat },
   { to: "/icerikler", label: "İçerikler", icon: IconContents },
   { to: "/takvim", label: "Takvim", icon: IconCalendar },
   { to: "/medya", label: "Medya", icon: IconMedia },
@@ -36,6 +44,8 @@ export const NAV_ITEMS: NavItem[] = [
 
 export function AppShell() {
   const location = useLocation();
+  const [statusOpen, setStatusOpen] = useState(false);
+
   return (
     <div className="min-h-dvh lg:grid lg:grid-cols-[264px_1fr]">
       <a
@@ -46,7 +56,7 @@ export function AppShell() {
       </a>
 
       {/* Desktop sidebar */}
-      <aside className="sticky top-0 hidden h-dvh flex-col gap-6 border-r border-line px-4 py-6 lg:flex">
+      <aside className="sticky top-0 hidden h-dvh flex-col gap-5 border-r border-line px-4 py-6 lg:flex">
         <Wordmark />
         <BrandSwitcher />
         <nav aria-label="Ana menü" className="flex flex-col gap-0.5">
@@ -75,6 +85,7 @@ export function AppShell() {
           ))}
         </nav>
         <div className="mt-auto flex flex-col gap-3">
+          <WorkerStatusCard onOpenDetails={() => setStatusOpen(true)} />
           <ThemeToggle />
           <HealthDot />
         </div>
@@ -82,11 +93,12 @@ export function AppShell() {
 
       {/* Mobile top bar */}
       <header className="pt-safe sticky top-0 z-30 border-b border-line bg-bg/85 backdrop-blur-md lg:hidden">
-        <div className="flex h-14 items-center gap-3 px-4">
+        <div className="flex h-14 items-center gap-2.5 px-4">
           <Wordmark compact />
           <div className="min-w-0 flex-1">
             <BrandSwitcher compact />
           </div>
+          <WorkerStatusPill onClick={() => setStatusOpen(true)} />
           <ThemeCycleButton />
         </div>
       </header>
@@ -94,9 +106,10 @@ export function AppShell() {
       <main
         id="main"
         key={location.pathname.split("/")[1]}
-        className="min-w-0 px-4 pt-6 pb-28 sm:px-6 lg:px-10 lg:pt-10 lg:pb-16"
+        className="min-w-0 px-4 pt-6 pb-28 sm:px-6 lg:px-10 lg:pt-8 lg:pb-16"
       >
         <div className="mx-auto max-w-[1240px]">
+          <LiveJobTopBar onOpenDetails={() => setStatusOpen(true)} />
           <Outlet />
         </div>
       </main>
@@ -106,7 +119,7 @@ export function AppShell() {
         aria-label="Ana menü"
         className="pb-safe fixed inset-x-0 bottom-0 z-30 border-t border-line bg-surface/92 backdrop-blur-md lg:hidden"
       >
-        <ul className="grid grid-cols-5">
+        <ul className="grid grid-cols-6">
           {NAV_ITEMS.map((item) => (
             <li key={item.to}>
               <NavLink
@@ -120,7 +133,7 @@ export function AppShell() {
               >
                 {({ isActive }) => (
                   <>
-                    <item.icon size={22} className={isActive ? "text-accent" : undefined} />
+                    <item.icon size={20} className={isActive ? "text-accent" : undefined} />
                     {item.label}
                   </>
                 )}
@@ -129,6 +142,8 @@ export function AppShell() {
           ))}
         </ul>
       </nav>
+
+      <AiStatusDialog open={statusOpen} onClose={() => setStatusOpen(false)} />
     </div>
   );
 }
@@ -207,6 +222,267 @@ export function BrandSwitcher({ compact }: { compact?: boolean }) {
         )}
       </select>
     </div>
+  );
+}
+
+function WorkerStatusCard({ onOpenDetails }: { onOpenDetails: () => void }) {
+  const { presence, summary, streamStatus } = useLiveJobs();
+  const dotColor =
+    summary.macTone === "good" ? "bg-good" : summary.macTone === "warn" ? "bg-warn" : "bg-ink-3";
+
+  return (
+    <button
+      type="button"
+      onClick={onOpenDetails}
+      aria-label={`Mac ve AI durumu: ${summary.macLabel}`}
+      className="flex flex-col gap-2 rounded-xl bg-surface p-3 text-left ring-1 ring-line transition-colors hover:bg-surface-2"
+    >
+      <div className="flex items-center justify-between gap-2">
+        <span className="flex items-center gap-2 text-[13px] font-medium text-ink">
+          <span className={cx("size-2 rounded-full", dotColor)} aria-hidden="true" />
+          {summary.macLabel}
+        </span>
+        <span className="font-mono text-[10px] tracking-wide text-ink-3 uppercase">
+          {streamStatus === "open" ? "canlı" : "yoklama"}
+        </span>
+      </div>
+      {presence && (
+        <div className="flex flex-wrap gap-1">
+          <Badge tone={summary.claudeTone} dot={false} className="h-5 px-2 text-[11px]">
+            {summary.claudeLabel}
+          </Badge>
+          <Badge tone={summary.geminiTone} dot={false} className="h-5 px-2 text-[11px]">
+            {summary.geminiLabel}
+          </Badge>
+        </div>
+      )}
+      <p className="truncate text-[11px] text-ink-3">{summary.macDetail}</p>
+    </button>
+  );
+}
+
+function WorkerStatusPill({ onClick }: { onClick: () => void }) {
+  const { presence, summary } = useLiveJobs();
+  if (!presence) return null;
+  const dotColor = summary.macTone === "good" ? "bg-good" : "bg-warn";
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-label={summary.macLabel}
+      className="inline-flex h-9 items-center gap-1.5 rounded-xl bg-surface px-2.5 text-[12px] font-medium text-ink ring-1 ring-line"
+    >
+      <span className={cx("size-2 rounded-full", dotColor)} aria-hidden="true" />
+      <span className="hidden sm:inline">{summary.macLabel}</span>
+    </button>
+  );
+}
+
+/** Real-time status & active job progress strip shown across views when live data is active. */
+function LiveJobTopBar({ onOpenDetails }: { onOpenDetails: () => void }) {
+  const { presence, summary, activeJobs } = useLiveJobs();
+  const runningJob = activeJobs.find((j) => j.status === "running") ?? activeJobs[0];
+
+  if (!presence && !runningJob) return null;
+
+  return (
+    <section
+      aria-label="Canlı sistem ve iş durumu"
+      className="mb-5 flex flex-col gap-2.5 rounded-2xl bg-surface px-4 py-2.5 shadow-card ring-1 ring-line/70 sm:flex-row sm:items-center sm:justify-between"
+    >
+      <div className="flex flex-wrap items-center gap-2 text-[12px]">
+        <button
+          type="button"
+          onClick={onOpenDetails}
+          className="inline-flex items-center gap-1.5 font-medium text-ink hover:text-accent"
+        >
+          <span
+            className={cx(
+              "size-2 rounded-full",
+              summary.macTone === "good"
+                ? "bg-good"
+                : summary.macTone === "warn"
+                  ? "bg-warn"
+                  : "bg-ink-3",
+            )}
+            aria-hidden="true"
+          />
+          {summary.macLabel}
+        </button>
+        {presence && (
+          <>
+            <span className="text-line-strong">·</span>
+            <Badge tone={summary.claudeTone} dot={false}>
+              {summary.claudeLabel}
+            </Badge>
+            <Badge tone={summary.geminiTone} dot={false}>
+              {summary.geminiLabel}
+            </Badge>
+          </>
+        )}
+      </div>
+
+      {runningJob && (
+        <div className="flex flex-wrap items-center gap-3 sm:min-w-72 sm:justify-end">
+          <Link
+            to={`/isler/${runningJob.id}`}
+            className="min-w-0 flex-1 hover:opacity-85 sm:max-w-xs"
+          >
+            <div className="flex items-center justify-between gap-2 text-[12px]">
+              <span className="truncate font-medium text-ink">
+                {runningJob.progressMessage || JOB_TYPE_LABELS[runningJob.type]}
+              </span>
+              {runningJob.progress !== undefined && (
+                <span className="font-mono text-ink-2 tabular-nums">
+                  {formatPercent(runningJob.progress)}
+                </span>
+              )}
+            </div>
+            {runningJob.progress !== undefined && (
+              <div className="mt-1">
+                <Progress value={runningJob.progress} label="Aktif iş ilerlemesi" />
+              </div>
+            )}
+          </Link>
+          <CancelJobButton job={runningJob} size="sm" />
+        </div>
+      )}
+    </section>
+  );
+}
+
+function AiStatusDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
+  const { presence, summary, streamStatus, refreshStatus, startClaudeLogin } = useLiveJobs();
+  const [refreshing, setRefreshing] = useState(false);
+
+  const handleRefresh = async () => {
+    setRefreshing(true);
+    try {
+      await refreshStatus();
+    } finally {
+      setRefreshing(false);
+    }
+  };
+
+  const windows = presence?.usage?.windows ?? [];
+
+  return (
+    <Dialog
+      open={open}
+      onClose={onClose}
+      title="Mac Worker ve AI Durumu"
+      description="Canlı bağlantı, Claude abonelik kotası ve Gemini görsel motoru hazırlığı."
+      size="md"
+      footer={
+        <>
+          <Button
+            variant="secondary"
+            icon={<IconRefresh size={16} />}
+            loading={refreshing}
+            onClick={() => void handleRefresh()}
+          >
+            Durumu yenile
+          </Button>
+          {presence?.online && presence.claude?.status !== "signed_in" && (
+            <Button variant="accent" onClick={() => void startClaudeLogin()}>
+              Claude girişi başlat
+            </Button>
+          )}
+          <Button variant="primary" onClick={onClose}>
+            Kapat
+          </Button>
+        </>
+      }
+    >
+      <div className="flex flex-col gap-5">
+        <div className="flex flex-wrap items-center gap-2">
+          <Badge tone={summary.macTone}>{summary.macLabel}</Badge>
+          <Badge tone={summary.claudeTone}>{summary.claudeLabel}</Badge>
+          <Badge tone={summary.geminiTone}>{summary.geminiLabel}</Badge>
+        </div>
+
+        <KeyValue
+          items={[
+            {
+              label: "Akış",
+              value:
+                streamStatus === "open"
+                  ? "WebSocket canlı (/api/jobs/stream)"
+                  : "HTTP yoklama yedek modunda",
+            },
+            {
+              label: "Son görülme",
+              value: presence?.lastSeenAt
+                ? formatDateTime(presence.lastSeenAt)
+                : "Henüz bağlanmadı",
+            },
+            {
+              label: "Kuyruk",
+              value: presence
+                ? `${presence.currentJobs.length} çalışan · ${presence.queueLength} sırada`
+                : "—",
+            },
+            {
+              label: "Claude hesabı",
+              value: presence?.claude ? (
+                <>
+                  {presence.claude.email ?? presence.claude.status}
+                  {presence.claude.plan ? ` (${presence.claude.plan})` : ""}
+                  {presence.claude.detail ? ` — ${presence.claude.detail}` : ""}
+                </>
+              ) : (
+                "Rapor bekleniyor"
+              ),
+            },
+            {
+              label: "Gemini",
+              value: presence?.gemini ? (
+                <>
+                  Mod: <Mono>{presence.gemini.mode}</Mono>
+                  {presence.gemini.defaultModel ? ` · ${presence.gemini.defaultModel}` : ""}
+                  {presence.gemini.detail ? ` — ${presence.gemini.detail}` : ""}
+                </>
+              ) : (
+                "Rapor bekleniyor"
+              ),
+            },
+          ]}
+        />
+
+        {windows.length > 0 && (
+          <section className="flex flex-col gap-2.5">
+            <h3 className="text-[12px] font-semibold tracking-wide text-ink-2 uppercase">
+              Claude kullanım pencereleri
+            </h3>
+            {windows.map((w, idx) => (
+              <div key={`${w.kind}-${idx}`} className="rounded-xl bg-surface-2 p-3">
+                <div className="mb-1.5 flex items-center justify-between text-xs">
+                  <span className="font-medium text-ink">
+                    {w.kind === "five_hour"
+                      ? "5 saatlik pencere"
+                      : w.kind === "weekly"
+                        ? "Haftalık pencere"
+                        : "Diğer kota"}
+                  </span>
+                  <span className="font-mono text-ink-2">
+                    {w.usedPercent !== undefined ? `%${Math.round(w.usedPercent)}` : "—"}
+                    {w.limited ? " · Sınır doldu" : ""}
+                  </span>
+                </div>
+                {w.usedPercent !== undefined && (
+                  <Progress value={w.usedPercent / 100} label={`${w.kind} kullanımı`} />
+                )}
+                {w.resetsAt && (
+                  <p className="mt-1 text-[11px] text-ink-3">
+                    Sıfırlanma: {formatDateTime(w.resetsAt)}
+                  </p>
+                )}
+              </div>
+            ))}
+          </section>
+        )}
+      </div>
+    </Dialog>
   );
 }
 

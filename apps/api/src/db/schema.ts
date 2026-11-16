@@ -25,8 +25,9 @@ export const ENUMS = {
   platform: ["instagram", "facebook", "linkedin"],
   socialAccountStatus: ["pending", "connected", "needs_reauth", "disabled"],
   brandProfileStatus: ["draft", "approved"],
-  assetKind: ["image", "video", "audio", "font", "logo", "other"],
+  assetKind: ["image", "video", "audio", "document", "font", "logo", "other"],
   assetSource: ["upload", "generated", "ingested"],
+  tokenHealth: ["valid", "expiring_soon", "invalid", "missing_scopes", "unchecked"],
   contentType: ["post", "carousel", "story", "reel"],
   contentStatus: [
     "draft",
@@ -50,6 +51,8 @@ export const ENUMS = {
   planStatus: ["draft", "proposed", "accepted", "rejected", "superseded"],
   planItemStatus: ["planned", "accepted", "skipped"],
   imageSlot: ["none", "user_upload", "ai_generate"],
+  // --- devices (L1) ---
+  devicePlatform: ["ios", "ipados", "macos", "other"],
 } as const;
 
 /** `col in ('a', 'b')` for CHECK constraints (values are constants above, never input). */
@@ -112,6 +115,26 @@ export const socialAccounts = sqliteTable(
     check("social_accounts_platform_check", oneOf(t.platform, ENUMS.platform)),
     check("social_accounts_status_check", oneOf(t.status, ENUMS.socialAccountStatus)),
   ],
+);
+
+// --- social_account_tokens (Faz 3 token vault) ----------------------------------
+
+export const socialAccountTokens = sqliteTable(
+  "social_account_tokens",
+  {
+    socialAccountId: text("social_account_id")
+      .primaryKey()
+      .references(() => socialAccounts.id, { onDelete: "cascade" }),
+    ciphertext: text("ciphertext").notNull(),
+    iv: text("iv").notNull(),
+    scopes: text("scopes", { mode: "json" }).$type<string[]>().notNull().default([]),
+    expiresAt: integer("expires_at", { mode: "timestamp_ms" }),
+    health: text("health", { enum: ENUMS.tokenHealth }).notNull().default("valid"),
+    checkedAt: integer("checked_at", { mode: "timestamp_ms" }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [check("social_account_tokens_health_check", oneOf(t.health, ENUMS.tokenHealth))],
 );
 
 // --- brand_profiles -------------------------------------------------------------
@@ -350,6 +373,7 @@ export const schedules = sqliteTable(
     contentHash: text("content_hash").notNull(),
     scheduledAt: integer("scheduled_at", { mode: "timestamp_ms" }).notNull(),
     status: text("status", { enum: ENUMS.scheduleStatus }).notNull().default("pending"),
+    permalink: text("permalink"),
     cancelledAt: integer("cancelled_at", { mode: "timestamp_ms" }),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
@@ -379,6 +403,7 @@ export const publishLogs = sqliteTable(
     attempt: integer("attempt").notNull(),
     status: text("status", { enum: ENUMS.publishLogStatus }).notNull(),
     externalPostId: text("external_post_id"),
+    permalink: text("permalink"),
     error: text("error"),
     startedAt: integer("started_at", { mode: "timestamp_ms" }).notNull(),
     finishedAt: integer("finished_at", { mode: "timestamp_ms" }),
@@ -408,6 +433,14 @@ export const conversations = sqliteTable(
     lastActivityAt: integer("last_activity_at", { mode: "timestamp_ms" }).notNull(),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
+    /**
+     * Claude Code session of the last completed agent turn (A5): its id, the
+     * number of messages it had seen, the run and when. All null = none.
+     */
+    agentSessionId: text("agent_session_id"),
+    agentSessionMessages: integer("agent_session_messages"),
+    agentSessionRunId: text("agent_session_run_id"),
+    agentSessionAt: integer("agent_session_at", { mode: "timestamp_ms" }),
   },
   (t) => [
     index("conversations_activity_idx").on(t.lastActivityAt, t.id),
@@ -638,5 +671,58 @@ export const planItems = sqliteTable(
     check("plan_items_slot_check", oneOf(t.imageSlot, ENUMS.imageSlot)),
     check("plan_items_status_check", oneOf(t.status, ENUMS.planItemStatus)),
     check("plan_items_position_check", sql`${t.position} >= 0`),
+  ],
+);
+
+// --- devices and pairing (L1) ------------------------------------------------------
+// The API runs on the owner's Mac. Phones pair once with a short code shown in
+// the Mac app and then send a long random bearer token; only its SHA-256 hash
+// is stored. See src/middleware/access.ts and src/routes/devices.ts.
+
+export const devices = sqliteTable(
+  "devices",
+  {
+    id: text("id").primaryKey(),
+    name: text("name").notNull(),
+    platform: text("platform", { enum: ENUMS.devicePlatform }).notNull().default("other"),
+    /** Hex SHA-256 of the bearer token. */
+    tokenHash: text("token_hash").notNull(),
+    lastSeenAt: integer("last_seen_at", { mode: "timestamp_ms" }),
+    revokedAt: integer("revoked_at", { mode: "timestamp_ms" }),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    uniqueIndex("devices_token_hash_idx").on(t.tokenHash),
+    check("devices_platform_check", oneOf(t.platform, ENUMS.devicePlatform)),
+  ],
+);
+
+/** Single-use codes; creating a new one invalidates the unused ones. */
+export const pairingCodes = sqliteTable(
+  "pairing_codes",
+  {
+    id: text("id").primaryKey(),
+    /** Hex SHA-256 of the 6-digit code. */
+    codeHash: text("code_hash").notNull(),
+    expiresAt: integer("expires_at", { mode: "timestamp_ms" }).notNull(),
+    /** Set when claimed or superseded; a used code never works again. */
+    usedAt: integer("used_at", { mode: "timestamp_ms" }),
+    deviceId: text("device_id").references(() => devices.id, { onDelete: "set null" }),
+    createdAt: createdAt(),
+  },
+  (t) => [index("pairing_codes_hash_idx").on(t.codeHash)],
+);
+
+/** Failed claims, for rate limiting (per client address and in total). */
+export const pairingFailures = sqliteTable(
+  "pairing_failures",
+  {
+    id: text("id").primaryKey(),
+    clientIp: text("client_ip").notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    index("pairing_failures_time_idx").on(t.createdAt),
+    index("pairing_failures_client_idx").on(t.clientIp, t.createdAt),
   ],
 );

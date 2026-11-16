@@ -9,6 +9,12 @@ final class AppSettings {
     static let serverKey = "studio.serverURL"
     static let appearanceKey = "studio.appearance"
     static let sampleKey = "StudioSampleData"
+    static let hostEnabledKey = "studio.host.enabled"
+    static let lanEnabledKey = "studio.host.lan"
+    static let repoPathKey = "studio.host.repoPath"
+    static let remoteControlEnabledKey = "studio.host.remoteControlEnabled"
+    static let remoteHostnameKey = "studio.host.remoteHostname"
+    nonisolated static let defaultRemoteHostname = "social.burakkoc.net"
 
     private let defaults: UserDefaults
 
@@ -27,17 +33,67 @@ final class AppSettings {
     /// instead of the API. For demos without a server; never the default.
     let useSampleData: Bool
 
+    /// The app runs the API and worker itself (LocalHost). Off: talk to `serverURLString`.
+    var hostEnabled: Bool {
+        didSet { defaults.set(hostEnabled, forKey: Self.hostEnabledKey) }
+    }
+
+    /// The host's LAN gateway + Bonjour ("Yerel ağdan erişim"); off = 127.0.0.1 only.
+    var lanEnabled: Bool {
+        didSet { defaults.set(lanEnabled, forKey: Self.lanEnabledKey) }
+    }
+
+    /// Repo checkout the host runs the API and worker from.
+    var repoPath: String {
+        didSet { defaults.set(repoPath, forKey: Self.repoPathKey) }
+    }
+
+    /// Remote Control (`L3`): supervise `cloudflared` tunnel to expose LAN gateway / API.
+    var remoteControlEnabled: Bool {
+        didSet { defaults.set(remoteControlEnabled, forKey: Self.remoteControlEnabledKey) }
+    }
+
+    /// Public hostname routed to this Mac's tunnel (default `social.burakkoc.net`).
+    var remoteHostname: String {
+        didSet { defaults.set(remoteHostname, forKey: Self.remoteHostnameKey) }
+    }
+
+    /// The running host's API (`http://127.0.0.1:<port>`); set at runtime, not saved.
+    var hostAPIURL: URL?
+
+    var hostConfiguration: HostConfiguration {
+        HostConfiguration(
+            repoPath: repoPath,
+            lanEnabled: lanEnabled,
+            remoteControlEnabled: remoteControlEnabled,
+            remoteHostname: remoteHostname,
+            tunnelToken: try? tunnelTokens.load()
+        )
+    }
+
     let credentials: any CredentialStore
+    let tunnelTokens: any TunnelTokenStore
     /// Model / effort per conversation and the last one used.
     let agentChoices: AgentChoiceStore
 
-    init(defaults: UserDefaults = .standard, credentials: any CredentialStore = KeychainCredentialStore(), useSampleData: Bool? = nil) {
+    init(
+        defaults: UserDefaults = .standard,
+        credentials: any CredentialStore = KeychainCredentialStore(),
+        tunnelTokens: any TunnelTokenStore = TunnelTokenKeychain(),
+        useSampleData: Bool? = nil
+    ) {
         self.defaults = defaults
         agentChoices = AgentChoiceStore(defaults: defaults)
         self.credentials = credentials
+        self.tunnelTokens = tunnelTokens
         serverURLString = defaults.string(forKey: Self.serverKey) ?? APIClient.localDefaultURL.absoluteString
         appearance = AppearancePreference(rawValue: defaults.string(forKey: Self.appearanceKey) ?? "") ?? .system
         self.useSampleData = useSampleData ?? defaults.bool(forKey: Self.sampleKey)
+        hostEnabled = defaults.object(forKey: Self.hostEnabledKey) as? Bool ?? true
+        lanEnabled = defaults.object(forKey: Self.lanEnabledKey) as? Bool ?? true
+        repoPath = defaults.string(forKey: Self.repoPathKey) ?? HostEnvironment.defaultRepoPath
+        remoteControlEnabled = defaults.object(forKey: Self.remoteControlEnabledKey) as? Bool ?? false
+        remoteHostname = defaults.string(forKey: Self.remoteHostnameKey) ?? Self.defaultRemoteHostname
     }
 
     var serverURL: URL? {
@@ -47,7 +103,9 @@ final class AppSettings {
     }
 
     func makeClient() -> APIClient {
-        APIClient(baseURL: serverURL ?? APIClient.localDefaultURL, auth: AccessServiceTokenAuth(store: credentials))
+        // The Mac app talks to its own host on 127.0.0.1 (trusted as local, no token).
+        if hostEnabled, let hostAPIURL { return APIClient(baseURL: hostAPIURL) }
+        return APIClient(baseURL: serverURL ?? APIClient.localDefaultURL, auth: AccessServiceTokenAuth(store: credentials))
     }
 
     /// Apply to every window immediately (no restart).

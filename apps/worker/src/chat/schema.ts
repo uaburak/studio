@@ -15,7 +15,7 @@ import {
 } from "@studio/contract";
 import { z } from "zod";
 
-export const CHAT_CONTENT_TYPES = ["post", "carousel", "story"] as const;
+export const CHAT_CONTENT_TYPES = ["post", "carousel", "story", "reel"] as const;
 export const CHAT_PLATFORMS = ["instagram", "facebook", "linkedin"] as const;
 const DATE = "^\\d{4}-\\d{2}-\\d{2}$";
 

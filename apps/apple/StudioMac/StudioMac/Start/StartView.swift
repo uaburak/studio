@@ -1,48 +1,137 @@
+import AppKit
 import StudioKit
-import SwiftUI
 
-/// Empty state (04): "Ne üretelim?", the composer, three suggestions.
-struct StartView: View {
-    @Environment(AppModel.self) private var app
-    @Environment(\.colorScheme) private var colorScheme
+/// Pure AppKit Start screen (04):
+/// - Centred `"Ne üretelim?"` (30pt bold)
+/// - `ComposerControlView` (max width 566) + `ComposerFooterControlView` underneath (Mac status, Model menu, Effort menu, Usage ring)
+/// - Inline error banner
+/// - Three suggestion pills (`"Bu ayın postlarını üret"`, `"Yeni ürün duyurusu"`, `"Bu haftayı planla"`).
+final class StartViewController: NSViewController {
+    private unowned let app: AppModel
+    private var composerView: ComposerControlView!
+    private var footerView: ComposerFooterControlView!
+    private let errorBanner = InlineErrorBannerView()
+    private var observation: ObservationToken?
+    private var lastFocusRequest = 0
 
-    var body: some View {
+    init(app: AppModel) {
+        self.app = app
+        super.init(nibName: nil, bundle: nil)
+    }
+
+    required init?(coder: NSCoder) { fatalError("not used") }
+
+    override func loadView() {
+        let root = ThemedView()
+        root.backgroundColor = Theme.canvas
+
         let model = app.newChat
-        VStack(spacing: 0) {
-            Spacer(minLength: 40)
-            Text("Ne üretelim?")
-                .font(.system(size: 30, weight: .bold))
-                .tracking(-0.4)
-                .foregroundStyle(Theme.textPrimary)
-                .padding(.bottom, 24)
-            VStack(alignment: .trailing, spacing: 8) {
-                ComposerView(model: model.composer, focusRequest: model.focusRequest, isBusy: model.isCreating) {
-                    Task { await model.send() }
+
+        let heading = NSTextField(labelWithString: "Ne üretelim?")
+        heading.font = NSFont.systemFont(ofSize: 30, weight: .bold)
+        heading.textColor = Theme.textPrimary
+
+        composerView = ComposerControlView(
+            model: model.composer,
+            imageStore: app.images,
+            onStop: nil,
+            onSend: { [weak model] in
+                guard let model else { return }
+                Task { await model.send() }
+            }
+        )
+        footerView = ComposerFooterControlView(newChat: model, app: app)
+
+        let footerWrapper = NSView()
+        footerWrapper.translatesAutoresizingMaskIntoConstraints = false
+        footerWrapper.addSubview(footerView)
+        NSLayoutConstraint.activate([
+            footerView.leadingAnchor.constraint(equalTo: footerWrapper.leadingAnchor, constant: 10),
+            footerView.trailingAnchor.constraint(equalTo: footerWrapper.trailingAnchor, constant: -10),
+            footerView.topAnchor.constraint(equalTo: footerWrapper.topAnchor),
+            footerView.bottomAnchor.constraint(equalTo: footerWrapper.bottomAnchor),
+        ])
+
+        let composerGroup = NSStackView(views: [composerView, footerWrapper])
+        composerGroup.orientation = .vertical
+        composerGroup.alignment = .trailing
+        composerGroup.spacing = 8
+        composerGroup.translatesAutoresizingMaskIntoConstraints = false
+
+        errorBanner.isHidden = true
+        errorBanner.onDismiss = { [weak model] in model?.error = nil }
+
+        let suggestionsRow = NSStackView(views: NewChatModel.suggestions.map { suggestion in
+            PillButton(title: suggestion, kind: .outline, height: 28) { [weak self] in
+                self?.prefill(suggestion)
+            }
+        })
+        suggestionsRow.orientation = .horizontal
+        suggestionsRow.alignment = .centerY
+        suggestionsRow.spacing = 6
+
+        let centerStack = NSStackView(views: [heading, composerGroup, errorBanner, suggestionsRow])
+        centerStack.orientation = .vertical
+        centerStack.alignment = .centerX
+        centerStack.spacing = 24
+        centerStack.setCustomSpacing(12, after: composerGroup)
+        centerStack.setCustomSpacing(28, after: errorBanner)
+        centerStack.translatesAutoresizingMaskIntoConstraints = false
+        root.addSubview(centerStack)
+
+        let widthPref = composerGroup.widthAnchor.constraint(equalToConstant: 566)
+        widthPref.priority = .defaultHigh
+
+        NSLayoutConstraint.activate([
+            centerStack.centerXAnchor.constraint(equalTo: root.centerXAnchor),
+            centerStack.centerYAnchor.constraint(equalTo: root.centerYAnchor, constant: -24),
+            centerStack.leadingAnchor.constraint(greaterThanOrEqualTo: root.leadingAnchor, constant: Theme.columnMinMargin),
+            centerStack.trailingAnchor.constraint(lessThanOrEqualTo: root.trailingAnchor, constant: -Theme.columnMinMargin),
+
+            widthPref,
+            composerGroup.widthAnchor.constraint(lessThanOrEqualToConstant: 566),
+            composerView.widthAnchor.constraint(equalTo: composerGroup.widthAnchor),
+            footerWrapper.widthAnchor.constraint(equalTo: composerGroup.widthAnchor),
+            errorBanner.widthAnchor.constraint(lessThanOrEqualToConstant: 566),
+        ])
+
+        self.view = root
+    }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        app.newChat.updatePlaceholder()
+        lastFocusRequest = app.newChat.focusRequest
+
+        observation = observe { [weak self] in
+            guard let self else { return }
+            _ = self.app.currentBrandId
+            self.app.newChat.updatePlaceholder()
+            self.composerView.isBusy = self.app.newChat.isCreating
+
+            if let err = self.app.newChat.error {
+                self.errorBanner.message = err
+                self.errorBanner.isHidden = false
+            } else {
+                self.errorBanner.isHidden = true
+            }
+
+            let req = self.app.newChat.focusRequest
+            if req != self.lastFocusRequest {
+                self.lastFocusRequest = req
+                DispatchQueue.main.async { [weak self] in
+                    self?.app.newChat.composer.bridge?.focus()
                 }
-                MacStatusView().padding(.trailing, 8)
             }
-            .frame(maxWidth: 566)
-            .padding(.horizontal, Theme.columnMinMargin)
-            if let error = model.error {
-                InlineError(message: error) { model.error = nil }
-                    .frame(maxWidth: 566)
-                    .padding(.top, 12)
-            }
-            HStack(spacing: 6) {
-                ForEach(NewChatModel.suggestions, id: \.self) { suggestion in
-                    Button(suggestion) { prefill(suggestion) }
-                        .buttonStyle(SuggestionPillStyle())
-                }
-            }
-            .padding(.top, 28)
-            Spacer(minLength: 40)
-            Spacer(minLength: 40)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        // Nothing scrolls here: in dark the toolbar's own background would read as a band.
-        .toolbarBackgroundVisibility(colorScheme == .dark ? .hidden : .automatic, for: .windowToolbar)
-        .onAppear { model.updatePlaceholder() }
-        .onChange(of: app.currentBrandId) { model.updatePlaceholder() }
+    }
+
+    override func viewDidAppear() {
+        super.viewDidAppear()
+        app.newChat.updatePlaceholder()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+            self?.app.newChat.composer.bridge?.focus()
+        }
     }
 
     private func prefill(_ suggestion: String) {
@@ -51,22 +140,5 @@ struct StartView: View {
         app.newChat.composer.text = text
         app.newChat.composer.bridge?.setText(text)
         app.newChat.composer.bridge?.focus()
-    }
-}
-
-/// White pill with a hairline (`Bu ayın postlarını üret`).
-struct SuggestionPillStyle: ButtonStyle {
-    @State private var hovering = false
-
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .font(Theme.buttonFont)
-            .foregroundStyle(Theme.textPrimary)
-            .padding(.horizontal, 14)
-            .frame(height: 28)
-            .background(Capsule().fill(hovering || configuration.isPressed ? Theme.fill : Theme.canvas))
-            .overlay(Capsule().strokeBorder(Theme.border))
-            .contentShape(Capsule())
-            .onHover { hovering = $0 }
     }
 }

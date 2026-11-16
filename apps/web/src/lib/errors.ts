@@ -19,6 +19,9 @@ const TITLES: Record<ErrorCode, string> = {
   hash_mismatch: "Sürüm değişti — onaylamak istediğiniz sürüm artık güncel değil",
   payload_too_large: "Dosya ya da veri çok büyük",
   unsupported_media_type: "Desteklenmeyen dosya türü",
+  unauthorized: "Bu cihaz eşleştirilmemiş ya da anahtarı geçersiz",
+  forbidden: "Bu işlem yalnızca Mac'ten yapılabilir",
+  rate_limited: "Çok fazla deneme — biraz bekleyip tekrar deneyin",
   internal_error: "Sunucuda beklenmeyen bir hata oluştu",
 };
 

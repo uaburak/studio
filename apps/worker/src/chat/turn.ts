@@ -1,21 +1,53 @@
 /**
- * `chat.turn`: one agent turn of a conversation.
+ * `chat.turn`: one Wecra-style tool-using agent turn of a conversation.
  *
- * start run (context) -> pick images of the latest user message -> one Claude call
- * (reply streamed into the assistant message while it is written) -> plan (PUT plan)
- * or question part -> complete. Usage limits park the call (the message shows a
- * progress step with the reset time); cancellation stops everything.
+ * Supports:
+ * - `/usage` & `/kullanım` slash command (instant Turkish status & usage report),
+ * - Direct Gemini SSE API (`GEMINI_API_KEY`) and `gemini` CLI fallback,
+ * - Headless Claude Code CLI with local MCP bridge (`studio-mcp.mjs`) and
+ *   `--resume` session continuation (with automatic full-context fallback on stale sessions),
+ * - Multi-part interleaved streaming (`text` -> `tool_step` -> `consent` -> `text`).
  */
-import { ApiError, type Brand, ChatTurnPayload, type RunUsage } from "@studio/contract";
-import type { AgentDeps } from "../agent.ts";
+import path from "node:path";
+import {
+  type AgentEffort,
+  ApiError,
+  type Brand,
+  ChatTurnPayload,
+  type ClaudeAccount,
+  type GeminiAccount,
+  type RunUsage,
+  type TurnContext,
+} from "@studio/contract";
+import type { AgentDeps, AgentSettings } from "../agent.ts";
 import { ClaudeError, describeClaudeError, formatClock, isClaudeError } from "../claude/errors.ts";
 import type { ParkInfo } from "../claude/gate.ts";
-import { aliasOf, chooseModel, type ModelChoice, readChoice } from "../claude/models.ts";
+import type { ClaudeHealth } from "../claude/health.ts";
+import {
+  aliasOf,
+  chooseModel,
+  DEFAULT_EFFORT,
+  type Effort,
+  MODEL_ALIASES,
+  type ModelAlias,
+  type ModelChoice,
+  readChoice,
+} from "../claude/models.ts";
 import type { ClaudeCallResult, ClaudeContentBlock } from "../claude/runner.ts";
+import type { UsageReport } from "../claude/usage.ts";
+import { buildGeminiContents, runGeminiApiTurn } from "../gemini/api-runner.ts";
+import { runGeminiCliTurn } from "../gemini/cli-runner.ts";
+import { describeGeminiError, GeminiError, isGeminiError } from "../gemini/errors.ts";
+import {
+  type GeminiModelAlias,
+  isGeminiModelAlias,
+  resolveGeminiModelId,
+} from "../gemini/models.ts";
 import { defineHandler, type JobContext, RetryableError } from "../registry.ts";
 import { loadTurnImages, selectTurnImages } from "./images.ts";
-import { buildChatContext, CHAT_SYSTEM_PROMPT } from "./prompt.ts";
-import { CHAT_TURN_JSON_SCHEMA, ChatTurnOutput, convertPlan, toQuestionPart } from "./schema.ts";
+import { startMcpBridge } from "./mcp-bridge.ts";
+import { buildChatContext, buildIncrementalChatPrompt, CHAT_SYSTEM_PROMPT } from "./prompt.ts";
+import { StudioToolExecutor } from "./tools.ts";
 import { RunClosedError, TurnWriter } from "./writer.ts";
 
 export interface ChatTurnOutputSummary extends Record<string, unknown> {
@@ -24,8 +56,12 @@ export interface ChatTurnOutputSummary extends Record<string, unknown> {
   planId?: string;
   planItems?: number;
   planNotes?: string[];
+  toolCalls?: string[];
   images: string[];
+  provider?: "claude" | "gemini" | "system";
   model?: string;
+  effort?: string;
+  resumedSession?: boolean;
   usage?: RunUsage;
 }
 
@@ -37,7 +73,6 @@ export function toRunUsage(
 ): RunUsage {
   const u = result.usage;
   return {
-    // The model actually used (full id from the CLI), the requested family and effort.
     ...(result.model ? { model: result.model } : {}),
     ...(choice ? { requestedModel: choice.model, effort: choice.effort } : {}),
     inputTokens: u.inputTokens,
@@ -58,6 +93,248 @@ export function createChatTurnHandler(deps: AgentDeps) {
   });
 }
 
+type ResolvedRoute =
+  | {
+      provider: "claude";
+      choice: ModelChoice;
+      explicitClaude: boolean;
+    }
+  | {
+      provider: "gemini";
+      alias: GeminiModelAlias;
+      modelId: string;
+      effort: Effort;
+      execution: "api" | "cli";
+    };
+
+function defaultGeminiAccount(settings: AgentSettings): GeminiAccount {
+  const apiKeyConfigured = Boolean(settings.geminiApiKey?.trim());
+  return {
+    status: apiKeyConfigured && settings.geminiMode !== "cli" ? "ready" : "not_configured",
+    mode: apiKeyConfigured ? "api" : "none",
+    apiKeyConfigured,
+    cliVersion: null,
+    defaultModel: settings.geminiModels["gemini-flash-lite"],
+    detail: apiKeyConfigured
+      ? `GEMINI_API_KEY hazır · doğrudan API (${settings.geminiModels["gemini-flash-lite"]})`
+      : ".env dosyasında GEMINI_API_KEY tanımlı değil",
+    checkedAt: new Date().toISOString(),
+  };
+}
+
+function resolveGeminiExecution(
+  alias: GeminiModelAlias,
+  effort: Effort,
+  settings: AgentSettings,
+  gemini: GeminiAccount,
+): ResolvedRoute {
+  const modelId = resolveGeminiModelId(alias, settings.geminiModels);
+  const apiKey = settings.parentEnv.GEMINI_API_KEY ?? settings.geminiApiKey;
+  const hasKey = Boolean(apiKey && apiKey.trim().length > 0);
+  const hasCli = gemini.cliVersion !== null || gemini.mode === "cli" || gemini.mode === "both";
+
+  if (settings.geminiMode === "api") {
+    if (!hasKey) {
+      throw new GeminiError(
+        "auth",
+        "Gemini API seçildi ancak .env dosyasında GEMINI_API_KEY tanımlı değil.",
+      );
+    }
+    return { provider: "gemini", alias, modelId, effort, execution: "api" };
+  }
+
+  if (settings.geminiMode === "cli") {
+    if (!hasCli) {
+      throw new GeminiError(
+        "spawn",
+        `STUDIO_GEMINI_MODE=cli seçili ancak Mac'te \`${settings.geminiBin}\` CLI bulunamadı.`,
+      );
+    }
+    return { provider: "gemini", alias, modelId, effort, execution: "cli" };
+  }
+
+  // `auto`: prefer direct API whenever GEMINI_API_KEY is configured, else CLI.
+  if (hasKey) {
+    return { provider: "gemini", alias, modelId, effort, execution: "api" };
+  }
+  if (hasCli) {
+    return { provider: "gemini", alias, modelId, effort, execution: "cli" };
+  }
+  throw new GeminiError(
+    "auth",
+    "Gemini kullanıma hazır değil: .env dosyasına GEMINI_API_KEY ekleyin veya Mac'e `gemini` CLI kurun.",
+  );
+}
+
+export function resolveChatRoute(input: {
+  runModel: string | null | undefined;
+  runEffort: AgentEffort | null | undefined;
+  settings: AgentSettings;
+  claudeHealth: ClaudeHealth;
+  geminiAccount: GeminiAccount;
+}): ResolvedRoute {
+  const { runModel, runEffort, settings, claudeHealth, geminiAccount } = input;
+  const effort: Effort = runEffort ?? (settings.effortChat as Effort | undefined) ?? DEFAULT_EFFORT;
+  const geminiReady = geminiAccount.status === "ready";
+
+  if (isGeminiModelAlias(runModel)) {
+    return resolveGeminiExecution(runModel, effort, settings, geminiAccount);
+  }
+
+  const isExplicitClaude =
+    typeof runModel === "string" && (MODEL_ALIASES as readonly string[]).includes(runModel);
+
+  if (isExplicitClaude) {
+    if (claudeHealth.state === "unauthenticated" || claudeHealth.state === "error") {
+      const hint = geminiReady
+        ? "Model seçiciden Gemini Flash-Lite veya Gemini Flash seçebilir ya da Ayarlar'dan Claude hesabınıza giriş yapabilirsiniz."
+        : "Ayarlar'dan Claude hesabınıza giriş yapın ya da Mac'te `claude auth login` çalıştırın.";
+      throw new Error(`${claudeHealth.message} ${hint}`);
+    }
+    const choice = chooseModel(readChoice({ model: runModel, effort: runEffort }), {
+      model: settings.model,
+      effort: settings.effortChat,
+    });
+    return { provider: "claude", choice, explicitClaude: true };
+  }
+
+  // `run.model` is null / unset -> worker default with automatic Gemini fallback!
+  if (isGeminiModelAlias(settings.model)) {
+    return resolveGeminiExecution(settings.model, effort, settings, geminiAccount);
+  }
+
+  if (claudeHealth.state === "ok") {
+    const choice = chooseModel(readChoice({ effort: runEffort }), {
+      model: settings.model,
+      effort: settings.effortChat,
+    });
+    return { provider: "claude", choice, explicitClaude: false };
+  }
+
+  if (geminiReady) {
+    return resolveGeminiExecution("gemini-flash-lite", effort, settings, geminiAccount);
+  }
+
+  if (claudeHealth.state === "limited") {
+    const choice = chooseModel(readChoice({ effort: runEffort }), {
+      model: settings.model,
+      effort: settings.effortChat,
+    });
+    return { provider: "claude", choice, explicitClaude: false };
+  }
+
+  throw new Error(claudeHealth.message);
+}
+
+function isUsageSlashCommand(context: TurnContext): boolean {
+  const trigger = context.messages.find((m) => m.id === context.run.triggerMessageId);
+  if (trigger?.role !== "user") return false;
+  const hasAttachments = trigger.parts.some((p) => p.type === "attachment");
+  if (hasAttachments) return false;
+  const text = trigger.parts
+    .filter(
+      (p): p is Extract<(typeof trigger.parts)[number], { type: "text" }> => p.type === "text",
+    )
+    .map((p) => p.text)
+    .join(" ")
+    .trim()
+    .toLowerCase();
+  return text === "/usage" || text === "/kullanım" || text === "/kullanim";
+}
+
+export function formatUsageSlashReport(input: {
+  claudeHealth: ClaudeHealth;
+  claudeAccount?: ClaudeAccount;
+  usageReport?: UsageReport | null;
+  geminiAccount: GeminiAccount;
+  settings: AgentSettings;
+  now: Date;
+}): string {
+  const { claudeHealth, claudeAccount, usageReport, geminiAccount, settings, now } = input;
+  const lines: string[] = ["### AI Durumu ve Kullanım Özeti", ""];
+
+  // Claude section
+  const claudeStatusMap: Record<ClaudeHealth["state"], string> = {
+    ok: "Hazır",
+    limited: `Kullanım sınırında${claudeHealth.resetsAt ? ` (${formatClock(new Date(claudeHealth.resetsAt), now)} civarında sıfırlanır)` : ""}`,
+    unauthenticated: "Oturum kapalı",
+    error: "Kullanılamıyor",
+  };
+  const accountSummary = claudeAccount
+    ? [
+        claudeAccount.plan,
+        claudeAccount.email,
+        claudeAccount.cliVersion ? `CLI ${claudeAccount.cliVersion}` : null,
+      ]
+        .filter(Boolean)
+        .join(" · ")
+    : claudeHealth.cliVersion
+      ? `CLI ${claudeHealth.cliVersion}`
+      : "";
+
+  lines.push(
+    `**Claude Code**: ${claudeStatusMap[claudeHealth.state]}${accountSummary ? ` (${accountSummary})` : ""}`,
+  );
+  if (claudeHealth.state !== "ok" && claudeHealth.message) {
+    lines.push(`- Durum notu: ${claudeHealth.message}`);
+  }
+
+  if (usageReport && usageReport.windows.length > 0) {
+    for (const w of usageReport.windows) {
+      const label =
+        w.kind === "five_hour"
+          ? "5 saatlik pencere"
+          : w.kind === "weekly"
+            ? "Haftalık pencere"
+            : (w.name ?? "Diğer pencere");
+      const pct = w.usedPercent !== undefined ? `%${w.usedPercent} kullanıldı` : "oran bilinmiyor";
+      const reset = w.resetsAt ? `, sıfırlanma: ${formatClock(new Date(w.resetsAt), now)}` : "";
+      const limitTag = w.limited ? " — **SINIR DOLU**" : "";
+      lines.push(`- ${label}: ${pct}${reset}${limitTag}`);
+    }
+  } else {
+    lines.push("- Kullanım penceresi: Henüz kayıtlı Claude pencere verisi yok.");
+  }
+
+  lines.push("");
+
+  // Gemini section
+  const geminiStatusLabel =
+    geminiAccount.status === "ready"
+      ? "Hazır"
+      : geminiAccount.status === "not_configured"
+        ? "Yapılandırılmadı"
+        : "Hata";
+  const geminiModeLabel =
+    geminiAccount.mode === "both"
+      ? `Doğrudan API + Gemini CLI (${geminiAccount.cliVersion ?? "?"})`
+      : geminiAccount.mode === "api"
+        ? "Doğrudan API (.env GEMINI_API_KEY)"
+        : geminiAccount.mode === "cli"
+          ? `Gemini CLI (${geminiAccount.cliVersion ?? "?"})`
+          : "Yok";
+  lines.push(`**Gemini**: ${geminiStatusLabel} · Mod: ${geminiModeLabel}`);
+  lines.push(
+    `- Modeller: Flash-Lite (\`${settings.geminiModels["gemini-flash-lite"]}\`), Flash (\`${settings.geminiModels["gemini-flash"]}\`), Pro (\`${settings.geminiModels["gemini-pro"]}\`)`,
+  );
+  if (geminiAccount.detail) {
+    lines.push(`- Detay: ${geminiAccount.detail}`);
+  }
+
+  return lines.join("\n");
+}
+
+function canResumeClaudeSession(context: TurnContext): string | undefined {
+  const session = context.conversation.agentSession;
+  if (!session?.id || session.id.startsWith("gemini:")) return undefined;
+  if (context.assistantMessage && context.assistantMessage.parts.length > 0) return undefined;
+  const totalMessages = context.messageCount ?? context.messages.length;
+  if (totalMessages !== session.messageCount + 1) return undefined;
+  const trigger = context.messages.find((m) => m.id === context.run.triggerMessageId);
+  if (trigger?.role !== "user") return undefined;
+  return session.id;
+}
+
 async function runChatTurn(
   payload: ChatTurnPayload,
   ctx: JobContext,
@@ -75,7 +352,6 @@ async function runChatTurn(
   } catch (error) {
     if (signal.aborted) throw signal.reason ?? error;
     if (error instanceof ApiError && error.status === 409) {
-      // Run cancelled/finished, or a newer attempt owns it: nothing to do.
       throw new Error(`run ${payload.runId} cannot be started: ${error.message}`);
     }
     throw new RetryableError(`could not start run ${payload.runId}: ${(error as Error).message}`);
@@ -90,20 +366,57 @@ async function runChatTurn(
     logger,
   });
 
-  // Model and effort the user picked for this turn (run.model / run.effort), else env, else opus/medium.
-  const choice = chooseModel(readChoice(context.run), {
-    model: settings.model,
-    effort: settings.effortChat,
-  });
-  const health = deps.health();
-  if (health.state === "unauthenticated" || health.state === "error") {
-    const message = health.message;
+  const claudeHealth = deps.health();
+  const geminiAccount = deps.geminiAccount?.() ?? defaultGeminiAccount(settings);
+
+  // Instant `/usage` (`/kullanım`) slash command — works even when providers are limited or signed out.
+  if (isUsageSlashCommand(context)) {
+    try {
+      const startedMs = Date.now();
+      const reportText = formatUsageSlashReport({
+        claudeHealth,
+        ...(deps.claudeAccount ? { claudeAccount: deps.claudeAccount() } : {}),
+        usageReport: deps.usage?.latest() ?? null,
+        geminiAccount,
+        settings,
+        now: now(),
+      });
+      writer.appendText(reportText);
+      await writer.complete("system/usage", {
+        durationMs: Math.max(0, Date.now() - startedMs),
+        calls: 0,
+      });
+      ctx.progress(1, "Tamamlandı");
+      return {
+        runId: payload.runId,
+        action: "none",
+        images: [],
+        provider: "system",
+        model: "system/usage",
+      };
+    } catch (error) {
+      writer.dispose();
+      throw error;
+    }
+  }
+
+  let route: ResolvedRoute;
+  try {
+    route = resolveChatRoute({
+      runModel: context.run.model,
+      runEffort: context.run.effort ?? null,
+      settings,
+      claudeHealth,
+      geminiAccount,
+    });
+  } catch (error) {
+    writer.dispose();
+    const message = isGeminiError(error) ? describeGeminiError(error) : (error as Error).message;
     await writer.fail(message).catch(() => undefined);
-    throw new Error(message);
+    throw error instanceof Error ? error : new Error(message);
   }
 
   try {
-    // Brand list only when the conversation has no brand (the model may pick one).
     let brands: Brand[] = [];
     if (!context.brand) {
       brands = (await api.client.brands.list({ status: "active", limit: 100 }, { signal })).items;
@@ -118,15 +431,127 @@ async function runChatTurn(
       logger,
     });
 
-    const contextText = buildChatContext({
-      context,
-      now: now(),
-      brands,
-      images: loaded.notes,
-    });
-    const content: ClaudeContentBlock[] = [{ type: "text", text: contextText }, ...loaded.blocks];
+    const claudeGenModel: ModelAlias | undefined =
+      route.provider === "claude" &&
+      (MODEL_ALIASES as readonly string[]).includes(route.choice.model)
+        ? (route.choice.model as ModelAlias)
+        : undefined;
+    const rawEffort = route.provider === "claude" ? route.choice.effort : route.effort;
+    const genEffort: AgentEffort | undefined = rawEffort !== "max" ? rawEffort : "xhigh";
 
-    // Usage-limit park: show it in the message and the job, resume later.
+    const executor = new StudioToolExecutor({
+      api,
+      writer,
+      runId: payload.runId,
+      conversationId: context.conversation.id,
+      initialBrandId: context.conversation.brandId,
+      initialOpenPlan: context.openPlan,
+      aliases: context.aliases ?? [],
+      signal,
+      logger,
+      generationChoice: {
+        ...(claudeGenModel ? { model: claudeGenModel } : {}),
+        ...(genEffort ? { effort: genEffort } : {}),
+      },
+      ...(deps.consentPollIntervalMs !== undefined
+        ? { consentPollIntervalMs: deps.consentPollIntervalMs }
+        : {}),
+      ...(deps.consentTimeoutMs !== undefined ? { consentTimeoutMs: deps.consentTimeoutMs } : {}),
+      now,
+    });
+
+    if (route.provider === "gemini") {
+      ctx.progress(0.15, "Gemini yanıtlıyor");
+      let usedModel: string;
+      let usage: RunUsage;
+
+      if (route.execution === "api") {
+        const apiKey = (settings.parentEnv.GEMINI_API_KEY ?? settings.geminiApiKey ?? "").trim();
+        const contents = buildGeminiContents({
+          context,
+          now: now(),
+          brands,
+          imageNotes: loaded.notes,
+          imageBlocks: loaded.blocks,
+        });
+        const gemRes = await runGeminiApiTurn({
+          apiKey,
+          modelId: route.modelId,
+          requestedModel: route.alias,
+          effort: route.effort,
+          system: CHAT_SYSTEM_PROMPT,
+          contents,
+          executor,
+          onTextDelta: (text) => writer.appendText(text),
+          signal,
+          timeoutMs: settings.claudeTimeoutMs,
+          ...(deps.geminiFetch ? { fetch: deps.geminiFetch } : {}),
+        });
+        usedModel = gemRes.model;
+        usage = gemRes.usage;
+      } else {
+        const bridge = await startMcpBridge(executor, {
+          workRoot: path.join(deps.stateDir, "mcp-work"),
+          signal,
+        });
+        try {
+          const promptText = buildChatContext({
+            context,
+            now: now(),
+            brands,
+            images: loaded.notes,
+          });
+          const cliRes = await runGeminiCliTurn({
+            bin: settings.geminiBin,
+            apiKey: settings.parentEnv.GEMINI_API_KEY ?? settings.geminiApiKey,
+            parentEnv: settings.parentEnv,
+            modelId: route.modelId,
+            requestedModel: route.alias,
+            effort: route.effort,
+            system: CHAT_SYSTEM_PROMPT,
+            prompt: promptText,
+            bridge,
+            onTextDelta: (text) => writer.appendText(text),
+            timeoutMs: settings.claudeTimeoutMs,
+            signal,
+            ...(deps.geminiCliSpawn ? { spawn: deps.geminiCliSpawn } : {}),
+          });
+          usedModel = cliRes.model;
+          usage = cliRes.usage;
+        } finally {
+          await bridge.close();
+        }
+      }
+
+      await writer.flush();
+      ctx.progress(0.9, "Yanıt kaydediliyor");
+      await writer.complete(usedModel, usage);
+      ctx.progress(1, "Tamamlandı");
+
+      return {
+        runId: payload.runId,
+        action: executor.outcome.action,
+        ...(executor.outcome.planId ? { planId: executor.outcome.planId } : {}),
+        ...(executor.outcome.planItems !== undefined
+          ? { planItems: executor.outcome.planItems }
+          : {}),
+        ...(executor.outcome.planNotes ? { planNotes: executor.outcome.planNotes } : {}),
+        ...(executor.outcome.toolCalls.length > 0 ? { toolCalls: executor.outcome.toolCalls } : {}),
+        images: loaded.notes.filter((n) => n.attached).map((n) => n.alias),
+        provider: "gemini",
+        model: usedModel,
+        effort: route.effort,
+        usage,
+      };
+    }
+
+    // --- Claude Wecra-style chat with MCP bridge & session persistence -------------------
+    const choice = route.choice;
+    const bridge = await startMcpBridge(executor, {
+      workRoot: path.join(deps.stateDir, "mcp-work"),
+      signal,
+    });
+
     let parkIndex: number | null = null;
     const onPark = async (info: ParkInfo) => {
       const label = "Claude kullanım sınırı doldu";
@@ -158,100 +583,126 @@ async function runChatTurn(
         .catch(() => undefined);
     };
 
-    ctx.progress(0.15, "Claude yanıtlıyor");
-    const result = await gate.call(
-      {
-        label: `chat-${payload.runId}`,
-        system: CHAT_SYSTEM_PROMPT,
-        content,
-        schema: CHAT_TURN_JSON_SCHEMA,
-        model: choice.model,
-        effort: choice.effort,
-        timeoutMs: settings.claudeTimeoutMs,
-        signal,
-        streamField: "reply",
-        onFieldDelta: (text) => writer.appendText(text),
-      },
-      { onPark, onResume },
-    );
-    await writer.flush();
-    ctx.progress(0.85, "Yanıt kaydediliyor");
+    try {
+      ctx.progress(0.15, "Claude yanıtlıyor");
+      const resumeSessionId = canResumeClaudeSession(context);
+      let resumedSession = Boolean(resumeSessionId);
+      let result: ClaudeCallResult;
 
-    const parsed = ChatTurnOutput.safeParse(result.output);
-    if (!parsed.success) {
-      throw new ClaudeError(
-        "output",
-        `chat output does not match the schema: ${parsed.error.message.slice(0, 500)}`,
-      );
-    }
-    const out = parsed.data;
-    // If the reply did not stream (or arrived only at the end), make sure it is there.
-    if (!writer.written.trim() && out.reply.trim()) {
-      writer.appendText(out.reply);
-      await writer.flush();
-    }
+      const buildFullBlocks = (): ClaudeContentBlock[] => [
+        {
+          type: "text",
+          text: buildChatContext({
+            context,
+            now: now(),
+            brands,
+            images: loaded.notes,
+          }),
+        },
+        ...loaded.blocks,
+      ];
 
-    const usage = toRunUsage(result, choice);
-    const summary: ChatTurnOutputSummary = {
-      runId: payload.runId,
-      action: out.action,
-      images: loaded.notes.filter((n) => n.attached).map((n) => n.alias),
-      ...(result.model ? { model: result.model } : {}),
-      effort: choice.effort,
-      usage,
-    };
+      const callClaude = (sessionIdToResume: string | undefined) => {
+        const content: ClaudeContentBlock[] = sessionIdToResume
+          ? [
+              {
+                type: "text",
+                text: buildIncrementalChatPrompt({
+                  context,
+                  now: now(),
+                  images: loaded.notes,
+                }),
+              },
+              ...loaded.blocks,
+            ]
+          : buildFullBlocks();
 
-    if (out.action === "plan" && out.plan) {
-      const brandId = context.conversation.brandId ?? pickBrand(out.plan.brandId, brands);
-      if (!brandId) {
-        await writer.setPart({
-          type: "question",
-          questionId: "brand",
-          prompt: "Bu plan hangi marka için?",
-          mode: brands.length >= 2 ? "single" : "text",
-          options:
-            brands.length >= 2
-              ? brands
-                  .slice(0, 12)
-                  .map((b) => ({ id: slugId(b.slug), label: b.name, description: null }))
-              : [],
-          allowText: brands.length >= 2,
-        });
-        summary.action = "question";
-      } else {
-        const { plan, notes } = convertPlan(out.plan, {
-          aliases: context.aliases ?? [],
-          ...(context.conversation.brandId ? {} : { brandId }),
-        });
-        if (notes.length) logger.info(`[job ${ctx.jobId}] plan fixes: ${notes.join("; ")}`);
-        const saved = await writer.putPlan(plan);
-        summary.planId = saved.plan.id;
-        summary.planItems = saved.plan.items.length;
-        if (notes.length) summary.planNotes = notes;
+        return gate.call(
+          {
+            label: `chat-${payload.runId}`,
+            system: CHAT_SYSTEM_PROMPT,
+            content,
+            model: choice.model,
+            effort: choice.effort,
+            timeoutMs: settings.claudeTimeoutMs,
+            signal,
+            persistSession: true,
+            ...(sessionIdToResume ? { resumeSessionId: sessionIdToResume } : {}),
+            mcpConfigFile: bridge.claudeMcpConfigPath,
+            allowedTools: bridge.allowedTools,
+            onTextDelta: (text) => writer.appendText(text),
+          },
+          { onPark, onResume },
+        );
+      };
+
+      try {
+        result = await callClaude(resumeSessionId);
+      } catch (error) {
+        if (
+          resumeSessionId &&
+          !signal.aborted &&
+          !writer.written &&
+          executor.outcome.toolCalls.length === 0 &&
+          error instanceof ClaudeError &&
+          error.code === "process"
+        ) {
+          logger.warn(
+            `[job ${ctx.jobId}] claude session ${resumeSessionId} could not be resumed (${error.message}); retrying with full context`,
+          );
+          resumedSession = false;
+          result = await callClaude(undefined);
+        } else {
+          throw error;
+        }
       }
-    } else if (out.action === "question" && out.question) {
-      const question = toQuestionPart(out.question, `q-${payload.runId.slice(-8)}`);
-      if (question) await writer.setPart(question);
-    }
 
-    // The run's `model` becomes the model id actually used (the contract's convention).
-    await writer.complete(result.model ?? aliasOf(choice.model), usage);
-    ctx.progress(1, "Tamamlandı");
-    return summary;
+      await writer.flush();
+      ctx.progress(0.9, "Yanıt kaydediliyor");
+
+      const usage = toRunUsage(result, choice);
+      const usedModel = result.model ?? aliasOf(choice.model) ?? choice.model;
+      const finalSessionId = result.sessionId ?? resumeSessionId;
+
+      await writer.complete(usedModel, usage, finalSessionId ? { id: finalSessionId } : undefined);
+      ctx.progress(1, "Tamamlandı");
+
+      return {
+        runId: payload.runId,
+        action: executor.outcome.action,
+        ...(executor.outcome.planId ? { planId: executor.outcome.planId } : {}),
+        ...(executor.outcome.planItems !== undefined
+          ? { planItems: executor.outcome.planItems }
+          : {}),
+        ...(executor.outcome.planNotes ? { planNotes: executor.outcome.planNotes } : {}),
+        ...(executor.outcome.toolCalls.length > 0 ? { toolCalls: executor.outcome.toolCalls } : {}),
+        images: loaded.notes.filter((n) => n.attached).map((n) => n.alias),
+        provider: "claude",
+        ...(result.model ? { model: result.model } : {}),
+        effort: choice.effort,
+        ...(resumedSession ? { resumedSession: true } : {}),
+        usage,
+      };
+    } finally {
+      await bridge.close();
+    }
   } catch (error) {
     writer.dispose();
     if (signal.aborted) throw signal.reason ?? error;
     if (error instanceof RunClosedError) {
-      // Cancelled or closed by the API meanwhile; the hub settles the job.
       throw new Error(`run closed while writing: ${error.message}`);
     }
     if (isClaudeError(error) && (error.code === "transient" || error.code === "timeout")) {
-      // Leave the run open: the hub re-queues the job (run -> queued) while attempts remain.
       throw new RetryableError(describeClaudeError(error));
+    }
+    if (isGeminiError(error) && (error.code === "transient" || error.code === "timeout")) {
+      throw new RetryableError(describeGeminiError(error));
     }
     const message = isClaudeError(error)
       ? describeClaudeError(error)
-      : `Tur tamamlanamadı: ${(error as Error).message.slice(0, 500)}`;
+      : isGeminiError(error)
+        ? describeGeminiError(error)
+        : `Tur tamamlanamadı: ${(error as Error).message.slice(0, 500)}`;
     logger.warn(`[job ${ctx.jobId}] chat turn failed: ${(error as Error).message}`);
     await writer
       .fail(message)
@@ -260,13 +711,4 @@ async function runChatTurn(
       );
     throw error instanceof Error ? error : new Error(String(error));
   }
-}
-
-function pickBrand(id: string | undefined, brands: readonly Brand[]): string | undefined {
-  if (!id) return brands.length === 1 ? brands[0]?.id : undefined;
-  return brands.find((b) => b.id === id || b.slug === id)?.id;
-}
-
-function slugId(slug: string): string {
-  return slug.slice(0, 64);
 }

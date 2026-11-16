@@ -2,7 +2,7 @@ import { z } from "zod";
 import { EntityId, PageQuery, pageOf, Timestamp } from "./common.ts";
 
 export const AssetKind = z
-  .enum(["image", "video", "audio", "font", "logo", "other"])
+  .enum(["image", "video", "audio", "document", "font", "logo", "other"])
   .meta({ id: "AssetKind" });
 export type AssetKind = z.infer<typeof AssetKind>;
 
@@ -69,12 +69,24 @@ export const ASSET_MIME_RULES = {
     ext: ".mp3",
   },
   "audio/mp4": { defaultKind: "audio", kinds: ["audio", "other"], maxBytes: 50 * MiB, ext: ".m4a" },
+  "audio/x-m4a": {
+    defaultKind: "audio",
+    kinds: ["audio", "other"],
+    maxBytes: 50 * MiB,
+    ext: ".m4a",
+  },
+  "audio/aac": { defaultKind: "audio", kinds: ["audio", "other"], maxBytes: 50 * MiB, ext: ".aac" },
   "audio/wav": { defaultKind: "audio", kinds: ["audio", "other"], maxBytes: 50 * MiB, ext: ".wav" },
   "font/woff2": { defaultKind: "font", kinds: ["font"], maxBytes: 5 * MiB, ext: ".woff2" },
   "font/woff": { defaultKind: "font", kinds: ["font"], maxBytes: 5 * MiB, ext: ".woff" },
   "font/ttf": { defaultKind: "font", kinds: ["font"], maxBytes: 5 * MiB, ext: ".ttf" },
   "font/otf": { defaultKind: "font", kinds: ["font"], maxBytes: 5 * MiB, ext: ".otf" },
-  "application/pdf": { defaultKind: "other", kinds: ["other"], maxBytes: 20 * MiB, ext: ".pdf" },
+  "application/pdf": {
+    defaultKind: "document",
+    kinds: ["document", "other"],
+    maxBytes: 50 * MiB,
+    ext: ".pdf",
+  },
 } as const satisfies Record<string, AssetMimeRule>;
 
 export type AssetMimeType = keyof typeof ASSET_MIME_RULES;

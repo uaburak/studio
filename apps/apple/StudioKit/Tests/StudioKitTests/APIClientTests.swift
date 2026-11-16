@@ -152,6 +152,54 @@ struct APIClientTests {
         let oddJSON = try JSONSerialization.jsonObject(with: MessageWire.encode(odd)) as! [String: Any]
         #expect(oddJSON["model"] == nil)
         #expect(oddJSON["effort"] == nil)
+
+        let geminiChosen = OutgoingMessage(text: "plan", clientMessageId: "k5", model: .geminiFlashLite, effort: .medium)
+        let geminiJSON = try JSONSerialization.jsonObject(with: MessageWire.encode(geminiChosen)) as! [String: Any]
+        #expect(geminiJSON["model"] as? String == "gemini-flash-lite")
+        #expect(geminiJSON["effort"] as? String == "medium")
+    }
+
+    @Test func decideConsentAndWorkerAICommands() async throws {
+        let messageJSON = """
+        {"message":{"id":"m1","conversationId":"c1","role":"assistant","status":"complete","runId":"r1","parts":[{"type":"consent","consentId":"con-1","tool":"schedule_post","title":"Postu zamanla","detail":null,"state":"allowed","decidedAt":"2026-11-16T14:00:00.000Z"}],"createdAt":"2026-11-16T14:00:00.000Z","updatedAt":"2026-11-16T14:00:00.000Z"}}
+        """
+        let claudeJSON = #"{"account":{"status":"signed_in","email":"burak@burakkoc.net","plan":"Claude Max","cliVersion":"1.0.24","loginUrl":null,"detail":null,"checkedAt":"2026-11-16T14:00:00.000Z"},"online":true,"sent":1}"#
+        let geminiJSON = #"{"account":{"status":"ready","mode":"api","apiKeyConfigured":true,"cliVersion":null,"defaultModel":"gemini-2.5-flash-lite","detail":"Hazır","checkedAt":"2026-11-16T14:00:00.000Z"},"online":true,"sent":0}"#
+
+        let (api, host) = client { request, _ in
+            let path = request.url!.path
+            if path.hasSuffix("/consent") { return .init(status: 200, body: Data(messageJSON.utf8)) }
+            if path.contains("/workers/claude") { return .init(status: 200, body: Data(claudeJSON.utf8)) }
+            return .init(status: 200, body: Data(geminiJSON.utf8))
+        }
+
+        let consent = try await api.decideConsent(conversationId: "c1", messageId: "m1", ConsentDecisionCreate(consentId: "con-1", allow: true))
+        guard case .consent(let part) = consent.message.parts.first else {
+            Issue.record("expected consent part"); return
+        }
+        #expect(part.state == .allowed)
+
+        let claude = try await api.claudeControl()
+        #expect(claude.account?.status == .signedIn)
+        _ = try await api.claudeLogin()
+        _ = try await api.claudeRefresh()
+
+        let gemini = try await api.geminiControl()
+        #expect(gemini.account?.status == .ready)
+        _ = try await api.geminiRefresh()
+
+        let recorded = StubURLProtocol.recorded(host: host)
+        #expect(recorded.map { "\($0.0.httpMethod!) \($0.0.url!.path)" } == [
+            "POST /api/conversations/c1/messages/m1/consent",
+            "GET /api/workers/claude",
+            "POST /api/workers/claude/login",
+            "POST /api/workers/claude/status",
+            "GET /api/workers/gemini",
+            "POST /api/workers/gemini/status",
+        ])
+        let consentBody = try JSONSerialization.jsonObject(with: recorded[0].1) as? [String: Any]
+        #expect(consentBody?["consentId"] as? String == "con-1")
+        #expect(consentBody?["allow"] as? Bool == true)
     }
 
     @Test func acceptAndGenerateSendsModelAndEffort() async throws {

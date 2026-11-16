@@ -424,18 +424,93 @@ describe("content.generate handler (fake renderer)", () => {
     expect(calls).toBe(3);
   });
 
-  it("refuses reels", async () => {
+  it("generates reels via the video engine and supports Gemini fallback when Claude is unavailable", async () => {
     const { api, state } = createFakeApi({ brands: [fakeBrand()] });
-    state.contents.set("content_1", content({ type: "reel" }));
-    const handler = createContentGenerateHandler(
-      makeDeps(api, async () => designResult(typographic), {
-        renderAndLint: async () => {
-          throw new Error("no");
-        },
-      }),
+    state.contents.set("content_1", content({ type: "reel", title: "Hasat Zamanı" }));
+
+    const coverPng = new Uint8Array(
+      await sharp({ create: { width: 1080, height: 1920, channels: 3, background: "#16301A" } })
+        .png()
+        .toBuffer(),
     );
-    const job = jobFor({ brief: "video" });
-    await expect(handler.run(job.payload as never, ctxFor(job).ctx)).rejects.toThrow("Reels");
+    const deps: ContentGenerateDeps = {
+      ...makeDeps(
+        api,
+        async () => {
+          throw new Error("Claude should not be called when Gemini fallback handles it");
+        },
+        {
+          renderAndLint: async () => {
+            throw new Error("static renderer unused for reel");
+          },
+        },
+        { GEMINI_API_KEY: "fake-gemini-key" },
+      ),
+      health: () => ({ state: "limited", message: "Claude limit dolu", checkedAt: NOW }),
+      geminiFetch: async () =>
+        new Response(
+          JSON.stringify({
+            candidates: [
+              {
+                content: {
+                  parts: [
+                    {
+                      text: JSON.stringify({
+                        hook: "Toprakta doğru denge",
+                        scenes: [
+                          {
+                            eyebrow: "MTM Agro",
+                            headline: "Toprakta doğru denge",
+                            subhead: "Sezon hazırlığı",
+                            durationSec: 2,
+                          },
+                          {
+                            eyebrow: "",
+                            headline: "Detaylar açıklamada",
+                            subhead: "",
+                            durationSec: 2,
+                          },
+                        ],
+                        narrationScript: "",
+                        overlays: [],
+                        cta: "mtmagro.com",
+                        caption: "Sezon hazırlığı. #mtmagro",
+                        durationSec: 4,
+                      }),
+                    },
+                  ],
+                },
+              },
+            ],
+            modelVersion: "gemini-2.5-flash",
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        ),
+      reelSeams: {
+        frameCapturer: async () => ({
+          frames: [coverPng, coverPng],
+          coverPng,
+        }),
+        ffmpeg: async () => ({
+          stdout: new TextEncoder().encode("FAKE_MP4"),
+          stderr: "",
+        }),
+      },
+    };
+
+    const handler = createContentGenerateHandler(deps);
+    const job = jobFor({ brief: "Hareketli grafik Reels", type: "reel" });
+    const out = await handler.run(job.payload as never, ctxFor(job).ctx);
+
+    expect(out).toMatchObject({
+      contentId: "content_1",
+      recipe: "motion_graphics",
+      provider: "gemini",
+      videoAssetId: "asset_gen_1",
+      coverAssetId: "asset_gen_2",
+      renderedAssetIds: ["asset_gen_2"],
+    });
+    expect(state.uploads.map((u) => u.kind)).toEqual(["video", "image"]);
   });
 });
 

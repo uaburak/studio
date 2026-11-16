@@ -108,6 +108,63 @@ describe("environment and flags", () => {
     expect(args[args.indexOf("--model") + 1]).toBe("opus");
     expect(args).not.toContain("--bare");
   });
+
+  it("supports session persistence, --resume, and --mcp-config / --allowedTools for chat turns", async () => {
+    const args = buildClaudeArgs({
+      systemPromptFile: "/tmp/s.md",
+      model: "sonnet",
+      persistSession: true,
+      resumeSessionId: "sess_42",
+      mcpConfigFile: "/tmp/mcp.json",
+      allowedTools: ["mcp__studio__propose_plan", "mcp__studio__ask_question"],
+      partialMessages: true,
+    });
+    expect(args).not.toContain("--no-session-persistence");
+    expect(args.slice(args.indexOf("--resume"), args.indexOf("--resume") + 2)).toEqual([
+      "--resume",
+      "sess_42",
+    ]);
+    expect(args.slice(args.indexOf("--mcp-config"), args.indexOf("--mcp-config") + 2)).toEqual([
+      "--mcp-config",
+      "/tmp/mcp.json",
+    ]);
+    expect(args.slice(args.indexOf("--allowedTools"), args.indexOf("--allowedTools") + 2)).toEqual([
+      "--allowedTools",
+      "mcp__studio__propose_plan,mcp__studio__ask_question",
+    ]);
+
+    const fake = fakeClaude({
+      lines: [
+        JSON.stringify({
+          type: "system",
+          subtype: "init",
+          session_id: "sess_init_99",
+          model: "claude-sonnet-5",
+        }),
+        JSON.stringify({
+          type: "result",
+          subtype: "success",
+          is_error: false,
+          session_id: "sess_final_99",
+          result: "Merhaba!",
+          usage: { input_tokens: 4, output_tokens: 6 },
+        }),
+      ],
+    });
+    const deltas: string[] = [];
+    const res = await runClaude(
+      {
+        label: "chat",
+        system: "s",
+        content: [{ type: "text", text: "selam" }],
+        persistSession: true,
+        onTextDelta: (t) => deltas.push(t),
+      },
+      { bin: fake.bin, workRoot },
+    );
+    expect(res.sessionId).toBe("sess_final_99");
+    expect(deltas).toEqual(["Merhaba!"]);
+  });
 });
 
 describe("runClaude with a fake CLI", () => {

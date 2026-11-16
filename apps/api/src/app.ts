@@ -6,18 +6,20 @@ import { toJob } from "./db/mappers.ts";
 import { jobs } from "./db/schema.ts";
 import { errorBody, handleError } from "./lib/errors.ts";
 import { createRouter } from "./lib/router.ts";
-import { cloudflareAccess } from "./middleware/access.ts";
+import { accessControl } from "./middleware/access.ts";
 import { assetRoutes } from "./routes/assets.ts";
 import { brandProfileRoutes } from "./routes/brand-profiles.ts";
 import { brandRoutes } from "./routes/brands.ts";
 import { contentRoutes } from "./routes/contents.ts";
 import { conversationRoutes } from "./routes/conversations.ts";
+import { deviceRoutes } from "./routes/devices.ts";
 import { hubRoutes } from "./routes/hub.ts";
 import { createJob, hubStub, jobRoutes } from "./routes/jobs.ts";
 import { agentRunRoutes, planRoutes } from "./routes/plans.ts";
 import { scheduleRoutes } from "./routes/schedules.ts";
 import { socialAccountRoutes } from "./routes/social-accounts.ts";
 import { workerRunRoutes } from "./routes/worker-runs.ts";
+import { workerScheduleRoutes } from "./routes/worker-schedules.ts";
 import { API_VERSION } from "./version.ts";
 
 const app = createRouter();
@@ -27,8 +29,8 @@ app.notFound((c) =>
   c.json(errorBody("not_found", `no route for ${c.req.method} ${c.req.path}`), 404),
 );
 
-// Authentication seam (no-op until Cloudflare Access is configured).
-app.use("/api/*", cloudflareAccess);
+// Authentication seam: local Mac, worker token or paired device (middleware/access.ts).
+app.use("/api/*", accessControl);
 
 // --- GET /api/health --------------------------------------------------------
 
@@ -59,6 +61,7 @@ app.openapi(healthRoute, async (c) => {
     version: API_VERSION,
     time: new Date().toISOString(),
     checks: { db },
+    ...(c.env.STUDIO_INSTANCE_ID ? { instance: c.env.STUDIO_INSTANCE_ID } : {}),
   });
   return c.json(body, 200);
 });
@@ -80,6 +83,11 @@ app.route("/", conversationRoutes);
 app.route("/", agentRunRoutes);
 app.route("/", planRoutes);
 app.route("/", workerRunRoutes); // /api/worker/* (worker token)
+app.route("/", workerScheduleRoutes); // /api/worker/schedules/* (worker token)
+
+// --- Devices (L1): pairing and paired-device management --------------------------
+
+app.route("/", deviceRoutes);
 
 // --- GET /api/openapi.json --------------------------------------------------
 

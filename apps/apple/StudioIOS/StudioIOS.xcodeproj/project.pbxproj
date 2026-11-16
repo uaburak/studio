@@ -1,0 +1,212 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		6F0000000000000000000007 /* StudioKit in Frameworks */ = {isa = PBXBuildFile; productRef = 6F0000000000000000000006 /* StudioKit */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		6F0000000000000000000029 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 6F0000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 6F0000000000000000000010;
+			remoteInfo = StudioIOS;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		6F0000000000000000000011 /* Studio.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Studio.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		6F0000000000000000000021 /* StudioIOSTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = StudioIOSTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		6F0000000000000000000050 /* Base.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Base.xcconfig; sourceTree = "<group>"; };
+		6F0000000000000000000051 /* App.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = App.xcconfig; sourceTree = "<group>"; };
+		6F0000000000000000000052 /* Tests.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Tests.xcconfig; sourceTree = "<group>"; };
+		6F0000000000000000000054 /* StudioIOS-Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = "StudioIOS-Info.plist"; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedRootGroup section */
+		6F0000000000000000000012 /* StudioIOS */ = {isa = PBXFileSystemSynchronizedRootGroup; path = StudioIOS; sourceTree = "<group>"; };
+		6F0000000000000000000022 /* StudioIOSTests */ = {isa = PBXFileSystemSynchronizedRootGroup; path = StudioIOSTests; sourceTree = "<group>"; };
+/* End PBXFileSystemSynchronizedRootGroup section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		6F0000000000000000000014 /* Frameworks */ = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (6F0000000000000000000007 /* StudioKit in Frameworks */,); runOnlyForDeploymentPostprocessing = 0; };
+		6F0000000000000000000024 /* Frameworks */ = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		6F0000000000000000000002 = {
+			isa = PBXGroup;
+			children = (
+				6F0000000000000000000012 /* StudioIOS */,
+				6F0000000000000000000022 /* StudioIOSTests */,
+				6F0000000000000000000004 /* Config */,
+				6F0000000000000000000003 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		6F0000000000000000000004 /* Config */ = {
+			isa = PBXGroup;
+			children = (
+				6F0000000000000000000050 /* Base.xcconfig */,
+				6F0000000000000000000051 /* App.xcconfig */,
+				6F0000000000000000000052 /* Tests.xcconfig */,
+				6F0000000000000000000054 /* StudioIOS-Info.plist */,
+			);
+			path = Config;
+			sourceTree = "<group>";
+		};
+		6F0000000000000000000003 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				6F0000000000000000000011 /* Studio.app */,
+				6F0000000000000000000021 /* StudioIOSTests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		6F0000000000000000000010 /* StudioIOS */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 6F0000000000000000000016;
+			buildPhases = (
+				6F0000000000000000000013 /* Sources */,
+				6F0000000000000000000014 /* Frameworks */,
+				6F0000000000000000000015 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				6F0000000000000000000012 /* StudioIOS */,
+			);
+			name = StudioIOS;
+			packageProductDependencies = (
+				6F0000000000000000000006 /* StudioKit */,
+			);
+			productName = StudioIOS;
+			productReference = 6F0000000000000000000011 /* Studio.app */;
+			productType = "com.apple.product-type.application";
+		};
+		6F0000000000000000000020 /* StudioIOSTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 6F0000000000000000000026;
+			buildPhases = (
+				6F0000000000000000000023 /* Sources */,
+				6F0000000000000000000024 /* Frameworks */,
+				6F0000000000000000000025 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				6F000000000000000000002A /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				6F0000000000000000000022 /* StudioIOSTests */,
+			);
+			name = StudioIOSTests;
+			packageProductDependencies = (
+			);
+			productName = StudioIOSTests;
+			productReference = 6F0000000000000000000021 /* StudioIOSTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		6F0000000000000000000001 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 2700;
+				LastUpgradeCheck = 2700;
+				TargetAttributes = {
+					6F0000000000000000000010 = {
+						CreatedOnToolsVersion = 27.0;
+					};
+					6F0000000000000000000020 = {
+						CreatedOnToolsVersion = 27.0;
+						TestTargetID = 6F0000000000000000000010;
+					};
+				};
+			};
+			buildConfigurationList = 6F0000000000000000000040;
+			developmentRegion = tr;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				tr,
+				Base,
+			);
+			mainGroup = 6F0000000000000000000002;
+			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				6F0000000000000000000005 /* XCLocalSwiftPackageReference "../StudioKit" */,
+			);
+			preferredProjectObjectVersion = 77;
+			productRefGroup = 6F0000000000000000000003 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				6F0000000000000000000010 /* StudioIOS */,
+				6F0000000000000000000020 /* StudioIOSTests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		6F0000000000000000000015 /* Resources */ = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+		6F0000000000000000000025 /* Resources */ = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		6F0000000000000000000013 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+		6F0000000000000000000023 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		6F000000000000000000002A /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 6F0000000000000000000010 /* StudioIOS */;
+			targetProxy = 6F0000000000000000000029 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		6F0000000000000000000041 /* Debug */ = {isa = XCBuildConfiguration; baseConfigurationReference = 6F0000000000000000000050 /* Base.xcconfig */; buildSettings = {}; name = Debug; };
+		6F0000000000000000000042 /* Release */ = {isa = XCBuildConfiguration; baseConfigurationReference = 6F0000000000000000000050 /* Base.xcconfig */; buildSettings = {}; name = Release; };
+		6F0000000000000000000017 /* Debug */ = {isa = XCBuildConfiguration; baseConfigurationReference = 6F0000000000000000000051 /* App.xcconfig */; buildSettings = {}; name = Debug; };
+		6F0000000000000000000018 /* Release */ = {isa = XCBuildConfiguration; baseConfigurationReference = 6F0000000000000000000051 /* App.xcconfig */; buildSettings = {}; name = Release; };
+		6F0000000000000000000027 /* Debug */ = {isa = XCBuildConfiguration; baseConfigurationReference = 6F0000000000000000000052 /* Tests.xcconfig */; buildSettings = {}; name = Debug; };
+		6F0000000000000000000028 /* Release */ = {isa = XCBuildConfiguration; baseConfigurationReference = 6F0000000000000000000052 /* Tests.xcconfig */; buildSettings = {}; name = Release; };
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		6F0000000000000000000040 = {isa = XCConfigurationList; buildConfigurations = (6F0000000000000000000041, 6F0000000000000000000042); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+		6F0000000000000000000016 = {isa = XCConfigurationList; buildConfigurations = (6F0000000000000000000017, 6F0000000000000000000018); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+		6F0000000000000000000026 = {isa = XCConfigurationList; buildConfigurations = (6F0000000000000000000027, 6F0000000000000000000028); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+/* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		6F0000000000000000000005 /* XCLocalSwiftPackageReference "../StudioKit" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = ../StudioKit;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		6F0000000000000000000006 /* StudioKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = StudioKit;
+		};
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = 6F0000000000000000000001 /* Project object */;
+}

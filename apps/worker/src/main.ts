@@ -1,8 +1,14 @@
 import { loadAgentSettings } from "./agent.ts";
 import { AgentRuntime } from "./agent-runtime.ts";
+import { runStdioMcpBridgeFromEnv } from "./chat/mcp-bridge.ts";
 import { loadConfig } from "./config.ts";
 import { createLogger } from "./log.ts";
 import { startWorker, WORKER_VERSION } from "./worker.ts";
+
+if (process.argv.includes("--studio-mcp-bridge")) {
+  await runStdioMcpBridgeFromEnv();
+  process.exit(0);
+}
 
 const config = loadConfig();
 const logger = createLogger(config.logLevel);
@@ -25,13 +31,20 @@ if (settings.enabled) {
   // Self-test before connecting, so the first `hello` announces only what can run.
   const health = await agent.start();
   if (health.state === "unauthenticated" || health.state === "error") {
-    logger.error(
-      "Claude job types (chat.turn, content.generate) are NOT announced until this is fixed; " +
-        "such jobs wait in the queue. The worker re-checks every 5 minutes.",
-    );
+    if (agent.geminiAvailable()) {
+      logger.warn(
+        `Claude unavailable (${health.state}), Gemini ready (${agent.geminiAccount().mode}): ` +
+          "all AI job types (chat.turn, content.generate, brand.analyze, image.generate) are active via Gemini.",
+      );
+    } else {
+      logger.error(
+        "AI job types (chat.turn, content.generate, brand.analyze, image.generate) are NOT announced " +
+          "until Claude is signed in or GEMINI_API_KEY is set; content.render and schedule.publish stay active.",
+      );
+    }
   }
 } else {
-  logger.warn("STUDIO_CLAUDE_ENABLED=0: running without the Claude-backed job types");
+  logger.warn("STUDIO_CLAUDE_ENABLED=0: running without the AI-backed job types");
 }
 const worker = startWorker({ config, logger, ...(agent ? { agent } : {}) });
 

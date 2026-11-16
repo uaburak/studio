@@ -235,4 +235,39 @@ describe("job stream frames", () => {
     expect(JobStreamQuery.safeParse({}).success).toBe(true);
     expect(JobStreamQuery.safeParse({ jobId: "a", brandId: "b" }).success).toBe(false);
   });
+
+  it("round-trips worker.claude, worker.gemini and worker.command frames", () => {
+    const aiFrames: ProtocolMessage[] = [
+      {
+        type: "worker.claude",
+        account: {
+          status: "signed_in",
+          email: "burak@example.com",
+          plan: "Claude Max",
+          cliVersion: "2.1.0",
+          loginUrl: null,
+          detail: "Giriş yapıldı",
+          checkedAt: now,
+        },
+      },
+      {
+        type: "worker.gemini",
+        account: {
+          status: "ready",
+          mode: "both",
+          apiKeyConfigured: true,
+          cliVersion: "0.4.0",
+          defaultModel: "gemini-2.5-flash-lite",
+          detail: "GEMINI_API_KEY ve Gemini CLI hazır",
+          checkedAt: now,
+        },
+      },
+      { type: "worker.command", command: "claude.login" },
+      { type: "worker.command", command: "claude.status" },
+      { type: "worker.command", command: "gemini.status" },
+    ];
+    for (const frame of aiFrames) {
+      expect(decodeMessage(encodeMessage(frame))).toEqual({ ok: true, message: frame });
+    }
+  });
 });

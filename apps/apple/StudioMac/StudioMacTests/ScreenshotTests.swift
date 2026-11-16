@@ -9,7 +9,7 @@ enum ScreenshotSwitch {
 }
 
 /// Renders every approved screen (and the three sidebar states) from the real
-/// SwiftUI views with sample data, in light and dark, at 1440x900, into
+/// AppKit views with sample data, in light and dark, at 1440x900, into
 /// apps/apple/docs/screenshots/offscreen/{light,dark}/ (override with
 /// STUDIO_SCREENSHOT_DIR). Opens windows, so it only runs with
 /// STUDIO_RENDER_SCREENSHOTS=1. Offscreen renders flatten Liquid Glass and

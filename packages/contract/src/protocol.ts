@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { ClaudeAccount, GeminiAccount, WorkerCommand } from "./agent.ts";
 import { Job, JobId, WorkerPresence, WorkerUsage } from "./job.ts";
 
 /**
@@ -7,8 +8,8 @@ import { Job, JobId, WorkerPresence, WorkerUsage } from "./job.ts";
  * Every frame is a JSON text message with a `type` discriminator.
  * Direction:
  *   worker -> hub: hello, job.ack, job.progress, job.heartbeat, job.result,
- *                  job.release, worker.drain, worker.usage, ping, pong
- *   hub -> worker: job.dispatch, job.cancel, job.result.ack, ping, pong
+ *                  job.release, worker.drain, worker.usage, worker.claude, ping, pong
+ *   hub -> worker: job.dispatch, job.cancel, job.result.ack, worker.command, ping, pong
  *
  * Job lifecycle on the wire (see apps/api/README.md for the full picture):
  *   hub  job.dispatch {job, attempt}  -> worker
@@ -111,6 +112,31 @@ export const WorkerUsageMessage = WorkerUsage.extend({
   type: z.literal("worker.usage"),
 });
 
+/**
+ * The Mac's Claude sign-in as the worker sees it (after `hello`, on every
+ * change and after a `worker.command`). The hub keeps the latest one and
+ * shows it in presence as `claude`.
+ */
+export const WorkerClaudeMessage = z.object({
+  type: z.literal("worker.claude"),
+  account: ClaudeAccount,
+});
+
+/**
+ * The Mac's Gemini API / CLI readiness as the worker sees it. The hub keeps
+ * the latest one and shows it in presence as `gemini`.
+ */
+export const WorkerGeminiMessage = z.object({
+  type: z.literal("worker.gemini"),
+  account: GeminiAccount,
+});
+
+/** Hub forwards an app request about AI sign-in / status (start Claude login, re-read Claude/Gemini status). */
+export const WorkerCommandMessage = z.object({
+  type: z.literal("worker.command"),
+  command: WorkerCommand,
+});
+
 /** Hub asks the worker to abort a job; the worker answers with a `cancelled` result. */
 export const JobCancelMessage = z.object({
   type: z.literal("job.cancel"),
@@ -145,8 +171,11 @@ export const ProtocolMessage = z.discriminatedUnion("type", [
   JobReleaseMessage,
   WorkerDrainMessage,
   WorkerUsageMessage,
+  WorkerClaudeMessage,
+  WorkerGeminiMessage,
   JobCancelMessage,
   JobResultAckMessage,
+  WorkerCommandMessage,
   PingMessage,
   PongMessage,
 ]);
@@ -160,6 +189,9 @@ export type JobResultMessage = z.infer<typeof JobResultMessage>;
 export type JobReleaseMessage = z.infer<typeof JobReleaseMessage>;
 export type WorkerDrainMessage = z.infer<typeof WorkerDrainMessage>;
 export type WorkerUsageMessage = z.infer<typeof WorkerUsageMessage>;
+export type WorkerClaudeMessage = z.infer<typeof WorkerClaudeMessage>;
+export type WorkerGeminiMessage = z.infer<typeof WorkerGeminiMessage>;
+export type WorkerCommandMessage = z.infer<typeof WorkerCommandMessage>;
 export type JobCancelMessage = z.infer<typeof JobCancelMessage>;
 export type JobResultAckMessage = z.infer<typeof JobResultAckMessage>;
 export type PingMessage = z.infer<typeof PingMessage>;
@@ -180,6 +212,8 @@ export type WorkerToHubMessage = Extract<
       | "job.release"
       | "worker.drain"
       | "worker.usage"
+      | "worker.claude"
+      | "worker.gemini"
       | "ping"
       | "pong";
   }
@@ -187,7 +221,7 @@ export type WorkerToHubMessage = Extract<
 /** Messages the hub sends. */
 export type HubToWorkerMessage = Extract<
   ProtocolMessage,
-  { type: "job.dispatch" | "job.cancel" | "job.result.ack" | "ping" | "pong" }
+  { type: "job.dispatch" | "job.cancel" | "job.result.ack" | "worker.command" | "ping" | "pong" }
 >;
 
 export type DecodeResult = { ok: true; message: ProtocolMessage } | { ok: false; error: string };

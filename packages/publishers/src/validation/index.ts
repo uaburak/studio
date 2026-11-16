@@ -7,17 +7,21 @@
 
 import {
   type AnyMedia,
+  type DocumentMedia,
   type FacebookRequest,
   type ImageMedia,
   type InstagramRequest,
+  type LinkedInRequest,
   PublishRequest,
   type VideoMedia,
 } from "../models.ts";
-import { FACEBOOK_LIMITS, INSTAGRAM_LIMITS } from "./rules.ts";
+import { FACEBOOK_LIMITS, INSTAGRAM_LIMITS, LINKEDIN_LIMITS } from "./rules.ts";
 
 export type ValidationCode =
   | "SCHEMA_INVALID"
   | "CAPTION_TOO_LONG"
+  | "COMMENTARY_EMPTY"
+  | "TITLE_TOO_LONG"
   | "TOO_MANY_HASHTAGS"
   | "TOO_MANY_MENTIONS"
   | "ALT_TEXT_TOO_LONG"
@@ -27,6 +31,8 @@ export type ValidationCode =
   | "IMAGE_FORMAT_UNSUPPORTED"
   | "IMAGE_TOO_LARGE"
   | "IMAGE_PNG_LARGE"
+  | "DOCUMENT_FORMAT_UNSUPPORTED"
+  | "DOCUMENT_TOO_LARGE"
   | "ASPECT_RATIO_OUT_OF_RANGE"
   | "ASPECT_RATIO_NOT_RECOMMENDED"
   | "IMAGE_WILL_BE_RESCALED"
@@ -104,13 +110,20 @@ const EXT_MIME: Record<string, string> = {
   mov: "video/quicktime",
   webm: "video/webm",
   mkv: "video/x-matroska",
+  pdf: "application/pdf",
 };
 
 /** Mime type from metadata, else from the URL extension, else undefined. */
-export function guessMime(media: AnyMedia): string | undefined {
+export function guessMime(media: AnyMedia | DocumentMedia): string | undefined {
   if (media.mimeType) return media.mimeType.split(";")[0]?.trim().toLowerCase();
   const url =
-    media.kind === "image" ? media.url : media.source.type === "url" ? media.source.url : null;
+    media.kind === "image"
+      ? media.url
+      : media.kind === "document"
+        ? (media.url ?? (media.source?.type === "url" ? media.source.url : null))
+        : media.source.type === "url"
+          ? media.source.url
+          : null;
   if (!url) return undefined;
   try {
     const ext = new URL(url).pathname.split(".").pop()?.toLowerCase() ?? "";
@@ -176,7 +189,12 @@ function checkCollaborators(c: Collector, path: string, list: string[] | undefin
 }
 
 /** One warning listing every metadata field we could not check. `mimeType` counts as known if the URL extension tells. */
-function checkMissing(c: Collector, path: string, media: AnyMedia, fields: string[]) {
+function checkMissing(
+  c: Collector,
+  path: string,
+  media: AnyMedia | DocumentMedia,
+  fields: string[],
+) {
   const record = media as Record<string, unknown>;
   const missing = fields.filter((f) =>
     f === "mimeType" ? guessMime(media) === undefined : record[f] === undefined,
@@ -520,6 +538,153 @@ function validateFacebook(c: Collector, r: FacebookRequest) {
   }
 }
 
+function checkLiCommentary(c: Collector, path: string, commentary: string | undefined) {
+  if (!commentary) return;
+  const chars = charCount(commentary);
+  if (chars > LINKEDIN_LIMITS.commentary.maxChars) {
+    c.error(
+      "CAPTION_TOO_LONG",
+      path,
+      `Açıklama en fazla ${n(LINKEDIN_LIMITS.commentary.maxChars)} karakter olabilir (şu an ${n(chars)}).`,
+    );
+  }
+}
+
+function checkLiTitle(c: Collector, path: string, title: string | undefined) {
+  if (!title) return;
+  const chars = charCount(title);
+  if (chars > LINKEDIN_LIMITS.title.maxChars) {
+    c.error(
+      "TITLE_TOO_LONG",
+      path,
+      `Başlık en fazla ${n(LINKEDIN_LIMITS.title.maxChars)} karakter olabilir (şu an ${n(chars)}).`,
+    );
+  }
+}
+
+function checkLiImage(c: Collector, path: string, img: ImageMedia) {
+  const L = LINKEDIN_LIMITS.image;
+  const mime = guessMime(img);
+  if (mime !== undefined && !(L.mimeTypes as readonly string[]).includes(mime)) {
+    c.error(
+      "IMAGE_FORMAT_UNSUPPORTED",
+      join(path, "mimeType"),
+      "LinkedIn yalnızca JPEG, PNG ya da GIF görsel kabul ediyor.",
+    );
+  }
+  if (img.bytes !== undefined && img.bytes > L.maxBytes) {
+    c.error(
+      "IMAGE_TOO_LARGE",
+      join(path, "bytes"),
+      `Görsel en fazla ${mb(L.maxBytes)} olabilir (şu an ${mb(img.bytes)}).`,
+    );
+  }
+  if (img.altText !== undefined && charCount(img.altText) > LINKEDIN_LIMITS.altText.maxChars) {
+    c.error(
+      "ALT_TEXT_TOO_LONG",
+      join(path, "altText"),
+      `Alternatif metin en fazla ${n(LINKEDIN_LIMITS.altText.maxChars)} karakter olabilir.`,
+    );
+  }
+  checkMissing(c, path, img, ["mimeType", "bytes"]);
+}
+
+function checkLiDocument(c: Collector, path: string, doc: DocumentMedia) {
+  const L = LINKEDIN_LIMITS.document;
+  const mime = guessMime(doc);
+  if (mime !== undefined && !(L.mimeTypes as readonly string[]).includes(mime)) {
+    c.error(
+      "DOCUMENT_FORMAT_UNSUPPORTED",
+      join(path, "mimeType"),
+      "LinkedIn belge carousel paylaşımı yalnızca PDF kabul ediyor.",
+    );
+  }
+  if (doc.bytes !== undefined && doc.bytes > L.maxBytes) {
+    c.error(
+      "DOCUMENT_TOO_LARGE",
+      join(path, "bytes"),
+      `PDF dosyası en fazla ${mb(L.maxBytes)} olabilir (şu an ${mb(doc.bytes)}).`,
+    );
+  }
+  checkMissing(c, path, doc, ["mimeType", "bytes"]);
+}
+
+function validateLinkedIn(c: Collector, r: LinkedInRequest) {
+  checkLiCommentary(c, "commentary", r.commentary);
+  switch (r.kind) {
+    case "linkedin.text":
+      if (r.commentary.trim().length === 0) {
+        c.error("COMMENTARY_EMPTY", "commentary", "Metin paylaşımı boş olamaz.");
+      }
+      return;
+    case "linkedin.image":
+      checkLiImage(c, "image", r.image);
+      return;
+    case "linkedin.multi_image": {
+      const L = LINKEDIN_LIMITS.multiImage;
+      if (r.images.length < L.minItems) {
+        c.error(
+          "CAROUSEL_TOO_FEW_ITEMS",
+          "images",
+          `Çoklu görsel paylaşımı en az ${L.minItems} görsel içermeli (şu an ${r.images.length}).`,
+        );
+      }
+      if (r.images.length > L.maxItems) {
+        c.error(
+          "CAROUSEL_TOO_MANY_ITEMS",
+          "images",
+          `Çoklu görsel paylaşımı en fazla ${L.maxItems} görsel içerebilir (şu an ${r.images.length}).`,
+        );
+      }
+      r.images.forEach((img, i) => {
+        checkLiImage(c, `images.${i}`, img);
+      });
+      return;
+    }
+    case "linkedin.document":
+      checkLiTitle(c, "title", r.title);
+      checkLiDocument(c, "document", r.document);
+      return;
+    case "linkedin.video": {
+      checkLiTitle(c, "title", r.title);
+      const L = LINKEDIN_LIMITS.video;
+      const mime = guessMime(r.video);
+      if (mime !== undefined && !(L.mimeTypes as readonly string[]).includes(mime)) {
+        c.error(
+          "VIDEO_FORMAT_UNSUPPORTED",
+          "video.mimeType",
+          "LinkedIn yalnızca MP4 ya da MOV video kabul ediyor.",
+        );
+      }
+      if (r.video.bytes !== undefined && r.video.bytes > L.maxBytes) {
+        c.error(
+          "VIDEO_TOO_LARGE",
+          "video.bytes",
+          `Video en fazla ${mb(L.maxBytes)} olabilir (şu an ${mb(r.video.bytes)}).`,
+        );
+      }
+      if (r.video.durationMs !== undefined) {
+        if (r.video.durationMs < L.minDurationMs) {
+          c.error(
+            "VIDEO_TOO_SHORT",
+            "video.durationMs",
+            `Video en az ${sec(L.minDurationMs)} olmalı (şu an ${sec(r.video.durationMs)}).`,
+          );
+        }
+        if (r.video.durationMs > L.maxDurationMs) {
+          c.error(
+            "VIDEO_TOO_LONG",
+            "video.durationMs",
+            `Video en fazla ${sec(L.maxDurationMs)} olabilir (şu an ${sec(r.video.durationMs)}).`,
+          );
+        }
+      }
+      checkMissing(c, "video", r.video, ["mimeType", "bytes", "durationMs"]);
+      return;
+    }
+  }
+}
+
 /**
  * Validate a request. Accepts unknown input: schema problems come back as
  * `SCHEMA_INVALID` issues instead of throwing.
@@ -539,6 +704,7 @@ export function validateRequest(input: unknown): ValidationReport {
   }
   const r = parsed.data;
   if (r.kind.startsWith("instagram.")) validateInstagram(c, r as InstagramRequest);
-  else validateFacebook(c, r as FacebookRequest);
+  else if (r.kind.startsWith("facebook.")) validateFacebook(c, r as FacebookRequest);
+  else validateLinkedIn(c, r as LinkedInRequest);
   return c.report();
 }

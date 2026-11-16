@@ -1,6 +1,5 @@
 import {
   type Content,
-  type ContentVersionSummary,
   type Job,
   type Platform,
   Platform as PlatformEnum,
@@ -14,6 +13,7 @@ import { ConfirmDialog } from "../../components/dialog.tsx";
 import {
   IconCalendar,
   IconCheck,
+  IconDownload,
   IconEdit,
   IconPlatform,
   IconShield,
@@ -21,14 +21,7 @@ import {
   IconTrash,
 } from "../../components/icons.tsx";
 import { BrandMark, PageHeader, StatusBadge } from "../../components/page.tsx";
-import { SlideCarousel } from "../../components/slide-preview.tsx";
-import {
-  EmptyState,
-  ErrorState,
-  InlineError,
-  Notice,
-  SkeletonRows,
-} from "../../components/states.tsx";
+import { ErrorState, InlineError, Notice, SkeletonRows } from "../../components/states.tsx";
 import { useToast } from "../../components/toast.tsx";
 import {
   Button,
@@ -55,6 +48,7 @@ import {
 } from "../../lib/content-status.ts";
 import { formatDateTime, formatRelative } from "../../lib/datetime.ts";
 import { describeError } from "../../lib/errors.ts";
+import { formatPercent } from "../../lib/format.ts";
 import {
   CAPTION_LIMITS,
   CONTENT_TYPE_LABELS,
@@ -62,11 +56,12 @@ import {
   JOB_TYPE_LABELS,
   PLATFORM_LABELS,
   SCHEDULE_STATUS,
-  VERSION_ORIGIN_LABELS,
 } from "../../lib/labels.ts";
+import { CancelJobButton, useLiveJobs } from "../../lib/live-jobs.tsx";
 import { queryKeys } from "../../lib/query-keys.ts";
 import { ScheduleDetailDialog } from "../calendar/ScheduleDetailDialog.tsx";
 import { ScheduleDialog } from "../calendar/ScheduleDialog.tsx";
+import { SlideEditorWorkspace } from "../editor/SlideEditorWorkspace.tsx";
 import { generatePayload } from "./generate.ts";
 import { useContentCacheUpdate, useContentVersion } from "./hooks.ts";
 
@@ -162,10 +157,10 @@ export function ContentDetailPage() {
         }
       />
 
-      <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_400px]">
+      <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_380px]">
         <div className="flex min-w-0 flex-col gap-6">
           <StatusPanel content={content} onSchedule={() => setScheduling(true)} />
-          <PreviewPanel content={content} />
+          <SlideEditorWorkspace content={content} />
         </div>
         <div className="flex min-w-0 flex-col gap-6">
           <BriefPanel content={content} />
@@ -401,132 +396,6 @@ function HashBadge({ check }: { check: HashCheck | null }) {
       </span>
     );
   return <span className="font-medium text-bad">hash uyuşmuyor</span>;
-}
-
-// --- Preview -----------------------------------------------------------------
-
-function PreviewPanel({ content }: { content: Content }) {
-  const api = useApi();
-  const currentNo = content.currentVersion?.version ?? null;
-  const [selected, setSelected] = useState<number | null>(currentNo);
-
-  useEffect(() => {
-    setSelected(currentNo);
-  }, [currentNo]);
-
-  const versions = useQuery({
-    queryKey: queryKeys.contents.versions(content.id),
-    queryFn: ({ signal }) => api.contents.versions.list(content.id, { limit: 100 }, { signal }),
-  });
-  const version = useContentVersion(content.id, selected);
-  const summary = versions.data?.items.find((v) => v.version === selected);
-
-  if (!content.currentVersion) {
-    return (
-      <Card className="p-5 sm:p-6">
-        <SectionTitle>Önizleme</SectionTitle>
-        <div className="mt-4">
-          <EmptyState title="Henüz tasarım yok" glyph={<IconSparkle size={24} />}>
-            Üretim hattı (Mac worker) bağlandığında “Üret” ile oluşan sürümler burada slayt slayt
-            görünecek.
-          </EmptyState>
-        </div>
-      </Card>
-    );
-  }
-
-  return (
-    <Card className="p-4 sm:p-6">
-      <SectionTitle>Önizleme</SectionTitle>
-      <div className="mt-4 flex flex-col-reverse gap-5">
-        <div className="min-w-0 flex-1">
-          {version.isPending ? (
-            <div className="skeleton aspect-[4/5] max-h-[640px] rounded-2xl" />
-          ) : version.error ? (
-            <ErrorState error={version.error} onRetry={() => void version.refetch()} />
-          ) : (
-            <SlideCarousel
-              key={version.data.id}
-              slides={version.data.slides}
-              title={`Sürüm ${version.data.version} önizlemesi`}
-            />
-          )}
-          {selected !== currentNo && (
-            <div className="mt-4">
-              <Notice tone="warn">
-                Eski bir sürüme bakıyorsunuz. Onay yalnızca güncel sürüme (v{currentNo})
-                verilebilir.
-              </Notice>
-            </div>
-          )}
-          {summary?.note && <p className="mt-3 text-sm text-ink-2">Not: {summary.note}</p>}
-        </div>
-
-        <nav aria-label="Sürümler">
-          <h3 className="mb-2 text-[12px] font-medium text-ink-3">Sürümler</h3>
-          {versions.error ? (
-            <ErrorState error={versions.error} compact />
-          ) : (
-            <ul className="-mx-1 flex gap-2 overflow-x-auto px-1 pb-1">
-              {(versions.data?.items ?? []).map((v) => (
-                <li key={v.id} className="shrink-0">
-                  <VersionButton
-                    v={v}
-                    active={v.version === selected}
-                    current={v.version === currentNo}
-                    approved={content.approval?.versionId === v.id}
-                    onSelect={() => setSelected(v.version)}
-                  />
-                </li>
-              ))}
-            </ul>
-          )}
-        </nav>
-      </div>
-    </Card>
-  );
-}
-
-function VersionButton({
-  v,
-  active,
-  current,
-  approved,
-  onSelect,
-}: {
-  v: ContentVersionSummary;
-  active: boolean;
-  current: boolean;
-  approved: boolean;
-  onSelect: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onSelect}
-      aria-pressed={active}
-      className={cx(
-        "flex w-44 flex-col gap-0.5 rounded-xl px-3 py-2.5 text-left ring-1 ring-inset transition-colors",
-        active ? "bg-ink text-bg ring-ink" : "bg-surface ring-line hover:ring-line-strong",
-      )}
-    >
-      <span className="flex items-center gap-2">
-        <span className="font-mono text-[13px] font-semibold">v{v.version}</span>
-        {current && (
-          <span className={cx("text-[11px]", active ? "opacity-70" : "text-accent")}>güncel</span>
-        )}
-        {approved && (
-          <IconShield size={14} className={active ? "" : "text-good"} aria-label="onaylı" />
-        )}
-      </span>
-      <span className={cx("text-[12px]", active ? "opacity-70" : "text-ink-3")}>
-        {VERSION_ORIGIN_LABELS[v.origin]} · {v.slideCount} slayt
-      </span>
-      <span className={cx("text-[11px]", active ? "opacity-60" : "text-ink-3")}>
-        {formatRelative(v.createdAt)}
-      </span>
-    </button>
-  );
 }
 
 // --- Brief -------------------------------------------------------------------
@@ -829,41 +698,82 @@ const ACTIVE_JOB = (j: Job) => j.status === "queued" || j.status === "running";
 
 function ContentJobs({ contentId }: { contentId: string }) {
   const api = useApi();
+  const { streamStatus, jobsById } = useLiveJobs();
   const query = useQuery({
     queryKey: queryKeys.jobs.list({ contentId }),
     queryFn: ({ signal }) => api.jobs.list({ contentId, limit: 10 }, { signal }),
-    refetchInterval: (q) => (q.state.data?.items.some(ACTIVE_JOB) ? 4000 : false),
+    refetchInterval: (q) =>
+      streamStatus !== "open" && q.state.data?.items.some(ACTIVE_JOB) ? 4000 : false,
   });
-  const items = query.data?.items ?? [];
+
+  const merged = new Map<string, Job>();
+  for (const j of jobsById.values()) {
+    if (j.contentId === contentId) merged.set(j.id, j);
+  }
+  for (const j of query.data?.items ?? []) {
+    if (!merged.has(j.id)) merged.set(j.id, j);
+  }
+  const items = [...merged.values()]
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+    .slice(0, 10);
+
   if (!query.isPending && !query.error && items.length === 0) return null;
 
   return (
     <Card className="p-5 sm:p-6">
-      <SectionTitle>Üretim işleri</SectionTitle>
-      {query.error ? (
+      <SectionTitle>Üretim ve Render İşleri</SectionTitle>
+      {query.error && items.length === 0 ? (
         <ErrorState error={query.error} compact />
       ) : (
         <ul className="mt-3 flex flex-col gap-2">
-          {items.map((job) => (
-            <li key={job.id}>
-              <Link
-                to={`/isler/${job.id}`}
-                className="flex flex-col gap-2 rounded-xl p-3 ring-1 ring-line ring-inset hover:ring-line-strong"
+          {items.map((job) => {
+            const pdfAssetId =
+              typeof job.output?.pdfAssetId === "string" ? job.output.pdfAssetId : null;
+            return (
+              <li
+                key={job.id}
+                className="flex flex-col gap-2 rounded-xl p-3 ring-1 ring-line ring-inset"
               >
-                <span className="flex items-center justify-between gap-2">
-                  <span className="text-sm font-medium text-ink">{JOB_TYPE_LABELS[job.type]}</span>
-                  <StatusBadge meta={JOB_STATUS[job.status]} />
-                </span>
+                <div className="flex items-center justify-between gap-2">
+                  <Link
+                    to={`/isler/${job.id}`}
+                    className="text-sm font-medium text-ink hover:text-accent"
+                  >
+                    {JOB_TYPE_LABELS[job.type]}
+                  </Link>
+                  <div className="flex items-center gap-1.5">
+                    <StatusBadge meta={JOB_STATUS[job.status]} />
+                    <CancelJobButton job={job} size="sm" />
+                  </div>
+                </div>
                 {job.status === "running" && job.progress !== undefined && (
-                  <Progress value={job.progress} label="İlerleme" />
+                  <div className="flex items-center gap-2">
+                    <Progress value={job.progress} label="İlerleme" />
+                    <span className="font-mono text-xs text-ink-3 tabular-nums">
+                      {formatPercent(job.progress)}
+                    </span>
+                  </div>
                 )}
-                <span className="text-[12px] text-ink-3">
-                  {job.status === "queued" ? "Worker bekleniyor · " : ""}
-                  {formatRelative(job.createdAt)}
-                </span>
-              </Link>
-            </li>
-          ))}
+                {job.progressMessage && <p className="text-xs text-ink-2">{job.progressMessage}</p>}
+                <div className="flex items-center justify-between gap-2 text-[12px] text-ink-3">
+                  <span>
+                    {job.status === "queued" ? "Worker bekleniyor · " : ""}
+                    {formatRelative(job.createdAt)}
+                  </span>
+                  {pdfAssetId && (
+                    <a
+                      href={api.assets.contentUrl(pdfAssetId)}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="inline-flex items-center gap-1 font-medium text-accent hover:underline"
+                    >
+                      <IconDownload size={13} /> PDF İndir
+                    </a>
+                  )}
+                </div>
+              </li>
+            );
+          })}
         </ul>
       )}
     </Card>

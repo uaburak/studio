@@ -13,6 +13,12 @@ export const HealthResponse = z
     checks: z.object({
       db: z.enum(["ok", "error"]),
     }),
+    /**
+     * Random id of the Mac host that started this API (STUDIO_INSTANCE_ID).
+     * The Mac app uses it to attach to its own running copy instead of
+     * starting a second one. Absent when the API was started by hand.
+     */
+    instance: z.string().min(1).max(128).optional(),
   })
   .meta({ id: "HealthResponse", description: "API health check result." });
 export type HealthResponse = z.infer<typeof HealthResponse>;

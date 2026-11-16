@@ -1,24 +1,36 @@
 import AppKit
 import StudioKit
-import SwiftUI
 
-/// The composer's text field: an NSTextView (TextKit 1) that
+/// Pure AppKit text editor for the message composer (TextKit 1 `NSTextView` inside an auto-sizing `NSScrollView`):
 /// - sends on Return, inserts a newline on Shift+Return,
-/// - turns `@alias` into a neutral pill token (an attachment that deletes as one),
-/// - drives the `@` autocomplete (arrows, Return/Tab to pick, Escape to close),
-/// - routes pasted / dropped images to the attachment row instead of the text.
-struct ComposerTextView: NSViewRepresentable {
+/// - turns `@alias` into a neutral pill token (`MentionAttachment`) that moves/deletes as one character,
+/// - drives `@` autocomplete (arrows, Return/Tab to pick, Escape to close),
+/// - routes pasted images to the attachment strip instead of the text.
+@MainActor
+final class ComposerEditor: NSObject, NSTextViewDelegate, ComposerTextBridge {
     let model: ComposerModel
-    var focusRequest: Int = 0
+    let scrollView: ComposerScrollView
+    let textView: ComposerNSTextView
     var onSubmit: () -> Void
     var onImages: ([ImportedImage], [String]) -> Void
 
-    func makeCoordinator() -> Coordinator { Coordinator(self) }
+    private var isConverting = false
+    private var observation: ObservationToken?
 
-    func makeNSView(context: Context) -> NSScrollView {
-        let textView = ComposerNSTextView(usingTextLayoutManager: false)
-        textView.coordinator = context.coordinator
-        textView.delegate = context.coordinator
+    init(
+        model: ComposerModel,
+        onSubmit: @escaping () -> Void = {},
+        onImages: @escaping ([ImportedImage], [String]) -> Void = { _, _ in }
+    ) {
+        self.model = model
+        self.onSubmit = onSubmit
+        self.onImages = onImages
+        self.textView = ComposerNSTextView(usingTextLayoutManager: false)
+        self.scrollView = ComposerScrollView(textView: textView)
+        super.init()
+
+        textView.editor = self
+        textView.delegate = self
         textView.isRichText = false
         textView.importsGraphics = false
         textView.allowsUndo = true
@@ -36,207 +48,212 @@ struct ComposerTextView: NSViewRepresentable {
         textView.isHorizontallyResizable = false
         textView.autoresizingMask = [.width]
         textView.setAccessibilityLabel("Mesaj")
-        // Images go to the attachment row (handled by the SwiftUI drop target), never into the text.
+        // Images go to the attachment row (handled by the AppKit drop target), never into the text.
         textView.unregisterDraggedTypes()
 
-        let scroll = NSScrollView()
-        scroll.drawsBackground = false
-        scroll.hasVerticalScroller = true
-        scroll.autohidesScrollers = true
-        scroll.borderType = .noBorder
-        scroll.documentView = textView
-        context.coordinator.textView = textView
-        model.bridge = context.coordinator
+        scrollView.drawsBackground = false
+        scrollView.hasVerticalScroller = true
+        scrollView.autohidesScrollers = true
+        scrollView.borderType = .noBorder
+        scrollView.documentView = textView
+        scrollView.applyMinimalScroller()
+
+        model.bridge = self
         textView.placeholder = model.placeholder
-        if !model.text.isEmpty { context.coordinator.setText(model.text) }
-        return scroll
-    }
-
-    func updateNSView(_ scroll: NSScrollView, context: Context) {
-        context.coordinator.parent = self
-        guard let textView = context.coordinator.textView else { return }
-        if textView.placeholder != model.placeholder {
-            textView.placeholder = model.placeholder
-            textView.needsDisplay = true
+        if !model.text.isEmpty {
+            setText(model.text)
         }
-        if context.coordinator.lastFocusRequest != focusRequest {
-            context.coordinator.lastFocusRequest = focusRequest
-            DispatchQueue.main.async { context.coordinator.focus() }
+
+        observation = observe { [weak self] in
+            guard let self else { return }
+            let placeholder = self.model.placeholder
+            if self.textView.placeholder != placeholder {
+                self.textView.placeholder = placeholder
+                self.textView.needsDisplay = true
+            }
         }
     }
 
-    func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSScrollView, context: Context) -> CGSize? {
-        guard let textView = context.coordinator.textView, let layout = textView.layoutManager, let container = textView.textContainer else { return nil }
-        let width = proposal.width ?? 400
-        container.containerSize = NSSize(width: width, height: .greatestFiniteMagnitude)
-        layout.ensureLayout(for: container)
-        let used = layout.usedRect(for: container).height + textView.textContainerInset.height * 2
-        let line = ComposerNSTextView.lineHeight + textView.textContainerInset.height * 2
-        return CGSize(width: width, height: min(max(used, line), line * 6))
+    // MARK: Bridge
+
+    func insertMention(_ alias: String, replacingQueryStartingAt start: Int) {
+        guard let storage = textView.textStorage else { return }
+        let caret = textView.selectedRange().location
+        let range = NSRange(location: start, length: max(0, caret - start))
+        let token = MentionAttachment.string(alias: alias)
+        let insertion = NSMutableAttributedString(attributedString: token)
+        insertion.append(NSAttributedString(string: " ", attributes: ComposerNSTextView.baseAttributes))
+        if textView.shouldChangeText(in: range, replacementString: insertion.string) {
+            storage.replaceCharacters(in: range, with: insertion)
+            textView.didChangeText()
+        }
+        textView.setSelectedRange(NSRange(location: range.location + insertion.length, length: 0))
+        push()
     }
 
-    @MainActor
-    final class Coordinator: NSObject, NSTextViewDelegate, ComposerTextBridge {
-        var parent: ComposerTextView
-        weak var textView: ComposerNSTextView?
-        var lastFocusRequest = 0
-        private var isConverting = false
+    func clear() {
+        textView.string = ""
+        textView.typingAttributes = ComposerNSTextView.baseAttributes
+        push()
+    }
 
-        init(_ parent: ComposerTextView) {
-            self.parent = parent
-        }
+    func focus() {
+        textView.window?.makeFirstResponder(textView)
+    }
 
-        var model: ComposerModel { parent.model }
+    func setText(_ text: String) {
+        guard let storage = textView.textStorage else { return }
+        storage.setAttributedString(NSAttributedString(string: text, attributes: ComposerNSTextView.baseAttributes))
+        textView.setSelectedRange(NSRange(location: storage.length, length: 0))
+        convertTypedMentions(force: true)
+        push()
+    }
 
-        // MARK: Bridge
+    // MARK: Delegate
 
-        func insertMention(_ alias: String, replacingQueryStartingAt start: Int) {
-            guard let textView, let storage = textView.textStorage else { return }
-            let caret = textView.selectedRange().location
-            let range = NSRange(location: start, length: max(0, caret - start))
-            let token = MentionAttachment.string(alias: alias)
-            let insertion = NSMutableAttributedString(attributedString: token)
-            insertion.append(NSAttributedString(string: " ", attributes: ComposerNSTextView.baseAttributes))
-            if textView.shouldChangeText(in: range, replacementString: insertion.string) {
-                storage.replaceCharacters(in: range, with: insertion)
-                textView.didChangeText()
+    func textDidChange(_ notification: Notification) {
+        convertTypedMentions(force: false)
+        push()
+    }
+
+    func textViewDidChangeSelection(_ notification: Notification) {
+        model.caret = exportedOffset(for: textView.selectedRange().location)
+    }
+
+    func textView(_ textView: NSTextView, doCommandBy selector: Selector) -> Bool {
+        if model.isSuggesting {
+            switch selector {
+            case #selector(NSResponder.moveUp(_:)): model.moveSuggestion(-1); return true
+            case #selector(NSResponder.moveDown(_:)): model.moveSuggestion(1); return true
+            case #selector(NSResponder.insertNewline(_:)), #selector(NSResponder.insertTab(_:)): model.choose(); return true
+            case #selector(NSResponder.cancelOperation(_:)): model.dismissSuggestions(); return true
+            default: break
             }
-            textView.setSelectedRange(NSRange(location: range.location + insertion.length, length: 0))
-            push()
         }
-
-        func clear() {
-            textView?.string = ""
-            textView?.typingAttributes = ComposerNSTextView.baseAttributes
-            push()
-        }
-
-        func focus() {
-            guard let textView else { return }
-            textView.window?.makeFirstResponder(textView)
-        }
-
-        func setText(_ text: String) {
-            guard let textView, let storage = textView.textStorage else { return }
-            storage.setAttributedString(NSAttributedString(string: text, attributes: ComposerNSTextView.baseAttributes))
-            convertTypedMentions(force: true)
-            push()
-        }
-
-        // MARK: Delegate
-
-        func textDidChange(_ notification: Notification) {
-            convertTypedMentions(force: false)
-            push()
-        }
-
-        func textViewDidChangeSelection(_ notification: Notification) {
-            guard let textView else { return }
-            model.caret = exportedOffset(for: textView.selectedRange().location)
-        }
-
-        func textView(_ textView: NSTextView, doCommandBy selector: Selector) -> Bool {
-            if model.isSuggesting {
-                switch selector {
-                case #selector(NSResponder.moveUp(_:)): model.moveSuggestion(-1); return true
-                case #selector(NSResponder.moveDown(_:)): model.moveSuggestion(1); return true
-                case #selector(NSResponder.insertNewline(_:)), #selector(NSResponder.insertTab(_:)): model.choose(); return true
-                case #selector(NSResponder.cancelOperation(_:)): model.dismissSuggestions(); return true
-                default: break
-                }
+        if selector == #selector(NSResponder.insertNewline(_:)) {
+            if NSApp.currentEvent?.modifierFlags.contains(.shift) == true {
+                textView.insertNewlineIgnoringFieldEditor(nil)
+            } else {
+                onSubmit()
             }
-            if selector == #selector(NSResponder.insertNewline(_:)) {
-                if NSApp.currentEvent?.modifierFlags.contains(.shift) == true {
-                    textView.insertNewlineIgnoringFieldEditor(nil)
-                } else {
-                    parent.onSubmit()
-                }
-                return true
-            }
-            return false
-        }
-
-        // MARK: Paste and drop
-
-        func handlePaste(_ pasteboard: NSPasteboard) -> Bool {
-            guard ImageImport.pasteboardHasImages(pasteboard) else { return false }
-            let (images, errors) = ImageImport.images(from: pasteboard)
-            parent.onImages(images, errors)
             return true
         }
+        return false
+    }
 
-        // MARK: Text <-> model
+    // MARK: Paste
 
-        /// Plain text with tokens exported as `@alias`.
-        func exportedText() -> String {
-            guard let storage = textView?.textStorage else { return "" }
-            var out = ""
-            storage.enumerateAttribute(.attachment, in: NSRange(location: 0, length: storage.length)) { value, range, _ in
-                if let mention = value as? MentionAttachment {
-                    out += "@" + mention.alias
-                } else {
-                    out += (storage.string as NSString).substring(with: range)
-                }
+    func handlePaste(_ pasteboard: NSPasteboard) -> Bool {
+        guard ImageImport.pasteboardHasImages(pasteboard) else { return false }
+        let (images, errors) = ImageImport.images(from: pasteboard)
+        onImages(images, errors)
+        return true
+    }
+
+    // MARK: Text <-> model
+
+    /// Plain text with tokens exported as `@alias`.
+    func exportedText() -> String {
+        guard let storage = textView.textStorage else { return "" }
+        var out = ""
+        storage.enumerateAttribute(.attachment, in: NSRange(location: 0, length: storage.length)) { value, range, _ in
+            if let mention = value as? MentionAttachment {
+                out += "@" + mention.alias
+            } else {
+                out += (storage.string as NSString).substring(with: range)
             }
-            return out
         }
+        return out
+    }
 
-        /// Caret offset in the exported text (tokens are longer there than the 1-char attachment).
-        func exportedOffset(for location: Int) -> Int {
-            guard let storage = textView?.textStorage else { return location }
-            var extra = 0
-            storage.enumerateAttribute(.attachment, in: NSRange(location: 0, length: min(location, storage.length))) { value, range, _ in
-                if let mention = value as? MentionAttachment { extra += mention.alias.utf16.count + 1 - range.length }
-            }
-            return location + extra
+    /// Caret offset in the exported text (tokens are longer there than the 1-char attachment).
+    func exportedOffset(for location: Int) -> Int {
+        guard let storage = textView.textStorage else { return location }
+        var extra = 0
+        storage.enumerateAttribute(.attachment, in: NSRange(location: 0, length: min(location, storage.length))) { value, range, _ in
+            if let mention = value as? MentionAttachment { extra += mention.alias.utf16.count + 1 - range.length }
         }
+        return location + extra
+    }
 
-        private func push() {
-            let text = exportedText()
-            if model.text != text { model.text = text }
-            if let textView { model.caret = exportedOffset(for: textView.selectedRange().location) }
-            textView?.needsDisplay = true
-            textView?.invalidateIntrinsicContentSize()
-            textView?.enclosingScrollView?.invalidateIntrinsicContentSize()
-        }
+    private func push() {
+        let text = exportedText()
+        if model.text != text { model.text = text }
+        model.caret = exportedOffset(for: textView.selectedRange().location)
+        textView.needsDisplay = true
+        scrollView.invalidateIntrinsicContentSize()
+    }
 
-        /// `@image-1` typed by hand becomes a token once it is complete (followed by a non-name character),
-        /// or everywhere when `force` (after a programmatic `setText`).
-        private func convertTypedMentions(force: Bool) {
-            guard !isConverting, let textView, let storage = textView.textStorage else { return }
-            isConverting = true
-            defer { isConverting = false }
-            let known = model.knownNames
-            guard !known.isEmpty else { return }
-            let string = storage.string
-            let units = (string as NSString).length
-            let caret = textView.selectedRange().location
-            let tokens = MentionText.scanTokens(string).filter { known.contains($0.alias) }
-            let utf16 = Array(string.utf16)
-            var shift = 0
-            var newCaret = caret
-            for token in tokens {
-                // The raw run includes trailing hyphens (`@image-` may still become `@image-1`).
-                var rawEnd = token.end
-                while rawEnd < units && MentionText.isNameChar(utf16[rawEnd]) { rawEnd += 1 }
-                // Leave the token the caret is in (or right after): the user may still be typing it.
-                let caretInside = caret > token.start && caret <= rawEnd
-                let closed = rawEnd < units
-                guard force || (!caretInside && (rawEnd < caret || closed)) else { continue }
-                let range = NSRange(location: token.start - shift, length: token.end - token.start)
-                let replacement = MentionAttachment.string(alias: token.alias)
-                storage.replaceCharacters(in: range, with: replacement)
-                if token.end <= caret { newCaret -= range.length - replacement.length }
-                shift += range.length - replacement.length
-            }
-            if shift > 0 { textView.setSelectedRange(NSRange(location: max(0, newCaret), length: 0)) }
+    /// `@image-1` typed by hand becomes a token once it is complete (followed by a non-name character),
+    /// or everywhere when `force` (after a programmatic `setText`).
+    private func convertTypedMentions(force: Bool) {
+        guard !isConverting, let storage = textView.textStorage else { return }
+        isConverting = true
+        defer { isConverting = false }
+        let known = model.knownNames
+        guard !known.isEmpty else { return }
+        let string = storage.string
+        let units = (string as NSString).length
+        let caret = textView.selectedRange().location
+        let tokens = MentionText.scanTokens(string).filter { known.contains($0.alias) }
+        let utf16 = Array(string.utf16)
+        var shift = 0
+        var newCaret = caret
+        for token in tokens {
+            var rawEnd = token.end
+            while rawEnd < units && MentionText.isNameChar(utf16[rawEnd]) { rawEnd += 1 }
+            let caretInside = caret > token.start && caret <= rawEnd
+            let closed = rawEnd < units
+            guard force || (!caretInside && (rawEnd < caret || closed)) else { continue }
+            let range = NSRange(location: token.start - shift, length: token.end - token.start)
+            let replacement = MentionAttachment.string(alias: token.alias)
+            storage.replaceCharacters(in: range, with: replacement)
+            if token.end <= caret { newCaret -= range.length - replacement.length }
+            shift += range.length - replacement.length
         }
+        if shift > 0 { textView.setSelectedRange(NSRange(location: max(0, newCaret), length: 0)) }
+    }
+}
+
+/// Auto-sizing scroll view that grows from 1 to 6 lines as the user types.
+final class ComposerScrollView: NSScrollView {
+    private unowned let editorTextView: ComposerNSTextView
+    private var lastWidth: CGFloat = 0
+
+    init(textView: ComposerNSTextView) {
+        self.editorTextView = textView
+        super.init(frame: .zero)
+        translatesAutoresizingMaskIntoConstraints = false
+    }
+
+    required init?(coder: NSCoder) { fatalError("not used") }
+
+    override func layout() {
+        super.layout()
+        if abs(bounds.width - lastWidth) > 0.5 {
+            lastWidth = bounds.width
+            editorTextView.frame.size.width = max(40, bounds.width)
+            invalidateIntrinsicContentSize()
+        }
+    }
+
+    override var intrinsicContentSize: NSSize {
+        let singleLine = ComposerNSTextView.lineHeight + editorTextView.textContainerInset.height * 2
+        guard let layout = editorTextView.layoutManager, let container = editorTextView.textContainer else {
+            return NSSize(width: NSView.noIntrinsicMetric, height: singleLine)
+        }
+        let width = bounds.width > 20 ? bounds.width : 420
+        container.containerSize = NSSize(width: width, height: .greatestFiniteMagnitude)
+        layout.ensureLayout(for: container)
+        let used = ceil(layout.usedRect(for: container).height + editorTextView.textContainerInset.height * 2)
+        let clamped = min(max(used, singleLine), singleLine * 6)
+        return NSSize(width: NSView.noIntrinsicMetric, height: clamped)
     }
 }
 
 /// NSTextView with a placeholder, image paste routing and token-aware copy.
 final class ComposerNSTextView: NSTextView {
-    weak var coordinator: ComposerTextView.Coordinator?
+    weak var editor: ComposerEditor?
     var placeholder = ""
 
     static var font: NSFont { ComposerMetrics.font }
@@ -244,7 +261,7 @@ final class ComposerNSTextView: NSTextView {
     static var baseAttributes: [NSAttributedString.Key: Any] { ComposerMetrics.baseAttributes }
 
     override func paste(_ sender: Any?) {
-        if let coordinator, coordinator.handlePaste(NSPasteboard.general) { return }
+        if let editor, editor.handlePaste(NSPasteboard.general) { return }
         pasteAsPlainText(sender)
     }
 

@@ -15,7 +15,9 @@
       "!**/dist",
       "!**/.wrangler",
       "!**/worker-configuration.d.ts",
-      "!**/migrations/meta"
+      "!**/migrations/meta",
+      "!apps/apple",
+      "!apps/ios"
     ]
   },
   "formatter": {

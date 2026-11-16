@@ -1,4 +1,4 @@
-import { env, exports } from "cloudflare:workers";
+import { env } from "cloudflare:workers";
 import {
   AgentEffort,
   AssetKind,
@@ -17,10 +17,12 @@ import {
   PublishLogStatus,
   ScheduleStatus,
   SocialAccountStatus,
+  TokenHealthStatus,
 } from "@studio/contract";
 import { describe, expect, it } from "vitest";
 import { ENUMS } from "../src/db/schema.ts";
 import * as entry from "../src/index.ts";
+import { localFetch } from "./helpers.ts";
 
 const BASE = "http://studio.test";
 
@@ -34,7 +36,7 @@ describe("worker entry module", () => {
 
 describe("GET /api/health", () => {
   it("returns a contract-valid healthy response", async () => {
-    const res = await exports.default.fetch(`${BASE}/api/health`);
+    const res = await localFetch(`${BASE}/api/health`);
     expect(res.status).toBe(200);
     const body = HealthResponse.parse(await res.json());
     expect(body.status).toBe("ok");
@@ -44,7 +46,7 @@ describe("GET /api/health", () => {
 
 describe("GET /api/openapi.json", () => {
   it("documents the health route with the contract schema", async () => {
-    const res = await exports.default.fetch(`${BASE}/api/openapi.json`);
+    const res = await localFetch(`${BASE}/api/openapi.json`);
     expect(res.status).toBe(200);
     const doc = (await res.json()) as {
       openapi: string;
@@ -108,6 +110,7 @@ describe("D1 + Drizzle", () => {
       [ENUMS.scheduleStatus, ScheduleStatus.options],
       [ENUMS.publishLogStatus, PublishLogStatus.options],
       [ENUMS.agentEffort, AgentEffort.options],
+      [ENUMS.tokenHealth, TokenHealthStatus.options],
     ];
     for (const [db, contract] of pairs) expect([...db]).toEqual([...contract]);
   });
@@ -115,7 +118,7 @@ describe("D1 + Drizzle", () => {
 
 describe("OpenAPI document", () => {
   it("documents the core resources with contract schemas", async () => {
-    const res = await exports.default.fetch(`${BASE}/api/openapi.json`);
+    const res = await localFetch(`${BASE}/api/openapi.json`);
     const doc = (await res.json()) as {
       paths: Record<string, Record<string, unknown>>;
       components?: { schemas?: Record<string, unknown> };
@@ -150,7 +153,7 @@ describe("OpenAPI document", () => {
 
 /** Open a WebSocket to the hub through the Worker and collect decoded frames. */
 async function connectHub() {
-  const res = await exports.default.fetch(`${BASE}/api/hub`, {
+  const res = await localFetch(`${BASE}/api/hub`, {
     headers: { Upgrade: "websocket", Authorization: `Bearer ${env.WORKER_TOKEN}` },
   });
   expect(res.status).toBe(101);
@@ -173,7 +176,7 @@ async function connectHub() {
 
 describe("Hub Durable Object", () => {
   it("rejects non-upgrade requests", async () => {
-    const res = await exports.default.fetch(`${BASE}/api/hub`);
+    const res = await localFetch(`${BASE}/api/hub`);
     expect(res.status).toBe(426);
   });
 
@@ -195,7 +198,7 @@ describe("Hub Durable Object", () => {
       }),
     );
 
-    const created = await exports.default.fetch(`${BASE}/api/dev/jobs/demo`, {
+    const created = await localFetch(`${BASE}/api/dev/jobs/demo`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ text: "merhaba" }),
@@ -222,7 +225,7 @@ describe("Hub Durable Object", () => {
     ws.send(encodeMessage({ type: "ping", ts: 1 }));
     expect(await next()).toEqual({ type: "pong", ts: 1 });
 
-    const res = await exports.default.fetch(`${BASE}/api/dev/jobs/${job.id}`);
+    const res = await localFetch(`${BASE}/api/dev/jobs/${job.id}`);
     const finished = (await res.json()) as Job;
     expect(finished.status).toBe("succeeded");
     expect(finished.output).toEqual({ text: "merhaba" });

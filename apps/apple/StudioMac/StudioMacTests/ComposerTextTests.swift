@@ -3,27 +3,22 @@ import StudioKit
 import Testing
 @testable import StudioMac
 
-/// The AppKit composer: typed `@alias` becomes a pill token, the `@` popover
-/// inserts tokens, export keeps `@alias` text, Return sends.
+/// The pure AppKit composer (`ComposerEditor`): typed `@alias` becomes a pill token,
+/// the `@` popup inserts tokens, export keeps `@alias` text, Return sends.
 @Suite("Composer text view")
 @MainActor
 struct ComposerTextTests {
     @MainActor
     private final class Harness {
         let model = ComposerModel()
-        let textView = ComposerNSTextView(usingTextLayoutManager: false)
-        let coordinator: ComposerTextView.Coordinator
+        let editor: ComposerEditor
+        var textView: ComposerNSTextView { editor.textView }
         var submitted = 0
 
         @MainActor
         init(aliases: [String]) {
             var submit: () -> Void = {}
-            let representable = ComposerTextView(model: model, onSubmit: { submit() }, onImages: { _, _ in })
-            coordinator = representable.makeCoordinator()
-            coordinator.textView = textView
-            textView.coordinator = coordinator
-            textView.delegate = coordinator
-            model.bridge = coordinator
+            editor = ComposerEditor(model: model, onSubmit: { submit() }, onImages: { _, _ in })
             model.updateConversationAliases(aliases.enumerated().map { index, name in
                 ConversationAlias(id: "al\(index)", conversationId: "c", alias: name, assetId: "a\(index)", mimeType: "image/png", createdAt: .now, updatedAt: .now)
             })
@@ -68,21 +63,21 @@ struct ComposerTextTests {
         let harness = Harness(aliases: ["image", "image-1"])
         harness.type("@")
         #expect(harness.model.suggestions.map(\.alias) == ["image", "image-1"])
-        _ = harness.coordinator.textView(harness.textView, doCommandBy: #selector(NSResponder.moveDown(_:)))
+        _ = harness.editor.textView(harness.textView, doCommandBy: #selector(NSResponder.moveDown(_:)))
         #expect(harness.model.suggestionIndex == 1)
-        _ = harness.coordinator.textView(harness.textView, doCommandBy: #selector(NSResponder.insertNewline(_:)))
+        _ = harness.editor.textView(harness.textView, doCommandBy: #selector(NSResponder.insertNewline(_:)))
         #expect(harness.tokens == ["image-1"])
         #expect(harness.submitted == 0)
-        _ = harness.coordinator.textView(harness.textView, doCommandBy: #selector(NSResponder.insertNewline(_:)))
+        _ = harness.editor.textView(harness.textView, doCommandBy: #selector(NSResponder.insertNewline(_:)))
         #expect(harness.submitted == 1)
     }
 
     @Test func clearAndSetTextKeepTokens() {
         let harness = Harness(aliases: ["image"])
-        harness.coordinator.setText("@image ile başla")
+        harness.editor.setText("@image ile başla")
         #expect(harness.tokens == ["image"])
         #expect(harness.model.text == "@image ile başla")
-        harness.coordinator.clear()
+        harness.editor.clear()
         #expect(harness.model.text.isEmpty)
         #expect(harness.tokens.isEmpty)
     }

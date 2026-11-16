@@ -1,7 +1,10 @@
 /**
- * `content.generate`: design one content item (from an accepted plan or created
- * directly), render it, upload the JPEGs and store a content version
- * (origin "generated") whose slides carry the HTML and the rendered asset ids.
+ * `content.generate`: design one content item (static post/carousel/story or 9:16 Reel),
+ * render it, upload the JPEGs / MP4 and store a content version (origin "generated")
+ * whose slides carry the HTML and the rendered asset ids.
+ *
+ * Supports both Claude Code (`gate.call`) and automatic Gemini fallback (`GEMINI_API_KEY`)
+ * when a `gemini-*` model is requested or when Claude is signed out / usage-limited.
  */
 
 import path from "node:path";
@@ -15,9 +18,11 @@ import {
 import type { AgentDeps } from "../agent.ts";
 import { describeClaudeError, formatClock, isClaudeError } from "../claude/errors.ts";
 import type { ParkInfo } from "../claude/gate.ts";
-import { chooseModel, readChoice } from "../claude/models.ts";
+import { describeGeminiError, isGeminiError } from "../gemini/errors.ts";
+import { callStructuredAi, hasGeminiApiKey, resolveStructuredRoute } from "../gemini/json-call.ts";
 import { extensionForMime, imageInfo } from "../media.ts";
 import { defineHandler, type JobContext, RetryableError } from "../registry.ts";
+import { generateAndRenderReel, type ReelEngineTestSeams } from "../video/render-reel.ts";
 import { loadBrandContext } from "./brand.ts";
 import {
   exportIssues,
@@ -32,6 +37,7 @@ import type { DesignBrief } from "./prompt.ts";
 export interface ContentGenerateDeps extends AgentDeps {
   /** Shared Chromium renderer (lazily launched). */
   renderer: () => SlideRenderer;
+  reelSeams?: ReelEngineTestSeams;
 }
 
 /** Most user images a single design takes. */
@@ -56,15 +62,25 @@ async function runContentGenerate(
   const payload = parsed.payload;
   const { brandId, contentId } = payload;
 
-  // Model and effort picked for this generation (payload.model / payload.effort), else env, else opus/medium.
-  const choice = chooseModel(readChoice(ctx.job.payload), {
-    model: settings.model,
-    effort: settings.effortDesign,
-  });
+  const requestedModel =
+    typeof ctx.job.payload.model === "string" ? ctx.job.payload.model : payload.model;
+  const requestedEffort =
+    typeof ctx.job.payload.effort === "string" ? ctx.job.payload.effort : payload.effort;
+
   const health = deps.health();
-  if (health.state === "unauthenticated" || health.state === "error") {
+  const geminiReady = hasGeminiApiKey(settings);
+  if ((health.state === "unauthenticated" || health.state === "error") && !geminiReady) {
     throw new Error(health.message);
   }
+
+  const route = resolveStructuredRoute({
+    requestedModel,
+    requestedEffort,
+    defaultEffort: settings.effortDesign,
+    defaultGeminiAlias: "gemini-flash",
+    settings,
+    claudeHealth: health,
+  });
 
   try {
     ctx.progress(0.02, "Hazırlanıyor");
@@ -91,10 +107,39 @@ async function runContentGenerate(
     if (content.brandId !== brandId)
       throw new Error(`content ${contentId} belongs to another brand`);
     const contentType = payload.type ?? content.type;
+
     if (contentType === "reel") {
-      throw new Error(
-        "Reels (video) üretimi henüz desteklenmiyor; bu içerik için post ya da carousel seçin.",
-      );
+      const media = await resolveMedia(deps, payload, signal);
+      const explicitClipId =
+        typeof ctx.job.payload.videoClipAssetId === "string"
+          ? ctx.job.payload.videoClipAssetId
+          : media.videoAssetId;
+      const explicitAudioId =
+        typeof ctx.job.payload.audioAssetId === "string"
+          ? ctx.job.payload.audioAssetId
+          : media.audioAssetId;
+      const heroFile = media.files[0] ?? null;
+
+      return await generateAndRenderReel({
+        deps,
+        renderer: deps.renderer(),
+        ...(deps.reelSeams ? { seams: deps.reelSeams } : {}),
+        jobId: ctx.jobId,
+        brandId,
+        content,
+        title: payload.title ?? content.title,
+        brief: payload.brief || content.brief,
+        instructions: payload.instructions ?? null,
+        requestedModel,
+        requestedEffort,
+        explicitRecipe: ctx.job.payload.recipe,
+        videoClipAssetId: explicitClipId,
+        audioAssetId: explicitAudioId,
+        heroImage: heroFile ? { path: heroFile.path, bytes: heroFile.bytes } : null,
+        brandProfileVersion: payload.brandProfileVersion,
+        signal,
+        progress: (v, m) => ctx.progress(v, m),
+      });
     }
 
     ctx.progress(0.05, "Marka profili okunuyor");
@@ -141,21 +186,43 @@ async function runContentGenerate(
         `Claude kullanım sınırı doldu: ${formatClock(info.until)} civarında devam edecek`,
       );
     };
+    const hooks = { onPark, onResume: () => ctx.progress(0.2, "Claude'a yeniden bağlanılıyor") };
+    const requestedLabelModel = route.provider === "gemini" ? route.alias : route.model;
+    const useCustomCaller = route.provider === "gemini" || route.canFallbackToGemini;
+
     const result = await runDesignPipeline({
       brand,
       brief,
       media: media.files,
       gate: deps.gate,
+      ...(useCustomCaller
+        ? {
+            modelCaller: (callInput) =>
+              callStructuredAi({
+                label: callInput.label,
+                system: callInput.system,
+                content: callInput.content,
+                schema: callInput.schema,
+                route,
+                gate: deps.gate,
+                settings,
+                timeoutMs: settings.claudeTimeoutMs,
+                signal: callInput.signal,
+                hooks,
+                ...(deps.geminiFetch ? { geminiFetch: deps.geminiFetch } : {}),
+              }),
+          }
+        : {}),
       renderer: deps.renderer(),
-      model: choice.model,
-      effort: choice.effort,
+      model: requestedLabelModel,
+      effort: route.effort,
       timeoutMs: settings.claudeTimeoutMs,
       fixPasses: settings.designFixPasses,
       imageMaxEdge: settings.imageMaxEdge,
       signal,
       logger,
       progress: (v, m) => ctx.progress(v, m),
-      hooks: { onPark, onResume: () => ctx.progress(0.2, "Claude'a yeniden bağlanılıyor") },
+      hooks,
       label: `content-${contentId.slice(-8)}`,
     });
     const final = result.final;
@@ -202,13 +269,14 @@ async function runContentGenerate(
       (n, s) => n + (s.report?.issues.filter((x) => x.rule === "slot-empty").length ?? 0),
       0,
     );
+    const providerLabel = result.provider === "gemini" ? "Gemini" : "Claude";
     const note = [
       `Üretildi (${brand.label}).`,
       final.errors === 0
         ? `Denetim temiz (${final.warnings} uyarı).`
         : `Denetimde ${final.errors} hata kaldı; düzenleyicide düzeltilmeli.`,
       emptySlots ? `${emptySlots} boş görsel yuvası.` : "",
-      `${result.calls} Claude çağrısı.`,
+      `${result.calls} ${providerLabel} çağrısı.`,
     ]
       .filter(Boolean)
       .join(" ");
@@ -269,9 +337,10 @@ async function runContentGenerate(
       })),
       finalPass: final.label,
       calls: result.calls,
+      provider: result.provider ?? "claude",
       model: result.model ?? null,
-      requestedModel: choice.model,
-      effort: choice.effort,
+      requestedModel: requestedLabelModel,
+      effort: route.effort,
       usage: u
         ? {
             inputTokens: u.inputTokens,
@@ -295,6 +364,11 @@ async function runContentGenerate(
       if (error.code === "transient" || error.code === "timeout") throw new RetryableError(message);
       throw new Error(`${message} (${error.message.slice(0, 300)})`);
     }
+    if (isGeminiError(error)) {
+      const message = describeGeminiError(error);
+      if (error.code === "transient" || error.code === "timeout") throw new RetryableError(message);
+      throw new Error(message);
+    }
     if (error instanceof ApiError && (error.status === undefined || error.status >= 500)) {
       throw new RetryableError(error.message);
     }
@@ -304,11 +378,13 @@ async function runContentGenerate(
 
 interface ResolvedMedia {
   files: MediaFile[];
-  /** `@names` in the brief that did not resolve to an image. */
+  videoAssetId?: string | undefined;
+  audioAssetId?: string | undefined;
+  /** `@names` in the brief that did not resolve to a usable asset. */
   unresolved: string[];
 }
 
-/** Images the brief names with `@alias` (resolved against the conversation's aliases). */
+/** Media the brief names with `@alias` (resolved against the conversation's aliases). */
 async function resolveMedia(
   deps: ContentGenerateDeps,
   payload: {
@@ -332,13 +408,27 @@ async function resolveMedia(
   }
   const mentions = resolveAliasMentions(text, aliases);
   const files: MediaFile[] = [];
+  let videoAssetId: string | undefined;
+  let audioAssetId: string | undefined;
   const unresolved: string[] = [];
   const seen = new Set<string>();
   for (const m of mentions) {
     if (seen.has(m.aliasId)) continue;
     seen.add(m.aliasId);
     const alias = aliases.find((a) => a.id === m.aliasId);
-    if (!alias || !/^image\//.test(alias.mimeType) || /svg/.test(alias.mimeType)) {
+    if (!alias) {
+      unresolved.push(m.alias);
+      continue;
+    }
+    if (/^video\//.test(alias.mimeType)) {
+      videoAssetId ??= alias.assetId;
+      continue;
+    }
+    if (/^audio\//.test(alias.mimeType)) {
+      audioAssetId ??= alias.assetId;
+      continue;
+    }
+    if (!/^image\//.test(alias.mimeType) || /svg/.test(alias.mimeType)) {
       unresolved.push(m.alias);
       continue;
     }
@@ -366,7 +456,7 @@ async function resolveMedia(
       unresolved.push(alias.alias);
     }
   }
-  return { files, unresolved };
+  return { files, videoAssetId, audioAssetId, unresolved };
 }
 
 function slug(text: string): string {

@@ -68,11 +68,30 @@ export interface MediaFile extends MediaImage {
   bytes: Uint8Array;
 }
 
+export interface ModelCallerInput {
+  label: string;
+  system: string;
+  content: ClaudeContentBlock[];
+  schema: object;
+  signal: AbortSignal;
+}
+
+export interface ModelCallerResult {
+  output: unknown;
+  model?: string | undefined;
+  provider?: "claude" | "gemini";
+  usage: ClaudeUsage;
+}
+
+export type DesignModelCaller = (input: ModelCallerInput) => Promise<ModelCallerResult>;
+
 export interface PipelineInput {
   brand: BrandContext;
   brief: DesignBrief;
   media: MediaFile[];
   gate: ClaudeGate;
+  /** Optional provider-agnostic caller (used for Gemini or Claude->Gemini fallback). */
+  modelCaller?: DesignModelCaller;
   renderer: SlideRenderer;
   model: string;
   effort?: string | undefined;
@@ -94,6 +113,7 @@ export interface PipelineResult {
   usage: ClaudeUsage | undefined;
   timings: { claudeMs: number; renderMs: number; totalMs: number };
   model: string | undefined;
+  provider?: "claude" | "gemini";
 }
 
 /** Preset for a content type and platform list (Instagram 4:5 feed by default). */
@@ -134,6 +154,7 @@ export async function runDesignPipeline(input: PipelineInput): Promise<PipelineR
   let claudeMs = 0;
   let renderMs = 0;
   let model: string | undefined;
+  let provider: "claude" | "gemini" | undefined;
 
   const call = async (
     step: string,
@@ -141,30 +162,36 @@ export async function runDesignPipeline(input: PipelineInput): Promise<PipelineR
     images: ClaudeContentBlock[],
   ): Promise<DesignOutput> => {
     const started = Date.now();
-    const result = await gate.call(
-      {
-        label: `${input.label}-${step}`,
-        system,
-        content: [{ type: "text", text }, ...images],
-        // One schema for every pass of a post: the StructuredOutput tool definition is part of
-        // the prompt-cache prefix, so an identical schema lets later passes read the ~20K-token
-        // system prompt from the cache instead of writing it again.
-        schema: designJsonSchema({
-          minSlides: brief.slides.min,
-          maxSlides: brief.slides.max,
-          critique: true,
-        }),
-        model: input.model,
-        ...(input.effort ? { effort: input.effort } : {}),
-        timeoutMs: input.timeoutMs,
-        signal,
-      },
-      input.hooks ?? {},
-    );
+    const schema = designJsonSchema({
+      minSlides: brief.slides.min,
+      maxSlides: brief.slides.max,
+      critique: true,
+    });
+    const label = `${input.label}-${step}`;
+    const content: ClaudeContentBlock[] = [{ type: "text", text }, ...images];
+    const result: ModelCallerResult = input.modelCaller
+      ? await input.modelCaller({ label, system, content, schema, signal })
+      : await gate.call(
+          {
+            label,
+            system,
+            content,
+            // One schema for every pass of a post: the StructuredOutput tool definition is part of
+            // the prompt-cache prefix, so an identical schema lets later passes read the ~20K-token
+            // system prompt from the cache instead of writing it again.
+            schema,
+            model: input.model,
+            ...(input.effort ? { effort: input.effort } : {}),
+            timeoutMs: input.timeoutMs,
+            signal,
+          },
+          input.hooks ?? {},
+        );
     claudeMs += Date.now() - started;
     calls++;
     usage = addUsage(usage, result.usage);
     model ??= result.model;
+    provider ??= result.provider ?? "claude";
     const parsed = DesignOutput.safeParse(result.output);
     if (!parsed.success) {
       throw new ClaudeError(
@@ -383,6 +410,7 @@ export async function runDesignPipeline(input: PipelineInput): Promise<PipelineR
     usage,
     timings: { claudeMs, renderMs, totalMs: Date.now() - t0 },
     model,
+    ...(provider ? { provider } : {}),
   };
 }
 

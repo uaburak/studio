@@ -1,0 +1,10 @@
+# Local secrets for `wrangler dev` (apps/cloud-publisher). Copy to .dev.vars
+# (git-ignored) and pick your own values. Never commit real values.
+#
+# Bearer secret the Mac sends on every /v1/* request. Generate: openssl rand -hex 32
+PUBLISHER_TOKEN=change-me-local-dev-token
+# AES-256-GCM key for access tokens at rest: base64 of 32 random bytes.
+# Generate: openssl rand -base64 32
+TOKEN_ENCRYPTION_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+# HMAC key for signed media URLs. Generate: openssl rand -hex 32
+MEDIA_URL_SECRET=change-me-local-media-secret

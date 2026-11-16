@@ -1,5 +1,6 @@
 import path from "node:path";
-import type { AgentRuntime } from "./agent-runtime.ts";
+import type { WorkerCommand } from "@studio/contract";
+import { type AgentRuntime, AI_JOB_TYPES } from "./agent-runtime.ts";
 import type { WorkerConfig } from "./config.ts";
 import { type ConnectionState, HubConnection } from "./connection.ts";
 import { demoEcho } from "./jobs/demo-echo.ts";
@@ -14,7 +15,7 @@ export const WORKER_VERSION = "0.1.0";
 
 /**
  * The job types this worker can run: `demo.echo`, plus `chat.turn` and
- * `content.generate` when an agent runtime (headless Claude) is given.
+ * `content.generate` when an agent runtime (Claude / Gemini) is given.
  */
 export function createDefaultRegistry(agent?: AgentRuntime): JobRegistry {
   const registry = new JobRegistry().register("demo.echo", demoEcho);
@@ -27,7 +28,7 @@ export interface StartWorkerOptions {
   socketFactory?: SocketFactory;
   registry?: JobRegistry;
   /**
-   * Claude-backed handlers. Its health decides which job types are announced; on a
+   * AI-backed handlers. Readiness decides which job types are announced; on a
    * change the worker reconnects to announce the new set.
    */
   agent?: AgentRuntime;
@@ -51,11 +52,12 @@ export function startWorker(options: StartWorkerOptions): RunningWorker {
   const { config, logger } = options;
   const agent = options.agent;
   const registry = options.registry ?? createDefaultRegistry(agent);
-  const claudeTypes = new Set(["chat.turn", "content.generate"]);
-  const baseTypes = registry.types().filter((t) => !agent || !claudeTypes.has(t));
+  const aiTypes = new Set<string>(AI_JOB_TYPES);
+  const baseTypes = registry.types().filter((t) => !agent || !aiTypes.has(t));
   const outbox = options.outbox ?? new FileOutbox(path.join(config.stateDir, "outbox.json"));
   let connection: HubConnection | undefined;
   let usageUnsupported = false;
+
   /** Latest subscription usage to the hub (`worker.usage`), when the contract knows the frame. */
   const sendUsage = () => {
     const report = agent?.usage.latest();
@@ -67,6 +69,35 @@ export function startWorker(options: StartWorkerOptions): RunningWorker {
       return;
     }
     connection.send(frame);
+  };
+
+  const sendClaude = () => {
+    if (!agent || !connection) return;
+    connection.send({ type: "worker.claude", account: agent.claudeAccount() });
+  };
+
+  const sendGemini = () => {
+    if (!agent || !connection) return;
+    connection.send({ type: "worker.gemini", account: agent.geminiAccount() });
+  };
+
+  const handleWorkerCommand = async (command: WorkerCommand) => {
+    if (!agent) {
+      logger.debug(`ignoring worker.command (${command}): agent runtime disabled`);
+      return;
+    }
+    logger.info(`hub command received: ${command}`);
+    switch (command) {
+      case "claude.status":
+        await agent.refreshClaudeStatus();
+        return;
+      case "claude.login":
+        agent.startClaudeLogin();
+        return;
+      case "gemini.status":
+        await agent.refreshGeminiStatus();
+        return;
+    }
   };
 
   const runner = new JobRunner({
@@ -95,9 +126,19 @@ export function startWorker(options: StartWorkerOptions): RunningWorker {
     helloFields: () => runner.helloFields(),
     onReady: () => {
       runner.onConnected();
+      sendClaude();
+      sendGemini();
       sendUsage();
     },
-    onMessage: (message) => runner.handle(message),
+    onMessage: (message) => {
+      if (message.type === "worker.command") {
+        void handleWorkerCommand(message.command).catch((err: unknown) =>
+          logger.error(`worker.command ${message.command} failed`, err),
+        );
+        return;
+      }
+      runner.handle(message);
+    },
     logger,
     ...(options.onStateChange ? { onStateChange: options.onStateChange } : {}),
   });
@@ -106,11 +147,18 @@ export function startWorker(options: StartWorkerOptions): RunningWorker {
   connection.start();
 
   const conn = connection;
-  agent?.usage.onUpdate(() => sendUsage());
+  const unsubUsage = agent?.usage.onUpdate(() => sendUsage());
+  const unsubClaude = agent?.onClaudeAccountChange((account) => {
+    conn.send({ type: "worker.claude", account });
+  });
+  const unsubGemini = agent?.onGeminiAccountChange((account) => {
+    conn.send({ type: "worker.gemini", account });
+  });
   agent?.onHealthChange(() => {
-    logger.info("claude health changed: re-announcing capabilities to the hub");
+    logger.info("agent health changed: re-announcing capabilities to the hub");
     conn.reannounce();
   });
+
   return {
     connection: conn,
     runner,
@@ -118,11 +166,17 @@ export function startWorker(options: StartWorkerOptions): RunningWorker {
       return conn.state;
     },
     async shutdown() {
+      unsubUsage?.();
+      unsubClaude?.();
+      unsubGemini?.();
       await runner.shutdown(config.shutdownTimeoutMs);
       conn.stop();
       await agent?.stop();
     },
     stop() {
+      unsubUsage?.();
+      unsubClaude?.();
+      unsubGemini?.();
       runner.stop();
       conn.stop();
       void agent?.stop();

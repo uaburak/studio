@@ -8,6 +8,8 @@ public struct HealthResponse: Codable, Sendable, Equatable {
     public var version: String
     public var time: Date
     public var checks: Checks
+    /// Id of the Mac host that started this API (absent when started by hand).
+    public var instance: String?
 }
 
 /// Typed client for the Studio API (mirror of `createApiClient` in
@@ -169,8 +171,83 @@ public final class APIClient: Sendable {
         try await get(Brand.self, "/api/brands/\(Self.enc(id))")
     }
 
+    public func createBrand(_ input: BrandCreate) async throws(StudioAPIError) -> Brand {
+        try await send(Brand.self, .post, "/api/brands", body: input)
+    }
+
+    public func updateBrand(_ id: EntityID, _ input: BrandUpdate) async throws(StudioAPIError) -> Brand {
+        try await send(Brand.self, .patch, "/api/brands/\(Self.enc(id))", body: input)
+    }
+
+    // MARK: - Brand profiles
+
+    public func brandProfiles(brandId: EntityID, status: BrandProfileStatus? = nil) async throws(StudioAPIError) -> [BrandProfile] {
+        try await all(BrandProfile.self, "/api/brands/\(Self.enc(brandId))/profiles", query: ["status": status?.sendable?.rawValue])
+    }
+
+    /// Returns `nil` when the brand has no approved profile yet (HTTP 404).
+    public func currentBrandProfile(brandId: EntityID) async throws(StudioAPIError) -> BrandProfile? {
+        do {
+            return try await get(BrandProfile.self, "/api/brands/\(Self.enc(brandId))/profiles/current")
+        } catch {
+            if error.code == .notFound { return nil }
+            if case .server(let status, _, _, _) = error, status == 404 { return nil }
+            throw error
+        }
+    }
+
+    public func brandProfile(brandId: EntityID, version: Int) async throws(StudioAPIError) -> BrandProfile {
+        try await get(BrandProfile.self, "/api/brands/\(Self.enc(brandId))/profiles/\(version)")
+    }
+
+    public func createBrandProfile(brandId: EntityID, _ input: BrandProfileCreate = BrandProfileCreate()) async throws(StudioAPIError) -> BrandProfile {
+        try await send(BrandProfile.self, .post, "/api/brands/\(Self.enc(brandId))/profiles", body: input)
+    }
+
+    public func updateBrandProfile(brandId: EntityID, version: Int, _ input: BrandProfileUpdate) async throws(StudioAPIError) -> BrandProfile {
+        try await send(BrandProfile.self, .patch, "/api/brands/\(Self.enc(brandId))/profiles/\(version)", body: input)
+    }
+
+    public func approveBrandProfile(brandId: EntityID, version: Int) async throws(StudioAPIError) -> BrandProfile {
+        try await send(BrandProfile.self, .post, "/api/brands/\(Self.enc(brandId))/profiles/\(version)/approve")
+    }
+
+    public func analyzeBrand(brandId: EntityID, notes: String? = nil) async throws(StudioAPIError) -> Job {
+        var payload: JSONObject = [:]
+        if let notes = notes?.trimmingCharacters(in: .whitespacesAndNewlines), !notes.isEmpty {
+            payload["notes"] = .string(notes)
+        }
+        return try await createJob(JobCreate(type: .brandAnalyze, payload: payload, brandId: brandId))
+    }
+
+    // MARK: - Social accounts & OAuth / Token vault
+
     public func socialAccounts(brandId: EntityID? = nil) async throws(StudioAPIError) -> [SocialAccount] {
         try await all(SocialAccount.self, "/api/social-accounts", query: ["brandId": brandId])
+    }
+
+    public func createSocialAccount(_ input: SocialAccountCreate) async throws(StudioAPIError) -> SocialAccount {
+        try await send(SocialAccount.self, .post, "/api/social-accounts", body: input)
+    }
+
+    public func updateSocialAccount(_ id: EntityID, _ input: SocialAccountUpdate) async throws(StudioAPIError) -> SocialAccount {
+        try await send(SocialAccount.self, .patch, "/api/social-accounts/\(Self.enc(id))", body: input)
+    }
+
+    public func putSocialAccountToken(id: EntityID, _ input: SocialAccountTokenPut) async throws(StudioAPIError) -> SocialAccount {
+        try await send(SocialAccount.self, .put, "/api/social-accounts/\(Self.enc(id))/token", body: input)
+    }
+
+    public func checkSocialAccountToken(id: EntityID) async throws(StudioAPIError) -> SocialAccount {
+        try await send(SocialAccount.self, .post, "/api/social-accounts/\(Self.enc(id))/check")
+    }
+
+    public func discoverMetaAccounts(_ input: MetaDiscoverInput) async throws(StudioAPIError) -> MetaDiscoverResult {
+        try await send(MetaDiscoverResult.self, .post, "/api/social-accounts/meta/discover", body: input)
+    }
+
+    public func connectLinkedInAccount(_ input: LinkedInConnectInput) async throws(StudioAPIError) -> SocialAccount {
+        try await send(SocialAccount.self, .post, "/api/social-accounts/linkedin/connect", body: input)
     }
 
     // MARK: - Contents
@@ -206,6 +283,34 @@ public final class APIClient: Sendable {
         try await all(ContentVersionSummary.self, "/api/contents/\(Self.enc(contentId))/versions")
     }
 
+    public func versions(contentId: EntityID) async throws(StudioAPIError) -> [ContentVersionSummary] {
+        try await contentVersions(contentId: contentId)
+    }
+
+    /// Queue `content.render` with `slotAssignments: [slotId: assetId]`.
+    public func fillSlotAndRender(contentId: EntityID, slotId: String, assetId: EntityID) async throws(StudioAPIError) -> Job {
+        let payload: JSONObject = [
+            "format": .string("jpeg"),
+            "slotAssignments": .object([slotId: .string(assetId)]),
+        ]
+        return try await createJob(JobCreate(type: .contentRender, payload: payload, contentId: contentId))
+    }
+
+    /// Queue `content.render` with `patches`.
+    public func patchLayersAndRender(contentId: EntityID, patches: [SlideLayerPatch]) async throws(StudioAPIError) -> Job {
+        let payload: JSONObject = [
+            "format": .string("jpeg"),
+            "patches": .array(patches.map { .object($0.toJSONObject()) }),
+        ]
+        return try await createJob(JobCreate(type: .contentRender, payload: payload, contentId: contentId))
+    }
+
+    /// Queue `content.render` export (`format: "jpeg" | "pdf" | "both"`).
+    public func exportContent(contentId: EntityID, format: String) async throws(StudioAPIError) -> Job {
+        let payload: JSONObject = ["format": .string(format)]
+        return try await createJob(JobCreate(type: .contentRender, payload: payload, contentId: contentId))
+    }
+
     // MARK: - Schedules
 
     public func schedules(brandId: EntityID? = nil, contentId: EntityID? = nil, status: ScheduleStatus? = nil, from: Date? = nil, to: Date? = nil) async throws(StudioAPIError) -> [Schedule] {
@@ -221,6 +326,10 @@ public final class APIClient: Sendable {
 
     public func cancelSchedule(_ id: EntityID) async throws(StudioAPIError) -> Schedule {
         try await send(Schedule.self, .post, "/api/schedules/\(Self.enc(id))/cancel")
+    }
+
+    public func scheduleLogs(scheduleId: EntityID) async throws(StudioAPIError) -> [PublishLog] {
+        try await all(PublishLog.self, "/api/schedules/\(Self.enc(scheduleId))/logs")
     }
 
     // MARK: - Jobs and presence
@@ -245,6 +354,26 @@ public final class APIClient: Sendable {
 
     public func presence() async throws(StudioAPIError) -> WorkerPresence {
         try await get(WorkerPresence.self, "/api/workers/presence")
+    }
+
+    public func claudeControl() async throws(StudioAPIError) -> ClaudeControl {
+        try await get(ClaudeControl.self, "/api/workers/claude")
+    }
+
+    public func claudeLogin() async throws(StudioAPIError) -> ClaudeControl {
+        try await send(ClaudeControl.self, .post, "/api/workers/claude/login")
+    }
+
+    public func claudeRefresh() async throws(StudioAPIError) -> ClaudeControl {
+        try await send(ClaudeControl.self, .post, "/api/workers/claude/status")
+    }
+
+    public func geminiControl() async throws(StudioAPIError) -> GeminiControl {
+        try await get(GeminiControl.self, "/api/workers/gemini")
+    }
+
+    public func geminiRefresh() async throws(StudioAPIError) -> GeminiControl {
+        try await send(GeminiControl.self, .post, "/api/workers/gemini/status")
     }
 
     /// `GET /api/jobs/stream` (WebSocket): one job, one brand, or every job.
@@ -283,6 +412,10 @@ public final class APIClient: Sendable {
 
     public func answerQuestion(conversationId: EntityID, messageId: EntityID, _ input: QuestionAnswerCreate) async throws(StudioAPIError) -> QuestionAnswerResult {
         try await send(QuestionAnswerResult.self, .post, "/api/conversations/\(Self.enc(conversationId))/messages/\(Self.enc(messageId))/answer", body: input)
+    }
+
+    public func decideConsent(conversationId: EntityID, messageId: EntityID, _ decision: ConsentDecisionCreate) async throws(StudioAPIError) -> ConsentDecisionResult {
+        try await send(ConsentDecisionResult.self, .post, "/api/conversations/\(Self.enc(conversationId))/messages/\(Self.enc(messageId))/consent", body: decision)
     }
 
     /// Every attachment alias of the conversation, oldest first (not paginated).
@@ -332,10 +465,36 @@ public final class APIClient: Sendable {
         try await send(PlanGenerateResult.self, .post, "/api/plans/\(Self.enc(id))/generate", body: input)
     }
 
-    // MARK: - Assets
+    // MARK: - Assets & AI image generation
+
+    public func assets(brandId: EntityID? = nil, kind: AssetKind? = nil) async throws(StudioAPIError) -> [Asset] {
+        try await all(Asset.self, "/api/assets", query: ["brandId": brandId, "kind": kind?.sendable?.rawValue])
+    }
 
     public func asset(_ id: EntityID) async throws(StudioAPIError) -> Asset {
         try await get(Asset.self, "/api/assets/\(Self.enc(id))")
+    }
+
+    public func generateAIImage(
+        brandId: EntityID,
+        prompt: String,
+        aspectRatio: String = "4:5",
+        imageSize: String = "2K",
+        referenceAssetIds: [EntityID] = [],
+        preserveProductLabel: Bool = false,
+        targetContentId: EntityID? = nil,
+        targetSlotId: String? = nil
+    ) async throws(StudioAPIError) -> Job {
+        var payload: JSONObject = [
+            "prompt": .string(prompt.trimmingCharacters(in: .whitespacesAndNewlines)),
+            "aspectRatio": .string(aspectRatio),
+            "imageSize": .string(imageSize),
+            "referenceAssetIds": .array(referenceAssetIds.map { .string($0) }),
+            "preserveProductLabel": .bool(preserveProductLabel),
+        ]
+        if let targetContentId { payload["targetContentId"] = .string(targetContentId) }
+        if let targetSlotId { payload["targetSlotId"] = .string(targetSlotId) }
+        return try await createJob(JobCreate(type: .imageGenerate, payload: payload, brandId: brandId))
     }
 
     /// URL that streams the stored bytes.

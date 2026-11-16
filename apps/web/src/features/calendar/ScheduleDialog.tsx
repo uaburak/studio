@@ -263,10 +263,16 @@ export function ScheduleDialog({
           </div>
         </div>
 
-        <Notice tone="warn">
-          <strong>Otomatik yayın henüz yok.</strong> Zamanlama kaydedilir ve takvimde görünür, ancak
-          yayın motoru (Faz 3) gelene kadar hiçbir şey paylaşılmaz.
-        </Notice>
+        {usable.find((a) => a.id === accountId)?.status === "connected" ? (
+          <Notice tone="good">
+            Seçilen saatte bulut zamanlayıcı üzerinden bağlı hesaptan otomatik yayınlanır.
+          </Notice>
+        ) : (
+          <Notice tone="warn">
+            Seçilen hesabın token bağlantısı henüz tamamlanmamış. Yayın saatinden önce Markalar
+            sayfasından hesabı bağlayın.
+          </Notice>
+        )}
 
         <InlineError error={create.error} />
       </form>

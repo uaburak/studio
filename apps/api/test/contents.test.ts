@@ -1,4 +1,4 @@
-import { env, exports } from "cloudflare:workers";
+import { env } from "cloudflare:workers";
 import {
   type Asset,
   Content,
@@ -16,6 +16,7 @@ import {
   createContent,
   expectError,
   getContent,
+  localFetch,
   slide,
 } from "./helpers.ts";
 
@@ -381,7 +382,7 @@ async function uploadPng(brandId: string): Promise<Asset> {
   form.set("kind", "image");
   form.set("source", "generated");
   form.set("file", new File([png], "render.png", { type: "image/png" }));
-  const res = await exports.default.fetch(`${BASE}/api/assets`, { method: "POST", body: form });
+  const res = await localFetch(`${BASE}/api/assets`, { method: "POST", body: form });
   expect(res.status).toBe(201);
   return (await res.json()) as Asset;
 }

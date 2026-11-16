@@ -47,7 +47,7 @@ struct StreamTests {
     }
 
     @Test func pollsOverHTTPWhileTheSocketKeepsFailing() async throws {
-        let connector = FakeConnector([.refuse, .refuse, .refuse])
+        let connector = FakeConnector([.refuse, .refuse, .framesThenHang([])])
         let sleeper = SleepRecorder()
         let polls = ProgressBox()
         let presence = WorkerPresence(online: true)

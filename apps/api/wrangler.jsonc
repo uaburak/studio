@@ -16,7 +16,10 @@
 
   "vars": {
     // Enables /api/dev/* routes (demo job trigger). Must be "production" when deployed.
-    "ENVIRONMENT": "development"
+    "ENVIRONMENT": "development",
+    // Set by the Mac app's host (task L1) through the process environment so
+    // /api/health can tell its own API from a hand-started one. Empty = unset.
+    "STUDIO_INSTANCE_ID": ""
   },
 
   // Shared secret the Mac worker presents on /api/hub (Authorization: Bearer).
