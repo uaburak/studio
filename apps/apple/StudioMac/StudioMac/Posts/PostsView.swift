@@ -31,7 +31,7 @@ struct PostsView: View {
             .padding(.top, 30)
             .padding(.bottom, 90)
         }
-        .scrollEdgeEffectStyle(.soft, for: .bottom)
+        .scrollEdgeEffectStyle(.soft, for: .all)
         .overlay(alignment: .bottom) {
             if !posts.approvable.isEmpty {
                 ApproveBar(count: posts.approvable.count, isApproving: posts.isApproving) {

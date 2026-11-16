@@ -21,6 +21,7 @@ struct InfoPanel: View {
             .padding(.vertical, 14)
         }
         .scrollIndicators(.never)
+        .scrollEdgeEffectStyle(.soft, for: .all)
         .background(Theme.canvas)
     }
 }

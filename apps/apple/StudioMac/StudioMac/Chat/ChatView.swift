@@ -31,6 +31,8 @@ struct ChatView: View {
         .defaultScrollAnchor(.top, for: .alignment)
         .defaultScrollAnchor(.bottom, for: .initialOffset)
         .defaultScrollAnchor(.bottom, for: .sizeChanges)
+        // Soft (feathered) edges under the toolbar and behind the composer; macOS defaults to hard.
+        .scrollEdgeEffectStyle(.soft, for: .all)
         .safeAreaBar(edge: .bottom) {
             VStack(alignment: .trailing, spacing: 8) {
                 if let error = model.error {
