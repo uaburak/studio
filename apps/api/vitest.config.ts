@@ -11,7 +11,10 @@ export default defineConfig(async () => {
     plugins: [
       cloudflareTest({
         wrangler: { configPath: "./wrangler.jsonc" },
-        miniflare: { bindings: { TEST_MIGRATIONS: migrations } },
+        miniflare: {
+          // WORKER_TOKEN: test-only value for the /api/hub shared-secret check.
+          bindings: { TEST_MIGRATIONS: migrations, WORKER_TOKEN: "test-worker-token" },
+        },
       }),
     ],
     test: {

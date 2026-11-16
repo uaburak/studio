@@ -149,7 +149,7 @@ describe("OpenAPI document", () => {
 /** Open a WebSocket to the hub through the Worker and collect decoded frames. */
 async function connectHub() {
   const res = await exports.default.fetch(`${BASE}/api/hub`, {
-    headers: { Upgrade: "websocket" },
+    headers: { Upgrade: "websocket", Authorization: `Bearer ${env.WORKER_TOKEN}` },
   });
   expect(res.status).toBe(101);
   const ws = res.webSocket;
@@ -214,6 +214,8 @@ describe("Hub Durable Object", () => {
         output: { text: "merhaba" },
       }),
     );
+    // F1-6: the hub acknowledges every result so the worker can drop it from its outbox.
+    expect(await next()).toEqual({ type: "job.result.ack", jobId: job.id });
     // Round-trip a ping so we know the hub processed the frames above.
     ws.send(encodeMessage({ type: "ping", ts: 1 }));
     expect(await next()).toEqual({ type: "pong", ts: 1 });

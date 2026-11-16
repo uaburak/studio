@@ -29,7 +29,15 @@ import {
   type ContentVersionUpdate,
 } from "./content.ts";
 import { HealthResponse } from "./health.ts";
-import { Job, type JobCreate, JobList, type JobListQuery } from "./job.ts";
+import {
+  Job,
+  type JobCreate,
+  JobList,
+  type JobListQuery,
+  type JobStreamQuery,
+  WorkerPresence,
+} from "./job.ts";
+import { decodeJobStreamMessage, type JobStreamMessage } from "./protocol.ts";
 import {
   PublishLogList,
   type PublishLogListQuery,
@@ -63,6 +71,28 @@ export interface ApiClientOptions {
   /** Base URL of the API, e.g. "" (same origin) or "http://localhost:8787". */
   baseUrl?: string;
   fetch?: typeof fetch;
+  /** WebSocket implementation for `jobs.watch` (defaults to the global one). */
+  WebSocket?: typeof WebSocket;
+}
+
+export type JobWatchStatus = "connecting" | "open" | "closed";
+
+export interface JobWatchHandlers {
+  /** Every decoded stream frame; a `jobs.snapshot` follows each (re)connect. */
+  onMessage: (message: JobStreamMessage) => void;
+  onStatus?: (status: JobWatchStatus) => void;
+}
+
+export interface JobWatchOptions {
+  /** Reconnect automatically after a drop (default true). */
+  reconnect?: boolean;
+  /** First reconnect delay; doubles up to 30 s (default 1000). */
+  reconnectDelayMs?: number;
+}
+
+export interface JobWatch {
+  /** Stop watching; no further reconnects. */
+  close(): void;
 }
 
 type Query = Record<string, string | number | boolean | undefined | null>;
@@ -139,6 +169,63 @@ export function createApiClient(options: ApiClientOptions = {}) {
   }
 
   const q = (query: object | undefined) => query as Query | undefined;
+
+  /** http(s) -> ws(s); relative URLs resolve against `location` when there is one. */
+  function wsUrl(httpUrl: string): string {
+    const loc = (globalThis as { location?: { href: string } }).location;
+    if (!/^https?:/i.test(httpUrl)) {
+      if (!loc) return httpUrl;
+      httpUrl = new URL(httpUrl, loc.href).toString();
+    }
+    return httpUrl.replace(/^http/i, "ws");
+  }
+
+  function watchStream(
+    target: string,
+    handlers: JobWatchHandlers,
+    opts: JobWatchOptions,
+  ): JobWatch {
+    const Impl = options.WebSocket ?? globalThis.WebSocket;
+    if (!Impl) throw new ApiError("no WebSocket implementation available");
+    const reconnect = opts.reconnect ?? true;
+    const baseDelay = opts.reconnectDelayMs ?? 1000;
+    let delay = baseDelay;
+    let closed = false;
+    let socket: WebSocket | undefined;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+
+    const connect = () => {
+      if (closed) return;
+      handlers.onStatus?.("connecting");
+      const ws = new Impl(target);
+      socket = ws;
+      ws.addEventListener("open", () => {
+        delay = baseDelay;
+        handlers.onStatus?.("open");
+      });
+      ws.addEventListener("message", (event: MessageEvent) => {
+        const decoded = decodeJobStreamMessage(event.data);
+        if (decoded.ok) handlers.onMessage(decoded.message);
+      });
+      ws.addEventListener("close", () => {
+        if (socket !== ws) return;
+        socket = undefined;
+        handlers.onStatus?.("closed");
+        if (closed || !reconnect) return;
+        timer = setTimeout(connect, delay);
+        delay = Math.min(delay * 2, 30_000);
+      });
+    };
+    connect();
+
+    return {
+      close() {
+        closed = true;
+        if (timer !== undefined) clearTimeout(timer);
+        socket?.close(1000, "client closed");
+      },
+    };
+  }
 
   return {
     async health(init?: RequestInit): Promise<HealthResponse> {
@@ -273,6 +360,28 @@ export function createApiClient(options: ApiClientOptions = {}) {
       get: (id: string, init?: RequestInit) => call(Job, `/api/jobs/${enc(id)}`, { init }),
       create: (input: JobCreate, init?: RequestInit) =>
         call(Job, "/api/jobs", { method: "POST", json: input, init }),
+      /**
+       * Cancel a job. A queued job comes back `cancelled`; a running one comes
+       * back still `running` with `cancelRequestedAt` set, and turns
+       * `cancelled` once the worker confirms (watch the stream). 409 when the
+       * job already finished.
+       */
+      cancel: (id: string, init?: RequestInit) =>
+        call(Job, `/api/jobs/${enc(id)}/cancel`, { method: "POST", init }),
+      /** WebSocket URL of the live job stream (relative when baseUrl is ""). */
+      streamUrl: (query?: JobStreamQuery) => wsUrl(url("/api/jobs/stream", q(query))),
+      /**
+       * Follow one job (`{ jobId }`), one brand (`{ brandId }`) or every job
+       * (`{}`) live. Reconnects with backoff; each connect starts with a
+       * `jobs.snapshot` that replaces local state.
+       */
+      watch: (query: JobStreamQuery, handlers: JobWatchHandlers, opts: JobWatchOptions = {}) =>
+        watchStream(wsUrl(url("/api/jobs/stream", q(query))), handlers, opts),
+    },
+
+    workers: {
+      /** Is the Mac worker online, what is it running, how long is the queue. */
+      presence: (init?: RequestInit) => call(WorkerPresence, "/api/workers/presence", { init }),
     },
 
     schedules: {

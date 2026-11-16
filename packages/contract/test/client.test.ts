@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { ApiError, createApiClient, type HealthResponse } from "../src/index.ts";
+import {
+  ApiError,
+  createApiClient,
+  encodeJobStreamMessage,
+  type HealthResponse,
+  type JobStreamMessage,
+} from "../src/index.ts";
 
 const healthy: HealthResponse = {
   status: "ok",
@@ -121,5 +127,91 @@ describe("api client: core resources", () => {
     expect(form.get("width")).toBe("10");
     expect((form.get("file") as File).name).toBe("x.png");
     expect(client.assets.contentUrl("a 1")).toBe("/api/assets/a%201/content");
+  });
+});
+
+describe("api client: jobs live (F1-6)", () => {
+  const now = "2026-11-16T10:00:00.000Z";
+  const job = {
+    id: "j1",
+    type: "demo.echo",
+    status: "running",
+    payload: {},
+    createdAt: now,
+    updatedAt: now,
+    cancelRequestedAt: now,
+  };
+
+  it("cancels a job and reads presence", async () => {
+    const calls: string[] = [];
+    const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      calls.push(`${init?.method} ${String(input)}`);
+      const body = String(input).endsWith("/presence")
+        ? { online: false, lastSeenAt: null, workers: [], currentJobs: [], queueLength: 3 }
+        : job;
+      return new Response(JSON.stringify(body), {
+        headers: { "content-type": "application/json" },
+      });
+    }) as typeof fetch;
+    const client = createApiClient({ baseUrl: "http://api.test", fetch: fetchImpl });
+    await expect(client.jobs.cancel("j1")).resolves.toMatchObject({ cancelRequestedAt: now });
+    await expect(client.workers.presence()).resolves.toMatchObject({ queueLength: 3 });
+    expect(calls).toEqual([
+      "POST http://api.test/api/jobs/j1/cancel",
+      "GET http://api.test/api/workers/presence",
+    ]);
+  });
+
+  it("builds stream URLs", () => {
+    expect(createApiClient({ baseUrl: "https://s.example" }).jobs.streamUrl({ jobId: "a b" })).toBe(
+      "wss://s.example/api/jobs/stream?jobId=a+b",
+    );
+    expect(createApiClient({ baseUrl: "http://127.0.0.1:8787" }).jobs.streamUrl()).toBe(
+      "ws://127.0.0.1:8787/api/jobs/stream",
+    );
+    expect(createApiClient().jobs.streamUrl({ brandId: "b1" })).toBe("/api/jobs/stream?brandId=b1");
+  });
+
+  it("watches the stream, decodes frames and reconnects after a drop", async () => {
+    const sockets: FakeWs[] = [];
+    class FakeWs extends EventTarget {
+      constructor(readonly url: string) {
+        super();
+        sockets.push(this);
+      }
+      closedByClient = false;
+      close() {
+        this.closedByClient = true;
+        this.dispatchEvent(new Event("close"));
+      }
+      emit(frame: JobStreamMessage | string) {
+        const data = typeof frame === "string" ? frame : encodeJobStreamMessage(frame);
+        this.dispatchEvent(new MessageEvent("message", { data }));
+      }
+    }
+    const client = createApiClient({
+      baseUrl: "http://api.test",
+      WebSocket: FakeWs as unknown as typeof WebSocket,
+    });
+    const got: string[] = [];
+    const statuses: string[] = [];
+    const watch = client.jobs.watch(
+      { jobId: "j1" },
+      { onMessage: (m) => got.push(m.type), onStatus: (s) => statuses.push(s) },
+      { reconnectDelayMs: 5 },
+    );
+    expect(sockets[0]?.url).toBe("ws://api.test/api/jobs/stream?jobId=j1");
+    sockets[0]?.dispatchEvent(new Event("open"));
+    sockets[0]?.emit({ type: "pong", ts: 1 });
+    sockets[0]?.emit("{garbage");
+    sockets[0]?.dispatchEvent(new Event("close")); // server dropped us
+    await new Promise((r) => setTimeout(r, 20));
+    expect(sockets).toHaveLength(2);
+    watch.close();
+    await new Promise((r) => setTimeout(r, 20));
+    expect(sockets).toHaveLength(2);
+    expect(sockets[1]?.closedByClient).toBe(true);
+    expect(got).toEqual(["pong"]);
+    expect(statuses).toEqual(["connecting", "open", "closed", "connecting", "closed"]);
   });
 });

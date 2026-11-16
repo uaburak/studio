@@ -3,24 +3,35 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { WorkerConfig } from "../src/config.ts";
 import { HubConnection } from "../src/connection.ts";
 import { silentLogger } from "../src/log.ts";
-import { startWorker } from "../src/worker.ts";
+import { MemoryOutbox } from "../src/outbox.ts";
+import { type StartWorkerOptions, startWorker as start } from "../src/worker.ts";
 import { fakeSocketFactory } from "./fake-socket.ts";
 
 const config: WorkerConfig = {
   hubUrl: "ws://hub.test/api/hub",
+  token: "secret-token",
   workerId: "mac-test",
+  concurrency: 1,
+  heartbeatIntervalMs: 15_000,
+  shutdownTimeoutMs: 1000,
+  stateDir: "/nonexistent",
   backoff: { baseMs: 100, maxMs: 1000, jitter: 0 },
   pingIntervalMs: 5000,
   logLevel: "error",
 };
 
+/** startWorker with an in-memory outbox (no files in tests). */
+const startWorker = (opts: Omit<StartWorkerOptions, "outbox">) =>
+  start({ ...opts, outbox: new MemoryOutbox() });
+
 beforeEach(() => vi.useFakeTimers());
 afterEach(() => vi.useRealTimers());
 
 describe("HubConnection", () => {
-  it("sends hello on open", () => {
+  it("authenticates and sends hello on open", () => {
     const fake = fakeSocketFactory();
     const conn = startWorker({ config, logger: silentLogger, socketFactory: fake.factory });
+    expect(fake.last()?.headers).toEqual({ Authorization: "Bearer secret-token" });
     fake.last()?.simulateOpen();
     expect(fake.last()?.sent[0]).toEqual({
       type: "hello",
@@ -28,6 +39,8 @@ describe("HubConnection", () => {
       workerId: "mac-test",
       capabilities: ["demo.echo"],
       workerVersion: "0.0.0",
+      concurrency: 1,
+      activeJobIds: [],
     });
     expect(conn.state).toBe("connected");
     conn.stop();
@@ -97,8 +110,11 @@ describe("HubConnection", () => {
     socket.simulateMessage({ type: "job.dispatch", job });
     await vi.waitFor(() => expect(socket.sent.at(-1)?.type).toBe("job.result"));
 
+    socket.simulateMessage({ type: "job.result.ack", jobId: "job_9" });
+
     expect(socket.sent.slice(1)).toEqual([
       { type: "pong", ts: 7 },
+      { type: "job.ack", jobId: "job_9" },
       { type: "job.progress", jobId: "job_9", progress: 0.5, message: "metin işleniyor" },
       {
         type: "job.result",
@@ -107,6 +123,7 @@ describe("HubConnection", () => {
         output: { text: "çay", reversed: "yaç", workerId: "mac-test" },
       },
     ]);
+    await vi.waitFor(() => expect(conn.runner.helloFields().activeJobIds).toEqual([]));
     conn.stop();
   });
 

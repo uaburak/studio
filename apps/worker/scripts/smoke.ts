@@ -1,17 +1,20 @@
 /**
  * End-to-end smoke check against a running local API (`pnpm dev`):
  * 1. starts a worker in-process and waits until it is connected to the hub,
- * 2. asks the API to enqueue a demo.echo job (/api/dev/jobs/demo),
+ * 2. creates a demo.echo job through the real API (POST /api/jobs),
  * 3. polls the job until the worker has reported its result.
+ * Needs STUDIO_WORKER_TOKEN (apps/worker/.env) matching WORKER_TOKEN (apps/api/.dev.vars).
  * Exits 0 on success, 1 on failure/timeout.
  */
-import type { Job } from "@studio/contract";
+import { createApiClient } from "@studio/contract";
 import { loadConfig } from "../src/config.ts";
 import { createLogger } from "../src/log.ts";
+import { MemoryOutbox } from "../src/outbox.ts";
 import { startWorker } from "../src/worker.ts";
 
 const config = loadConfig({ ...process.env, STUDIO_WORKER_ID: "smoke-test" });
 const apiBase = config.hubUrl.replace(/^ws/, "http").replace(/\/api\/hub$/, "");
+const api = createApiClient({ baseUrl: apiBase });
 const logger = createLogger("info");
 
 function fail(message: string): never {
@@ -19,37 +22,32 @@ function fail(message: string): never {
   process.exit(1);
 }
 
+if (!config.token) fail("STUDIO_WORKER_TOKEN is not set (see apps/worker/.env.example)");
 const timeout = setTimeout(() => fail("timed out after 15s"), 15_000);
 
 const connected = new Promise<void>((resolve) => {
-  const connection = startWorker({
+  const worker = startWorker({
     config,
     logger,
+    outbox: new MemoryOutbox(),
     onStateChange: (state) => state === "connected" && resolve(),
   });
-  process.once("exit", () => connection.stop());
+  process.once("exit", () => worker.stop());
 });
 await connected;
-// Let the hub process our `hello` before enqueuing.
-await new Promise((r) => setTimeout(r, 200));
 
-const created = await fetch(`${apiBase}/api/dev/jobs/demo`, {
-  method: "POST",
-  headers: { "content-type": "application/json" },
-  body: JSON.stringify({ text: "Merhaba Studio" }),
-});
-if (created.status !== 202) fail(`enqueue returned HTTP ${created.status}`);
-const job = (await created.json()) as Job;
-logger.info(`enqueued job ${job.id} (status: ${job.status})`);
+const job = await api.jobs.create({ type: "demo.echo", payload: { text: "Merhaba Studio" } });
+logger.info(`created job ${job.id} (status: ${job.status})`);
 
 for (;;) {
-  const res = await fetch(`${apiBase}/api/dev/jobs/${job.id}`);
-  const current = (await res.json()) as Job;
+  const current = await api.jobs.get(job.id);
   if (current.status === "succeeded") {
     logger.info(`job finished: ${JSON.stringify(current.output)}`);
     break;
   }
-  if (current.status === "failed") fail(`job failed: ${current.error}`);
+  if (current.status === "failed" || current.status === "cancelled") {
+    fail(`job ${current.status}: ${current.error ?? ""}`);
+  }
   await new Promise((r) => setTimeout(r, 100));
 }
 

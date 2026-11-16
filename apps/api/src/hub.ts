@@ -1,166 +1,649 @@
 import { DurableObject } from "cloudflare:workers";
 import {
-  type DemoEchoPayload,
   decodeMessage,
+  encodeJobStreamMessage,
   encodeMessage,
+  type HubToWorkerMessage,
+  isTerminalJobStatus,
   type Job,
-  type JobProgressMessage,
   type JobResultMessage,
+  type JobStreamMessage,
   PROTOCOL_VERSION,
-  type ProtocolMessage,
+  type WorkerPresence,
+  type WorkerToHubMessage,
 } from "@studio/contract";
+import { createDb } from "./db/client.ts";
+import { type JobRow, toJob } from "./db/mappers.ts";
+import { CLOSE, HUB_TIMING, SNAPSHOT_LIMIT } from "./hub/config.ts";
+import { JobStore } from "./hub/store.ts";
 
-/** Per-socket state that survives hibernation. */
-interface SocketAttachment {
+/** Per-socket state; survives hibernation (serializeAttachment, max 2 KB). */
+type WorkerAttachment = {
+  role: "worker";
+  connectedAt: number;
+  lastSeenAt: number;
+  /** Set by `hello`; a worker socket without it has not identified itself yet. */
   workerId?: string;
+  workerVersion?: string;
   capabilities?: string[];
+  concurrency?: number;
+  draining?: boolean;
+  persistedAt?: number;
+};
+type ClientAttachment = { role: "client"; connectedAt: number };
+type Attachment = WorkerAttachment | ClientAttachment;
+
+interface WorkerSocket {
+  ws: WebSocket;
+  att: WorkerAttachment & { workerId: string };
 }
 
-const JOB_PREFIX = "job:";
+export type CancelJobResult =
+  | { ok: true; job: Job }
+  | { ok: false; reason: "not_found" }
+  | { ok: false; reason: "terminal"; status: Job["status"] };
+
+const LAST_SEEN_KEY = "presence:lastSeenAt";
 
 /**
- * Hub — one Durable Object instance ("main") that Mac workers connect to over
- * WebSocket (Hibernation API). Skeleton scope:
- * - answers protocol pings,
- * - tracks connected workers via `hello`,
- * - dispatches the demo job and records progress/results.
- * The real job queue (F1-6) will replace the in-DO job storage used here.
+ * Hub — the job dispatcher (one instance, "main").
+ *
+ * D1 `jobs` is the source of truth. The Hub never keeps job state in memory:
+ * every decision reads D1 and every transition is a conditional update
+ * (see hub/store.ts), so eviction or a restart loses nothing. What the Hub
+ * adds on top:
+ * - WebSockets (Hibernation API) for the Mac worker (`/worker`) and for
+ *   clients following jobs live (`/clients`), told apart by tag/attachment;
+ * - leases: a running job must be acked / heartbeated; when the lease runs
+ *   out the alarm requeues it (or fails it after `max_attempts`);
+ * - a serial queue so that messages, RPCs and alarms never interleave their
+ *   D1 reads and writes (D1 calls open the input gate, so without this two
+ *   events could both see the same `queued` row);
+ * - DO storage only for the worker's last-seen time (presence).
  */
 export class Hub extends DurableObject<Env> {
+  private readonly store = new JobStore(createDb(this.env.DB));
+  private chain: Promise<unknown> = Promise.resolve();
+
+  // --- HTTP / WebSocket entry ------------------------------------------------
+
   override async fetch(request: Request): Promise<Response> {
     if (request.headers.get("Upgrade")?.toLowerCase() !== "websocket") {
       return new Response("Expected WebSocket upgrade", { status: 426 });
     }
+    const url = new URL(request.url);
     const pair = new WebSocketPair();
     const [client, server] = Object.values(pair) as [WebSocket, WebSocket];
-    this.ctx.acceptWebSocket(server);
-    server.serializeAttachment({} satisfies SocketAttachment);
-    return new Response(null, { status: 101, webSocket: client });
+    const now = Date.now();
+
+    if (url.pathname === "/worker") {
+      // Authentication happened in the Worker route (/api/hub) before we got here.
+      this.ctx.acceptWebSocket(server, ["worker"]);
+      server.serializeAttachment({
+        role: "worker",
+        connectedAt: now,
+        lastSeenAt: now,
+      } satisfies WorkerAttachment);
+      return new Response(null, { status: 101, webSocket: client });
+    }
+
+    if (url.pathname === "/clients") {
+      const jobId = url.searchParams.get("jobId") ?? undefined;
+      const brandId = url.searchParams.get("brandId") ?? undefined;
+      const tag = jobId ? `job:${jobId}` : brandId ? `brand:${brandId}` : "all";
+      await this.serial(async () => {
+        // Inside the serial queue: no update can slip in between the
+        // snapshot query and the socket joining the broadcast set.
+        this.ctx.acceptWebSocket(server, ["client", tag]);
+        server.serializeAttachment({ role: "client", connectedAt: now } satisfies ClientAttachment);
+        const rows = await this.store.recent(
+          { ...(jobId ? { jobId } : {}), ...(brandId ? { brandId } : {}) },
+          SNAPSHOT_LIMIT,
+        );
+        this.sendClient(server, {
+          type: "jobs.snapshot",
+          jobs: rows.map(toJob),
+          presence: await this.computePresence(),
+        });
+      });
+      return new Response(null, { status: 101, webSocket: client });
+    }
+
+    return new Response("not found", { status: 404 });
   }
 
   override async webSocketMessage(ws: WebSocket, raw: string | ArrayBuffer): Promise<void> {
+    const att = attachmentOf(ws);
     const decoded = decodeMessage(raw);
     if (!decoded.ok) {
-      console.warn("hub: dropped malformed frame:", decoded.error);
+      console.warn(`hub: dropped malformed frame from ${att.role}:`, decoded.error);
       return;
     }
-    await this.handle(ws, decoded.message);
+    const message = decoded.message;
+    if (att.role === "client") {
+      // Clients are read-only: they may only ping. Never treat them as workers.
+      if (message.type === "ping") this.sendClient(ws, { type: "pong", ts: message.ts });
+      return;
+    }
+    await this.serial(() => this.onWorkerMessage(ws, att, message as WorkerToHubMessage));
   }
 
-  override async webSocketClose(): Promise<void> {
-    // compatibility_date >= 2026-04-07 auto-replies to Close frames; nothing to do.
+  override async webSocketClose(ws: WebSocket): Promise<void> {
+    await this.onSocketGone(ws);
   }
 
-  // --- RPC (called from the Worker) ---------------------------------------
+  override async webSocketError(ws: WebSocket): Promise<void> {
+    await this.onSocketGone(ws);
+  }
+
+  override async alarm(): Promise<void> {
+    await this.serial(async () => {
+      try {
+        await this.sweep(Date.now());
+        await this.dispatchQueued();
+      } finally {
+        await this.scheduleAlarm();
+      }
+    });
+  }
+
+  // --- RPC (called from the Worker) ---------------------------------------------
+
+  /** The API inserted a queued job: tell watchers and try to dispatch it. */
+  async jobCreated(jobId: string): Promise<void> {
+    await this.serial(async () => {
+      const row = await this.store.get(jobId);
+      if (row) this.publish(row);
+      await this.dispatchQueued();
+      await this.broadcastPresence();
+    });
+  }
+
+  async cancelJob(jobId: string): Promise<CancelJobResult> {
+    return this.serial(async (): Promise<CancelJobResult> => {
+      const now = Date.now();
+      const row = await this.store.get(jobId);
+      if (!row) return { ok: false, reason: "not_found" };
+      if (isTerminalJobStatus(row.status))
+        return { ok: false, reason: "terminal", status: row.status };
+
+      if (row.status === "queued") {
+        const done = await this.store.cancelQueued(jobId, now);
+        if (done) {
+          this.publish(done);
+          await this.broadcastPresence();
+          return { ok: true, job: toJob(done) };
+        }
+      }
+
+      const graceUntil = now + HUB_TIMING.cancelGraceMs;
+      const pending = await this.store.requestCancel(jobId, now, graceUntil);
+      if (!pending) {
+        const current = await this.store.get(jobId);
+        return current
+          ? { ok: false, reason: "terminal", status: current.status }
+          : { ok: false, reason: "not_found" };
+      }
+      if (pending.workerId) {
+        this.sendToWorker(pending.workerId, {
+          type: "job.cancel",
+          jobId,
+          reason: "cancelled by user",
+        });
+      }
+      await this.ensureAlarmBy(graceUntil);
+      this.publish(pending);
+      return { ok: true, job: toJob(pending) };
+    });
+  }
+
+  async presence(): Promise<WorkerPresence> {
+    return this.computePresence();
+  }
 
   /** Number of workers that completed the `hello` handshake. */
   async connectedWorkers(): Promise<number> {
     return this.workerSockets().length;
   }
 
-  async enqueueDemoJob(payload: DemoEchoPayload): Promise<Job> {
-    const now = new Date().toISOString();
-    const job: Job = {
-      id: crypto.randomUUID(),
-      type: "demo.echo",
-      status: "queued",
-      payload,
-      createdAt: now,
-      updatedAt: now,
-    };
-    await this.saveJob(job);
-    return (await this.tryDispatch(job)) ?? job;
-  }
+  // --- worker messages -----------------------------------------------------------
 
-  async getJob(id: string): Promise<Job | null> {
-    return (await this.ctx.storage.get<Job>(JOB_PREFIX + id)) ?? null;
-  }
+  private async onWorkerMessage(
+    ws: WebSocket,
+    att: WorkerAttachment,
+    message: WorkerToHubMessage,
+  ): Promise<void> {
+    const now = Date.now();
+    att.lastSeenAt = now;
+    if (att.workerId && now - (att.persistedAt ?? 0) > HUB_TIMING.presencePersistMs) {
+      att.persistedAt = now;
+      await this.ctx.storage.put(LAST_SEEN_KEY, now);
+    }
+    ws.serializeAttachment(att);
 
-  // --- internals -------------------------------------------------------------
+    if (message.type === "ping") {
+      sendWorker(ws, { type: "pong", ts: message.ts });
+      return;
+    }
+    if (message.type === "pong") return;
+    if (message.type === "hello") {
+      await this.onHello(ws, att, message);
+      return;
+    }
 
-  private async handle(ws: WebSocket, message: ProtocolMessage): Promise<void> {
+    const workerId = att.workerId;
+    if (!workerId) {
+      console.warn(`hub: ${message.type} before hello; ignored`);
+      return;
+    }
+
     switch (message.type) {
-      case "ping":
-        ws.send(encodeMessage({ type: "pong", ts: message.ts }));
-        return;
-      case "pong":
-        return;
-      case "hello": {
-        if (message.protocolVersion !== PROTOCOL_VERSION) {
-          ws.close(4000, `unsupported protocol version ${message.protocolVersion}`);
+      case "job.ack": {
+        const row = await this.store.touch(
+          message.jobId,
+          workerId,
+          now,
+          now + HUB_TIMING.leaseTtlMs,
+        );
+        if (!row) {
+          await this.stopIfNotOurs(ws, workerId, message.jobId);
           return;
         }
-        ws.serializeAttachment({
-          workerId: message.workerId,
-          capabilities: message.capabilities,
-        } satisfies SocketAttachment);
-        await this.dispatchQueued();
+        if (row.cancelRequestedAt) {
+          sendWorker(ws, { type: "job.cancel", jobId: row.id, reason: "cancelled by user" });
+        }
+        this.publish(row);
         return;
       }
-      case "job.progress":
-        await this.applyProgress(message);
+      case "job.progress": {
+        if (message.attempt !== undefined) {
+          const current = await this.store.get(message.jobId);
+          if (current && current.attempts !== message.attempt) return; // stale attempt
+        }
+        const row = await this.store.touch(
+          message.jobId,
+          workerId,
+          now,
+          now + HUB_TIMING.leaseTtlMs,
+          { value: message.progress, message: message.message ?? null },
+        );
+        if (!row) {
+          await this.stopIfNotOurs(ws, workerId, message.jobId);
+          return;
+        }
+        this.publish(row);
         return;
+      }
+      case "job.heartbeat": {
+        const rows = await this.store.getMany(message.jobIds);
+        const known = new Map(rows.map((r) => [r.id, r]));
+        for (const id of message.jobIds) {
+          const row = known.get(id);
+          if (row?.status !== "running" || row.workerId !== workerId) {
+            sendWorker(ws, {
+              type: "job.cancel",
+              jobId: id,
+              reason: "job is no longer assigned to this worker",
+            });
+          }
+        }
+        await this.store.renew(workerId, message.jobIds, now, now + HUB_TIMING.leaseTtlMs);
+        return;
+      }
       case "job.result":
-        await this.applyResult(message);
+        await this.onResult(ws, workerId, message, now);
         return;
-      case "job.dispatch":
-        // Hub -> worker only; a worker must never send this.
-        console.warn("hub: ignoring job.dispatch sent by a client");
+      case "job.release": {
+        const row = await this.store.get(message.jobId);
+        if (row?.status !== "running" || row.workerId !== workerId) return;
+        const next = row.cancelRequestedAt
+          ? await this.store.finish(row.id, now, { status: "cancelled" })
+          : await this.store.requeue(row.id, now, { refundAttempt: true });
+        if (next) this.publish(next);
+        await this.dispatchQueued();
+        await this.broadcastPresence();
+        return;
+      }
+      case "worker.drain":
+        att.draining = true;
+        ws.serializeAttachment(att);
+        await this.broadcastPresence();
         return;
     }
   }
 
-  private workerSockets(): Array<{ ws: WebSocket; att: SocketAttachment }> {
-    return this.ctx
-      .getWebSockets()
-      .map((ws) => ({ ws, att: (ws.deserializeAttachment() ?? {}) as SocketAttachment }))
-      .filter(({ att }) => att.workerId !== undefined);
+  private async onHello(
+    ws: WebSocket,
+    att: WorkerAttachment,
+    hello: Extract<WorkerToHubMessage, { type: "hello" }>,
+  ): Promise<void> {
+    if (hello.protocolVersion !== PROTOCOL_VERSION) {
+      ws.close(CLOSE.unsupportedProtocol, `unsupported protocol version ${hello.protocolVersion}`);
+      return;
+    }
+    // One connection per worker id: a reconnect replaces a half-open socket.
+    for (const other of this.workerSockets()) {
+      if (other.ws !== ws && other.att.workerId === hello.workerId) {
+        // Forget its identity first so nothing is dispatched to it any more.
+        other.ws.serializeAttachment({ ...other.att, workerId: undefined });
+        try {
+          other.ws.close(CLOSE.superseded, "superseded by a newer connection");
+        } catch {
+          // already closed
+        }
+      }
+    }
+    Object.assign(att, {
+      workerId: hello.workerId,
+      capabilities: hello.capabilities,
+      concurrency: hello.concurrency ?? 1,
+      draining: false,
+      persistedAt: Date.now(),
+      ...(hello.workerVersion ? { workerVersion: hello.workerVersion } : {}),
+    });
+    ws.serializeAttachment(att);
+    await this.ctx.storage.put(LAST_SEEN_KEY, att.lastSeenAt);
+
+    if (hello.activeJobIds) await this.reconcile(ws, hello.workerId, hello.activeJobIds);
+    await this.dispatchQueued();
+    await this.scheduleAlarm();
+    await this.broadcastPresence();
   }
 
-  private async tryDispatch(job: Job): Promise<Job | null> {
-    const target = this.workerSockets().find(({ att }) => att.capabilities?.includes(job.type));
-    if (!target) return null;
-    const now = new Date().toISOString();
-    const running: Job = { ...job, status: "running", startedAt: now, updatedAt: now };
-    await this.saveJob(running);
-    target.ws.send(encodeMessage({ type: "job.dispatch", job: running }));
-    return running;
+  /**
+   * After a (re)connect the worker lists the jobs it still holds. Jobs the
+   * Hub assigned to it that are not in the list were lost (worker restart);
+   * jobs in the list that the Hub requeued meanwhile are taken back.
+   */
+  private async reconcile(ws: WebSocket, workerId: string, activeIds: string[]): Promise<void> {
+    const now = Date.now();
+    const active = new Set(activeIds);
+    for (const row of await this.store.runningFor(workerId)) {
+      if (!active.has(row.id)) await this.loseJob(row, now, "the worker restarted without it");
+    }
+    for (const row of await this.store.getMany(activeIds)) {
+      if (row.status === "running" && row.workerId === workerId) {
+        if (row.cancelRequestedAt) {
+          sendWorker(ws, { type: "job.cancel", jobId: row.id, reason: "cancelled by user" });
+        } else {
+          await this.store.renew(workerId, [row.id], now, now + HUB_TIMING.leaseTtlMs);
+        }
+      } else if (row.status === "queued" && row.workerId === workerId) {
+        const back = await this.store.reclaim(row.id, workerId, now, now + HUB_TIMING.leaseTtlMs);
+        if (back) this.publish(back);
+      } else if (!isTerminalJobStatus(row.status)) {
+        // Someone else has it now.
+        sendWorker(ws, { type: "job.cancel", jobId: row.id, reason: "reassigned" });
+      }
+      // Terminal jobs: if the worker still has a result it will resend it and
+      // get a result.ack; if it is still running it, its next heartbeat gets
+      // a job.cancel. Nothing to do here.
+    }
   }
 
+  private async onResult(
+    ws: WebSocket,
+    workerId: string,
+    message: JobResultMessage,
+    now: number,
+  ): Promise<void> {
+    const row = await this.store.get(message.jobId);
+    // A worker that no longer holds the job may still deliver a finished
+    // result (the work is done), but its failure or cancellation must not end
+    // the attempt someone else is running now.
+    const holder = row?.workerId === workerId;
+    if (row && !isTerminalJobStatus(row.status) && (holder || message.status === "succeeded")) {
+      if (row.status === "running" && row.workerId && !holder) {
+        // A late result from a previous holder wins; stop the current one.
+        this.sendToWorker(row.workerId, { type: "job.cancel", jobId: row.id, reason: "finished" });
+      }
+      const retry =
+        message.status === "failed" &&
+        message.retryable === true &&
+        row.status === "running" &&
+        row.attempts < row.maxAttempts &&
+        !row.cancelRequestedAt;
+      const next = retry
+        ? await this.store.requeue(row.id, now, {
+            refundAttempt: false,
+            error: message.error ?? null,
+          })
+        : await this.store.finish(row.id, now, resultOf(message));
+      if (next) {
+        this.publish(next);
+        await this.broadcastPresence();
+      }
+    }
+    // Always acknowledge, also duplicates and unknown jobs, so the worker can
+    // drop the result from its outbox. Written to D1 first, acked second:
+    // a crash in between only causes a resend, which lands in the branch above.
+    sendWorker(ws, { type: "job.result.ack", jobId: message.jobId });
+    await this.dispatchQueued();
+  }
+
+  /** The worker reports on a job the Hub does not have assigned to it: tell it to stop. */
+  private async stopIfNotOurs(ws: WebSocket, workerId: string, jobId: string): Promise<void> {
+    const row = await this.store.get(jobId);
+    if (row?.status !== "running" || row.workerId !== workerId) {
+      sendWorker(ws, {
+        type: "job.cancel",
+        jobId,
+        reason: "job is no longer assigned to this worker",
+      });
+    }
+  }
+
+  // --- queue mechanics --------------------------------------------------------------
+
+  /** Fill every connected worker up to its concurrency, highest priority first, then FIFO. */
   private async dispatchQueued(): Promise<void> {
-    const jobs = await this.ctx.storage.list<Job>({ prefix: JOB_PREFIX });
-    for (const job of jobs.values()) {
-      if (job.status === "queued") await this.tryDispatch(job);
+    for (const { ws, att } of this.workerSockets()) {
+      if (att.draining) continue;
+      const running = (await this.store.runningFor(att.workerId)).length;
+      const free = (att.concurrency ?? 1) - running;
+      if (free <= 0) continue;
+      for (const row of await this.store.nextQueued(att.capabilities ?? [], free)) {
+        const now = Date.now();
+        const deadline = now + HUB_TIMING.ackTimeoutMs;
+        const claimed = await this.store.claim(row.id, att.workerId, now, deadline);
+        if (!claimed) continue;
+        try {
+          sendWorker(ws, { type: "job.dispatch", job: toJob(claimed), attempt: claimed.attempts });
+        } catch (error) {
+          console.warn(`hub: dispatch of ${row.id} failed, requeueing`, error);
+          const back = await this.store.requeue(row.id, now, { refundAttempt: true });
+          if (back) this.publish(back);
+          return;
+        }
+        await this.ensureAlarmBy(deadline);
+        this.publish(claimed);
+      }
     }
   }
 
-  private async applyProgress(message: JobProgressMessage): Promise<void> {
-    const job = await this.getJob(message.jobId);
-    if (job?.status !== "running") return;
-    await this.saveJob({
-      ...job,
-      progress: message.progress,
-      updatedAt: new Date().toISOString(),
+  /** Lease expiry and stale sockets. */
+  private async sweep(now: number): Promise<void> {
+    for (const { ws, att } of this.workerSockets()) {
+      if (now - att.lastSeenAt > HUB_TIMING.staleWorkerMs) {
+        console.warn(`hub: worker ${att.workerId} silent for too long; closing`);
+        await this.ctx.storage.put(LAST_SEEN_KEY, att.lastSeenAt);
+        ws.serializeAttachment({ ...att, workerId: undefined });
+        try {
+          ws.close(CLOSE.stale, "no message within the stale timeout");
+        } catch {
+          // already closed
+        }
+      }
+    }
+    let changed = false;
+    for (const row of await this.store.expiredLeases(now)) {
+      await this.loseJob(row, now, "its lease expired");
+      changed = true;
+    }
+    if (changed) await this.broadcastPresence();
+  }
+
+  /** The worker no longer has this running job: cancel, requeue, or give up. */
+  private async loseJob(row: JobRow, now: number, why: string): Promise<void> {
+    let next: JobRow | undefined;
+    if (row.cancelRequestedAt) {
+      next = await this.store.finish(row.id, now, { status: "cancelled" });
+    } else if (!row.ackedAt) {
+      // Never acknowledged: the worker probably never got it. Not an attempt.
+      next = await this.store.requeue(row.id, now, { refundAttempt: true });
+    } else if (row.attempts >= row.maxAttempts) {
+      next = await this.store.finish(row.id, now, {
+        status: "failed",
+        error: `worker ${row.workerId ?? "?"} lost the job (${why}); gave up after ${row.attempts} attempt(s)`,
+      });
+    } else {
+      next = await this.store.requeue(row.id, now, { refundAttempt: false });
+    }
+    if (next) this.publish(next);
+  }
+
+  private async scheduleAlarm(): Promise<void> {
+    const now = Date.now();
+    let next = await this.store.nextLeaseDeadline();
+    if (this.workerSockets().length > 0) {
+      next = Math.min(next ?? Number.POSITIVE_INFINITY, now + HUB_TIMING.sweepIntervalMs);
+    }
+    if (next === null) {
+      await this.ctx.storage.deleteAlarm();
+    } else {
+      await this.ctx.storage.setAlarm(Math.max(next, now + 50));
+    }
+  }
+
+  /** Make sure the alarm fires no later than `deadline`. */
+  private async ensureAlarmBy(deadline: number): Promise<void> {
+    const current = await this.ctx.storage.getAlarm();
+    if (current === null || current > deadline) await this.ctx.storage.setAlarm(deadline);
+  }
+
+  // --- presence and fan-out ------------------------------------------------------------
+
+  private async onSocketGone(ws: WebSocket): Promise<void> {
+    const att = attachmentOf(ws);
+    if (att.role !== "worker" || !att.workerId) return;
+    await this.ctx.storage.put(LAST_SEEN_KEY, att.lastSeenAt);
+    // Running jobs keep their lease: a quick reconnect (hello.activeJobIds)
+    // keeps them; otherwise the alarm requeues them when the lease runs out.
+    await this.serial(async () => {
+      await this.broadcastPresence(ws);
+      await this.scheduleAlarm();
     });
   }
 
-  private async applyResult(message: JobResultMessage): Promise<void> {
-    const job = await this.getJob(message.jobId);
-    if (!job) return;
-    const now = new Date().toISOString();
-    const done: Job = {
-      ...job,
-      status: message.status,
-      updatedAt: now,
-      finishedAt: now,
-      ...(message.status === "succeeded" ? { progress: 1 } : {}),
-      ...(message.output !== undefined ? { output: message.output } : {}),
-      ...(message.error !== undefined ? { error: message.error } : {}),
+  private async computePresence(exclude?: WebSocket): Promise<WorkerPresence> {
+    const workers = this.workerSockets().filter(({ ws }) => ws !== exclude);
+    const [running, queueLength, stored] = await Promise.all([
+      this.store.running(),
+      this.store.queueLength(),
+      this.ctx.storage.get<number>(LAST_SEEN_KEY),
+    ]);
+    const lastSeen = Math.max(stored ?? 0, ...workers.map((w) => w.att.lastSeenAt));
+    return {
+      online: workers.some((w) => !w.att.draining),
+      lastSeenAt: lastSeen > 0 ? new Date(lastSeen).toISOString() : null,
+      workers: workers.map(({ att }) => ({
+        workerId: att.workerId,
+        ...(att.workerVersion ? { workerVersion: att.workerVersion } : {}),
+        capabilities: att.capabilities ?? [],
+        concurrency: att.concurrency ?? 1,
+        connectedAt: new Date(att.connectedAt).toISOString(),
+        lastSeenAt: new Date(att.lastSeenAt).toISOString(),
+        draining: att.draining ?? false,
+      })),
+      currentJobs: running.map((r) => {
+        const job = toJob(r);
+        return {
+          id: job.id,
+          type: job.type,
+          ...(job.brandId ? { brandId: job.brandId } : {}),
+          ...(job.workerId ? { workerId: job.workerId } : {}),
+          ...(job.progress !== undefined ? { progress: job.progress } : {}),
+          ...(job.progressMessage ? { progressMessage: job.progressMessage } : {}),
+          ...(job.startedAt ? { startedAt: job.startedAt } : {}),
+        };
+      }),
+      queueLength,
     };
-    await this.saveJob(done);
   }
 
-  private async saveJob(job: Job): Promise<void> {
-    await this.ctx.storage.put(JOB_PREFIX + job.id, job);
+  private async broadcastPresence(exclude?: WebSocket): Promise<void> {
+    const clients = this.ctx.getWebSockets("client");
+    if (clients.length === 0) return;
+    const presence = await this.computePresence(exclude);
+    for (const ws of clients) this.sendClient(ws, { type: "presence", presence });
+  }
+
+  /** Send a job change to every client watching that job, its brand, or everything. */
+  private publish(row: JobRow): void {
+    const targets = new Set<WebSocket>([
+      ...this.ctx.getWebSockets(`job:${row.id}`),
+      ...(row.brandId ? this.ctx.getWebSockets(`brand:${row.brandId}`) : []),
+      ...this.ctx.getWebSockets("all"),
+    ]);
+    if (targets.size === 0) return;
+    const frame = encodeJobStreamMessage({ type: "job.updated", job: toJob(row) });
+    for (const ws of targets) trySend(ws, frame);
+  }
+
+  private sendClient(ws: WebSocket, message: JobStreamMessage): void {
+    trySend(ws, encodeJobStreamMessage(message));
+  }
+
+  private sendToWorker(workerId: string, message: HubToWorkerMessage): void {
+    const target = this.workerSockets().find((w) => w.att.workerId === workerId);
+    if (target) trySend(target.ws, encodeMessage(message));
+  }
+
+  /** Identified (post-hello) worker sockets. */
+  private workerSockets(): WorkerSocket[] {
+    const out: WorkerSocket[] = [];
+    for (const ws of this.ctx.getWebSockets("worker")) {
+      const att = attachmentOf(ws);
+      if (att.role === "worker" && att.workerId) {
+        out.push({ ws, att: att as WorkerSocket["att"] });
+      }
+    }
+    return out;
+  }
+
+  /** Run `fn` after everything queued before it; failures do not block the queue. */
+  private serial<T>(fn: () => Promise<T>): Promise<T> {
+    const run = this.chain.then(fn, fn);
+    this.chain = run.catch((error: unknown) => console.error("hub: operation failed", error));
+    return run;
+  }
+}
+
+function attachmentOf(ws: WebSocket): Attachment {
+  const raw = ws.deserializeAttachment() as Partial<Attachment> | null;
+  if (raw?.role === "client") return raw as ClientAttachment;
+  return { role: "worker", connectedAt: 0, lastSeenAt: 0, ...(raw ?? {}) } as WorkerAttachment;
+}
+
+function sendWorker(ws: WebSocket, message: HubToWorkerMessage): void {
+  ws.send(encodeMessage(message));
+}
+
+function trySend(ws: WebSocket, frame: string): void {
+  try {
+    ws.send(frame);
+  } catch {
+    // Socket is closing; the close handler cleans up.
+  }
+}
+
+function resultOf(message: JobResultMessage) {
+  switch (message.status) {
+    case "succeeded":
+      return { status: "succeeded" as const, output: message.output ?? null };
+    case "failed":
+      return { status: "failed" as const, error: message.error ?? "job failed" };
+    case "cancelled":
+      return { status: "cancelled" as const, error: message.error ?? null };
   }
 }

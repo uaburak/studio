@@ -1,18 +1,32 @@
 import { z } from "zod";
-import { Job, JobId } from "./job.ts";
+import { Job, JobId, WorkerPresence } from "./job.ts";
 
 /**
  * Worker <-> hub WebSocket protocol.
  *
  * Every frame is a JSON text message with a `type` discriminator.
  * Direction:
- *   worker -> hub: hello, job.progress, job.result, ping, pong
- *   hub -> worker: job.dispatch, ping, pong
+ *   worker -> hub: hello, job.ack, job.progress, job.heartbeat, job.result,
+ *                  job.release, worker.drain, ping, pong
+ *   hub -> worker: job.dispatch, job.cancel, job.result.ack, ping, pong
  *
- * Bump PROTOCOL_VERSION on breaking changes; the hub can reject
- * workers that announce an incompatible version in `hello`.
+ * Job lifecycle on the wire (see apps/api/README.md for the full picture):
+ *   hub  job.dispatch {job, attempt}  -> worker
+ *   hub  <- job.ack {jobId, attempt}          (lease starts)
+ *   hub  <- job.progress / job.heartbeat      (lease renewed)
+ *   hub  <- job.result {status}               (worker keeps it in an outbox)
+ *   hub  job.result.ack {jobId}       -> worker (outbox entry dropped)
+ * Results are idempotent: the hub accepts the first one and acknowledges
+ * every duplicate, so the worker can resend its outbox after a reconnect.
+ *
+ * Bump PROTOCOL_VERSION on breaking changes; the hub rejects workers that
+ * announce an incompatible version in `hello`. Everything added in F1-6 is
+ * optional or a new message type, so version 1 still holds.
  */
 export const PROTOCOL_VERSION = 1;
+
+/** Upper bound for list fields in frames, to keep messages small. */
+export const MAX_ACTIVE_JOBS_IN_FRAME = 100;
 
 export const HelloMessage = z.object({
   type: z.literal("hello"),
@@ -21,11 +35,29 @@ export const HelloMessage = z.object({
   /** Job types this worker can execute. */
   capabilities: z.array(z.string().min(1)),
   workerVersion: z.string().optional(),
+  /** Jobs the worker runs at the same time (default 1). */
+  concurrency: z.number().int().min(1).max(16).optional(),
+  /**
+   * Jobs this worker still holds: running, or finished with a result not yet
+   * acknowledged. The hub keeps these assigned (or reclaims them) and
+   * requeues any other job it thought this worker had. Omit (old workers)
+   * to skip that reconciliation and rely on leases alone.
+   */
+  activeJobIds: z.array(JobId).max(MAX_ACTIVE_JOBS_IN_FRAME).optional(),
 });
 
 export const JobDispatchMessage = z.object({
   type: z.literal("job.dispatch"),
   job: Job,
+  /** Attempt number of this dispatch (1-based); echo it in ack/progress/result. */
+  attempt: z.number().int().min(1).optional(),
+});
+
+/** Worker took the dispatched job; the hub starts the lease. */
+export const JobAckMessage = z.object({
+  type: z.literal("job.ack"),
+  jobId: JobId,
+  attempt: z.number().int().min(1).optional(),
 });
 
 export const JobProgressMessage = z.object({
@@ -34,14 +66,54 @@ export const JobProgressMessage = z.object({
   /** 0..1 */
   progress: z.number().min(0).max(1),
   message: z.string().max(2_000).optional(),
+  attempt: z.number().int().min(1).optional(),
+});
+
+/** Lease renewal for every job the worker is still executing. */
+export const JobHeartbeatMessage = z.object({
+  type: z.literal("job.heartbeat"),
+  jobIds: z.array(JobId).max(MAX_ACTIVE_JOBS_IN_FRAME),
 });
 
 export const JobResultMessage = z.object({
   type: z.literal("job.result"),
   jobId: JobId,
-  status: z.enum(["succeeded", "failed"]),
+  /** `cancelled` confirms a `job.cancel`. */
+  status: z.enum(["succeeded", "failed", "cancelled"]),
   output: z.record(z.string(), z.unknown()).optional(),
   error: z.string().max(10_000).optional(),
+  attempt: z.number().int().min(1).optional(),
+  /**
+   * For `failed`: the failure is transient, run it again if attempts remain.
+   * Default false: handler failures are final.
+   */
+  retryable: z.boolean().optional(),
+});
+
+/** Worker gives a job back unfinished (e.g. graceful shutdown); no attempt is consumed. */
+export const JobReleaseMessage = z.object({
+  type: z.literal("job.release"),
+  jobId: JobId,
+  attempt: z.number().int().min(1).optional(),
+  reason: z.string().max(500).optional(),
+});
+
+/** Worker is shutting down: send it no new jobs on this connection. */
+export const WorkerDrainMessage = z.object({
+  type: z.literal("worker.drain"),
+});
+
+/** Hub asks the worker to abort a job; the worker answers with a `cancelled` result. */
+export const JobCancelMessage = z.object({
+  type: z.literal("job.cancel"),
+  jobId: JobId,
+  reason: z.string().max(500).optional(),
+});
+
+/** Hub stored (or already had) the result; the worker may forget it. */
+export const JobResultAckMessage = z.object({
+  type: z.literal("job.result.ack"),
+  jobId: JobId,
 });
 
 export const PingMessage = z.object({
@@ -58,16 +130,28 @@ export const PongMessage = z.object({
 export const ProtocolMessage = z.discriminatedUnion("type", [
   HelloMessage,
   JobDispatchMessage,
+  JobAckMessage,
   JobProgressMessage,
+  JobHeartbeatMessage,
   JobResultMessage,
+  JobReleaseMessage,
+  WorkerDrainMessage,
+  JobCancelMessage,
+  JobResultAckMessage,
   PingMessage,
   PongMessage,
 ]);
 
 export type HelloMessage = z.infer<typeof HelloMessage>;
 export type JobDispatchMessage = z.infer<typeof JobDispatchMessage>;
+export type JobAckMessage = z.infer<typeof JobAckMessage>;
 export type JobProgressMessage = z.infer<typeof JobProgressMessage>;
+export type JobHeartbeatMessage = z.infer<typeof JobHeartbeatMessage>;
 export type JobResultMessage = z.infer<typeof JobResultMessage>;
+export type JobReleaseMessage = z.infer<typeof JobReleaseMessage>;
+export type WorkerDrainMessage = z.infer<typeof WorkerDrainMessage>;
+export type JobCancelMessage = z.infer<typeof JobCancelMessage>;
+export type JobResultAckMessage = z.infer<typeof JobResultAckMessage>;
 export type PingMessage = z.infer<typeof PingMessage>;
 export type PongMessage = z.infer<typeof PongMessage>;
 export type ProtocolMessage = z.infer<typeof ProtocolMessage>;
@@ -76,12 +160,23 @@ export type ProtocolMessageType = ProtocolMessage["type"];
 /** Messages the worker sends. */
 export type WorkerToHubMessage = Extract<
   ProtocolMessage,
-  { type: "hello" | "job.progress" | "job.result" | "ping" | "pong" }
+  {
+    type:
+      | "hello"
+      | "job.ack"
+      | "job.progress"
+      | "job.heartbeat"
+      | "job.result"
+      | "job.release"
+      | "worker.drain"
+      | "ping"
+      | "pong";
+  }
 >;
 /** Messages the hub sends. */
 export type HubToWorkerMessage = Extract<
   ProtocolMessage,
-  { type: "job.dispatch" | "ping" | "pong" }
+  { type: "job.dispatch" | "job.cancel" | "job.result.ack" | "ping" | "pong" }
 >;
 
 export type DecodeResult = { ok: true; message: ProtocolMessage } | { ok: false; error: string };
@@ -91,11 +186,10 @@ export function encodeMessage(message: ProtocolMessage): string {
   return JSON.stringify(ProtocolMessage.parse(message));
 }
 
-/**
- * Parse and validate an incoming frame. Never throws: malformed JSON,
- * binary frames and schema violations all come back as `{ ok: false }`.
- */
-export function decodeMessage(raw: unknown): DecodeResult {
+function parseFrame<S extends z.ZodType>(
+  schema: S,
+  raw: unknown,
+): { ok: true; message: z.output<S> } | { ok: false; error: string } {
   if (typeof raw !== "string") {
     return { ok: false, error: "frame must be a text (JSON) message" };
   }
@@ -105,9 +199,68 @@ export function decodeMessage(raw: unknown): DecodeResult {
   } catch {
     return { ok: false, error: "frame is not valid JSON" };
   }
-  const parsed = ProtocolMessage.safeParse(data);
+  const parsed = schema.safeParse(data);
   if (!parsed.success) {
     return { ok: false, error: z.prettifyError(parsed.error) };
   }
   return { ok: true, message: parsed.data };
+}
+
+/**
+ * Parse and validate an incoming frame. Never throws: malformed JSON,
+ * binary frames and schema violations all come back as `{ ok: false }`.
+ */
+export function decodeMessage(raw: unknown): DecodeResult {
+  return parseFrame(ProtocolMessage, raw);
+}
+
+// --- Client job stream (GET /api/jobs/stream) ---------------------------------
+//
+// Web and iOS clients open a WebSocket to /api/jobs/stream (optionally
+// ?jobId= or ?brandId=). The hub sends one `jobs.snapshot` right away, then
+// `job.updated` for every change of a matching job and `presence` when the
+// worker comes or goes. Clients may send `ping` and get `pong`; anything
+// else they send is ignored. After a reconnect the new snapshot replaces
+// local state, so no update is ever lost for good.
+
+export const JobsSnapshotEvent = z.object({
+  type: z.literal("jobs.snapshot"),
+  /** Matching jobs, newest first (at most 50; page older ones via GET /api/jobs). */
+  jobs: z.array(Job),
+  presence: WorkerPresence,
+});
+
+export const JobUpdatedEvent = z.object({
+  type: z.literal("job.updated"),
+  job: Job,
+});
+
+export const PresenceEvent = z.object({
+  type: z.literal("presence"),
+  presence: WorkerPresence,
+});
+
+export const JobStreamMessage = z.discriminatedUnion("type", [
+  JobsSnapshotEvent,
+  JobUpdatedEvent,
+  PresenceEvent,
+  PongMessage,
+]);
+
+export type JobsSnapshotEvent = z.infer<typeof JobsSnapshotEvent>;
+export type JobUpdatedEvent = z.infer<typeof JobUpdatedEvent>;
+export type PresenceEvent = z.infer<typeof PresenceEvent>;
+export type JobStreamMessage = z.infer<typeof JobStreamMessage>;
+
+export type JobStreamDecodeResult =
+  | { ok: true; message: JobStreamMessage }
+  | { ok: false; error: string };
+
+export function encodeJobStreamMessage(message: JobStreamMessage): string {
+  return JSON.stringify(JobStreamMessage.parse(message));
+}
+
+/** Parse a frame from the job stream. Never throws. */
+export function decodeJobStreamMessage(raw: unknown): JobStreamDecodeResult {
+  return parseFrame(JobStreamMessage, raw);
 }

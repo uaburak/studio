@@ -12,11 +12,28 @@ export interface SocketEvents {
   onError(error: unknown): void;
 }
 
-export type SocketFactory = (url: string, events: SocketEvents) => SocketLike;
+export interface SocketOptions {
+  /** Extra HTTP headers for the upgrade request (e.g. Authorization). */
+  headers?: Record<string, string>;
+}
 
-/** Default factory: Node's built-in WebSocket client (stable since Node 22). */
-export const nodeSocketFactory: SocketFactory = (url, events) => {
-  const ws = new WebSocket(url);
+export type SocketFactory = (
+  url: string,
+  events: SocketEvents,
+  options?: SocketOptions,
+) => SocketLike;
+
+/**
+ * Default factory: Node's built-in WebSocket client (undici). Node's client
+ * accepts `{ headers }` as the second argument (an undici extension that the
+ * DOM typings do not describe), which is how the Authorization header is sent.
+ */
+export const nodeSocketFactory: SocketFactory = (url, events, options) => {
+  const NodeWebSocket = WebSocket as unknown as new (
+    url: string,
+    init?: { headers?: Record<string, string> },
+  ) => WebSocket;
+  const ws = new NodeWebSocket(url, options?.headers ? { headers: options.headers } : undefined);
   ws.addEventListener("open", () => events.onOpen());
   ws.addEventListener("message", (event) => events.onMessage(event.data));
   ws.addEventListener("close", (event) => events.onClose(event.code, event.reason));

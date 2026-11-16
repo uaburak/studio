@@ -1,5 +1,5 @@
 import { decodeMessage, encodeMessage, type ProtocolMessage } from "@studio/contract";
-import type { SocketEvents, SocketFactory, SocketLike } from "../src/socket.ts";
+import type { SocketEvents, SocketFactory, SocketLike, SocketOptions } from "../src/socket.ts";
 
 /** In-memory socket that records what the worker sends and lets tests drive events. */
 export class FakeSocket implements SocketLike {
@@ -10,6 +10,7 @@ export class FakeSocket implements SocketLike {
   constructor(
     readonly url: string,
     private readonly events: SocketEvents,
+    readonly headers?: SocketOptions["headers"],
   ) {}
 
   send(data: string): void {
@@ -47,8 +48,8 @@ export class FakeSocket implements SocketLike {
 
 export function fakeSocketFactory() {
   const sockets: FakeSocket[] = [];
-  const factory: SocketFactory = (url, events) => {
-    const socket = new FakeSocket(url, events);
+  const factory: SocketFactory = (url, events, options) => {
+    const socket = new FakeSocket(url, events, options?.headers);
     sockets.push(socket);
     return socket;
   };

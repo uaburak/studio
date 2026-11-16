@@ -19,6 +19,12 @@
     "ENVIRONMENT": "development"
   },
 
+  // Shared secret the Mac worker presents on /api/hub (Authorization: Bearer).
+  // Locally: copy .dev.vars.example to .dev.vars. Deployed: `wrangler secret put
+  // WORKER_TOKEN` (deploy task). Declaring it here also fixes the generated Env
+  // type, independent of whether a .dev.vars file exists.
+  "secrets": { "required": ["WORKER_TOKEN"] },
+
   "d1_databases": [
     {
       "binding": "DB",

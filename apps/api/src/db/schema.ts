@@ -170,8 +170,12 @@ export const assets = sqliteTable(
 );
 
 // --- jobs -----------------------------------------------------------------------
-// Persistent job records. The Hub DO still keeps its own copy for the demo
-// path; F1-6 decides how the two are unified.
+// The single source of truth for jobs (F1-6). The API inserts rows as
+// `queued`; the Hub Durable Object is the only writer after that (dispatch,
+// lease, progress, result, cancel) and always uses conditional updates, so a
+// restarted Hub can neither lose nor double-dispatch a job.
+// Columns added in 0002 have no CHECK constraints on purpose: SQLite cannot
+// add a CHECK without rebuilding the table; the API validates the ranges.
 
 export const jobs = sqliteTable(
   "jobs",
@@ -192,9 +196,26 @@ export const jobs = sqliteTable(
     updatedAt: updatedAt(),
     startedAt: integer("started_at", { mode: "timestamp_ms" }),
     finishedAt: integer("finished_at", { mode: "timestamp_ms" }),
+    // --- queue / dispatch (0002) ---
+    /** Higher runs first; FIFO (by id) within the same priority. */
+    priority: integer("priority").notNull().default(0),
+    /** Dispatches that the worker acknowledged or that ended abnormally. */
+    attempts: integer("attempts").notNull().default(0),
+    maxAttempts: integer("max_attempts").notNull().default(3),
+    /** Worker that holds (or last held) the job. */
+    workerId: text("worker_id"),
+    /** While running: the Hub requeues the job when this passes without a heartbeat. */
+    leaseExpiresAt: integer("lease_expires_at", { mode: "timestamp_ms" }),
+    /** Current assignment was sent at / acknowledged at (null until acked). */
+    dispatchedAt: integer("dispatched_at", { mode: "timestamp_ms" }),
+    ackedAt: integer("acked_at", { mode: "timestamp_ms" }),
+    cancelRequestedAt: integer("cancel_requested_at", { mode: "timestamp_ms" }),
+    progressMessage: text("progress_message"),
   },
   (t) => [
     index("jobs_status_idx").on(t.status, t.id),
+    index("jobs_queue_idx").on(t.status, t.priority, t.id),
+    index("jobs_lease_idx").on(t.status, t.leaseExpiresAt),
     index("jobs_brand_idx").on(t.brandId, t.id),
     index("jobs_content_idx").on(t.contentId, t.id),
     check("jobs_status_check", oneOf(t.status, ENUMS.jobStatus)),

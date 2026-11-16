@@ -1,0 +1,7 @@
+# Local secrets for `wrangler dev` (apps/api). Copy to .dev.vars (git-ignored)
+# and pick your own value. Never commit real values.
+#
+# Shared secret the Mac worker sends as `Authorization: Bearer <token>` on
+# /api/hub. Must equal STUDIO_WORKER_TOKEN in apps/worker/.env.
+# Generate one with: openssl rand -hex 32
+WORKER_TOKEN=change-me-local-dev-token

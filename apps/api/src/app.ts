@@ -1,7 +1,9 @@
 import { createRoute } from "@hono/zod-openapi";
 import { DemoEchoPayload, HealthResponse } from "@studio/contract";
-import { sql } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { createDb } from "./db/client.ts";
+import { toJob } from "./db/mappers.ts";
+import { jobs } from "./db/schema.ts";
 import { errorBody, handleError } from "./lib/errors.ts";
 import { createRouter } from "./lib/router.ts";
 import { cloudflareAccess } from "./middleware/access.ts";
@@ -9,7 +11,8 @@ import { assetRoutes } from "./routes/assets.ts";
 import { brandProfileRoutes } from "./routes/brand-profiles.ts";
 import { brandRoutes } from "./routes/brands.ts";
 import { contentRoutes } from "./routes/contents.ts";
-import { jobRoutes } from "./routes/jobs.ts";
+import { hubRoutes } from "./routes/hub.ts";
+import { createJob, hubStub, jobRoutes } from "./routes/jobs.ts";
 import { scheduleRoutes } from "./routes/schedules.ts";
 import { socialAccountRoutes } from "./routes/social-accounts.ts";
 import { API_VERSION } from "./version.ts";
@@ -66,6 +69,7 @@ app.route("/", assetRoutes);
 app.route("/", contentRoutes);
 app.route("/", jobRoutes);
 app.route("/", scheduleRoutes);
+app.route("/", hubRoutes); // /api/hub (worker WebSocket), /api/workers/presence
 
 // --- GET /api/openapi.json --------------------------------------------------
 
@@ -74,18 +78,9 @@ app.doc31("/api/openapi.json", {
   info: { title: "Studio API", version: API_VERSION },
 });
 
-// --- GET /api/hub (WebSocket) -------------------------------------------------
-// Mac worker connects here. NOTE: no auth yet; Cloudflare Access service
-// tokens will guard this route before anything is deployed (PLAN.md §4).
-
-app.get("/api/hub", async (c) => {
-  if (c.req.header("Upgrade")?.toLowerCase() !== "websocket") {
-    return c.text("Expected WebSocket upgrade", 426);
-  }
-  return c.env.HUB.getByName("main").fetch(c.req.raw);
-});
-
 // --- /api/dev/* — local development helpers only ------------------------------
+// Thin aliases over the real job path (D1 + Hub), kept for quick manual tests.
+// Prefer POST /api/jobs and GET /api/jobs/{id}.
 
 app.use("/api/dev/*", async (c, next) => {
   if (c.env.ENVIRONMENT !== "development") return c.notFound();
@@ -95,17 +90,19 @@ app.use("/api/dev/*", async (c, next) => {
 app.post("/api/dev/jobs/demo", async (c) => {
   const parsed = DemoEchoPayload.safeParse(await c.req.json().catch(() => null));
   if (!parsed.success) return c.json({ error: "body must be { text: string }" }, 400);
-  const job = await c.env.HUB.getByName("main").enqueueDemoJob(parsed.data);
+  const job = await createJob(c.env, { type: "demo.echo", payload: parsed.data });
   return c.json(job, 202);
 });
 
 app.get("/api/dev/jobs/:id", async (c) => {
-  const job = await c.env.HUB.getByName("main").getJob(c.req.param("id"));
-  return job ? c.json(job) : c.json({ error: "not found" }, 404);
+  const row = await createDb(c.env.DB).query.jobs.findFirst({
+    where: eq(jobs.id, c.req.param("id")),
+  });
+  return row ? c.json(toJob(row)) : c.json({ error: "not found" }, 404);
 });
 
 app.get("/api/dev/hub", async (c) => {
-  const workers = await c.env.HUB.getByName("main").connectedWorkers();
+  const workers = await hubStub(c.env).connectedWorkers();
   return c.json({ connectedWorkers: workers });
 });
 

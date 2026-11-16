@@ -1,6 +1,7 @@
 import {
   decodeMessage,
   encodeMessage,
+  type HelloMessage,
   PROTOCOL_VERSION,
   type ProtocolMessage,
   type WorkerToHubMessage,
@@ -20,6 +21,12 @@ export interface HubConnectionOptions {
   /** Keepalive ping interval; 0 disables. */
   pingIntervalMs: number;
   socketFactory: SocketFactory;
+  /** Shared secret sent as `Authorization: Bearer <token>` on the upgrade request. */
+  token?: string | undefined;
+  /** Extra `hello` fields computed at connect time (active jobs, concurrency). */
+  helloFields?: () => Partial<Pick<HelloMessage, "concurrency" | "activeJobIds">>;
+  /** Called after `hello` went out on a new connection (flush the outbox here). */
+  onReady?: () => void;
   onMessage: (message: ProtocolMessage) => void | Promise<void>;
   onStateChange?: (state: ConnectionState) => void;
   logger?: Logger;
@@ -73,43 +80,57 @@ export class HubConnection {
     this.logger.info(`connecting to ${this.options.url}`);
 
     try {
-      this.socket = this.options.socketFactory(this.options.url, {
-        onOpen: () => {
-          if (!isCurrent()) return;
-          this.attempt = 0;
-          this.setState("connected");
-          this.logger.info("connected to hub");
-          this.send({
-            type: "hello",
-            protocolVersion: PROTOCOL_VERSION,
-            workerId: this.options.workerId,
-            capabilities: this.options.capabilities,
-            ...(this.options.workerVersion ? { workerVersion: this.options.workerVersion } : {}),
-          });
-          this.startPing();
+      const headers = this.options.token
+        ? { Authorization: `Bearer ${this.options.token}` }
+        : undefined;
+      this.socket = this.options.socketFactory(
+        this.options.url,
+        {
+          onOpen: () => {
+            if (!isCurrent()) return;
+            this.attempt = 0;
+            this.setState("connected");
+            this.logger.info("connected to hub");
+            this.send({
+              type: "hello",
+              protocolVersion: PROTOCOL_VERSION,
+              workerId: this.options.workerId,
+              capabilities: this.options.capabilities,
+              ...(this.options.workerVersion ? { workerVersion: this.options.workerVersion } : {}),
+              ...this.options.helloFields?.(),
+            });
+            this.startPing();
+            this.options.onReady?.();
+          },
+          onMessage: (data) => {
+            if (!isCurrent()) return;
+            const decoded = decodeMessage(data);
+            if (!decoded.ok) {
+              this.logger.warn(`dropped malformed frame from hub: ${decoded.error}`);
+              return;
+            }
+            Promise.resolve(this.options.onMessage(decoded.message)).catch((error: unknown) =>
+              this.logger.error("message handler failed", error),
+            );
+          },
+          onClose: (code, reason) => {
+            if (!isCurrent()) return;
+            this.logger.warn(`hub connection closed (${code}${reason ? `: ${reason}` : ""})`);
+            if (code === 1006 && this.state === "connecting") {
+              this.logger.warn(
+                "could not open the hub connection (hub down, or STUDIO_WORKER_TOKEN rejected: HTTP 401)",
+              );
+            }
+            this.scheduleReconnect();
+          },
+          onError: (error) => {
+            if (!isCurrent()) return;
+            this.logger.debug("socket error", error);
+            // A close event follows an error; reconnect is handled there.
+          },
         },
-        onMessage: (data) => {
-          if (!isCurrent()) return;
-          const decoded = decodeMessage(data);
-          if (!decoded.ok) {
-            this.logger.warn(`dropped malformed frame from hub: ${decoded.error}`);
-            return;
-          }
-          Promise.resolve(this.options.onMessage(decoded.message)).catch((error: unknown) =>
-            this.logger.error("message handler failed", error),
-          );
-        },
-        onClose: (code, reason) => {
-          if (!isCurrent()) return;
-          this.logger.warn(`hub connection closed (${code}${reason ? `: ${reason}` : ""})`);
-          this.scheduleReconnect();
-        },
-        onError: (error) => {
-          if (!isCurrent()) return;
-          this.logger.debug("socket error", error);
-          // A close event follows an error; reconnect is handled there.
-        },
-      });
+        headers ? { headers } : undefined,
+      );
     } catch (error) {
       this.logger.error("could not create socket", error);
       this.scheduleReconnect();

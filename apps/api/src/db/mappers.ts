@@ -161,6 +161,12 @@ export function toJob(r: JobRow): Job {
     ...(r.progress !== null ? { progress: r.progress } : {}),
     ...(r.output ? { output: r.output } : {}),
     ...(r.error !== null ? { error: r.error } : {}),
+    priority: r.priority,
+    attempts: r.attempts,
+    maxAttempts: r.maxAttempts,
+    ...(r.workerId !== null ? { workerId: r.workerId } : {}),
+    ...(r.progressMessage !== null ? { progressMessage: r.progressMessage } : {}),
+    ...(r.cancelRequestedAt ? { cancelRequestedAt: iso(r.cancelRequestedAt) } : {}),
   };
 }
 
