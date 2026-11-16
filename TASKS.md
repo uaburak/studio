@@ -23,6 +23,7 @@ Son güncelleme: 2026-11-16. Mimari ve kararlar için: [PLAN.md](PLAN.md).
 |---|---|---|---|---|
 | L1 | Mac'te yerel sunucu: Mac uygulaması API ve worker'ı kendisi başlatır ve yönetir; veriler uygulama klasöründe; Bonjour ile duyuru; cihaz eşleştirme ve cihaz anahtarları | high | `apps/api`, `apps/worker`, `apps/apple`, `packages/contract` | Çalışıyor |
 | L2 | Bulut yayıncı: zamanlanmış postları alan ve saatinde paylaşan küçük Cloudflare Worker (yayıncılar paketiyle) | high | `apps/cloud-publisher` (yeni) | Çalışıyor |
+| A5 | Sohbet ajanı Wecra yöntemiyle: oturum sürdürme, Studio MCP araçları, onay kartları, araç adımları, /usage, uygulama içi Claude girişi | xhigh | `apps/worker`, ek alanlar `apps/api`, `packages/contract`, `apps/apple` | Çalışıyor |
 | L3 | Remote Control: Mac uygulamasında anahtar, Cloudflare Tunnel, Access | medium | `apps/apple` | L1'den sonra; Burak'ın Cloudflare girişini bekliyor |
 
 ## Yön düzeltmesi (Burak, 2026-11-16)
