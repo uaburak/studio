@@ -35,7 +35,7 @@ Son güncelleme: 2026-11-16. Mimari ve kararlar için: [PLAN.md](PLAN.md).
 | F1-5 | Web panosu: markalar, prompt, inceleme, dışa aktarım (TAMAM, denetlendi)   | high  | `apps/web`                                  |
 | F1-6 | Hub ve iş kuyruğu (denemeden ürüne) (TAMAM, denetlendi)                   | high  | `apps/api`, `apps/worker`                   |
 
-| F3-1 | Yayıncılar paketi: Instagram ve Facebook bağdaştırıcıları, sahte sunucuyla testler (ÇALIŞIYOR; Faz 3'ten öne alındı) | high | `packages/publishers` |
+| F3-1 | Yayıncılar paketi: Instagram ve Facebook bağdaştırıcıları, sahte sunucuyla testler (TAMAM, denetlendi; gerçek Meta denemesi bekliyor) | high | `packages/publishers` |
 | F4-1 | iOS uygulaması iskeleti ve ilk ekranlar (ÇALIŞIYOR; Faz 4'ten öne alındı) | high | `apps/ios` |
 | F1-5b | Web: canlı iş akışı, iş iptali, Mac çevrimiçi göstergesi (SIRADA) | medium | `apps/web` |
 

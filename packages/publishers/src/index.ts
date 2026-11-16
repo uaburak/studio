@@ -1,3 +1,35 @@
-// @studio/publishers — Meta and LinkedIn publishing adapters.
-// Intentionally empty: the API is defined in a later phase (Faz 3).
+// @studio/publishers — Instagram and Facebook Page publishing through the
+// Meta Graph API. Runtime-agnostic (fetch + Web APIs only); runs in workerd.
+// See README.md (Turkish) for the supported matrix and the scheduler contract.
+
 export const PACKAGE_NAME = "@studio/publishers";
+
+export * from "./accounts.ts";
+export * from "./errors.ts";
+export { type FacebookPhase, FacebookPublisher, type FacebookState } from "./facebook/publisher.ts";
+export * from "./graph/client.ts";
+export { encodeParamPairs, type Params, type ParamValue } from "./graph/encode.ts";
+export {
+  type InstagramItemState,
+  type InstagramPhase,
+  InstagramPublisher,
+  type InstagramState,
+  itemContainerParams,
+  readPublishingQuota,
+} from "./instagram/publisher.ts";
+export {
+  DEFAULT_MACHINE_OPTIONS,
+  type MachineOptions,
+  type Publisher,
+  type RunOptions,
+  runToCompletion,
+  STATE_VERSION,
+  type StepContext,
+  type StepOutcome,
+} from "./machine.ts";
+export * from "./models.ts";
+export * from "./publisher.ts";
+export { REDACTED, redact, redactDeep } from "./redact.ts";
+export * from "./runtime.ts";
+export * from "./validation/index.ts";
+export { FACEBOOK_LIMITS, INSTAGRAM_LIMITS } from "./validation/rules.ts";

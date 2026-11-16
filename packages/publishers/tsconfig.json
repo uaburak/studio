@@ -1,4 +1,12 @@
 {
   "extends": "../../tsconfig.base.json",
-  "include": ["src"]
+  "compilerOptions": {
+    // Web platform APIs only (fetch, Request, Response, ReadableStream, Blob,
+    // FormData, crypto.subtle, TextEncoder). No @types/node: anything
+    // Node-specific (Buffer, process, node:*) fails the typecheck, which keeps
+    // the package runnable in workerd.
+    "lib": ["ES2024", "DOM"],
+    "types": []
+  },
+  "include": ["src", "test"]
 }
