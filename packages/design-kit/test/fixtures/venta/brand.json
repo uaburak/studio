@@ -1,0 +1,74 @@
+{
+  "$comment": "PROVISIONAL stand-in profile for the F0-2 spike. Derived only from the Venta Borinc packaging photo (spikes/gemini-image/refs/venta-borinc.png). Not approved by Burak. Replace with values from real published posts / brand kit before production use.",
+  "id": "venta",
+  "name": "Venta",
+  "owner": "MTM Agro",
+  "status": "provisional",
+  "version": "0.1.0",
+  "language": "tr",
+  "sources": [
+    { "kind": "packaging-photo", "path": "assets/product-venta-borinc.png", "note": "1200x1200 sRGB, white background" },
+    { "kind": "label-transcript", "path": "../../../gemini-image/refs/venta-borinc.label.md", "note": "only high-confidence parts are used, see facts.json" }
+  ],
+  "color": {
+    "green":       { "value": "#66B052", "origin": "sampled", "from": "green label band + Zn hexagon + BORINC wordmark (median #66b052 / #69b056 / #68a558)", "use": "accent fills, bands, rules, hexagon badge, large display text (>= 64px) only" },
+    "green-deep":  { "value": "#3C8529", "origin": "sampled", "from": "lower label band (shaded side)", "use": "green text on light surfaces at any size, background for white text (contrast with white 4.6:1)" },
+    "forest":      { "value": "#16301A", "origin": "derived", "from": "green-deep darkened, not on the pack", "use": "dark backgrounds for contrast posts and carousel covers" },
+    "amber":       { "value": "#E0A505", "origin": "sampled", "from": "boron (B) hexagon", "use": "boron badge and very small highlights only, never body text on white" },
+    "ink":         { "value": "#0B0B0B", "origin": "sampled", "from": "VENTA logotype (#010101), softened", "use": "display headlines, primary text" },
+    "graphite":    { "value": "#2F2F2F", "origin": "sampled", "from": "MTM AGRO lettering", "use": "body text" },
+    "stone":       { "value": "#6E6E6E", "origin": "sampled", "from": "label body text (#777777), darkened slightly for contrast", "use": "secondary text, captions (>= 28px)" },
+    "paper":       { "value": "#FFFFFF", "origin": "sampled", "from": "photo background / bag", "use": "default background" },
+    "mist":        { "value": "#F2F4EF", "origin": "derived", "from": "bag surface tinted towards green", "use": "secondary background, panels" },
+    "line":        { "value": "#DADADA", "origin": "sampled", "from": "bag surface in shade", "use": "hairlines, dividers on white" }
+  },
+  "font": {
+    "display": {
+      "family": "Archivo",
+      "files": ["fonts/archivo-latin-wdth-normal.woff2", "fonts/archivo-latin-ext-wdth-normal.woff2", "fonts/archivo-latin-wdth-italic.woff2", "fonts/archivo-latin-ext-wdth-italic.woff2"],
+      "axes": { "wght": [100, 900], "wdth": [62, 125] },
+      "license": "OFL-1.1 (Fontsource @fontsource-variable/archivo 5.3.0)",
+      "why": "Closest open font to the wide, heavy, slanted VENTA logotype when set at font-stretch 125%, weight 800-900, italic.",
+      "default": { "weight": 900, "stretch": "125%", "style": "italic", "transform": "uppercase", "tracking": "-0.01em", "leading": 0.96, "leading_note": "Do not go below 0.96 in uppercase: Turkish İ dots and Ç/Ş cedillas collide with the neighbouring line (seen in the spike fixture at 0.9)." }
+    },
+    "text": {
+      "family": "Montserrat",
+      "files": ["fonts/montserrat-latin-wght-normal.woff2", "fonts/montserrat-latin-ext-wght-normal.woff2", "fonts/montserrat-latin-wght-italic.woff2", "fonts/montserrat-latin-ext-wght-italic.woff2"],
+      "axes": { "wght": [100, 900] },
+      "license": "OFL-1.1 (Fontsource @fontsource-variable/montserrat 5.x)",
+      "why": "Geometric sans close to the packaging's BORINC and label typography; full Turkish coverage (ğ ş ı İ).",
+      "default": { "weight": 500, "leading": 1.35 }
+    }
+  },
+  "type": {
+    "$comment": "px at 1080 artboard width. Phone display scale is ~0.36, so 28px renders at ~10pt on a phone.",
+    "display-xl": { "font": "display", "size": 168, "weight": 900, "leading": 0.96 },
+    "display-l":  { "font": "display", "size": 120, "weight": 900, "leading": 0.98 },
+    "display-m":  { "font": "display", "size": 88,  "weight": 850, "leading": 1.0 },
+    "headline":   { "font": "text", "size": 72, "weight": 800, "leading": 1.02, "tracking": "-0.02em" },
+    "title":      { "font": "text", "size": 52, "weight": 750, "leading": 1.08, "tracking": "-0.01em" },
+    "body-l":     { "font": "text", "size": 36, "weight": 500, "leading": 1.34 },
+    "body":       { "font": "text", "size": 30, "weight": 500, "leading": 1.38 },
+    "eyebrow":    { "font": "text", "size": 26, "weight": 700, "leading": 1.2, "tracking": "0.14em", "transform": "uppercase" },
+    "caption":    { "font": "text", "size": 24, "weight": 600, "leading": 1.3, "tracking": "0.04em" }
+  },
+  "space": { "unit": 8, "margin": 72, "gutter": 24, "columns": 6, "scale": [8, 16, 24, 32, 48, 64, 72, 96, 128, 160] },
+  "radius": { "sm": 8, "md": 16, "lg": 32, "pill": 999 },
+  "rule": { "width": 56, "thickness": 6, "color": "green", "$comment": "short green rule under eyebrows, taken from the label (EC FERTILIZER / BORINC dividers)" },
+  "logos": {
+    "$comment": "STAND-INS. Typeset placeholders rendered from the brand fonts, NOT the real logo artwork. Replace with official vector files.",
+    "venta-black": { "path": "logos/venta-wordmark-black.standin.png", "intrinsic": [1010, 163], "aspect": 6.196, "on": "light" },
+    "venta-white": { "path": "logos/venta-wordmark-white.standin.png", "intrinsic": [1010, 163], "aspect": 6.196, "on": "dark" },
+    "mtm-agro-graphite": { "path": "logos/mtm-agro-graphite.standin.png", "intrinsic": [761, 70], "aspect": 10.871, "on": "light" },
+    "mtm-agro-white": { "path": "logos/mtm-agro-white.standin.png", "intrinsic": [761, 70], "aspect": 10.871, "on": "dark" }
+  },
+  "assets": {
+    "product-venta-borinc": { "path": "assets/product-venta-borinc.png", "intrinsic": [1200, 1200], "background": "#FFFFFF", "subject_box": [268, 232, 663, 787], "subject_box_format": "[x, y, w, h] incl. soft shadow, measured", "note": "Bag (with its soft shadow) occupies x 268-931, y 232-1019 of the 1200x1200 photo, so ~45% of the photo is white margin: crop with object-fit/object-position or size the <img> larger than the visible bag. White background: place on white/very light surfaces, or use mix-blend-mode: multiply on light tints. Never on dark surfaces without a light panel. Do not upscale beyond 1200px." }
+  },
+  "motifs": [
+    "green band with a raised centre tab (label top edge)",
+    "hexagon element badges: B on amber, Zn on green",
+    "short green rule (56x6) under eyebrow lines",
+    "generous white space, centred label-like hierarchy"
+  ]
+}

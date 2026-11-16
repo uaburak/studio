@@ -1,15 +1,37 @@
 {
   "name": "@studio/design-kit",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": true,
   "type": "module",
+  "description": "Design contract v1, layer model, patch operations, sanitiser, brand CSS, linter, platform presets and the (Node-only) Chromium renderer.",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./contract": "./src/contract/index.ts",
+    "./document": "./src/document/index.ts",
+    "./patch": "./src/patch/index.ts",
+    "./sanitize": "./src/sanitize/index.ts",
+    "./brand": "./src/brand/index.ts",
+    "./lint": "./src/lint/index.ts",
+    "./presets": "./src/presets/index.ts",
+    "./render": "./src/render/index.ts",
+    "./DESIGN_CONTRACT.v1.md": "./contract/DESIGN_CONTRACT.v1.md"
   },
   "scripts": {
-    "typecheck": "tsc -p tsconfig.json"
+    "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.node.json",
+    "test": "vitest run",
+    "sync:contract": "node scripts/sync-contract.mjs"
+  },
+  "dependencies": {
+    "parse5": "8.0.1",
+    "playwright-core": "1.65.1",
+    "sharp": "0.35.5",
+    "zod": "catalog:"
   },
   "devDependencies": {
-    "typescript": "catalog:"
+    "@types/node": "catalog:",
+    "esbuild": "catalog:",
+    "fast-check": "4.10.2",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
   }
 }

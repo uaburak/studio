@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8">
+  <meta name="studio:contract" content="v0">
+  <meta name="studio:format" content="1080x1350">
+  <link rel="stylesheet" href="/brand/brand.css">
+  <style>
+    [data-artboard] { position: relative; background: var(--color-paper); }
+    [data-artboard] > [data-layer] { position: absolute; }
+    [data-type="text"] { hyphens: none; }
+
+    /* label band (pack quote): plain full-width green edge */
+    .band { background: var(--color-green); }
+
+    /* intro stack: eyebrow + rule, display headline */
+    .intro { display: flex; flex-direction: column; gap: var(--space-24); }
+    .eyebrow-stack { display: flex; flex-direction: column; align-items: flex-start; gap: var(--space-16); }
+    .eyebrow { color: var(--color-green-deep); white-space: nowrap; }
+    .rule { margin: 0; width: 56px; height: 6px; background: var(--color-green); }
+    .headline {
+      font-family: var(--font-display);
+      font-size: 88px;
+      font-weight: 900;
+      font-stretch: 125%;
+      font-style: italic;
+      text-transform: uppercase;
+      letter-spacing: -0.01em;
+      line-height: 1;
+      color: var(--color-ink);
+      text-wrap: balance;
+    }
+
+    /* element key: nested B / Zn badges over the category line, left of the pack */
+    .element-key { display: flex; flex-direction: column; align-items: flex-start; gap: var(--space-32); }
+    .badge-pair {
+      display: grid;
+      grid-template-columns: 96px 24px 96px;
+      grid-template-rows: 56px 48px 56px;
+    }
+    .badge-pos-b { grid-column: 1 / 3; grid-row: 1 / 3; }
+    .badge-pos-zn { grid-column: 2 / 4; grid-row: 2 / 4; }
+    .badge { display: grid; place-items: center; width: 120px; height: 104px; }
+    .badge > * { grid-area: 1 / 1; }
+    .hex { width: 120px; height: 104px; clip-path: polygon(25% 0, 75% 0, 100% 50%, 75% 100%, 25% 100%, 0 50%); }
+    .hex-b { background: var(--color-amber); }
+    .hex-zn { background: var(--color-green); }
+    .badge-letter {
+      position: relative; /* clip-path puts the hex on its own paint layer: lift the letter above it */
+      z-index: 1;
+      font-family: var(--font-text);
+      font-size: 44px;
+      font-weight: 700;
+      line-height: 1;
+      letter-spacing: 0;
+      color: var(--color-ink);
+    }
+    .subhead { font-weight: 500; color: var(--color-graphite); text-wrap: balance; }
+
+    /* sign-off: logo left, web right, on one baseline */
+    .sign-off { display: flex; align-items: baseline; justify-content: space-between; }
+    .sign-off-logo { height: 32px; width: auto; }
+    .web {
+      font-family: var(--font-text);
+      font-size: 28px;
+      font-weight: 500;
+      line-height: 1.3;
+      letter-spacing: 0.02em;
+      color: var(--color-graphite);
+      white-space: nowrap;
+    }
+  </style>
+</head>
+<body>
+  <main data-artboard style="width:1080px;height:1350px">
+
+    <img data-layer="product-photo" data-type="image"
+         src="/brand/assets/product-venta-borinc.png" alt="Venta Borinc ambalajı"
+         style="left:147px; top:164px; width:1200px; height:1200px">
+
+    <div data-layer="label-band" data-type="shape" data-role="decoration" class="band"
+         style="left:0; top:1326px; width:1080px; height:24px"></div>
+
+    <div data-layer="intro" data-type="group" class="intro"
+         style="left:72px; top:72px; width:936px">
+      <div data-layer="eyebrow-stack" data-type="group" class="eyebrow-stack">
+        <p data-layer="eyebrow" data-type="text" data-role="eyebrow" class="ts-eyebrow eyebrow">VENTA BORINC</p>
+        <div data-layer="eyebrow-rule" data-type="shape" data-role="decoration" class="brand-rule rule"></div>
+      </div>
+      <h1 data-layer="headline" data-type="text" data-role="headline" class="ts-display-m headline">Bor ve çinko<br>bir arada</h1>
+    </div>
+
+    <div data-layer="element-key" data-type="group" class="element-key"
+         style="left:72px; top:640px; width:320px">
+      <div data-layer="badge-pair" data-type="group" class="badge-pair">
+        <div data-layer="badge-b" data-type="group" class="badge badge-pos-b">
+          <div data-layer="badge-b-hex" data-type="shape" data-role="badge" class="hex hex-b"></div>
+          <p data-layer="badge-b-letter" data-type="text" data-role="badge" class="badge-letter">B</p>
+        </div>
+        <div data-layer="badge-zn" data-type="group" class="badge badge-pos-zn">
+          <div data-layer="badge-zn-hex" data-type="shape" data-role="badge" class="hex hex-zn"></div>
+          <p data-layer="badge-zn-letter" data-type="text" data-role="badge" class="badge-letter">Zn</p>
+        </div>
+      </div>
+      <p data-layer="subhead" data-type="text" data-role="subhead" class="ts-body subhead">Mikro bitki besin maddeleri karışımı</p>
+    </div>
+
+    <div data-layer="sign-off" data-type="group" class="sign-off"
+         style="left:72px; top:1240px; width:936px">
+      <img data-layer="logo-venta" data-type="logo" class="sign-off-logo"
+           src="/brand/logos/venta-wordmark-black.standin.png" alt="VENTA">
+      <p data-layer="web" data-type="text" data-role="cta" class="ts-caption web">www.mtmagro.com</p>
+    </div>
+
+  </main>
+</body>
+</html>

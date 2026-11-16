@@ -23,7 +23,7 @@ Son güncelleme: 2026-11-16. Mimari ve kararlar için: [PLAN.md](PLAN.md).
 
 | No | Görev | Efor | Klasör | Durum |
 |---|---|---|---|---|
-| A1 | Tasarım kiti (F1-2) | xhigh | `packages/design-kit` | Çalışıyor |
+| A1 | Tasarım kiti (F1-2) | xhigh | `packages/design-kit` | Tamam (denetlendi) |
 | A2 | Sohbet altyapısı: konuşma, mesaj, ajan turu ve plan kayıtları; API ve canlı akış | high | `apps/api`, `packages/contract` | Tamam (denetlendi) |
 | A3 | Başsız Claude çağrısının abonelikle doğrulanması | | `spikes/design-render` | Burak'ın `claude auth login` yapmasını bekliyor |
 | A4 | Worker üretim hattı: sohbet ajanı, aylık plan, post üretimi, kalite döngüsü, render, yükleme | xhigh | `apps/worker` | A1, A2, A3'ü bekliyor |

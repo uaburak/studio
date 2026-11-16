@@ -17,3 +17,9 @@ spikes/video-bakeoff/**/player-dist/
 spikes/**/work/
 spikes/**/logs/
 !.dev.vars.example
+
+# Swift / Xcode
+.build/
+DerivedData/
+*.xcuserstate
+xcuserdata/

@@ -1,0 +1,56 @@
+{
+  "$comment": "PROVISIONAL. The only product/company facts a design may state. Built from the HIGH-CONFIDENCE parts of spikes/gemini-image/refs/venta-borinc.label.md (headings and paragraphs). The dose table, guaranteed-content table (% w/w), licence/registration numbers and the short company line under MTM AGRO are LOW confidence and deliberately excluded. Not yet approved by Burak.",
+  "status": "provisional",
+  "source": "spikes/gemini-image/refs/venta-borinc.label.md (2026-11-16 transcript)",
+  "product": {
+    "brand": "VENTA",
+    "product_name": "BORINC",
+    "full_name": "Venta Borinc",
+    "by": "MTM AGRO (label: \"VENTA BY MTM AGRO\")",
+    "category_label": "EC FERTILIZER",
+    "description_tr": "Bor (B) ve Çinko (Zn-Sülfat) Mikro Bitki Besin Maddeleri Karışımı",
+    "elements": ["Bor (B)", "Çinko (Zn)"],
+    "pack_badges": "Hexagon badges on the pack: B (amber), Zn (green)"
+  },
+  "manufacturer": {
+    "legal_name": "MTM KİMYA TARIM SANAYİ VE TİCARET LİMİTED ŞİRKETİ",
+    "address": "Gaziler Mah. Küçük Esnaflar Sanayi Sitesi 256 Sk. No:3b Kepez, Antalya",
+    "email": "info@mtmagro.com",
+    "web": "www.mtmagro.com",
+    "phone": "+90 507 036 49 39"
+  },
+  "statements_tr": {
+    "safety": [
+      "Kullanmadan önce etiketi okuyunuz.",
+      "Uygulama sırasında koruyucu eldiven, gözlük ve maske kullanınız; bir şey yiyip içmeyiniz, sigara kullanmayınız.",
+      "Cilt temasında bol su ve sabunla yıkayınız.",
+      "Gözle temasta en az 15 dakika bol suyla yıkayıp tıbbi yardım alınız.",
+      "Yutulması halinde ağzı bol suyla çalkalayınız, kusturmayınız ve derhal doktora başvurunuz.",
+      "Gıda ve yemlerden uzak tutunuz.",
+      "Toprak ve/veya yaprak analizi yaptırılarak ürünün kullanılması tavsiye edilir."
+    ],
+    "storage": [
+      "Serin, kuru, iyi havalandırılan ve güneş almayan yerde (5°C – 45°C) saklayınız.",
+      "Orijinal ambalajında, ağzı kapalı muhafaza ediniz.",
+      "Gıda, yem ve ilaçlardan ayrı; çocukların ve hayvanların erişemeyeceği yerlerde tutunuz.",
+      "Açılan ambalajı sıkıca kapatıp kısa sürede tüketiniz.",
+      "Uygun koşullarda raf ömrü 3 yıldır."
+    ],
+    "company_statement": [
+      "Bu ürün mevzuata uygun olarak üretilmiştir.",
+      "Etiket ve kullanım talimatlarına uyulması koşuluyla kalitesi firmamızın garantisi altındadır."
+    ],
+    "mixability": [
+      "Ürünlerimiz genel olarak yaygın kullanılan bitki besleme ürünleri ve bitki koruma preparatları ile karışabilir niteliktedir."
+    ]
+  },
+  "forbidden": [
+    "Any dose, rate, timing or crop recommendation (dose table is low confidence)",
+    "Guaranteed content percentages (e.g. % B, % Zn) — low confidence",
+    "Licence / registration numbers — low confidence",
+    "Any efficacy, yield, quality or price claim not printed on the label (e.g. 'verimi artırır', '%30 daha fazla')",
+    "Certifications, awards, origin claims, dealer network, campaigns, discounts"
+  ],
+  "allowedNumbers": ["5", "45", "3", "15", "256", "3b", "90", "507", "036", "49", "39", "1", "2"],
+  "allowedNumbers$comment": "Numbers that may appear in design text: those printed in the high-confidence statements and contact lines, plus 1/2/3 for slide counters (e.g. 1/3). The linter flags any other number as unverified."
+}

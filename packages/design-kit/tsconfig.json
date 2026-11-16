@@ -1,4 +1,12 @@
 {
   "extends": "../../tsconfig.base.json",
-  "include": ["src"]
+  "compilerOptions": {
+    // Isomorphic sources: Web platform + DOM types only. No @types/node, so any
+    // Node-only API (Buffer, process, node:*) fails this typecheck. The renderer
+    // (src/render) and the tests are checked by tsconfig.node.json.
+    "lib": ["ES2024", "DOM", "DOM.Iterable"],
+    "types": []
+  },
+  "include": ["src"],
+  "exclude": ["src/render"]
 }
