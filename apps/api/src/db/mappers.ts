@@ -1,23 +1,27 @@
-import type {
-  AgentRun,
-  Asset,
-  Brand,
-  BrandProfile,
-  Content,
-  ContentVersion,
-  ContentVersionSummary,
-  Conversation,
-  Job,
-  JobStatus,
-  JobType,
-  Message,
-  MessagePart,
-  Plan,
-  PlanItem,
-  PublishLog,
-  RunUsage,
-  Schedule,
-  SocialAccount,
+import {
+  type AgentRun,
+  type Asset,
+  assetContentPath,
+  type Brand,
+  type BrandProfile,
+  type Content,
+  type ContentVersion,
+  type ContentVersionSummary,
+  type Conversation,
+  type ConversationAlias,
+  type Job,
+  type JobStatus,
+  type JobType,
+  type Message,
+  type MessageMention,
+  type MessagePart,
+  type Plan,
+  type PlanItem,
+  type PublishLog,
+  type RunUsage,
+  type Schedule,
+  type SocialAccount,
+  type TurnAlias,
 } from "@studio/contract";
 import type * as schema from "./schema.ts";
 
@@ -37,6 +41,7 @@ export type AgentRunRow = typeof schema.agentRuns.$inferSelect;
 export type ConversationEventRow = typeof schema.conversationEvents.$inferSelect;
 export type PlanRow = typeof schema.contentPlans.$inferSelect;
 export type PlanItemRow = typeof schema.planItems.$inferSelect;
+export type ConversationAliasRow = typeof schema.conversationAliases.$inferSelect;
 
 const iso = (d: Date) => d.toISOString();
 const isoOrNull = (d: Date | null) => (d ? d.toISOString() : null);
@@ -240,6 +245,7 @@ export function toMessage(r: MessageRow): Message {
     runId: r.runId,
     // Written only by the chat service from contract-validated parts.
     parts: r.parts as MessagePart[],
+    mentions: (r.mentions as MessageMention[] | null) ?? [],
     createdAt: iso(r.createdAt),
     updatedAt: iso(r.updatedAt),
   };
@@ -309,4 +315,34 @@ export function toPlan(r: PlanRow, items: PlanItem[]): Plan {
     createdAt: iso(r.createdAt),
     updatedAt: iso(r.updatedAt),
   };
+}
+
+/** An alias with its asset and every name it has had (oldest first, current included). */
+export interface AliasRecord {
+  row: ConversationAliasRow;
+  asset: AssetRow;
+  names: string[];
+}
+
+export function toConversationAlias(r: AliasRecord): ConversationAlias {
+  return {
+    id: r.row.id,
+    conversationId: r.row.conversationId,
+    alias: r.row.alias,
+    previousAliases: r.names.filter((n) => n !== r.row.alias),
+    assetId: r.asset.id,
+    kind: r.asset.kind,
+    mimeType: r.asset.mimeType,
+    width: r.asset.width,
+    height: r.asset.height,
+    filename: r.asset.originalFilename,
+    contentPath: assetContentPath(r.asset.id),
+    messageId: r.row.messageId,
+    createdAt: iso(r.row.createdAt),
+    updatedAt: iso(r.row.updatedAt),
+  };
+}
+
+export function toTurnAlias(r: AliasRecord): TurnAlias {
+  return { ...toConversationAlias(r), objectKey: r.asset.objectKey };
 }

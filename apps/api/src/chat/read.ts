@@ -13,6 +13,7 @@ import { and, asc, desc, eq, gt, inArray, ne, notInArray } from "drizzle-orm";
 import type { Db } from "../db/client.ts";
 import {
   type AgentRunRow,
+  type AliasRecord,
   type ConversationRow,
   type PlanRow,
   toAgentRun,
@@ -20,9 +21,11 @@ import {
   toBrand,
   toBrandProfile,
   toConversation,
+  toConversationAlias,
   toMessage,
   toPlan,
   toPlanItem,
+  toTurnAlias,
 } from "../db/mappers.ts";
 import {
   agentRuns,
@@ -30,6 +33,8 @@ import {
   brandProfiles,
   brands,
   contentPlans,
+  conversationAliases,
+  conversationAliasNames,
   conversationEvents,
   conversations,
   jobs,
@@ -138,6 +143,28 @@ export async function openPlanOf(db: Db, conversationId: string): Promise<Plan |
   return plan ?? null;
 }
 
+/** Every alias of the conversation with its asset and names, oldest first. */
+export async function loadAliases(db: Db, conversationId: string): Promise<AliasRecord[]> {
+  const [rows, names] = await Promise.all([
+    db
+      .select({ row: conversationAliases, asset: assets })
+      .from(conversationAliases)
+      .innerJoin(assets, eq(conversationAliases.assetId, assets.id))
+      .where(eq(conversationAliases.conversationId, conversationId))
+      .orderBy(asc(conversationAliases.createdAt), asc(conversationAliases.id)),
+    db
+      .select()
+      .from(conversationAliasNames)
+      .where(eq(conversationAliasNames.conversationId, conversationId))
+      .orderBy(asc(conversationAliasNames.createdAt)),
+  ]);
+  return rows.map(({ row, asset }) => ({
+    row,
+    asset,
+    names: names.filter((n) => n.aliasId === row.id).map((n) => n.name),
+  }));
+}
+
 /** Assets referenced by attachment parts. */
 async function attachedAssets(db: Db, list: Message[]): Promise<Asset[]> {
   const ids = new Set<string>();
@@ -181,13 +208,14 @@ export async function turnContext(db: Db, runId: string): Promise<TurnContext> {
     assets: await attachedAssets(db, list),
     openPlan,
     assistantMessage: assistant ? toMessage(assistant) : null,
+    aliases: (await loadAliases(db, conv.id)).map(toTurnAlias),
   };
 }
 
 /** State for `conversation.snapshot` (presence is added by the Hub). */
 export async function conversationSnapshot(db: Db, conversationId: string) {
   const conv = await requireConversation(db, conversationId);
-  const [{ messages: list, hasMore }, active, planRows] = await Promise.all([
+  const [{ messages: list, hasMore }, active, planRows, aliases] = await Promise.all([
     latestMessages(db, conversationId, CONVERSATION_SNAPSHOT_MESSAGES),
     activeRunOf(db, conversationId),
     db
@@ -198,6 +226,7 @@ export async function conversationSnapshot(db: Db, conversationId: string) {
       )
       .orderBy(desc(contentPlans.id))
       .limit(20),
+    loadAliases(db, conversationId),
   ]);
   return {
     seq: conv.lastSeq,
@@ -206,6 +235,7 @@ export async function conversationSnapshot(db: Db, conversationId: string) {
     hasMoreMessages: hasMore,
     activeRun: active ? toAgentRun(active) : null,
     plans: await plansWithItems(db, planRows),
+    aliases: aliases.map(toConversationAlias),
   };
 }
 

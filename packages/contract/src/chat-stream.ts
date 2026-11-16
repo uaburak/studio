@@ -7,6 +7,7 @@ import {
   MessagePart,
   type TextPart,
 } from "./chat.ts";
+import { ConversationAlias } from "./chat-alias.ts";
 import { WorkerPresence } from "./job.ts";
 import { Plan } from "./plan.ts";
 import { PongMessage, PresenceEvent } from "./protocol.ts";
@@ -78,10 +79,16 @@ export const PlanUpdatedEvent = z.object({
   seq: Seq,
   plan: Plan,
 });
+/**
+ * Conversation changed. Also carries alias changes: `aliases` lists the
+ * aliases added or renamed by this change (upsert by `id`); absent when no
+ * alias changed. Reusing this frame keeps the stream's frame types unchanged.
+ */
 export const ConversationUpdatedEvent = z.object({
   type: z.literal("conversation.updated"),
   seq: Seq,
   conversation: Conversation,
+  aliases: z.array(ConversationAlias).optional(),
 });
 
 /** Stored, sequenced events. */
@@ -109,6 +116,8 @@ export const ConversationSnapshotEvent = z.object({
   activeRun: AgentRun.nullable(),
   /** Plans of the conversation except superseded ones, newest first (at most 20). */
   plans: z.array(Plan),
+  /** Every alias of the conversation, oldest first. Always sent by the server. */
+  aliases: z.array(ConversationAlias).optional(),
   presence: WorkerPresence,
 });
 
@@ -179,6 +188,8 @@ export interface ConversationState {
   hasMoreMessages: boolean;
   activeRun: AgentRun | null;
   plans: Plan[];
+  /** Attachment aliases, oldest first (snapshot, then `conversation.updated` upserts). */
+  aliases: ConversationAlias[];
   presence: WorkerPresence | null;
   /** Set when a seq gap was seen; reconnect with `after = seq` to recover. */
   stale: boolean;
@@ -220,6 +231,7 @@ export function applyConversationStreamMessage(
       hasMoreMessages: message.hasMoreMessages,
       activeRun: message.activeRun,
       plans: message.plans,
+      aliases: message.aliases ?? [],
       presence: message.presence,
       stale: false,
     };
@@ -270,6 +282,11 @@ export function applyConversationStreamMessage(
       return next;
     case "conversation.updated":
       next.conversation = message.conversation;
+      if (message.aliases) {
+        let aliases = state.aliases ?? [];
+        for (const alias of message.aliases) aliases = upsertById(aliases, alias);
+        next.aliases = aliases;
+      }
       return next;
   }
 }

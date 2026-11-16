@@ -2,6 +2,7 @@ export * from "./asset.ts";
 export * from "./brand.ts";
 export * from "./brand-profile.ts";
 export * from "./chat.ts";
+export * from "./chat-alias.ts";
 export * from "./chat-stream.ts";
 export * from "./client.ts";
 export * from "./common.ts";

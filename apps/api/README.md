@@ -8,24 +8,26 @@ Cloudflare Workers API (Hono + `@hono/zod-openapi`), `Hub` Durable Object, D1 (D
 Tüm kimlikler zamana göre sıralı UUIDv7 metnidir. Zaman damgaları UTC milisaniye olarak tutulur, API'de ISO 8601 (`...Z`) döner.
 JSON alanları metin sütunudur. Durum sütunlarında CHECK kısıtı vardır; değerler sözleşmedeki zod enum'larıyla aynıdır (bir test bunu denetler).
 
-| Tablo                    | İçerik                                                                                                                                                               | Önemli kurallar                                                                                       |
-| ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
-| `brands`                 | ad, `slug` (benzersiz), varsayılan dil, durum `active` / `archived`                                                                                                  | Silinmez, arşivlenir. `slug` verilmezse addan türetilir (Türkçe harfler ASCII'ye çevrilir).           |
-| `social_accounts`        | marka, platform `instagram` / `facebook` / `linkedin`, görünen ad, dış kimlik, durum                                                                                 | Token ya da gizli bilgi **yok**. Token kasası (Faz 3) ayrı tabloda, hesap kimliğine bağlı olacak.     |
-| `brand_profiles`         | marka, sürüm no, durum `draft` / `approved`, `tokens` (JSON), tasarım kuralları, ses tonu, onay zamanı, `is_current`                                                 | Taslak düzenlenir, onaylı sürüm değişmez. Marka başına tek "current" (kısmi benzersiz indeks).        |
-| `assets`                 | marka, tür, kaynak (`upload` / `generated` / `ingested`), R2 anahtarı, mime, boyut, SHA-256, en/boy/süre, özgün dosya adı                                            | R2 anahtarı: `brands/{brandId}/assets/{assetId}.{uzantı}`.                                            |
-| `contents`               | marka, tür (`post` / `carousel` / `story` / `reel`), başlık, brif, durum, hedef platformlar, açıklama metni, güncel sürüm, onay                                      | Onay = sürüm kimliği + o sürümün hash'i + zaman.                                                      |
-| `content_versions`       | içerik, sürüm no, köken (`generated` / `manual_edit` / `ai_edit`), içerik hash'i, slayt sayısı, not, üreten iş                                                       | Sürüm değişmez; yalnızca not ve render varlıkları sonradan güncellenir (hash'i etkilemez).            |
-| `content_version_slides` | sürüm, sıra, HTML belgesi, pano en/boy, render edilmiş varlık                                                                                                        | Slayt başına bir satır: D1'in 2 MB satır sınırına takılmamak ve render'ı gerçek FK yapmak için.       |
-| `jobs`                   | tür, durum, marka, içerik, payload, çıktı (`output`), hata, ilerleme (+ mesaj), öncelik, deneme / en fazla deneme, worker, kiralama, zamanlar                        | İşlerin tek doğru kaynağı. Oluşturma API'de, sonraki her geçiş Hub'da (aşağıda "İş kuyruğu").         |
-| `schedules`              | içerik, marka, platform, sosyal hesap, dondurulmuş sürüm + hash, UTC zaman, durum                                                                                    | İçerik + hesap başına tek etkin (`pending`/`publishing`) zamanlama.                                   |
-| `publish_logs`           | zamanlama, deneme no, durum, dış gönderi kimliği, hata, zamanlar                                                                                                     | Yazan yayın motoru (Faz 3); bu görevde yalnızca okuma.                                                |
-| `conversations`          | marka (isteğe bağlı), başlık, durum `active` / `archived`, `last_seq`, son etkinlik zamanı                                                                           | Silinmez, arşivlenir. Marka bir kez atanır, sonra değişmez.                                           |
-| `messages`               | konuşma, rol `user` / `assistant` / `system`, durum `streaming` / `complete` / `failed` / `cancelled`, üreten tur, `parts` (JSON), `delta_seqs`, `client_message_id` | Tur başına tek asistan mesajı (kısmi benzersiz indeks). `client_message_id` konuşma içinde benzersiz. |
-| `agent_runs`             | konuşma, tetikleyen mesaj, `chat.turn` işi, durum, deneme, model, kullanım (JSON), hata, zamanlar                                                                    | Konuşma başına en fazla bir `queued`/`running` tur (kısmi benzersiz indeks).                          |
-| `conversation_events`    | konuşma, `seq`, tür, akış çerçevesi (JSON)                                                                                                                           | Canlı akışın kalıcı günlüğü; birincil anahtar `(conversation_id, seq)`.                               |
-| `content_plans`          | marka, konuşma, öneren tur, başlık, dönem başı/sonu (`YYYY-MM-DD`), durum, özet, `revision`, karar zamanı, ret nedeni                                                | Durumlar `draft` → `proposed` → `accepted` / `rejected` / `superseded`.                               |
-| `plan_items`             | plan, sıra, tarih, platformlar, içerik türü, başlık, brif, sütun (pillar), görsel yuvası `none` / `user_upload` / `ai_generate`, durum, içerik, üretim işi           | Üretim durumu `jobs` tablosundan canlı okunur; `generation_status` yalnızca değişiklik tespiti için.  |
+| Tablo                      | İçerik                                                                                                                                                               | Önemli kurallar                                                                                       |
+| -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| `brands`                   | ad, `slug` (benzersiz), varsayılan dil, durum `active` / `archived`                                                                                                  | Silinmez, arşivlenir. `slug` verilmezse addan türetilir (Türkçe harfler ASCII'ye çevrilir).           |
+| `social_accounts`          | marka, platform `instagram` / `facebook` / `linkedin`, görünen ad, dış kimlik, durum                                                                                 | Token ya da gizli bilgi **yok**. Token kasası (Faz 3) ayrı tabloda, hesap kimliğine bağlı olacak.     |
+| `brand_profiles`           | marka, sürüm no, durum `draft` / `approved`, `tokens` (JSON), tasarım kuralları, ses tonu, onay zamanı, `is_current`                                                 | Taslak düzenlenir, onaylı sürüm değişmez. Marka başına tek "current" (kısmi benzersiz indeks).        |
+| `assets`                   | marka, tür, kaynak (`upload` / `generated` / `ingested`), R2 anahtarı, mime, boyut, SHA-256, en/boy/süre, özgün dosya adı                                            | R2 anahtarı: `brands/{brandId}/assets/{assetId}.{uzantı}`.                                            |
+| `contents`                 | marka, tür (`post` / `carousel` / `story` / `reel`), başlık, brif, durum, hedef platformlar, açıklama metni, güncel sürüm, onay                                      | Onay = sürüm kimliği + o sürümün hash'i + zaman.                                                      |
+| `content_versions`         | içerik, sürüm no, köken (`generated` / `manual_edit` / `ai_edit`), içerik hash'i, slayt sayısı, not, üreten iş                                                       | Sürüm değişmez; yalnızca not ve render varlıkları sonradan güncellenir (hash'i etkilemez).            |
+| `content_version_slides`   | sürüm, sıra, HTML belgesi, pano en/boy, render edilmiş varlık                                                                                                        | Slayt başına bir satır: D1'in 2 MB satır sınırına takılmamak ve render'ı gerçek FK yapmak için.       |
+| `jobs`                     | tür, durum, marka, içerik, payload, çıktı (`output`), hata, ilerleme (+ mesaj), öncelik, deneme / en fazla deneme, worker, kiralama, zamanlar                        | İşlerin tek doğru kaynağı. Oluşturma API'de, sonraki her geçiş Hub'da (aşağıda "İş kuyruğu").         |
+| `schedules`                | içerik, marka, platform, sosyal hesap, dondurulmuş sürüm + hash, UTC zaman, durum                                                                                    | İçerik + hesap başına tek etkin (`pending`/`publishing`) zamanlama.                                   |
+| `publish_logs`             | zamanlama, deneme no, durum, dış gönderi kimliği, hata, zamanlar                                                                                                     | Yazan yayın motoru (Faz 3); bu görevde yalnızca okuma.                                                |
+| `conversations`            | marka (isteğe bağlı), başlık, durum `active` / `archived`, `last_seq`, son etkinlik zamanı                                                                           | Silinmez, arşivlenir. Marka bir kez atanır, sonra değişmez.                                           |
+| `messages`                 | konuşma, rol `user` / `assistant` / `system`, durum `streaming` / `complete` / `failed` / `cancelled`, üreten tur, `parts` (JSON), `delta_seqs`, `client_message_id` | Tur başına tek asistan mesajı (kısmi benzersiz indeks). `client_message_id` konuşma içinde benzersiz. |
+| `agent_runs`               | konuşma, tetikleyen mesaj, `chat.turn` işi, durum, deneme, model, kullanım (JSON), hata, zamanlar                                                                    | Konuşma başına en fazla bir `queued`/`running` tur (kısmi benzersiz indeks).                          |
+| `conversation_events`      | konuşma, `seq`, tür, akış çerçevesi (JSON)                                                                                                                           | Canlı akışın kalıcı günlüğü; birincil anahtar `(conversation_id, seq)`.                               |
+| `conversation_aliases`     | konuşma, varlık, güncel takma ad (`alias`), takma adı getiren mesaj                                                                                                  | Konuşmada ad ve varlık ayrı ayrı benzersiz. Kimlik (`id`) yeniden adlandırmada değişmez.              |
+| `conversation_alias_names` | konuşma, ad, takma ad kimliği                                                                                                                                        | Konuşmada kullanılmış **her** ad (eski adlar dahil); birincil anahtar `(conversation_id, name)`.      |
+| `content_plans`            | marka, konuşma, öneren tur, başlık, dönem başı/sonu (`YYYY-MM-DD`), durum, özet, `revision`, karar zamanı, ret nedeni                                                | Durumlar `draft` → `proposed` → `accepted` / `rejected` / `superseded`.                               |
+| `plan_items`               | plan, sıra, tarih, platformlar, içerik türü, başlık, brif, sütun (pillar), görsel yuvası `none` / `user_upload` / `ai_generate`, durum, içerik, üretim işi           | Üretim durumu `jobs` tablosundan canlı okunur; `generation_status` yalnızca değişiklik tespiti için.  |
 
 ### İçerik durumları (PLAN.md §8)
 
@@ -48,21 +50,21 @@ draft ──► in_review ──► approved ──► scheduled ──► publi
 
 Tam liste ve şemalar: `GET /api/openapi.json`.
 
-| Kaynak          | Uçlar                                                                                                                                                                                                                 |
-| --------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Markalar        | `GET/POST /api/brands`, `GET/PATCH /api/brands/{id}`                                                                                                                                                                  |
-| Marka profili   | `GET/POST /api/brands/{brandId}/profiles`, `GET …/profiles/current`, `GET/PATCH …/profiles/{version}`, `POST …/profiles/{version}/approve`                                                                            |
-| Sosyal hesaplar | `GET/POST /api/social-accounts`, `GET/PATCH /api/social-accounts/{id}`                                                                                                                                                |
-| Varlıklar       | `GET /api/assets`, `POST /api/assets` (multipart: `file`, `brandId`, isteğe bağlı `kind`, `source`, `width`, `height`, `durationMs`), `GET /api/assets/{id}`, `GET /api/assets/{id}/content` (Range ve ETag destekli) |
-| İçerikler       | `GET/POST /api/contents`, `GET/PATCH/DELETE /api/contents/{id}`, `POST …/approve`, `POST …/transition`                                                                                                                |
-| Sürümler        | `GET/POST /api/contents/{id}/versions`, `GET/PATCH /api/contents/{id}/versions/{version}`                                                                                                                             |
-| İşler           | `GET/POST /api/jobs`, `GET /api/jobs/{id}`, `POST /api/jobs/{id}/cancel`, `GET /api/jobs/stream` (WebSocket, canlı izleme)                                                                                            |
-| Worker          | `GET /api/workers/presence` (Mac çevrimiçi mi, şu an çalışan işler, kuyruk uzunluğu); `GET /api/hub` (worker WebSocket'i, token ister)                                                                                |
-| Zamanlama       | `GET/POST /api/schedules`, `GET /api/schedules/{id}`, `POST …/cancel`, `GET …/logs`                                                                                                                                   |
-| Konuşmalar      | `GET/POST /api/conversations`, `GET/PATCH /api/conversations/{id}`, `GET/POST …/messages`, `POST …/messages/{messageId}/answer`, `GET …/runs`, `GET …/stream` (WebSocket)                                             |
-| Ajan turları    | `GET /api/agent-runs/{id}`, `POST /api/agent-runs/{id}/cancel`                                                                                                                                                        |
-| Planlar         | `GET /api/plans`, `GET/PATCH /api/plans/{id}`, `POST …/accept`, `POST …/reject`, `POST …/generate`                                                                                                                    |
-| Worker turu     | `POST /api/worker/runs/{runId}/start`, `GET …/context`, `POST …/ops`, `PUT …/plan`, `POST …/complete`, `POST …/fail` (worker token'ı ister)                                                                           |
+| Kaynak          | Uçlar                                                                                                                                                                                                                   |
+| --------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Markalar        | `GET/POST /api/brands`, `GET/PATCH /api/brands/{id}`                                                                                                                                                                    |
+| Marka profili   | `GET/POST /api/brands/{brandId}/profiles`, `GET …/profiles/current`, `GET/PATCH …/profiles/{version}`, `POST …/profiles/{version}/approve`                                                                              |
+| Sosyal hesaplar | `GET/POST /api/social-accounts`, `GET/PATCH /api/social-accounts/{id}`                                                                                                                                                  |
+| Varlıklar       | `GET /api/assets`, `POST /api/assets` (multipart: `file`, `brandId`, isteğe bağlı `kind`, `source`, `width`, `height`, `durationMs`), `GET /api/assets/{id}`, `GET /api/assets/{id}/content` (Range ve ETag destekli)   |
+| İçerikler       | `GET/POST /api/contents`, `GET/PATCH/DELETE /api/contents/{id}`, `POST …/approve`, `POST …/transition`                                                                                                                  |
+| Sürümler        | `GET/POST /api/contents/{id}/versions`, `GET/PATCH /api/contents/{id}/versions/{version}`                                                                                                                               |
+| İşler           | `GET/POST /api/jobs`, `GET /api/jobs/{id}`, `POST /api/jobs/{id}/cancel`, `GET /api/jobs/stream` (WebSocket, canlı izleme)                                                                                              |
+| Worker          | `GET /api/workers/presence` (Mac çevrimiçi mi, şu an çalışan işler, kuyruk uzunluğu); `GET /api/hub` (worker WebSocket'i, token ister)                                                                                  |
+| Zamanlama       | `GET/POST /api/schedules`, `GET /api/schedules/{id}`, `POST …/cancel`, `GET …/logs`                                                                                                                                     |
+| Konuşmalar      | `GET/POST /api/conversations`, `GET/PATCH /api/conversations/{id}`, `GET/POST …/messages`, `POST …/messages/{messageId}/answer`, `GET …/runs`, `GET …/stream` (WebSocket), `GET …/aliases`, `PATCH …/aliases/{aliasId}` |
+| Ajan turları    | `GET /api/agent-runs/{id}`, `POST /api/agent-runs/{id}/cancel`                                                                                                                                                          |
+| Planlar         | `GET /api/plans`, `GET/PATCH /api/plans/{id}`, `POST …/accept`, `POST …/reject`, `POST …/generate`                                                                                                                      |
+| Worker turu     | `POST /api/worker/runs/{runId}/start`, `GET …/context`, `POST …/ops`, `PUT …/plan`, `POST …/complete`, `POST …/fail` (worker token'ı ister)                                                                             |
 
 `/api/health` ve `/api/openapi.json` aynen duruyor. Yalnızca geliştirmede açık `/api/dev/*` uçları artık gerçek iş yolunun
 ince takma adları: `POST /api/dev/jobs/demo` bir `demo.echo` işini `POST /api/jobs` ile aynı şekilde D1'e yazar,
@@ -260,11 +262,103 @@ ek talimat). `POST /api/jobs` bu şemayı geriye uyumluluk için henüz zorlamı
 `parseContentGenerateJob(job)` ile okur (marka/içerik kimliklerini iş satırından tamamlar). İş durumları plan
 kartına `plan.updated` olarak yansır.
 
+## Görsel takma adları ve @anmalar (A2b)
+
+Sohbette eklenen her dosya konuşma içinde bir takma ad alır; kullanıcı metinde `@image-1` diye o dosyayı
+işaret eder. Şemalar ve yardımcılar: `packages/contract/src/chat-alias.ts`.
+
+### Kurallar
+
+- **Ad biçimi:** 1–40 karakter, `a-z`, `0-9` ve `-`; harfle başlar, `-` ile bitmez. Girdi küçük harfe
+  çevrilir (`Kapak` → `kapak`), yani karşılaştırma büyük/küçük harf duyarsızdır (`AttachmentAlias`).
+- **Otomatik ad:** görsel `image`, `image-1`, `image-2`, …; video `video…`, ses `audio…`, diğerleri `file…`
+  (mime türüne göre, `aliasBaseFor`). Her zaman o tabanın konuşmada **hiç kullanılmamış** en küçük adı
+  verilir. Adlar asla serbest kalmadığı için numara yalnızca ileri gider: yeniden adlandırılan ya da mesajı
+  silinen bir ekin adı başka bir dosyaya verilmez.
+- **Bir varlık, bir ad:** aynı varlık konuşmada tekrar eklenirse ilk adını korur (ek parçası aynı `aliasId`'yi
+  taşır). Ajanın `part.set` ile eklediği dosyalar da ad alır (ör. üretilen görsel `image-2`).
+- **İstenen ad:** `attachments: [{ assetId, alias? }]` ile istemci ad isteyebilir. Ad başka bir takma ada ait
+  ya da daha önce aitse `409 conflict`; varlığın zaten başka bir adı varsa (kendi eski/güncel adları hariç)
+  `409`. Aynı mesajda önce istenen adlar ayrılır, sonra otomatik adlar verilir. `attachmentAssetIds` aynen
+  çalışır; ikisi birlikte gönderilemez (`400`).
+- **Ek kuralı değişmedi:** yalnızca konuşmanın markasına ait var olan varlıklar; markasız konuşmada ek `400`.
+- **Yarışsızlık:** ayırma Hub'ın seri kuyruğunda, mesajla aynı D1 batch'inde yazılır; benzersiz indeksler
+  (ad, varlık, ad geçmişi) ikinci güvence.
+
+### @anmalar
+
+Kullanıcı mesajı kaydedilirken metindeki `@ad` parçaları konuşmanın takma adlarına (güncel ve eski adlar)
+çözülür ve `message.mentions` olarak saklanır; bilinmeyen `@ad` düz metin kalır ve listelenmez.
+
+- `@` metnin başında ya da boşluk/noktalama sonrasında olmalı: `a@image`, `x.y@image`, `…/@image` eşleşmez.
+- Ad, `@`'ten sonraki en uzun `A-Z a-z 0-9 -` dizisidir (sondaki `-` atılır): `@image-10` her zaman
+  `image-10`'dur, asla `image-1` + "0" değildir; `@image-100` (öyle bir ad yoksa) hiçbir şeye çözülmez.
+- Addan hemen sonra harf/rakam gelirse eşleşmez (`@imageım`); noktalama serbest: `@image,` `@image-1'i` `(@image)`.
+- Her geçiş ayrı listelenir (tekrarlar dahil), metin sırasıyla.
+- İstemci yazarken aynı sonucu `resolveAliasMentions(text, aliases)` ile vurgulayabilir; kaydedilen sunucunun sonucudur.
+
+### Biçim (wire format)
+
+```jsonc
+// POST /api/conversations/{id}/messages
+{ "text": "@image-1 görselini ürün postunda kullan, @image kapak olsun",
+  "attachments": [{ "assetId": "…" }, { "assetId": "…", "alias": "urun" }],   // ya da attachmentAssetIds
+  "clientMessageId": "ios-42" }
+
+// message.parts[] içindeki ek
+{ "type": "attachment", "assetId": "…", "kind": "image", "mimeType": "image/png", "width": 1080,
+  "height": 1350, "filename": "tarla.png", "alias": "image", "aliasId": "…" }
+
+// message.mentions[] (kullanıcı mesajında; diğer mesajlarda [])
+{ "alias": "image-1", "aliasId": "…", "assetId": "…", "start": 0, "end": 8 }
+
+// GET /api/conversations/{id}/aliases  → { "items": [ConversationAlias, …] } (eskiden yeniye, sayfasız)
+{ "id": "…", "conversationId": "…", "alias": "kapak", "previousAliases": ["image-1"], "assetId": "…",
+  "kind": "image", "mimeType": "image/png", "width": 1080, "height": 1350, "filename": "tarla.png",
+  "contentPath": "/api/assets/{assetId}/content", "messageId": "…", "createdAt": "…", "updatedAt": "…" }
+
+// PATCH /api/conversations/{id}/aliases/{aliasId}  { "alias": "kapak" }  → ConversationAlias
+```
+
+- `start`/`end` metin parçasındaki **UTF-16 kod birimi** konumlarıdır (JS dizgi indeksi; Swift'te
+  `NSRange` / `String.utf16`), `end` hariç; aralık `@` dahil adı kapsar. `alias` yazıldığı hâliyle (küçük
+  harf) addır; eski bir ad olabilir.
+- `alias`, `aliasId` (ek parçasında) ve `mentions` alanları şemada isteğe bağlıdır (eski kayıtlar için);
+  sunucu yeni yanıtlarda hep gönderir.
+
+### Yeniden adlandırma ve gösterim
+
+`PATCH …/aliases/{aliasId}` adı değiştirir; takma adın `id`'si aynı kalır, eski ad `previousAliases`'a geçer ve
+o takma ada ayrılmış kalır (yeni metinde hâlâ çözülür, başka dosyaya verilmez). Aynı ad: değişiklik yok (200).
+Başka bir takma adın güncel ya da eski adı: `409`. Takma ad kendi eski adına geri dönebilir.
+
+**Kayıtlı mesajlar değişmez** (metin, ek parçasındaki `alias`, mention'daki `alias`). İstemci gösterirken:
+ek parçası ve mention için `aliasId` ile konuşmanın takma ad listesinden **güncel adı** bulur; mention
+aralığındaki metni (`text.slice(start, end)`) `@` + güncel ad olarak çizer. `aliasId` bulunamazsa (eski
+istemci durumu) saklanan `alias` gösterilir.
+
+### Worker bağlamı
+
+`start` ve `GET …/context` yanıtındaki `TurnContext` artık `aliases` taşır: konuşmanın **tüm** takma adları
+(son 100 mesajın dışındakiler dahil), `ConversationAlias` alanları + `objectKey` (R2 anahtarı) ile
+(`TurnAlias`). `messages[].mentions[].aliasId` bu listeye çözülür; ajan yalnızca anılan görselleri
+`objectKey` ya da `contentPath` ile yükleyebilir.
+
+### Akış
+
+Yeni çerçeve türü **eklenmedi** (kendi bilmediği türü atan bir istemci `seq` boşluğu görüp sürekli yeniden
+bağlanırdı). Bunun yerine `conversation.updated` çerçevesine isteğe bağlı `aliases` alanı eklendi: bu
+değişiklikte eklenen ya da yeniden adlandırılan takma adlar (`id` ile upsert). Mesaj gönderiminde zaten
+giden `conversation.updated` bunu taşır; ajan ek eklediğinde ve yeniden adlandırmada ayrıca bir
+`conversation.updated` gider. `conversation.snapshot` tam listeyi `aliases` olarak taşır. Referans
+indirgeyici `state.aliases`'ı tutar (snapshot'tan alır, `conversation.updated.aliases` ile upsert eder).
+
 ## Migration
 
-Şema `src/db/schema.ts`. Migration SQL'leri `migrations/` altında (`0000_init`, `0001_core_model`, `0002_job_queue`, `0003_chat`).
+Şema `src/db/schema.ts`. Migration SQL'leri `migrations/` altında (`0000_init`, `0001_core_model`, `0002_job_queue`, `0003_chat`, `0004_attachment_aliases`).
 `0002` yalnızca `jobs` tablosuna sütun ve indeks ekler (tablo yeniden kurulmaz); yeni sütunların aralıkları API'de doğrulanır.
 `0003` yalnızca yeni tablolar ekler (konuşmalar, mesajlar, turlar, akış olayları, planlar, plan kalemleri).
+`0004` iki yeni tablo (`conversation_aliases`, `conversation_alias_names`) ve `messages.mentions` sütununu ekler (null = anma yok).
 
 ```sh
 pnpm --filter @studio/api db:generate --name <kisa_ad>      # şema değişince yeni migration üretir (çevrimdışı)
@@ -287,7 +381,9 @@ en fazla deneme, heartbeat, tekrarlanan mesajlar, iptal, kopukken üretilen sonu
 düzgün kapanış, canlı akış), `chat` (tam akış: mesaj → tur + iş → worker deltaları ve plan → istemci akışı
 sırayla → kabul → içerikler → üretim işleri; tek etkin tur, tur ortasında iptal, yinelenen/boşluklu delta,
 iptalden sonra yazma, yanlış marka eki, eşzamanlı mesaj, `after` ile devam ve Hub yeniden başlaması, soru cevabı,
-plan düzenleme/ret/geçersizleşme, iş kaybında tur durumu, worker token'ı).
+plan düzenleme/ret/geçersizleşme, iş kaybında tur durumu, worker token'ı), `aliases` (ayırma sırası, yeniden
+adlandırmadan sonra adın tekrar verilmemesi, istenen ad çakışmaları, eşzamanlı gönderim ve yeniden adlandırma,
+mention ayrıştırma, worker bağlamı ve akış).
 
 Elle deneme (API çalışırken, `pnpm dev`):
 

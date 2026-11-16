@@ -38,6 +38,11 @@ import {
   UserMessageResult,
 } from "./chat.ts";
 import {
+  ConversationAlias,
+  ConversationAliasList,
+  type ConversationAliasUpdate,
+} from "./chat-alias.ts";
+import {
   type ConversationStreamMessage,
   type ConversationStreamQuery,
   decodeConversationStreamMessage,
@@ -547,6 +552,29 @@ export function createApiClient(options: ApiClientOptions = {}) {
             QuestionAnswerResult,
             `/api/conversations/${enc(conversationId)}/messages/${enc(messageId)}/answer`,
             { method: "POST", json: input, init },
+          ),
+      },
+      aliases: {
+        /** Every attachment alias of the conversation, oldest first. */
+        list: (conversationId: string, init?: RequestInit) =>
+          call(ConversationAliasList, `/api/conversations/${enc(conversationId)}/aliases`, {
+            init,
+          }),
+        /**
+         * Rename an alias (by its stable id). 409 `conflict` when the name is
+         * or was used by another alias of the conversation. Stored messages
+         * keep their text; show names through `aliasId`.
+         */
+        rename: (
+          conversationId: string,
+          aliasId: string,
+          input: ConversationAliasUpdate,
+          init?: RequestInit,
+        ) =>
+          call(
+            ConversationAlias,
+            `/api/conversations/${enc(conversationId)}/aliases/${enc(aliasId)}`,
+            { method: "PATCH", json: input, init },
           ),
       },
       runs: (conversationId: string, query?: AgentRunListQuery, init?: RequestInit) =>

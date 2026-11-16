@@ -436,6 +436,8 @@ export const messages = sqliteTable(
     }),
     parts: text("parts", { mode: "json" }).$type<unknown[]>().notNull(),
     deltaSeqs: text("delta_seqs", { mode: "json" }).$type<number[]>().notNull(),
+    /** Resolved `@alias` mentions of a user message (contract MessageMention[]); null = none. */
+    mentions: text("mentions", { mode: "json" }).$type<unknown[]>(),
     /** Idempotency key of a user message (unique per conversation). */
     clientMessageId: text("client_message_id"),
     createdAt: createdAt(),
@@ -501,6 +503,62 @@ export const conversationEvents = sqliteTable(
   (t) => [
     primaryKey({ columns: [t.conversationId, t.seq] }),
     check("conversation_events_seq_check", sql`${t.seq} >= 1`),
+  ],
+);
+
+/**
+ * Attachment aliases (task A2b): one row per (conversation, asset), holding
+ * the current name. Written only in the Hub's serial queue, like messages.
+ */
+export const conversationAliases = sqliteTable(
+  "conversation_aliases",
+  {
+    /** Stable alias id (survives renames). */
+    id: text("id").primaryKey(),
+    conversationId: text("conversation_id")
+      .notNull()
+      .references(() => conversations.id, { onDelete: "cascade" }),
+    assetId: text("asset_id")
+      .notNull()
+      .references(() => assets.id),
+    /** Current name: lower-case, unique in the conversation. */
+    alias: text("alias").notNull(),
+    /** Message whose attachment introduced the alias. */
+    messageId: text("message_id").references((): AnySQLiteColumn => messages.id, {
+      onDelete: "set null",
+    }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    uniqueIndex("conversation_aliases_name_unique").on(t.conversationId, t.alias),
+    uniqueIndex("conversation_aliases_asset_unique").on(t.conversationId, t.assetId),
+    check(
+      "conversation_aliases_alias_check",
+      sql`length(${t.alias}) between 1 and 40 and ${t.alias} = lower(${t.alias})`,
+    ),
+  ],
+);
+
+/**
+ * Every name ever given to an alias of a conversation (current and earlier).
+ * The primary key makes a name unusable for any other asset, forever.
+ */
+export const conversationAliasNames = sqliteTable(
+  "conversation_alias_names",
+  {
+    conversationId: text("conversation_id")
+      .notNull()
+      .references(() => conversations.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    aliasId: text("alias_id")
+      .notNull()
+      .references(() => conversationAliases.id, { onDelete: "cascade" }),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.conversationId, t.name] }),
+    index("conversation_alias_names_alias_idx").on(t.aliasId),
   ],
 );
 

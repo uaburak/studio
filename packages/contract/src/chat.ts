@@ -2,6 +2,7 @@ import { z } from "zod";
 import { Asset, AssetKind } from "./asset.ts";
 import { Brand } from "./brand.ts";
 import { BrandProfile } from "./brand-profile.ts";
+import { AttachmentAlias, MessageMention, TurnAlias } from "./chat-alias.ts";
 import {
   EntityId,
   jsonWithin,
@@ -140,6 +141,14 @@ export const AttachmentPart = z
     width: z.number().int().nullable(),
     height: z.number().int().nullable(),
     filename: z.string().nullable(),
+    /**
+     * The attachment's alias in the conversation when the part was stored
+     * (`image`, `image-1`, ...). Display the current name: look `aliasId` up
+     * in the conversation's aliases. Absent on parts stored before aliases.
+     */
+    alias: z.string().optional(),
+    /** Stable alias id (see ConversationAlias). */
+    aliasId: EntityId.optional(),
   })
   .meta({ id: "AttachmentPart" });
 
@@ -251,9 +260,16 @@ export const TextPartInput = z
   })
   .meta({ id: "TextPartInput" });
 
-/** The asset must belong to the conversation's brand. */
+/**
+ * The asset must belong to the conversation's brand. It gets the next free
+ * alias unless it already has one or `alias` asks for a name.
+ */
 export const AttachmentPartInput = z
-  .object({ type: z.literal("attachment"), assetId: EntityId })
+  .object({
+    type: z.literal("attachment"),
+    assetId: EntityId,
+    alias: AttachmentAlias.optional(),
+  })
   .meta({ id: "AttachmentPartInput" });
 
 /** The plan must belong to the conversation (normally added by `PUT .../plan`). */
@@ -334,6 +350,12 @@ export const Message = z
     /** Agent run that produced the message (assistant messages); null for user messages. */
     runId: EntityId.nullable(),
     parts: z.array(MessagePart),
+    /**
+     * `@alias` references the server resolved in a user message's text part,
+     * in text order (repeats included). Always sent by the server (empty for
+     * assistant and system messages); optional for older stored events.
+     */
+    mentions: z.array(MessageMention).optional(),
     createdAt: Timestamp,
     updatedAt: Timestamp,
   })
@@ -346,6 +368,16 @@ export type MessageListQuery = z.input<typeof MessageListQuery>;
 /** Newest first (page backwards with `cursor`); reverse for display. */
 export const MessageList = pageOf(Message, "MessageList");
 export type MessageList = z.infer<typeof MessageList>;
+
+/** One attachment of a user message, optionally with the alias the owner chose. */
+export const UserMessageAttachment = z
+  .object({
+    assetId: EntityId,
+    /** Requested alias; omitted = next free one (`image`, `image-1`, ...). 409 if taken. */
+    alias: AttachmentAlias.optional(),
+  })
+  .meta({ id: "UserMessageAttachment" });
+export type UserMessageAttachment = z.input<typeof UserMessageAttachment>;
 
 export const UserMessageCreate = z
   .object({
@@ -362,15 +394,38 @@ export const UserMessageCreate = z
       .refine((ids) => new Set(ids).size === ids.length, "attachments must be unique")
       .default([]),
     /**
+     * Same as `attachmentAssetIds`, with an optional requested alias per
+     * attachment. Use one of the two fields, not both.
+     */
+    attachments: z
+      .array(UserMessageAttachment)
+      .max(MAX_ATTACHMENTS_PER_MESSAGE)
+      .refine(
+        (list) => new Set(list.map((a) => a.assetId)).size === list.length,
+        "attachments must be unique",
+      )
+      .refine((list) => {
+        const names = list.flatMap((a) => (a.alias ? [a.alias] : []));
+        return new Set(names).size === names.length;
+      }, "requested aliases must be unique")
+      .optional(),
+    /**
      * Client-generated idempotency key. Sending the same key again returns
      * the original message and run (`replayed: true`) instead of a second turn.
      */
     clientMessageId: z.string().min(1).max(128).optional(),
   })
   .refine(
-    (m) => (m.text !== undefined && m.text.length > 0) || m.attachmentAssetIds.length > 0,
+    (m) =>
+      (m.text !== undefined && m.text.length > 0) ||
+      m.attachmentAssetIds.length > 0 ||
+      (m.attachments?.length ?? 0) > 0,
     "a message needs text or at least one attachment",
   )
+  .refine((m) => !(m.attachmentAssetIds.length > 0 && (m.attachments?.length ?? 0) > 0), {
+    message: "use either attachmentAssetIds or attachments, not both",
+    path: ["attachments"],
+  })
   .meta({ id: "UserMessageCreate" });
 export type UserMessageCreate = z.input<typeof UserMessageCreate>;
 
@@ -518,6 +573,13 @@ export const TurnContext = z
     openPlan: Plan.nullable(),
     /** The run's assistant message so far (null before the first write). */
     assistantMessage: Message.nullable(),
+    /**
+     * Every alias of the conversation (oldest first, also those introduced
+     * before the last `TURN_CONTEXT_MESSAGES` messages), with asset metadata
+     * and R2 object key. Resolve `messages[].mentions[].aliasId` against it.
+     * Always sent by the server.
+     */
+    aliases: z.array(TurnAlias).optional(),
   })
   .meta({ id: "TurnContext" });
 export type TurnContext = z.infer<typeof TurnContext>;

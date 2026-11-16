@@ -30,6 +30,7 @@ Son güncelleme: 2026-11-16. Mimari ve kararlar için: [PLAN.md](PLAN.md).
 | A5 | Marka profili: marka kiti yükleme, post çekme, analiz | high | `apps/api`, `apps/worker` | A4'ten sonra; post çekme Meta uygulamasını bekliyor |
 | A6 | Yayın motoru: Meta girişi, token kasası, zamanlayıcı | xhigh | `apps/api` | Meta uygulamasını bekliyor |
 | A7 | Ortak Swift paketi (macOS + iOS): API istemcisi, modeller, canlı akış | xhigh | `apps/apple/StudioKit` | M1 içinde çalışıyor |
+| A2b | Görsel takma adları ve @anmalar (arka uç) | medium | `apps/api`, `packages/contract` | Tamam (denetlendi) |
 | M1 | Native macOS uygulaması: Wecra'da onaylanan altı ekran, açık ve koyu mod (Burak öne aldı) | xhigh | `apps/apple` | Çalışıyor |
 | A8 | Cloudflare'e dağıtım ve Access | high | `apps/api` | Burak'ın Cloudflare yetkilendirmesini bekliyor |
 

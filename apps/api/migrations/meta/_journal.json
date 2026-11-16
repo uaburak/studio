@@ -29,6 +29,13 @@
       "when": 1794829305737,
       "tag": "0003_chat",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1794830866458,
+      "tag": "0004_attachment_aliases",
+      "breakpoints": true
     }
   ]
 }

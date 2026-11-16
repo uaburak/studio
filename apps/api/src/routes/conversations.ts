@@ -4,6 +4,9 @@ import {
   AgentRunList,
   AgentRunListQuery,
   Conversation,
+  ConversationAlias,
+  ConversationAliasList,
+  ConversationAliasUpdate,
   ConversationCreate,
   ConversationList,
   ConversationListQuery,
@@ -19,9 +22,9 @@ import {
 } from "@studio/contract";
 import { and, desc, eq, inArray, lt, or, type SQL } from "drizzle-orm";
 import { runChat } from "../chat/command.ts";
-import { conversationView, requireConversation } from "../chat/read.ts";
+import { conversationView, loadAliases, requireConversation } from "../chat/read.ts";
 import { createDb } from "../db/client.ts";
-import { toAgentRun, toConversation, toMessage } from "../db/mappers.ts";
+import { toAgentRun, toConversation, toConversationAlias, toMessage } from "../db/mappers.ts";
 import { agentRuns, conversations, messages } from "../db/schema.ts";
 import { badRequest, conflict, zodIssues } from "../lib/errors.ts";
 import { newId } from "../lib/ids.ts";
@@ -32,6 +35,7 @@ import { hubStub } from "./jobs.ts";
 
 const tags = ["Conversations"];
 const MessageParams = z.object({ id: EntityId, messageId: EntityId });
+const AliasParams = z.object({ id: EntityId, aliasId: EntityId });
 
 export const conversationRoutes = createRouter();
 
@@ -243,8 +247,10 @@ conversationRoutes
         "Stores the message, creates an agent run and a `chat.turn` job (dispatched to the Mac " +
         "worker now or when it connects). 409 `conflict` while another run of the conversation " +
         "is queued or running, or when the conversation is archived. Attachments must be " +
-        "existing assets of the conversation's brand. With a repeated `clientMessageId` the " +
-        "original message and run come back (200, `replayed: true`).",
+        "existing assets of the conversation's brand. Each attachment gets a conversation alias " +
+        "(`image`, `image-1`, ...; or the one requested in `attachments[].alias`, 409 if taken) " +
+        "and `@alias` tokens in the text are resolved into `message.mentions`. With a repeated " +
+        "`clientMessageId` the original message and run come back (200, `replayed: true`).",
       request: { params: IdParams, body: jsonBody(UserMessageCreate) },
       responses: {
         200: json(UserMessageResult, "Replayed (same clientMessageId)."),
@@ -291,6 +297,56 @@ conversationRoutes
         input: c.req.valid("json"),
       });
       return c.json(QuestionAnswerResult.parse(result), 200);
+    },
+  )
+  .openapi(
+    createRoute({
+      method: "get",
+      path: "/api/conversations/{id}/aliases",
+      tags,
+      summary: "List attachment aliases (oldest first, not paginated)",
+      description:
+        "Every alias of the conversation with its asset metadata, a path that streams the file " +
+        "(`contentPath`), earlier names (`previousAliases`) and the message that introduced it.",
+      request: { params: IdParams },
+      responses: { 200: json(ConversationAliasList, "The aliases."), 404: errors[404] },
+    }),
+    async (c) => {
+      const { id } = c.req.valid("param");
+      const db = createDb(c.env.DB);
+      await requireConversation(db, id);
+      const items = (await loadAliases(db, id)).map(toConversationAlias);
+      return c.json({ items }, 200);
+    },
+  )
+  .openapi(
+    createRoute({
+      method: "patch",
+      path: "/api/conversations/{id}/aliases/{aliasId}",
+      tags,
+      summary: "Rename an attachment alias",
+      description:
+        "The alias keeps its id; its old name stays reserved for it (it still resolves in new " +
+        "text and is never given to another attachment). 409 `conflict` when the name is or was " +
+        "used by another alias of the conversation. Stored messages keep their text: clients " +
+        "show the current name by looking up `aliasId` of mentions and attachment parts.",
+      request: { params: AliasParams, body: jsonBody(ConversationAliasUpdate) },
+      responses: {
+        200: json(ConversationAlias, "Renamed (or unchanged)."),
+        400: errors[400],
+        404: errors[404],
+        409: errors[409],
+      },
+    }),
+    async (c) => {
+      const { id, aliasId } = c.req.valid("param");
+      const result = await runChat(c.env, {
+        kind: "renameAlias",
+        conversationId: id,
+        aliasId,
+        input: c.req.valid("json"),
+      });
+      return c.json(ConversationAlias.parse(result), 200);
     },
   )
   .openapi(

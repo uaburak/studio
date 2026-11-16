@@ -1,8 +1,12 @@
 import {
   type AgentRun,
   type AttachmentPart,
+  aliasBaseFor,
+  autoAlias,
   ContentGeneratePayload,
   type Conversation,
+  type ConversationAlias,
+  type ConversationAliasUpdate,
   ConversationEvent,
   type ConversationUpdate,
   checkPlanPeriod,
@@ -32,6 +36,7 @@ import {
   type RunComplete,
   type RunFail,
   type RunUsage,
+  resolveAliasMentions,
   type TurnContext,
   type TurnOps,
   type TurnWriteResult,
@@ -45,6 +50,8 @@ import type { z } from "zod";
 import type { Db } from "../db/client.ts";
 import {
   type AgentRunRow,
+  type AliasRecord,
+  type AssetRow,
   type ConversationRow,
   type JobRow,
   type MessageRow,
@@ -52,6 +59,7 @@ import {
   type PlanRow,
   toAgentRun,
   toConversation,
+  toConversationAlias,
   toJob,
   toMessage,
   toPlan,
@@ -65,6 +73,8 @@ import {
   contentPlans,
   contents,
   contentVersions,
+  conversationAliases,
+  conversationAliasNames,
   conversationEvents,
   conversations,
   jobs,
@@ -76,6 +86,7 @@ import { newId } from "../lib/ids.ts";
 import {
   activeRunOf,
   assistantMessageOf,
+  loadAliases,
   loadPlan,
   plansWithItems,
   requireConversation,
@@ -116,7 +127,13 @@ export type ChatCommand =
   | { kind: "applyOps"; runId: string; input: z.output<typeof TurnOps> }
   | { kind: "putPlan"; runId: string; input: z.output<typeof PlanProposalPut> }
   | { kind: "completeRun"; runId: string; input: z.output<typeof RunComplete> }
-  | { kind: "failRun"; runId: string; input: z.output<typeof RunFail> };
+  | { kind: "failRun"; runId: string; input: z.output<typeof RunFail> }
+  | {
+      kind: "renameAlias";
+      conversationId: string;
+      aliasId: string;
+      input: z.output<typeof ConversationAliasUpdate>;
+    };
 
 export interface ChatResults {
   updateConversation: Conversation;
@@ -132,6 +149,7 @@ export interface ChatResults {
   putPlan: PlanProposalResult;
   completeRun: AgentRun;
   failRun: AgentRun;
+  renameAlias: ConversationAlias;
 }
 
 /** What the Hub must do after a committed change. */
@@ -280,12 +298,13 @@ function messageRowView(row: MessageRow): Message {
   return toMessage(row);
 }
 
-async function attachmentParts(
+/** The assets of attachments, in order, after the existence and brand checks. */
+async function attachmentAssets(
   db: Db,
   conv: ConversationRow,
   ids: readonly string[],
   pathOf: (index: number) => string,
-): Promise<AttachmentPart[]> {
+): Promise<AssetRow[]> {
   if (ids.length === 0) return [];
   if (!conv.brandId) {
     throw badRequest("this conversation has no brand yet; set one before attaching files", [
@@ -304,34 +323,191 @@ async function attachmentParts(
         { path: pathOf(i), message: "asset must belong to the conversation's brand" },
       ]);
     }
-    return {
-      type: "attachment",
-      assetId: asset.id,
-      kind: asset.kind,
-      mimeType: asset.mimeType,
-      width: asset.width,
-      height: asset.height,
-      filename: asset.originalFilename,
-    };
+    return asset;
   });
+}
+
+function attachmentPart(asset: AssetRow, alias: AliasRecord): AttachmentPart {
+  return {
+    type: "attachment",
+    assetId: asset.id,
+    kind: asset.kind,
+    mimeType: asset.mimeType,
+    width: asset.width,
+    height: asset.height,
+    filename: asset.originalFilename,
+    alias: alias.row.alias,
+    aliasId: alias.row.id,
+  };
+}
+
+// --- attachment aliases -----------------------------------------------------------------
+
+/**
+ * A conversation's aliases during one change. Allocation happens in memory
+ * (inside the Hub's serial queue, so nothing else allocates meanwhile);
+ * `flush` adds the inserts/updates to the change after the message rows they
+ * reference. A name is taken when any alias has ever had it, so names are
+ * never reused; auto names take the lowest free `base`, `base-1`, ... which
+ * only ever grows because names are never released.
+ */
+class AliasBook {
+  private readonly stmts: BatchItem<"sqlite">[] = [];
+  private readonly touched = new Map<string, AliasRecord>();
+  /** name -> alias id, every name ever used in the conversation. */
+  private readonly owners = new Map<string, string>();
+
+  private constructor(
+    private readonly conversationId: string,
+    private readonly records: AliasRecord[],
+  ) {
+    for (const r of records) for (const n of r.names) this.owners.set(n, r.row.id);
+  }
+
+  static async load(db: Db, conversationId: string): Promise<AliasBook> {
+    return new AliasBook(conversationId, await loadAliases(db, conversationId));
+  }
+
+  byId(id: string): AliasRecord | undefined {
+    return this.records.find((r) => r.row.id === id);
+  }
+
+  /** For mention resolution: current and previous names of every alias. */
+  targets() {
+    return this.records.map((r) => ({
+      id: r.row.id,
+      alias: r.row.alias,
+      previousAliases: r.names.filter((n) => n !== r.row.alias),
+      assetId: r.asset.id,
+    }));
+  }
+
+  /**
+   * The asset's alias, created when it has none. `requested` must be free (or
+   * one of the asset's own names when it already has an alias).
+   */
+  ensure(
+    change: Change,
+    asset: AssetRow,
+    messageId: string,
+    requested: string | undefined,
+    path: string,
+  ): AliasRecord {
+    const existing = this.records.find((r) => r.asset.id === asset.id);
+    if (existing) {
+      if (requested !== undefined && !existing.names.includes(requested)) {
+        throw conflict(
+          `${path}: asset ${asset.id} already has the alias @${existing.row.alias} in this conversation; rename it instead`,
+        );
+      }
+      return existing;
+    }
+    let name: string;
+    if (requested !== undefined) {
+      if (this.owners.has(requested)) {
+        throw conflict(`${path}: the alias @${requested} is already used in this conversation`);
+      }
+      name = requested;
+    } else {
+      const base = aliasBaseFor(asset.mimeType);
+      let n = 0;
+      while (this.owners.has(autoAlias(base, n))) n++;
+      name = autoAlias(base, n);
+    }
+    const record: AliasRecord = {
+      row: {
+        id: newId(),
+        conversationId: this.conversationId,
+        assetId: asset.id,
+        alias: name,
+        messageId,
+        createdAt: change.now,
+        updatedAt: change.now,
+      },
+      asset,
+      names: [name],
+    };
+    this.records.push(record);
+    this.owners.set(name, record.row.id);
+    this.touched.set(record.row.id, record);
+    this.stmts.push(change.db.insert(conversationAliases).values(record.row));
+    this.stmts.push(
+      change.db.insert(conversationAliasNames).values({
+        conversationId: this.conversationId,
+        name,
+        aliasId: record.row.id,
+        createdAt: change.now,
+      }),
+    );
+    return record;
+  }
+
+  /** Rename; false when the name is already the current one. */
+  rename(change: Change, record: AliasRecord, name: string): boolean {
+    if (record.row.alias === name) return false;
+    const owner = this.owners.get(name);
+    if (owner !== undefined && owner !== record.row.id) {
+      throw conflict(`the alias @${name} is already used in this conversation`);
+    }
+    if (owner === undefined) {
+      this.owners.set(name, record.row.id);
+      record.names.push(name);
+      this.stmts.push(
+        change.db.insert(conversationAliasNames).values({
+          conversationId: this.conversationId,
+          name,
+          aliasId: record.row.id,
+          createdAt: change.now,
+        }),
+      );
+    }
+    record.row = { ...record.row, alias: name, updatedAt: change.now };
+    this.touched.set(record.row.id, record);
+    this.stmts.push(
+      change.db
+        .update(conversationAliases)
+        .set({ alias: name, updatedAt: change.now })
+        .where(eq(conversationAliases.id, record.row.id)),
+    );
+    return true;
+  }
+
+  /** Aliases added or renamed in this change (for `conversation.updated.aliases`). */
+  changed(): ConversationAlias[] {
+    return [...this.touched.values()].map(toConversationAlias);
+  }
+
+  /** Add the pending writes to the change (after the rows they reference). */
+  flush(change: Change): void {
+    for (const stmt of this.stmts.splice(0)) change.add(stmt);
+  }
 }
 
 /** Turn a validated part input into the stored part (lookups and brand checks included). */
 async function buildPart(
-  db: Db,
+  change: Change,
   conv: ConversationRow,
   input: z.output<typeof MessagePartInput>,
   path: string,
+  aliases: { book: () => Promise<AliasBook>; messageId: string },
 ): Promise<MessagePart> {
+  const { db } = change;
   switch (input.type) {
     case "text":
     case "progress":
     case "error":
       return input;
     case "attachment": {
-      const [part] = await attachmentParts(db, conv, [input.assetId], () => `${path}.assetId`);
-      if (!part) throw new Error("attachment lookup returned nothing");
-      return part;
+      const [asset] = await attachmentAssets(db, conv, [input.assetId], () => `${path}.assetId`);
+      if (!asset) throw new Error("attachment lookup returned nothing");
+      const alias = (await aliases.book()).ensure(
+        change,
+        asset,
+        aliases.messageId,
+        input.alias,
+        `${path}.alias`,
+      );
+      return attachmentPart(asset, alias);
     }
     case "plan_proposal": {
       const plan = await db.query.contentPlans.findFirst({
@@ -488,6 +664,7 @@ async function finishRun(change: Change, run: AgentRunRow, outcome: RunOutcome):
       runId: run.id,
       parts: [errorPart],
       deltaSeqs: [0],
+      mentions: null,
       clientMessageId: null,
       createdAt: now,
       updatedAt: now,
@@ -511,6 +688,7 @@ async function assistantDraft(change: Change, run: AgentRunRow) {
     runId: run.id,
     parts: [],
     deltaSeqs: [],
+    mentions: null,
     clientMessageId: null,
     createdAt: change.now,
     updatedAt: change.now,
@@ -658,6 +836,8 @@ export async function executeChat(
       return completeRun(change, command.runId, command.input);
     case "failRun":
       return failRun(change, command.runId, command.input);
+    case "renameAlias":
+      return renameAlias(change, command.conversationId, command.aliasId, command.input);
   }
 }
 
@@ -727,30 +907,51 @@ async function sendUserMessage(
     );
   }
 
+  const attachments =
+    input.attachments ?? input.attachmentAssetIds.map((assetId) => ({ assetId, alias: undefined }));
+  const field = input.attachments ? "attachments" : "attachmentAssetIds";
+  const assetRows = await attachmentAssets(
+    db,
+    conv,
+    attachments.map((a) => a.assetId),
+    (i) => (input.attachments ? `attachments.${i}.assetId` : `attachmentAssetIds.${i}`),
+  );
+  const messageId = newId();
+  const book = await AliasBook.load(db, conversationId);
+  // Requested names first, so an auto name never takes a name asked for in the same message.
+  const records: AliasRecord[] = new Array(attachments.length);
+  for (const pass of ["requested", "auto"] as const) {
+    for (const [i, a] of attachments.entries()) {
+      const asset = assetRows[i];
+      if (!asset || (a.alias !== undefined) !== (pass === "requested")) continue;
+      records[i] = book.ensure(change, asset, messageId, a.alias, `${field}.${i}.alias`);
+    }
+  }
+
   const parts: MessagePart[] = [];
   if (input.text) parts.push({ type: "text", text: input.text });
-  parts.push(
-    ...(await attachmentParts(
-      db,
-      conv,
-      input.attachmentAssetIds,
-      (i) => `attachmentAssetIds.${i}`,
-    )),
-  );
+  for (const [i, asset] of assetRows.entries()) {
+    const alias = records[i];
+    if (!alias) throw new Error("alias allocation skipped an attachment");
+    parts.push(attachmentPart(asset, alias));
+  }
+  const mentions = input.text ? resolveAliasMentions(input.text, book.targets()) : [];
 
   const message: MessageRow = {
-    id: newId(),
+    id: messageId,
     conversationId,
     role: "user",
     status: "complete",
     runId: null,
     parts,
     deltaSeqs: parts.map(() => 0),
+    mentions: mentions.length > 0 ? mentions : null,
     clientMessageId: input.clientMessageId ?? null,
     createdAt: now,
     updatedAt: now,
   };
   change.add(db.insert(messages).values(message));
+  book.flush(change);
   change.emit(conversationId, { type: "message.created", message: messageRowView(message) });
   const run = startTurn(change, conv, message.id);
 
@@ -760,12 +961,14 @@ async function sendUserMessage(
       db.update(conversations).set({ title, updatedAt: now }).where(eq(conversations.id, conv.id)),
     );
   }
+  const newAliases = book.changed();
   change.emit(conversationId, {
     type: "conversation.updated",
     conversation: convView(
       { ...conv, title, updatedAt: title !== conv.title ? now : conv.updatedAt },
       run.id,
     ),
+    ...(newAliases.length > 0 ? { aliases: newAliases } : {}),
   });
   await change.commit();
   return { message: messageRowView(message), run: toAgentRun(run), replayed: false };
@@ -896,6 +1099,12 @@ async function applyOps(
   const parts = [...(row.parts as MessagePart[])];
   const seqs = [...row.deltaSeqs];
   let changed = created;
+  // Loaded only when the batch attaches something (most batches are text deltas).
+  let book: AliasBook | undefined;
+  const loadBook = async () => {
+    book ??= await AliasBook.load(db, conv.id);
+    return book;
+  };
 
   for (const [n, op] of input.ops.entries()) {
     const at = `ops.${n}`;
@@ -941,7 +1150,10 @@ async function applyOps(
       continue;
     }
 
-    const part = await buildPart(db, conv, op.part, `${at}.part`);
+    const part = await buildPart(change, conv, op.part, `${at}.part`, {
+      book: loadBook,
+      messageId: row.id,
+    });
     if (part.type === "question") {
       const clash = parts.some(
         (p, i) => i !== op.index && p.type === "question" && p.questionId === part.questionId,
@@ -980,6 +1192,15 @@ async function applyOps(
   };
   if (changed) {
     persistMessage(change, next, created);
+    book?.flush(change);
+    const newAliases = book?.changed() ?? [];
+    if (newAliases.length > 0) {
+      change.emit(conv.id, {
+        type: "conversation.updated",
+        conversation: convView(conv, run.id),
+        aliases: newAliases,
+      });
+    }
     await change.commit();
   }
   return { run: toAgentRun(run), message: messageRowView(next) };
@@ -1445,6 +1666,30 @@ async function generatePlan(
     await change.commit();
   }
   return { plan: await loadPlan(db, planId), jobs: created.map((j): Job => toJob(j)) };
+}
+
+async function renameAlias(
+  change: Change,
+  conversationId: string,
+  aliasId: string,
+  input: z.output<typeof ConversationAliasUpdate>,
+): Promise<ConversationAlias> {
+  const { db } = change;
+  const conv = await requireConversation(db, conversationId);
+  const book = await AliasBook.load(db, conversationId);
+  const record = book.byId(aliasId);
+  if (!record) throw notFound(`conversation ${conversationId} alias`, aliasId);
+  if (book.rename(change, record, input.alias)) {
+    book.flush(change);
+    const active = await activeRunOf(db, conversationId);
+    change.emit(conversationId, {
+      type: "conversation.updated",
+      conversation: convView(conv, active?.id ?? null),
+      aliases: book.changed(),
+    });
+    await change.commit();
+  }
+  return toConversationAlias(record);
 }
 
 // --- job hooks (called by the Hub after every job change) ----------------------------------

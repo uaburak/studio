@@ -407,6 +407,8 @@ describe("happy path", () => {
         width: null,
         height: null,
         filename: "tarla.png",
+        alias: "image",
+        aliasId: expect.any(String),
       },
     ]);
     expect(sent.run).toMatchObject({
