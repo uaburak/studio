@@ -11,10 +11,13 @@ import { assetRoutes } from "./routes/assets.ts";
 import { brandProfileRoutes } from "./routes/brand-profiles.ts";
 import { brandRoutes } from "./routes/brands.ts";
 import { contentRoutes } from "./routes/contents.ts";
+import { conversationRoutes } from "./routes/conversations.ts";
 import { hubRoutes } from "./routes/hub.ts";
 import { createJob, hubStub, jobRoutes } from "./routes/jobs.ts";
+import { agentRunRoutes, planRoutes } from "./routes/plans.ts";
 import { scheduleRoutes } from "./routes/schedules.ts";
 import { socialAccountRoutes } from "./routes/social-accounts.ts";
+import { workerRunRoutes } from "./routes/worker-runs.ts";
 import { API_VERSION } from "./version.ts";
 
 const app = createRouter();
@@ -70,6 +73,13 @@ app.route("/", contentRoutes);
 app.route("/", jobRoutes);
 app.route("/", scheduleRoutes);
 app.route("/", hubRoutes); // /api/hub (worker WebSocket), /api/workers/presence
+
+// --- Chat (A2): conversations, agent runs, plans, the worker's turn API -------------
+
+app.route("/", conversationRoutes);
+app.route("/", agentRunRoutes);
+app.route("/", planRoutes);
+app.route("/", workerRunRoutes); // /api/worker/* (worker token)
 
 // --- GET /api/openapi.json --------------------------------------------------
 

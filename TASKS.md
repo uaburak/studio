@@ -24,12 +24,13 @@ Son güncelleme: 2026-11-16. Mimari ve kararlar için: [PLAN.md](PLAN.md).
 | No | Görev | Efor | Klasör | Durum |
 |---|---|---|---|---|
 | A1 | Tasarım kiti (F1-2) | xhigh | `packages/design-kit` | Çalışıyor |
-| A2 | Sohbet altyapısı: konuşma, mesaj, ajan turu ve plan kayıtları; API ve canlı akış | high | `apps/api`, `packages/contract` | Çalışıyor |
+| A2 | Sohbet altyapısı: konuşma, mesaj, ajan turu ve plan kayıtları; API ve canlı akış | high | `apps/api`, `packages/contract` | Tamam (denetlendi) |
 | A3 | Başsız Claude çağrısının abonelikle doğrulanması | | `spikes/design-render` | Burak'ın `claude auth login` yapmasını bekliyor |
 | A4 | Worker üretim hattı: sohbet ajanı, aylık plan, post üretimi, kalite döngüsü, render, yükleme | xhigh | `apps/worker` | A1, A2, A3'ü bekliyor |
 | A5 | Marka profili: marka kiti yükleme, post çekme, analiz | high | `apps/api`, `apps/worker` | A4'ten sonra; post çekme Meta uygulamasını bekliyor |
 | A6 | Yayın motoru: Meta girişi, token kasası, zamanlayıcı | xhigh | `apps/api` | Meta uygulamasını bekliyor |
-| A7 | Ortak Swift paketi (macOS + iOS): API istemcisi, modeller, canlı akış; arayüz yok | high | `apps/apple/StudioKit` | A2'den sonra |
+| A7 | Ortak Swift paketi (macOS + iOS): API istemcisi, modeller, canlı akış | xhigh | `apps/apple/StudioKit` | M1 içinde çalışıyor |
+| M1 | Native macOS uygulaması: Wecra'da onaylanan altı ekran, açık ve koyu mod (Burak öne aldı) | xhigh | `apps/apple` | Çalışıyor |
 | A8 | Cloudflare'e dağıtım ve Access | high | `apps/api` | Burak'ın Cloudflare yetkilendirmesini bekliyor |
 
 Durdurulan: F4-1 iOS ekranları (arayüz işi; yarım kalan kod `apps/ios` altında, commit edilmedi). Ağ katmanı A7'de yeniden ele alınacak.

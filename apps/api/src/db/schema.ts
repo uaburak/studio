@@ -41,6 +41,14 @@ export const ENUMS = {
   jobStatus: ["queued", "running", "succeeded", "failed", "cancelled"],
   scheduleStatus: ["pending", "publishing", "published", "failed", "cancelled"],
   publishLogStatus: ["started", "succeeded", "failed"],
+  // --- chat (A2) ---
+  conversationStatus: ["active", "archived"],
+  messageRole: ["user", "assistant", "system"],
+  messageStatus: ["streaming", "complete", "failed", "cancelled"],
+  agentRunStatus: ["queued", "running", "completed", "failed", "cancelled"],
+  planStatus: ["draft", "proposed", "accepted", "rejected", "superseded"],
+  planItemStatus: ["planned", "accepted", "skipped"],
+  imageSlot: ["none", "user_upload", "ai_generate"],
 } as const;
 
 /** `col in ('a', 'b')` for CHECK constraints (values are constants above, never input). */
@@ -378,5 +386,195 @@ export const publishLogs = sqliteTable(
   (t) => [
     uniqueIndex("publish_logs_schedule_attempt_unique").on(t.scheduleId, t.attempt),
     check("publish_logs_status_check", oneOf(t.status, ENUMS.publishLogStatus)),
+  ],
+);
+
+// --- chat (task A2): conversations, messages, agent runs, stream events ---------------
+// All writes to these tables happen inside the Hub Durable Object's serial
+// queue (src/chat/service.ts), so check-then-write sequences cannot race and
+// stream sequence numbers are assigned without gaps. Every change is written
+// together with its stream event(s) in one D1 batch (a transaction).
+
+export const conversations = sqliteTable(
+  "conversations",
+  {
+    id: text("id").primaryKey(),
+    brandId: text("brand_id").references(() => brands.id),
+    title: text("title").notNull().default(""),
+    status: text("status", { enum: ENUMS.conversationStatus }).notNull().default("active"),
+    /** Seq of the last event in conversation_events (0 = none). */
+    lastSeq: integer("last_seq").notNull().default(0),
+    lastActivityAt: integer("last_activity_at", { mode: "timestamp_ms" }).notNull(),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    index("conversations_activity_idx").on(t.lastActivityAt, t.id),
+    index("conversations_brand_activity_idx").on(t.brandId, t.lastActivityAt, t.id),
+    check("conversations_status_check", oneOf(t.status, ENUMS.conversationStatus)),
+    check("conversations_last_seq_check", sql`${t.lastSeq} >= 0`),
+  ],
+);
+
+/**
+ * Parts are one JSON array per message (typed by the contract's MessagePart
+ * union): a message is always read and written as a whole, and the Hub
+ * serialises writes, so appending a text delta is a read-modify-write of one
+ * row. `delta_seqs[i]` is the last applied text-delta seq of part i.
+ */
+export const messages = sqliteTable(
+  "messages",
+  {
+    id: text("id").primaryKey(),
+    conversationId: text("conversation_id")
+      .notNull()
+      .references(() => conversations.id, { onDelete: "cascade" }),
+    role: text("role", { enum: ENUMS.messageRole }).notNull(),
+    status: text("status", { enum: ENUMS.messageStatus }).notNull(),
+    runId: text("run_id").references((): AnySQLiteColumn => agentRuns.id, {
+      onDelete: "set null",
+    }),
+    parts: text("parts", { mode: "json" }).$type<unknown[]>().notNull(),
+    deltaSeqs: text("delta_seqs", { mode: "json" }).$type<number[]>().notNull(),
+    /** Idempotency key of a user message (unique per conversation). */
+    clientMessageId: text("client_message_id"),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    index("messages_conversation_idx").on(t.conversationId, t.id),
+    uniqueIndex("messages_client_id_unique").on(t.conversationId, t.clientMessageId),
+    // One assistant message per run.
+    uniqueIndex("messages_run_assistant_unique").on(t.runId).where(sql`${t.role} = 'assistant'`),
+    check("messages_role_check", oneOf(t.role, ENUMS.messageRole)),
+    check("messages_status_check", oneOf(t.status, ENUMS.messageStatus)),
+  ],
+);
+
+export const agentRuns = sqliteTable(
+  "agent_runs",
+  {
+    id: text("id").primaryKey(),
+    conversationId: text("conversation_id")
+      .notNull()
+      .references(() => conversations.id, { onDelete: "cascade" }),
+    triggerMessageId: text("trigger_message_id")
+      .notNull()
+      .references((): AnySQLiteColumn => messages.id, { onDelete: "cascade" }),
+    jobId: text("job_id").references(() => jobs.id, { onDelete: "set null" }),
+    status: text("status", { enum: ENUMS.agentRunStatus }).notNull().default("queued"),
+    /** Worker attempt that currently writes (0 until started). */
+    attempt: integer("attempt").notNull().default(0),
+    model: text("model"),
+    usage: text("usage", { mode: "json" }).$type<Record<string, unknown>>(),
+    error: text("error"),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+    startedAt: integer("started_at", { mode: "timestamp_ms" }),
+    finishedAt: integer("finished_at", { mode: "timestamp_ms" }),
+  },
+  (t) => [
+    index("agent_runs_conversation_idx").on(t.conversationId, t.id),
+    index("agent_runs_job_idx").on(t.jobId),
+    // At most one queued/running run per conversation.
+    uniqueIndex("agent_runs_active_unique")
+      .on(t.conversationId)
+      .where(sql`${t.status} in ('queued', 'running')`),
+    check("agent_runs_status_check", oneOf(t.status, ENUMS.agentRunStatus)),
+    check("agent_runs_attempt_check", sql`${t.attempt} >= 0`),
+  ],
+);
+
+/** The conversation stream's durable log: replayed on resume (`?after=`). */
+export const conversationEvents = sqliteTable(
+  "conversation_events",
+  {
+    conversationId: text("conversation_id")
+      .notNull()
+      .references(() => conversations.id, { onDelete: "cascade" }),
+    seq: integer("seq").notNull(),
+    type: text("type").notNull(),
+    /** The stream frame without `seq`. */
+    data: text("data", { mode: "json" }).$type<Record<string, unknown>>().notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.conversationId, t.seq] }),
+    check("conversation_events_seq_check", sql`${t.seq} >= 1`),
+  ],
+);
+
+// --- content plans ---------------------------------------------------------------------
+
+export const contentPlans = sqliteTable(
+  "content_plans",
+  {
+    id: text("id").primaryKey(),
+    brandId: text("brand_id")
+      .notNull()
+      .references(() => brands.id),
+    conversationId: text("conversation_id").references(() => conversations.id, {
+      onDelete: "set null",
+    }),
+    runId: text("run_id").references(() => agentRuns.id, { onDelete: "set null" }),
+    title: text("title").notNull().default(""),
+    /** Inclusive `YYYY-MM-DD` dates. */
+    periodStart: text("period_start").notNull(),
+    periodEnd: text("period_end").notNull(),
+    status: text("status", { enum: ENUMS.planStatus }).notNull(),
+    summary: text("summary").notNull().default(""),
+    revision: integer("revision").notNull().default(1),
+    decidedAt: integer("decided_at", { mode: "timestamp_ms" }),
+    rejectionReason: text("rejection_reason"),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    index("content_plans_conversation_idx").on(t.conversationId, t.id),
+    index("content_plans_brand_idx").on(t.brandId, t.id),
+    index("content_plans_status_idx").on(t.status, t.id),
+    check("content_plans_status_check", oneOf(t.status, ENUMS.planStatus)),
+    check("content_plans_period_check", sql`${t.periodStart} <= ${t.periodEnd}`),
+    check("content_plans_revision_check", sql`${t.revision} >= 1`),
+  ],
+);
+
+export const planItems = sqliteTable(
+  "plan_items",
+  {
+    id: text("id").primaryKey(),
+    planId: text("plan_id")
+      .notNull()
+      .references(() => contentPlans.id, { onDelete: "cascade" }),
+    position: integer("position").notNull(),
+    date: text("date"),
+    platforms: text("platforms", { mode: "json" })
+      .$type<Array<(typeof ENUMS.platform)[number]>>()
+      .notNull(),
+    contentType: text("content_type", { enum: ENUMS.contentType }).notNull(),
+    title: text("title").notNull(),
+    brief: text("brief").notNull().default(""),
+    pillar: text("pillar"),
+    imageSlot: text("image_slot", { enum: ENUMS.imageSlot }).notNull().default("none"),
+    imageBrief: text("image_brief"),
+    status: text("status", { enum: ENUMS.planItemStatus }).notNull().default("planned"),
+    contentId: text("content_id").references(() => contents.id, { onDelete: "set null" }),
+    /** Latest content.generate job; its live status is read through a join. */
+    generationJobId: text("generation_job_id").references(() => jobs.id, {
+      onDelete: "set null",
+    }),
+    /** Last job status pushed to the stream (change detection only). */
+    generationStatus: text("generation_status"),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    index("plan_items_plan_idx").on(t.planId, t.position),
+    index("plan_items_content_idx").on(t.contentId),
+    index("plan_items_job_idx").on(t.generationJobId),
+    check("plan_items_type_check", oneOf(t.contentType, ENUMS.contentType)),
+    check("plan_items_slot_check", oneOf(t.imageSlot, ENUMS.imageSlot)),
+    check("plan_items_status_check", oneOf(t.status, ENUMS.planItemStatus)),
+    check("plan_items_position_check", sql`${t.position} >= 0`),
   ],
 );

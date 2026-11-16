@@ -10,9 +10,13 @@ export type JobId = z.infer<typeof JobId>;
  * - `content.generate`, `content.render`, `brand.analyze` are reserved for
  *   the generation pipeline (F1-3) and brand profiling (F1-4); their payload
  *   schemas are defined by those tasks. Until then the payload is free-form.
+ *   (`ContentGeneratePayload` in plan.ts describes what plan generation sends.)
+ * - `chat.turn` runs one agent turn of a conversation (A2). Only the API
+ *   creates it (when a user message or answer arrives); `POST /api/jobs`
+ *   refuses it. Payload: `ChatTurnPayload`.
  */
 export const JobType = z
-  .enum(["demo.echo", "content.generate", "content.render", "brand.analyze"])
+  .enum(["demo.echo", "content.generate", "content.render", "brand.analyze", "chat.turn"])
   .meta({ id: "JobType" });
 export type JobType = z.infer<typeof JobType>;
 
@@ -27,6 +31,7 @@ export const JOB_TYPE_REQUIREMENTS = {
   "content.generate": { brand: true, content: true },
   "content.render": { brand: true, content: true },
   "brand.analyze": { brand: true, content: false },
+  "chat.turn": { brand: false, content: false },
 } as const satisfies Record<JobType, { brand: boolean; content: boolean }>;
 
 export const MAX_JOB_PAYLOAD_BYTES = 100_000;
@@ -130,9 +135,27 @@ export const DemoEchoOutput = z.object({
 });
 export type DemoEchoOutput = z.infer<typeof DemoEchoOutput>;
 
+// --- chat.turn (A2) ------------------------------------------------------------
+
+/**
+ * One agent turn. The worker reads everything else through the turn API
+ * (`POST /api/worker/runs/{runId}/start` returns the full context).
+ */
+export const ChatTurnPayload = z
+  .object({
+    conversationId: EntityId,
+    runId: EntityId,
+  })
+  .meta({ id: "ChatTurnPayload" });
+export type ChatTurnPayload = z.infer<typeof ChatTurnPayload>;
+
+/** Job types only the API itself creates; `POST /api/jobs` refuses them. */
+export const INTERNAL_JOB_TYPES = ["chat.turn"] as const satisfies readonly JobType[];
+
 /** Per-type payload schemas known so far; other types accept any object. */
 export const JOB_PAYLOAD_SCHEMAS: Partial<Record<JobType, z.ZodType>> = {
   "demo.echo": DemoEchoPayload,
+  "chat.turn": ChatTurnPayload,
 };
 
 // --- Live updates and worker presence (F1-6) --------------------------------

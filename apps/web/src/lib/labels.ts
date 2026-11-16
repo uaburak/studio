@@ -64,6 +64,7 @@ export const ASSET_SOURCE_LABELS: Record<AssetSource, string> = {
 };
 
 export const JOB_TYPE_LABELS: Record<JobType, string> = {
+  "chat.turn": "Sohbet turu",
   "content.generate": "İçerik üretimi",
   "content.render": "Render",
   "brand.analyze": "Marka analizi",

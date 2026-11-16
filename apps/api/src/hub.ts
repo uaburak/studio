@@ -1,6 +1,11 @@
 import { DurableObject } from "cloudflare:workers";
 import {
+  CONVERSATION_REPLAY_LIMIT,
+  type ConversationStreamMessage,
   decodeMessage,
+  type ErrorCode,
+  type ErrorIssue,
+  encodeConversationStreamMessage,
   encodeJobStreamMessage,
   encodeMessage,
   type HubToWorkerMessage,
@@ -12,10 +17,19 @@ import {
   type WorkerPresence,
   type WorkerToHubMessage,
 } from "@studio/contract";
+import { conversationSnapshot, eventsAfter, requireConversation } from "./chat/read.ts";
+import {
+  type ChatCommand,
+  type ChatEffects,
+  executeChat,
+  newEffects,
+  onJobChanged,
+} from "./chat/service.ts";
 import { createDb } from "./db/client.ts";
 import { type JobRow, toJob } from "./db/mappers.ts";
 import { CLOSE, HUB_TIMING, SNAPSHOT_LIMIT } from "./hub/config.ts";
 import { JobStore } from "./hub/store.ts";
+import { toProblem } from "./lib/errors.ts";
 
 /** Per-socket state; survives hibernation (serializeAttachment, max 2 KB). */
 type WorkerAttachment = {
@@ -31,12 +45,24 @@ type WorkerAttachment = {
   persistedAt?: number;
 };
 type ClientAttachment = { role: "client"; connectedAt: number };
-type Attachment = WorkerAttachment | ClientAttachment;
+/** A client following one conversation; `lastSentSeq` is -1 until the snapshot/replay went out. */
+type ConversationAttachment = {
+  role: "conversation";
+  connectedAt: number;
+  conversationId: string;
+  lastSentSeq: number;
+};
+type Attachment = WorkerAttachment | ClientAttachment | ConversationAttachment;
 
 interface WorkerSocket {
   ws: WebSocket;
   att: WorkerAttachment & { workerId: string };
 }
+
+/** Result of a chat command run inside the Hub (errors travel as data, not as thrown RPC errors). */
+export type ChatOutcome =
+  | { ok: true; value: unknown }
+  | { ok: false; problem: { code: ErrorCode; message: string; issues?: ErrorIssue[] } };
 
 export type CancelJobResult =
   | { ok: true; job: Job }
@@ -60,9 +86,16 @@ const LAST_SEEN_KEY = "presence:lastSeenAt";
  *   D1 reads and writes (D1 calls open the input gate, so without this two
  *   events could both see the same `queued` row);
  * - DO storage only for the worker's last-seen time (presence).
+ *
+ * Chat (A2): every conversation / plan mutation runs through `chat()` in the
+ * same serial queue (src/chat/service.ts), which writes the change and its
+ * sequenced stream events in one D1 batch; the Hub then pushes the new events
+ * to the conversation's sockets (`/conversations`), reading them back from D1
+ * by seq so delivery is ordered and gap-free even after hibernation.
  */
 export class Hub extends DurableObject<Env> {
-  private readonly store = new JobStore(createDb(this.env.DB));
+  private readonly db = createDb(this.env.DB);
+  private readonly store = new JobStore(this.db);
   private chain: Promise<unknown> = Promise.resolve();
 
   // --- HTTP / WebSocket entry ------------------------------------------------
@@ -109,6 +142,23 @@ export class Hub extends DurableObject<Env> {
       return new Response(null, { status: 101, webSocket: client });
     }
 
+    if (url.pathname === "/conversations") {
+      const conversationId = url.searchParams.get("conversationId");
+      if (!conversationId) return new Response("conversationId is required", { status: 400 });
+      const afterRaw = url.searchParams.get("after");
+      const after = afterRaw === null ? undefined : Number(afterRaw);
+      // Mark the socket before any await so an early frame is never mistaken for a worker's.
+      this.ctx.acceptWebSocket(server, ["conversation", `conv:${conversationId}`]);
+      server.serializeAttachment({
+        role: "conversation",
+        connectedAt: now,
+        conversationId,
+        lastSentSeq: -1,
+      } satisfies ConversationAttachment);
+      await this.serial(() => this.openConversation(server, conversationId, after));
+      return new Response(null, { status: 101, webSocket: client });
+    }
+
     return new Response("not found", { status: 404 });
   }
 
@@ -123,6 +173,10 @@ export class Hub extends DurableObject<Env> {
     if (att.role === "client") {
       // Clients are read-only: they may only ping. Never treat them as workers.
       if (message.type === "ping") this.sendClient(ws, { type: "pong", ts: message.ts });
+      return;
+    }
+    if (att.role === "conversation") {
+      if (message.type === "ping") this.sendConversation(ws, { type: "pong", ts: message.ts });
       return;
     }
     await this.serial(() => this.onWorkerMessage(ws, att, message as WorkerToHubMessage));
@@ -151,16 +205,50 @@ export class Hub extends DurableObject<Env> {
 
   /** The API inserted a queued job: tell watchers and try to dispatch it. */
   async jobCreated(jobId: string): Promise<void> {
-    await this.serial(async () => {
-      const row = await this.store.get(jobId);
-      if (row) this.publish(row);
-      await this.dispatchQueued();
-      await this.broadcastPresence();
-    });
+    await this.serial(() => this.onJobCreated(jobId));
   }
 
   async cancelJob(jobId: string): Promise<CancelJobResult> {
-    return this.serial(async (): Promise<CancelJobResult> => {
+    return this.serial(() => this.cancelJobNow(jobId));
+  }
+
+  /**
+   * Run one chat command (see ChatCommand) in the serial queue, then push its
+   * stream events and dispatch / cancel the jobs it created or stopped.
+   */
+  async chat(command: ChatCommand): Promise<ChatOutcome> {
+    return this.serial(async (): Promise<ChatOutcome> => {
+      const effects = newEffects();
+      let outcome: ChatOutcome;
+      try {
+        outcome = { ok: true, value: await executeChat(this.db, command, effects) };
+      } catch (error) {
+        const problem = toProblem(error);
+        if (problem.code === "internal_error") console.error("hub: chat command failed", error);
+        outcome = {
+          ok: false,
+          problem: {
+            code: problem.code,
+            message: problem.message,
+            ...(problem.issues ? { issues: problem.issues } : {}),
+          },
+        };
+      }
+      // Effects only hold committed changes.
+      await this.applyChatEffects(effects);
+      return outcome;
+    });
+  }
+
+  private async onJobCreated(jobId: string): Promise<void> {
+    const row = await this.store.get(jobId);
+    if (row) await this.publish(row);
+    await this.dispatchQueued();
+    await this.broadcastPresence();
+  }
+
+  private async cancelJobNow(jobId: string): Promise<CancelJobResult> {
+    {
       const now = Date.now();
       const row = await this.store.get(jobId);
       if (!row) return { ok: false, reason: "not_found" };
@@ -170,7 +258,7 @@ export class Hub extends DurableObject<Env> {
       if (row.status === "queued") {
         const done = await this.store.cancelQueued(jobId, now);
         if (done) {
-          this.publish(done);
+          await this.publish(done);
           await this.broadcastPresence();
           return { ok: true, job: toJob(done) };
         }
@@ -192,9 +280,9 @@ export class Hub extends DurableObject<Env> {
         });
       }
       await this.ensureAlarmBy(graceUntil);
-      this.publish(pending);
+      await this.publish(pending);
       return { ok: true, job: toJob(pending) };
-    });
+    }
   }
 
   async presence(): Promise<WorkerPresence> {
@@ -252,7 +340,7 @@ export class Hub extends DurableObject<Env> {
         if (row.cancelRequestedAt) {
           sendWorker(ws, { type: "job.cancel", jobId: row.id, reason: "cancelled by user" });
         }
-        this.publish(row);
+        await this.publish(row);
         return;
       }
       case "job.progress": {
@@ -271,7 +359,7 @@ export class Hub extends DurableObject<Env> {
           await this.stopIfNotOurs(ws, workerId, message.jobId);
           return;
         }
-        this.publish(row);
+        await this.publish(row);
         return;
       }
       case "job.heartbeat": {
@@ -299,7 +387,7 @@ export class Hub extends DurableObject<Env> {
         const next = row.cancelRequestedAt
           ? await this.store.finish(row.id, now, { status: "cancelled" })
           : await this.store.requeue(row.id, now, { refundAttempt: true });
-        if (next) this.publish(next);
+        if (next) await this.publish(next);
         await this.dispatchQueued();
         await this.broadcastPresence();
         return;
@@ -370,7 +458,7 @@ export class Hub extends DurableObject<Env> {
         }
       } else if (row.status === "queued" && row.workerId === workerId) {
         const back = await this.store.reclaim(row.id, workerId, now, now + HUB_TIMING.leaseTtlMs);
-        if (back) this.publish(back);
+        if (back) await this.publish(back);
       } else if (!isTerminalJobStatus(row.status)) {
         // Someone else has it now.
         sendWorker(ws, { type: "job.cancel", jobId: row.id, reason: "reassigned" });
@@ -410,7 +498,7 @@ export class Hub extends DurableObject<Env> {
           })
         : await this.store.finish(row.id, now, resultOf(message));
       if (next) {
-        this.publish(next);
+        await this.publish(next);
         await this.broadcastPresence();
       }
     }
@@ -452,11 +540,11 @@ export class Hub extends DurableObject<Env> {
         } catch (error) {
           console.warn(`hub: dispatch of ${row.id} failed, requeueing`, error);
           const back = await this.store.requeue(row.id, now, { refundAttempt: true });
-          if (back) this.publish(back);
+          if (back) await this.publish(back);
           return;
         }
         await this.ensureAlarmBy(deadline);
-        this.publish(claimed);
+        await this.publish(claimed);
       }
     }
   }
@@ -499,7 +587,7 @@ export class Hub extends DurableObject<Env> {
     } else {
       next = await this.store.requeue(row.id, now, { refundAttempt: false });
     }
-    if (next) this.publish(next);
+    if (next) await this.publish(next);
   }
 
   private async scheduleAlarm(): Promise<void> {
@@ -573,21 +661,120 @@ export class Hub extends DurableObject<Env> {
 
   private async broadcastPresence(exclude?: WebSocket): Promise<void> {
     const clients = this.ctx.getWebSockets("client");
-    if (clients.length === 0) return;
+    const followers = this.ctx.getWebSockets("conversation");
+    if (clients.length === 0 && followers.length === 0) return;
     const presence = await this.computePresence(exclude);
     for (const ws of clients) this.sendClient(ws, { type: "presence", presence });
+    for (const ws of followers) this.sendConversation(ws, { type: "presence", presence });
   }
 
-  /** Send a job change to every client watching that job, its brand, or everything. */
-  private publish(row: JobRow): void {
+  /**
+   * Send a job change to every client watching that job, its brand, or
+   * everything; then let the chat layer react (run / plan item status).
+   */
+  private async publish(row: JobRow): Promise<void> {
     const targets = new Set<WebSocket>([
       ...this.ctx.getWebSockets(`job:${row.id}`),
       ...(row.brandId ? this.ctx.getWebSockets(`brand:${row.brandId}`) : []),
       ...this.ctx.getWebSockets("all"),
     ]);
-    if (targets.size === 0) return;
-    const frame = encodeJobStreamMessage({ type: "job.updated", job: toJob(row) });
-    for (const ws of targets) trySend(ws, frame);
+    if (targets.size > 0) {
+      const frame = encodeJobStreamMessage({ type: "job.updated", job: toJob(row) });
+      for (const ws of targets) trySend(ws, frame);
+    }
+    if (row.type === "chat.turn" || row.type === "content.generate") {
+      const effects = newEffects();
+      try {
+        await onJobChanged(this.db, row, effects);
+      } catch (error) {
+        // Never let chat bookkeeping break job dispatch.
+        console.error(`hub: chat hook for job ${row.id} failed`, error);
+      }
+      await this.applyChatEffects(effects);
+    }
+  }
+
+  // --- conversations -----------------------------------------------------------------------
+
+  private async applyChatEffects(effects: ChatEffects): Promise<void> {
+    for (const id of effects.conversations) await this.pushConversation(id);
+    for (const id of effects.jobsCreated) await this.onJobCreated(id);
+    for (const id of effects.jobsToCancel) await this.cancelJobNow(id);
+  }
+
+  /** First frames of a conversation socket: replay since `after`, or a snapshot. */
+  private async openConversation(
+    ws: WebSocket,
+    conversationId: string,
+    after: number | undefined,
+  ): Promise<void> {
+    const conv = await requireConversation(this.db, conversationId);
+    const presence = await this.computePresence();
+    let lastSent: number;
+    const canResume =
+      after !== undefined &&
+      Number.isInteger(after) &&
+      after >= 0 &&
+      after <= conv.lastSeq &&
+      conv.lastSeq - after <= CONVERSATION_REPLAY_LIMIT;
+    if (canResume) {
+      const events = await eventsAfter(this.db, conversationId, after, CONVERSATION_REPLAY_LIMIT);
+      for (const event of events) this.sendConversation(ws, event);
+      lastSent = events.at(-1)?.seq ?? after;
+      this.sendConversation(ws, {
+        type: "conversation.resumed",
+        seq: lastSent,
+        replayed: events.length,
+        presence,
+      });
+    } else {
+      const snapshot = await conversationSnapshot(this.db, conversationId);
+      lastSent = snapshot.seq;
+      this.sendConversation(ws, { type: "conversation.snapshot", ...snapshot, presence });
+    }
+    try {
+      ws.serializeAttachment({
+        role: "conversation",
+        connectedAt: Date.now(),
+        conversationId,
+        lastSentSeq: lastSent,
+      } satisfies ConversationAttachment);
+    } catch {
+      // closed meanwhile
+    }
+  }
+
+  /** Send each socket of the conversation the stored events it has not seen yet, in seq order. */
+  private async pushConversation(conversationId: string): Promise<void> {
+    const sockets: Array<{ ws: WebSocket; att: ConversationAttachment }> = [];
+    for (const ws of this.ctx.getWebSockets(`conv:${conversationId}`)) {
+      const att = attachmentOf(ws);
+      if (att.role === "conversation" && att.lastSentSeq >= 0) sockets.push({ ws, att });
+    }
+    if (sockets.length === 0) return;
+    let from = Math.min(...sockets.map((s) => s.att.lastSentSeq));
+    for (;;) {
+      const events = await eventsAfter(this.db, conversationId, from, CONVERSATION_REPLAY_LIMIT);
+      for (const { ws, att } of sockets) {
+        const fresh = events.filter((e) => e.seq > att.lastSentSeq);
+        const last = fresh.at(-1);
+        if (!last) continue;
+        for (const event of fresh) this.sendConversation(ws, event);
+        att.lastSentSeq = last.seq;
+        try {
+          ws.serializeAttachment(att);
+        } catch {
+          // closing
+        }
+      }
+      const tail = events.at(-1);
+      if (!tail || events.length < CONVERSATION_REPLAY_LIMIT) break;
+      from = tail.seq;
+    }
+  }
+
+  private sendConversation(ws: WebSocket, message: ConversationStreamMessage): void {
+    trySend(ws, encodeConversationStreamMessage(message));
   }
 
   private sendClient(ws: WebSocket, message: JobStreamMessage): void {
@@ -622,6 +809,7 @@ export class Hub extends DurableObject<Env> {
 function attachmentOf(ws: WebSocket): Attachment {
   const raw = ws.deserializeAttachment() as Partial<Attachment> | null;
   if (raw?.role === "client") return raw as ClientAttachment;
+  if (raw?.role === "conversation") return raw as ConversationAttachment;
   return { role: "worker", connectedAt: 0, lastSeenAt: 0, ...(raw ?? {}) } as WorkerAttachment;
 }
 

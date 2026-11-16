@@ -1,13 +1,21 @@
 import type {
+  AgentRun,
   Asset,
   Brand,
   BrandProfile,
   Content,
   ContentVersion,
   ContentVersionSummary,
+  Conversation,
   Job,
+  JobStatus,
   JobType,
+  Message,
+  MessagePart,
+  Plan,
+  PlanItem,
   PublishLog,
+  RunUsage,
   Schedule,
   SocialAccount,
 } from "@studio/contract";
@@ -23,6 +31,12 @@ export type SlideRow = typeof schema.contentVersionSlides.$inferSelect;
 export type JobRow = typeof schema.jobs.$inferSelect;
 export type ScheduleRow = typeof schema.schedules.$inferSelect;
 export type PublishLogRow = typeof schema.publishLogs.$inferSelect;
+export type ConversationRow = typeof schema.conversations.$inferSelect;
+export type MessageRow = typeof schema.messages.$inferSelect;
+export type AgentRunRow = typeof schema.agentRuns.$inferSelect;
+export type ConversationEventRow = typeof schema.conversationEvents.$inferSelect;
+export type PlanRow = typeof schema.contentPlans.$inferSelect;
+export type PlanItemRow = typeof schema.planItems.$inferSelect;
 
 const iso = (d: Date) => d.toISOString();
 const isoOrNull = (d: Date | null) => (d ? d.toISOString() : null);
@@ -198,5 +212,101 @@ export function toPublishLog(r: PublishLogRow): PublishLog {
     startedAt: iso(r.startedAt),
     finishedAt: isoOrNull(r.finishedAt),
     createdAt: iso(r.createdAt),
+  };
+}
+
+// --- chat (A2) -------------------------------------------------------------------
+
+export function toConversation(r: ConversationRow, activeRunId: string | null): Conversation {
+  return {
+    id: r.id,
+    brandId: r.brandId,
+    title: r.title,
+    status: r.status,
+    activeRunId,
+    lastSeq: r.lastSeq,
+    lastActivityAt: iso(r.lastActivityAt),
+    createdAt: iso(r.createdAt),
+    updatedAt: iso(r.updatedAt),
+  };
+}
+
+export function toMessage(r: MessageRow): Message {
+  return {
+    id: r.id,
+    conversationId: r.conversationId,
+    role: r.role,
+    status: r.status,
+    runId: r.runId,
+    // Written only by the chat service from contract-validated parts.
+    parts: r.parts as MessagePart[],
+    createdAt: iso(r.createdAt),
+    updatedAt: iso(r.updatedAt),
+  };
+}
+
+export function toAgentRun(r: AgentRunRow): AgentRun {
+  return {
+    id: r.id,
+    conversationId: r.conversationId,
+    triggerMessageId: r.triggerMessageId,
+    jobId: r.jobId,
+    status: r.status,
+    attempt: r.attempt,
+    model: r.model,
+    usage: (r.usage as RunUsage | null) ?? null,
+    error: r.error,
+    createdAt: iso(r.createdAt),
+    updatedAt: iso(r.updatedAt),
+    startedAt: isoOrNull(r.startedAt),
+    finishedAt: isoOrNull(r.finishedAt),
+  };
+}
+
+/** The bits of an item's generation job a PlanItem carries. */
+export interface GenerationJobRef {
+  id: string;
+  status: JobStatus;
+  error: string | null;
+}
+
+export function toPlanItem(r: PlanItemRow, job: GenerationJobRef | null): PlanItem {
+  return {
+    id: r.id,
+    planId: r.planId,
+    position: r.position,
+    date: r.date,
+    platforms: r.platforms,
+    contentType: r.contentType,
+    title: r.title,
+    brief: r.brief,
+    pillar: r.pillar,
+    imageSlot: r.imageSlot,
+    imageBrief: r.imageBrief,
+    status: r.status,
+    contentId: r.contentId,
+    generation: job ? { jobId: job.id, status: job.status, error: job.error } : null,
+    createdAt: iso(r.createdAt),
+    updatedAt: iso(r.updatedAt),
+  };
+}
+
+export function toPlan(r: PlanRow, items: PlanItem[]): Plan {
+  return {
+    id: r.id,
+    brandId: r.brandId,
+    conversationId: r.conversationId,
+    runId: r.runId,
+    title: r.title,
+    periodStart: r.periodStart,
+    periodEnd: r.periodEnd,
+    status: r.status,
+    summary: r.summary,
+    revision: r.revision,
+    decidedAt: isoOrNull(r.decidedAt),
+    rejectionReason: r.rejectionReason,
+    items: [...items].sort((a, b) => a.position - b.position),
+    createdAt: iso(r.createdAt),
+    updatedAt: iso(r.updatedAt),
   };
 }

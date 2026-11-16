@@ -1,6 +1,7 @@
 import { createRoute, type z } from "@hono/zod-openapi";
 import {
   DEFAULT_JOB_MAX_ATTEMPTS,
+  INTERNAL_JOB_TYPES,
   JOB_PAYLOAD_SCHEMAS,
   JOB_TYPE_REQUIREMENTS,
   Job,
@@ -33,6 +34,14 @@ export const hubStub = (env: Env) => env.HUB.getByName("main");
 export async function createJob(env: Env, input: z.output<typeof JobCreate>): Promise<Job> {
   const db = createDb(env.DB);
   const needs = JOB_TYPE_REQUIREMENTS[input.type];
+  if ((INTERNAL_JOB_TYPES as readonly string[]).includes(input.type)) {
+    throw badRequest(`${input.type} jobs are created by the API itself`, [
+      {
+        path: "type",
+        message: "send a message with POST /api/conversations/{id}/messages instead",
+      },
+    ]);
+  }
 
   let brandId = input.brandId;
   if (input.contentId) {

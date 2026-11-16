@@ -14,6 +14,34 @@ import {
   type BrandProfileListQuery,
   type BrandProfileUpdate,
 } from "./brand-profile.ts";
+import {
+  AgentRun,
+  AgentRunList,
+  type AgentRunListQuery,
+  Conversation,
+  type ConversationCreate,
+  ConversationList,
+  type ConversationListQuery,
+  type ConversationUpdate,
+  MessageList,
+  type MessageListQuery,
+  type PlanProposalPut,
+  PlanProposalResult,
+  type QuestionAnswerCreate,
+  QuestionAnswerResult,
+  type RunComplete,
+  type RunFail,
+  TurnContext,
+  type TurnOps,
+  TurnWriteResult,
+  type UserMessageCreate,
+  UserMessageResult,
+} from "./chat.ts";
+import {
+  type ConversationStreamMessage,
+  type ConversationStreamQuery,
+  decodeConversationStreamMessage,
+} from "./chat-stream.ts";
 import { ApiErrorBody, type ErrorCode, type ErrorIssue } from "./common.ts";
 import {
   Content,
@@ -37,6 +65,16 @@ import {
   type JobStreamQuery,
   WorkerPresence,
 } from "./job.ts";
+import {
+  Plan,
+  type PlanAccept,
+  type PlanGenerate,
+  PlanGenerateResult,
+  PlanList,
+  type PlanListQuery,
+  type PlanReject,
+  type PlanUpdate,
+} from "./plan.ts";
 import { decodeJobStreamMessage, type JobStreamMessage } from "./protocol.ts";
 import {
   PublishLogList,
@@ -73,6 +111,11 @@ export interface ApiClientOptions {
   fetch?: typeof fetch;
   /** WebSocket implementation for `jobs.watch` (defaults to the global one). */
   WebSocket?: typeof WebSocket;
+  /**
+   * Mac worker only: sent as `Authorization: Bearer <token>` on every request
+   * (needed by the `workerTurns` methods). Never set this in a UI client.
+   */
+  workerToken?: string;
 }
 
 export type JobWatchStatus = "connecting" | "open" | "closed";
@@ -95,10 +138,30 @@ export interface JobWatch {
   close(): void;
 }
 
+export interface ConversationWatchHandlers {
+  /**
+   * Every decoded frame. After each (re)connect either a
+   * `conversation.snapshot` or the missed events + `conversation.resumed`
+   * arrive first; feed them to `applyConversationStreamMessage`.
+   */
+  onMessage: (message: ConversationStreamMessage) => void;
+  onStatus?: (status: JobWatchStatus) => void;
+}
+
+export interface ConversationWatchOptions extends JobWatchOptions {
+  /** Last seq already applied (e.g. from a cached state); resumes from there. */
+  after?: number;
+}
+
+export interface ConversationWatch extends JobWatch {
+  /** Highest seq seen so far (used as `after` on reconnect). */
+  readonly lastSeq: number | undefined;
+}
+
 type Query = Record<string, string | number | boolean | undefined | null>;
 
 interface RequestOptions {
-  method?: "GET" | "POST" | "PATCH" | "DELETE";
+  method?: "GET" | "POST" | "PATCH" | "PUT" | "DELETE";
   query?: Query | undefined;
   json?: unknown;
   form?: FormData;
@@ -131,6 +194,9 @@ export function createApiClient(options: ApiClientOptions = {}) {
   async function send(path: string, opts: RequestOptions = {}): Promise<Response> {
     const headers = new Headers(opts.init?.headers);
     headers.set("accept", "application/json");
+    if (options.workerToken && !headers.has("authorization")) {
+      headers.set("authorization", `Bearer ${options.workerToken}`);
+    }
     let body: FormData | string | undefined;
     if (opts.form) {
       body = opts.form;
@@ -185,6 +251,16 @@ export function createApiClient(options: ApiClientOptions = {}) {
     handlers: JobWatchHandlers,
     opts: JobWatchOptions,
   ): JobWatch {
+    return openSocketLoop(() => target, decodeJobStreamMessage, handlers, opts);
+  }
+
+  /** Reconnecting WebSocket loop shared by the job and conversation streams. */
+  function openSocketLoop<M>(
+    target: () => string,
+    decode: (raw: unknown) => { ok: true; message: M } | { ok: false; error: string },
+    handlers: { onMessage: (message: M) => void; onStatus?: (status: JobWatchStatus) => void },
+    opts: JobWatchOptions,
+  ): JobWatch {
     const Impl = options.WebSocket ?? globalThis.WebSocket;
     if (!Impl) throw new ApiError("no WebSocket implementation available");
     const reconnect = opts.reconnect ?? true;
@@ -197,14 +273,14 @@ export function createApiClient(options: ApiClientOptions = {}) {
     const connect = () => {
       if (closed) return;
       handlers.onStatus?.("connecting");
-      const ws = new Impl(target);
+      const ws = new Impl(target());
       socket = ws;
       ws.addEventListener("open", () => {
         delay = baseDelay;
         handlers.onStatus?.("open");
       });
       ws.addEventListener("message", (event: MessageEvent) => {
-        const decoded = decodeJobStreamMessage(event.data);
+        const decoded = decode(event.data);
         if (decoded.ok) handlers.onMessage(decoded.message);
       });
       ws.addEventListener("close", () => {
@@ -223,6 +299,40 @@ export function createApiClient(options: ApiClientOptions = {}) {
         closed = true;
         if (timer !== undefined) clearTimeout(timer);
         socket?.close(1000, "client closed");
+      },
+    };
+  }
+
+  function watchConversation(
+    id: string,
+    handlers: ConversationWatchHandlers,
+    opts: ConversationWatchOptions,
+  ): ConversationWatch {
+    let lastSeq = opts.after;
+    const loop = openSocketLoop(
+      () =>
+        wsUrl(
+          url(
+            `/api/conversations/${enc(id)}/stream`,
+            lastSeq !== undefined ? { after: lastSeq } : {},
+          ),
+        ),
+      decodeConversationStreamMessage,
+      {
+        onMessage: (message) => {
+          if ("seq" in message && (lastSeq === undefined || message.seq > lastSeq)) {
+            lastSeq = message.seq;
+          }
+          handlers.onMessage(message);
+        },
+        ...(handlers.onStatus ? { onStatus: handlers.onStatus } : {}),
+      },
+      opts,
+    );
+    return {
+      close: () => loop.close(),
+      get lastSeq() {
+        return lastSeq;
       },
     };
   }
@@ -395,6 +505,135 @@ export function createApiClient(options: ApiClientOptions = {}) {
         call(Schedule, `/api/schedules/${enc(id)}/cancel`, { method: "POST", init }),
       logs: (id: string, query?: PublishLogListQuery, init?: RequestInit) =>
         call(PublishLogList, `/api/schedules/${enc(id)}/logs`, { query: q(query), init }),
+    },
+
+    conversations: {
+      /** Most recently active first. */
+      list: (query?: ConversationListQuery, init?: RequestInit) =>
+        call(ConversationList, "/api/conversations", { query: q(query), init }),
+      get: (id: string, init?: RequestInit) =>
+        call(Conversation, `/api/conversations/${enc(id)}`, { init }),
+      create: (input: ConversationCreate = {}, init?: RequestInit) =>
+        call(Conversation, "/api/conversations", { method: "POST", json: input, init }),
+      /** Rename, archive (`status: "archived"`), unarchive, or set the brand once. */
+      update: (id: string, input: ConversationUpdate, init?: RequestInit) =>
+        call(Conversation, `/api/conversations/${enc(id)}`, { method: "PATCH", json: input, init }),
+      messages: {
+        /** Newest first; pass `nextCursor` to load older messages. */
+        list: (conversationId: string, query?: MessageListQuery, init?: RequestInit) =>
+          call(MessageList, `/api/conversations/${enc(conversationId)}/messages`, {
+            query: q(query),
+            init,
+          }),
+        /**
+         * Send a user message; starts an agent run (a `chat.turn` job). 409
+         * `conflict` while another run is active. Retry with the same
+         * `clientMessageId` after a network error.
+         */
+        send: (conversationId: string, input: UserMessageCreate, init?: RequestInit) =>
+          call(UserMessageResult, `/api/conversations/${enc(conversationId)}/messages`, {
+            method: "POST",
+            json: input,
+            init,
+          }),
+        /** Answer a `question` part of an assistant message. */
+        answer: (
+          conversationId: string,
+          messageId: string,
+          input: QuestionAnswerCreate,
+          init?: RequestInit,
+        ) =>
+          call(
+            QuestionAnswerResult,
+            `/api/conversations/${enc(conversationId)}/messages/${enc(messageId)}/answer`,
+            { method: "POST", json: input, init },
+          ),
+      },
+      runs: (conversationId: string, query?: AgentRunListQuery, init?: RequestInit) =>
+        call(AgentRunList, `/api/conversations/${enc(conversationId)}/runs`, {
+          query: q(query),
+          init,
+        }),
+      /** WebSocket URL of the conversation stream. */
+      streamUrl: (id: string, query?: ConversationStreamQuery) =>
+        wsUrl(url(`/api/conversations/${enc(id)}/stream`, q(query))),
+      /**
+       * Follow a conversation live. Reconnects with backoff and resumes from
+       * the last seq it saw (`?after=`), so no event is lost or applied twice.
+       */
+      watch: (
+        id: string,
+        handlers: ConversationWatchHandlers,
+        opts: ConversationWatchOptions = {},
+      ) => watchConversation(id, handlers, opts),
+    },
+
+    agentRuns: {
+      get: (id: string, init?: RequestInit) =>
+        call(AgentRun, `/api/agent-runs/${enc(id)}`, { init }),
+      /** Cancel a queued or running run (and its job). 409 when it already finished. */
+      cancel: (id: string, init?: RequestInit) =>
+        call(AgentRun, `/api/agent-runs/${enc(id)}/cancel`, { method: "POST", init }),
+    },
+
+    plans: {
+      list: (query?: PlanListQuery, init?: RequestInit) =>
+        call(PlanList, "/api/plans", { query: q(query), init }),
+      get: (id: string, init?: RequestInit) => call(Plan, `/api/plans/${enc(id)}`, { init }),
+      /** Edit a draft/proposed plan; `revision` must be the one you edited. */
+      update: (id: string, input: PlanUpdate, init?: RequestInit) =>
+        call(Plan, `/api/plans/${enc(id)}`, { method: "PATCH", json: input, init }),
+      /** Accept by revision: creates one draft content item per (non-skipped) item. */
+      accept: (id: string, input: PlanAccept, init?: RequestInit) =>
+        call(Plan, `/api/plans/${enc(id)}/accept`, { method: "POST", json: input, init }),
+      reject: (id: string, input: PlanReject = {}, init?: RequestInit) =>
+        call(Plan, `/api/plans/${enc(id)}/reject`, { method: "POST", json: input, init }),
+      /** Queue `content.generate` jobs for accepted items (all, or `itemIds`). */
+      generate: (id: string, input: PlanGenerate = {}, init?: RequestInit) =>
+        call(PlanGenerateResult, `/api/plans/${enc(id)}/generate`, {
+          method: "POST",
+          json: input,
+          init,
+        }),
+    },
+
+    /**
+     * Mac worker: the agent's side of a `chat.turn` job. Needs `workerToken`.
+     * Order: start -> ops / plan (any number) -> complete | fail.
+     */
+    workerTurns: {
+      start: (runId: string, attempt: number, init?: RequestInit) =>
+        call(TurnContext, `/api/worker/runs/${enc(runId)}/start`, {
+          method: "POST",
+          json: { attempt },
+          init,
+        }),
+      context: (runId: string, init?: RequestInit) =>
+        call(TurnContext, `/api/worker/runs/${enc(runId)}/context`, { init }),
+      ops: (runId: string, input: TurnOps, init?: RequestInit) =>
+        call(TurnWriteResult, `/api/worker/runs/${enc(runId)}/ops`, {
+          method: "POST",
+          json: input,
+          init,
+        }),
+      putPlan: (runId: string, input: PlanProposalPut, init?: RequestInit) =>
+        call(PlanProposalResult, `/api/worker/runs/${enc(runId)}/plan`, {
+          method: "PUT",
+          json: input,
+          init,
+        }),
+      complete: (runId: string, input: RunComplete = {}, init?: RequestInit) =>
+        call(AgentRun, `/api/worker/runs/${enc(runId)}/complete`, {
+          method: "POST",
+          json: input,
+          init,
+        }),
+      fail: (runId: string, input: RunFail, init?: RequestInit) =>
+        call(AgentRun, `/api/worker/runs/${enc(runId)}/fail`, {
+          method: "POST",
+          json: input,
+          init,
+        }),
     },
   };
 }
