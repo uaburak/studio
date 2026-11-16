@@ -25,8 +25,8 @@ Son güncelleme: 2026-11-16. Mimari ve kararlar için: [PLAN.md](PLAN.md).
 |---|---|---|---|---|
 | A1 | Tasarım kiti (F1-2) | xhigh | `packages/design-kit` | Tamam (denetlendi) |
 | A2 | Sohbet altyapısı: konuşma, mesaj, ajan turu ve plan kayıtları; API ve canlı akış | high | `apps/api`, `packages/contract` | Tamam (denetlendi) |
-| A3 | Başsız Claude çağrısının abonelikle doğrulanması | | `spikes/design-render` | Burak'ın `claude auth login` yapmasını bekliyor |
-| A4 | Worker üretim hattı: sohbet ajanı, aylık plan, post üretimi, kalite döngüsü, render, yükleme | xhigh | `apps/worker` | A1, A2, A3'ü bekliyor |
+| A3 | Başsız Claude çağrısının abonelikle doğrulanması | | `spikes/design-render` | Tamam: 5/5 çağrı başarılı (görsel okuma dahil); Read aracı klasör dışına çıkabildiği için worker'da araç verilmeyecek |
+| A4 | Worker üretim hattı: sohbet ajanı, aylık plan, post üretimi, kalite döngüsü, render, yükleme | xhigh | `apps/worker` | Çalışıyor |
 | A5 | Marka profili: marka kiti yükleme, post çekme, analiz | high | `apps/api`, `apps/worker` | A4'ten sonra; post çekme Meta uygulamasını bekliyor |
 | A6 | Yayın motoru: Meta girişi, token kasası, zamanlayıcı | xhigh | `apps/api` | Meta uygulamasını bekliyor |
 | A7 | Ortak Swift paketi (macOS + iOS): API istemcisi, modeller, canlı akış | xhigh | `apps/apple/StudioKit` | M1 içinde çalışıyor |
