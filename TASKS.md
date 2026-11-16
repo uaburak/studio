@@ -12,6 +12,19 @@ Son güncelleme: 2026-11-16. Mimari ve kararlar için: [PLAN.md](PLAN.md).
 - **Gizlilik:** ajanlar `.env` dosyasını okumaz; anahtarlar hiçbir çıktıya yazılmaz.
 - **Git:** Burak isteyene kadar commit yapılmaz.
 
+## Mimari düzeltmesi: önce Mac (Burak, 2026-11-16)
+
+- Veriler ve üretim Mac'te. Sunucu yalnızca telefonun dışarıdan Mac'e ulaşması için köprü.
+- Aynı ağda iPhone Mac'le doğrudan konuşur (Bonjour); sunucu gerekmez.
+- Remote Control: Mac uygulamasında bir anahtar. Açıkken Cloudflare Tunnel ile social.burakkoc.net üzerinden erişim; sunucuda veri tutulmaz.
+- Yalnız onaylanıp zamanlanan postlar (görsel, metin, zaman, paylaşım anahtarı) buluta gider; Mac kapalıyken de saatinde paylaşılır.
+
+| No | Görev | Efor | Klasör | Durum |
+|---|---|---|---|---|
+| L1 | Mac'te yerel sunucu: Mac uygulaması API ve worker'ı kendisi başlatır ve yönetir; veriler uygulama klasöründe; Bonjour ile duyuru; cihaz eşleştirme ve cihaz anahtarları | high | `apps/api`, `apps/worker`, `apps/apple`, `packages/contract` | Çalışıyor |
+| L2 | Bulut yayıncı: zamanlanmış postları alan ve saatinde paylaşan küçük Cloudflare Worker (yayıncılar paketiyle) | high | `apps/cloud-publisher` (yeni) | Çalışıyor |
+| L3 | Remote Control: Mac uygulamasında anahtar, Cloudflare Tunnel, Access | medium | `apps/apple` | L1'den sonra; Burak'ın Cloudflare girişini bekliyor |
+
 ## Yön düzeltmesi (Burak, 2026-11-16)
 
 - Ana ürün **native macOS uygulaması**; iOS sürümü onunla birlikte gelir. Web panosu ana arayüz değildir, en fazla iç araç olarak kalır.
