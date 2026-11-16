@@ -15,8 +15,9 @@ export type ConnectionState = "idle" | "connecting" | "connected" | "waiting" | 
 export interface HubConnectionOptions {
   url: string;
   workerId: string;
-  capabilities: string[];
-  workerVersion?: string;
+  /** Job types announced in `hello`; a function is read on every (re)connect. */
+  capabilities: string[] | (() => string[]);
+  workerVersion?: string | (() => string);
   backoff: BackoffOptions;
   /** Keepalive ping interval; 0 disables. */
   pingIntervalMs: number;
@@ -66,6 +67,21 @@ export class HubConnection {
     this.setState("stopped");
   }
 
+  /**
+   * Reconnect now so the hub gets a fresh `hello` (e.g. capabilities changed after
+   * the Claude login came back). Running jobs are kept: `hello.activeJobIds` lists them.
+   */
+  reannounce(): void {
+    if (this.stopped) return;
+    this.generation++;
+    clearTimeout(this.reconnectTimer);
+    clearInterval(this.pingTimer);
+    this.socket?.close(1000, "re-announce");
+    this.socket = undefined;
+    this.attempt = 0;
+    this.connect();
+  }
+
   /** Send a message if connected. Returns false when it could not be sent. */
   send(message: WorkerToHubMessage): boolean {
     if (!this.socket?.isOpen()) return false;
@@ -91,12 +107,14 @@ export class HubConnection {
             this.attempt = 0;
             this.setState("connected");
             this.logger.info("connected to hub");
+            const { capabilities, workerVersion } = this.options;
+            const version = typeof workerVersion === "function" ? workerVersion() : workerVersion;
             this.send({
               type: "hello",
               protocolVersion: PROTOCOL_VERSION,
               workerId: this.options.workerId,
-              capabilities: this.options.capabilities,
-              ...(this.options.workerVersion ? { workerVersion: this.options.workerVersion } : {}),
+              capabilities: typeof capabilities === "function" ? capabilities() : capabilities,
+              ...(version ? { workerVersion: version } : {}),
               ...this.options.helloFields?.(),
             });
             this.startPing();

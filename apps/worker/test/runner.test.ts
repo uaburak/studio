@@ -85,6 +85,7 @@ describe("JobRegistry", () => {
     expect(registry.types()).toEqual(["demo.echo"]);
     const ctx = {
       jobId: "j",
+      job: job({}, "j"),
       attempt: 1,
       workerId: "w",
       signal: new AbortController().signal,

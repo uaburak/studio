@@ -68,9 +68,9 @@ struct ChatView: View {
         ZStack(alignment: .bottom) {
             // Light darkening at the bottom of the window, under the composer.
             LinearGradient(
-                colors: [.black.opacity(0), .black.opacity(0.28)],
+                colors: [.black.opacity(0), .black.opacity(0.3), .black.opacity(0.55)],
                 startPoint: .top, endPoint: .bottom)
-                .frame(height: 150)
+                .frame(height: 190)
                 .frame(maxWidth: .infinity)
                 .allowsHitTesting(false)
             composerStack

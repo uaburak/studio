@@ -4,6 +4,8 @@ import { z } from "zod";
 /** What a handler gets besides its payload. */
 export interface JobContext {
   jobId: string;
+  /** The dispatched job row (type, brand/content ids, payload as sent). */
+  job: Job;
   /** 1-based attempt number from the hub (undefined for very old hubs). */
   attempt: number | undefined;
   workerId: string;

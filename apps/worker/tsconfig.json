@@ -1,6 +1,9 @@
 {
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
+    // DOM lib: @studio/design-kit's isomorphic sources (linted in-page code) are typechecked
+    // through this project when the worker imports them.
+    "lib": ["ES2024", "DOM", "DOM.Iterable"],
     "types": ["node"]
   },
   "include": ["src", "test", "scripts"]

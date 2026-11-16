@@ -1,0 +1,271 @@
+/**
+ * Prompts of the design pipeline (validated in the F0-2 spike, moved to contract v1):
+ * system = role + rules + design contract + brand.css manifest + brand profile + facts;
+ * generate = the brief; revise = renders + lint report + first-pass HTML; fix = remaining
+ * linter errors only.
+ */
+
+import { describeBrandCss } from "@studio/design-kit/brand";
+import { DESIGN_CONTRACT_MD } from "@studio/design-kit/contract";
+import type { PlatformPreset } from "@studio/design-kit/presets";
+import type { BrandContext } from "./brand.ts";
+
+/** A user image available to the design under `/media/...`. */
+export interface MediaImage {
+  alias: string;
+  path: string;
+  width: number;
+  height: number;
+  mimeType: string;
+  /** Shown to the model as an attached image in the generate call. */
+  attached: boolean;
+}
+
+export interface DesignBrief {
+  title: string;
+  brief: string;
+  contentType: "post" | "carousel" | "story";
+  platforms: string[];
+  date: string | null;
+  pillar: string | null;
+  imageSlot: "none" | "user_upload" | "ai_generate";
+  imageBrief: string | null;
+  instructions: string | null;
+  preset: PlatformPreset;
+  slides: { min: number; max: number };
+  media: MediaImage[];
+  language: string;
+}
+
+function json(value: unknown): string {
+  return JSON.stringify(value, null, 1);
+}
+
+export function buildDesignSystemPrompt(brand: BrandContext): string {
+  const assets = [
+    ...brand.logos.map(
+      (l) =>
+        `- ${l.path}  (logo "${l.name}"${l.width && l.height ? `, ${l.width}x${l.height} px` : ""}${l.aspect ? `, aspect ${l.aspect.toFixed(3)}` : ""}${l.on ? `, for ${l.on} backgrounds` : ""})`,
+    ),
+    ...brand.images.map(
+      (a) => `- ${a.path}  (brand image "${a.name}"${a.note ? `; ${a.note}` : ""})`,
+    ),
+  ];
+  const status =
+    brand.mode === "neutral"
+      ? "PROFILE STATUS: NEUTRAL DEFAULT. This brand has no approved profile. Use the neutral tokens below, no logo, no brand claims. The design must look clean and professional but must not pretend to be a specific brand identity."
+      : brand.mode === "provisional"
+        ? "PROFILE STATUS: PROVISIONAL. The profile was derived from limited sources and is not approved by the brand owner. Follow it, but stay conservative: no claims beyond FACTS."
+        : "PROFILE STATUS: APPROVED.";
+  return `You are the design engine of Studio, a tool that produces social media posts for brands.
+You work as a senior brand designer and a native copywriter in the brand's language at the same time.
+
+You write each design as a constrained HTML/CSS document. Chromium renders it at a fixed pixel size,
+an automatic linter checks it, and a professional designer later edits it element by element in a DOM editor.
+Your work is judged by an experienced art director: it must look like a post a good agency would publish
+for this specific brand, not like a generic AI template.
+
+Non-negotiable:
+1. Follow the DESIGN CONTRACT exactly (document skeleton, layers, types, tokens, slots, forbidden constructs).
+   A design that violates it is rejected.
+2. Use only this brand's profile: its colour tokens, its fonts (through the font variables), its components,
+   its logo files and assets listed below. Never invent colours, fonts, logos, icons or brand marks.
+3. Copy is in the brand language, follows VOICE and states only facts from FACTS. Never invent numbers,
+   doses, percentages, prices, benefits, certifications or claims. Every number in the design and the caption
+   must be in FACTS.allowedNumbers (a machine checks this). If the brief asks for something FACTS does not
+   support, leave it out and say so in the rationale.
+4. Return only the JSON object required by the output schema. Each \`html\` value is a complete document.
+
+How to work:
+- Decide the single idea and the focal point first. Then the grid (margins, columns), then type.
+- Few elements, large type, generous space, exact alignment. One loud thing per post.
+- Vary the layout to the content; do not fall back to the same centred template every time.
+- Check your own geometry before answering: compute box sizes from font sizes and line counts so nothing
+  overflows, overlaps or leaves the safe area. Prefer flex/grid groups for text stacks.
+- Turkish typography: \`lang\` set, correct İ/ı, no hyphenation, balanced headline breaks, no widows,
+  uppercase display line-height ≥ 0.96.
+- Image slots: the slot's box must match its \`data-slot-ratio\` exactly (compute width/height). An empty slot
+  shows the brand placeholder; never put text over a slot.
+
+${status}
+
+Brand: ${brand.brand.name} (language: ${brand.brand.defaultLanguage})
+
+Brand files you may use (root-relative, served by the renderer):
+${assets.length ? assets.join("\n") : "- (none: no logo or brand images are available; do not draw or typeset a logo)"}
+
+<design_contract>
+${DESIGN_CONTRACT_MD}
+</design_contract>
+
+<brand_css>
+${describeBrandCss(brand.manifest)}
+</brand_css>
+
+<brand_tokens>
+${json(brand.promptTokens)}
+</brand_tokens>
+
+<design_md>
+${brand.designRules || "(none)"}
+</design_md>
+
+<voice_md>
+${brand.voice || "(none)"}
+</voice_md>
+
+<facts_json>
+${brand.facts ? json(brand.facts) : '{ "allowedNumbers": [], "note": "No brand facts: state no numbers and no claims about the brand or its products." }'}
+</facts_json>`;
+}
+
+function slotRequirement(brief: DesignBrief): string[] {
+  const used = brief.media.map((m) => `${m.path} (@${m.alias}, ${m.width}x${m.height})`);
+  switch (brief.imageSlot) {
+    case "user_upload":
+      if (brief.media.length > 0) {
+        return [
+          `Use the user's image(s) ${used.join(", ")} as the photo of this post: put each into an image slot in the FILLED state ` +
+            '(`data-slot-state="filled"` with exactly one `<img data-slot-image src="/media/…" alt="…">` inside), with a ' +
+            "data-slot-ratio that suits both the layout and the photo; crop with object-position if needed. " +
+            "Look at the attached image to see what it shows (subject position, background) and design around it.",
+        ];
+      }
+      return [
+        'The user will upload the photo later: include exactly one EMPTY image slot (`data-slot-state="empty"`) ' +
+          `as the photo area${brief.imageBrief ? ` for: ${brief.imageBrief}` : ""}. Give it a short Turkish data-slot-label ` +
+          '(max ~24 characters, e.g. "Ürün fotoğrafı") and a ratio that fits the layout. The design must work with a busy photo there.',
+      ];
+    case "ai_generate":
+      return [
+        "An AI-generated image will fill a slot later: include exactly one EMPTY image slot " +
+          `(\`data-slot-state="empty"\`) for it${brief.imageBrief ? ` (it will show: ${brief.imageBrief})` : ""}, ` +
+          'labelled e.g. "AI görsel". The design must work with a busy photo there.',
+      ];
+    default:
+      return [
+        brief.media.length > 0
+          ? `Use the user's image(s) ${used.join(", ")} in an image slot (filled state) if it serves the idea.`
+          : "No photo: a typographic/graphic design built from type, colour fields and brand components. No image slot.",
+      ];
+  }
+}
+
+export function briefBlock(brief: DesignBrief): string {
+  const slides =
+    brief.slides.min === brief.slides.max
+      ? `${brief.slides.min} slide(s)`
+      : `${brief.slides.min}–${brief.slides.max} slides (choose the number the story needs)`;
+  const requirements = [
+    `Artboard ${brief.preset.width}x${brief.preset.height} (${brief.preset.label}, ratio ${brief.preset.ratio}); safe area ${json(brief.preset.safeArea).replace(/\s+/g, " ")} px.`,
+    ...slotRequirement(brief),
+    ...(brief.contentType === "carousel"
+      ? [
+          "Carousel: a cover slide that stops the scroll, content slides that each make one point, a closing slide. " +
+            "All slides share one identical <style> block, the same artboard, margins and type styles; the logo/sign-off and the " +
+            "brand-counter stay at exactly the same position on every slide; the counter shows the slide position and total.",
+        ]
+      : []),
+    ...(brief.contentType === "story"
+      ? ["Story: keep text and logos clear of the top 250px and bottom 340px UI zones."]
+      : []),
+    `Copy language: ${brief.language}. Caption for ${brief.platforms.join(", ") || "instagram"} following VOICE (hashtags at the end).`,
+    "Numbers: only those in FACTS.allowedNumbers (slide counters excepted), in the design and in the caption.",
+  ];
+  return [
+    `- Title: ${brief.title}`,
+    `- Content type: ${brief.contentType}, ${slides}`,
+    `- Platforms: ${brief.platforms.join(", ") || "instagram"}`,
+    brief.date ? `- Planned date: ${brief.date}` : "",
+    brief.pillar ? `- Content pillar: ${brief.pillar}` : "",
+    `- Brief (from the plan, Turkish): ${brief.brief || "(empty: derive it from the title)"}`,
+    brief.imageBrief ? `- Image brief: ${brief.imageBrief}` : "",
+    brief.instructions ? `- Extra instructions from the user: ${brief.instructions}` : "",
+    "- Requirements:",
+    ...requirements.map((r) => `  - ${r}`),
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+export function buildGeneratePrompt(brief: DesignBrief, slideIds: string): string {
+  return `Design brief
+
+${briefBlock(brief)}
+
+Write the design now. Return JSON with:
+- \`slides\`: each \`{ "id": "slide-N", "html": "<!doctype html>..." }\`${slideIds}
+- \`caption\`: the post caption (VOICE rules, hashtags at the end)
+- \`rationale\`: 2–4 sentences on the idea and the key layout decision
+- \`critique\`: [] and \`changes\`: [] (empty in this first pass)`;
+}
+
+export function buildRevisePrompt(input: {
+  brief: DesignBrief;
+  imageNames: string[];
+  lint: unknown;
+  extraIssues: string[];
+  html: string;
+}): string {
+  const plural = input.imageNames.length > 1 ? "s" : "";
+  const carousel = input.brief.contentType === "carousel";
+  return `Critique and revise
+
+Below is your first-pass design for this brief, its rendered output (attached image${plural}: ${input.imageNames.join(", ")}),
+and the automatic linter report. Review it as the brand's senior art director would, then fix it.
+
+${briefBlock(input.brief)}
+
+1. Look at the render${plural} first, not the code. Judge honestly and specifically:
+   - hierarchy and focal point; is the one idea instantly readable on a phone?
+   - spacing rhythm and alignment to the margin / column grid; optical balance; empty areas that feel accidental
+   - typographic quality: sizes, weights, leading, tracking, line breaks, rag, widows, Turkish diacritics colliding
+   - brand fidelity to DESIGN and voice/facts fidelity
+   - anything that looks like generic AI output (template feel, decoration without purpose)
+   ${carousel ? "- carousel: do the slides read as one system (same margins, header/footer positions, type styles) and does the sequence work?" : ""}
+2. Fix every linter \`error\`. Fix \`warning\`s unless you have a design reason (say it in \`changes\`).
+   \`info\` items such as \`slot-empty\` are expected for empty slots.
+3. Improve the design based on your critique. Keep \`data-layer\` ids of layers that still exist.
+   Do not start over unless the first pass is fundamentally wrong; say so if you do.
+
+Return JSON with:
+- \`critique\`: the problems you found, most severe first: \`{ "issue", "severity": "high|medium|low", "fix" }\`
+- \`slides\`: the complete revised HTML for every slide (same ids)
+- \`caption\`: revised caption
+- \`rationale\`: 2–4 sentences
+- \`changes\`: list of what you changed
+
+<linter_report>
+${json(input.lint)}
+</linter_report>
+${input.extraIssues.length ? `\n<other_checks>\n${input.extraIssues.map((i) => `- ${i}`).join("\n")}\n</other_checks>\n` : ""}
+<first_pass_html>
+${input.html}
+</first_pass_html>`;
+}
+
+export function buildFixPrompt(input: {
+  brief: DesignBrief;
+  lint: unknown;
+  extraIssues: string[];
+  html: string;
+}): string {
+  return `Fix the remaining linter errors
+
+The revised design below still fails the automatic checks. Fix every \`error\` listed (and the other checks),
+changing as little as possible: keep the layout, copy, layer ids and style unless a fix requires a change.
+The attached image(s) show the current render.
+
+${briefBlock(input.brief)}
+
+Return JSON with \`critique\` (the errors you fixed), \`slides\` (complete HTML for every slide, same ids),
+\`caption\`, \`rationale\` and \`changes\`.
+
+<linter_report>
+${json(input.lint)}
+</linter_report>
+${input.extraIssues.length ? `\n<other_checks>\n${input.extraIssues.map((i) => `- ${i}`).join("\n")}\n</other_checks>\n` : ""}
+<current_html>
+${input.html}
+</current_html>`;
+}

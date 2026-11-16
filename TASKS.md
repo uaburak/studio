@@ -26,11 +26,12 @@ Son güncelleme: 2026-11-16. Mimari ve kararlar için: [PLAN.md](PLAN.md).
 | A1 | Tasarım kiti (F1-2) | xhigh | `packages/design-kit` | Tamam (denetlendi) |
 | A2 | Sohbet altyapısı: konuşma, mesaj, ajan turu ve plan kayıtları; API ve canlı akış | high | `apps/api`, `packages/contract` | Tamam (denetlendi) |
 | A3 | Başsız Claude çağrısının abonelikle doğrulanması | | `spikes/design-render` | Tamam: 5/5 çağrı başarılı (görsel okuma dahil); Read aracı klasör dışına çıkabildiği için worker'da araç verilmeyecek |
-| A4 | Worker üretim hattı: sohbet ajanı, aylık plan, post üretimi, kalite döngüsü, render, yükleme | xhigh | `apps/worker` | Çalışıyor |
+| A4 | Worker üretim hattı: sohbet ajanı, aylık plan, post üretimi, kalite döngüsü, render, yükleme | xhigh | `apps/worker` | Tamam (denetlendi): uçtan uca 3 post üretildi |
 | A5 | Marka profili: marka kiti yükleme, post çekme, analiz | high | `apps/api`, `apps/worker` | A4'ten sonra; post çekme Meta uygulamasını bekliyor |
 | A6 | Yayın motoru: Meta girişi, token kasası, zamanlayıcı | xhigh | `apps/api` | Meta uygulamasını bekliyor |
 | A7 | Ortak Swift paketi (macOS + iOS): API istemcisi, modeller, canlı akış | xhigh | `apps/apple/StudioKit` | Tamam (M1 içinde) |
 | A2b | Görsel takma adları ve @anmalar (arka uç) | medium | `apps/api`, `packages/contract` | Tamam (denetlendi) |
+| M2 | Model, efor ve kalan limit seçimi | high | `apps/api`, `packages/contract`, `apps/apple` | Tamam |
 | M1 | Native macOS uygulaması: Wecra'da onaylanan altı ekran, açık ve koyu mod (Burak öne aldı) | xhigh | `apps/apple` | Tamam: derleme ve birim testleri geçiyor; görsel inceleme Burak'ta |
 | A8 | Cloudflare'e dağıtım ve Access | high | `apps/api` | Burak'ın Cloudflare yetkilendirmesini bekliyor |
 

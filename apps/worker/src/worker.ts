@@ -1,4 +1,5 @@
 import path from "node:path";
+import type { AgentRuntime } from "./agent-runtime.ts";
 import type { WorkerConfig } from "./config.ts";
 import { type ConnectionState, HubConnection } from "./connection.ts";
 import { demoEcho } from "./jobs/demo-echo.ts";
@@ -7,12 +8,17 @@ import { FileOutbox, type Outbox } from "./outbox.ts";
 import { JobRegistry } from "./registry.ts";
 import { JobRunner } from "./runner.ts";
 import { nodeSocketFactory, type SocketFactory } from "./socket.ts";
+import { encodableUsageFrame } from "./usage-report.ts";
 
-export const WORKER_VERSION = "0.0.0";
+export const WORKER_VERSION = "0.1.0";
 
-/** The job types this worker can run. Real generation handlers arrive with F1-3 / F1-4. */
-export function createDefaultRegistry(): JobRegistry {
-  return new JobRegistry().register("demo.echo", demoEcho);
+/**
+ * The job types this worker can run: `demo.echo`, plus `chat.turn` and
+ * `content.generate` when an agent runtime (headless Claude) is given.
+ */
+export function createDefaultRegistry(agent?: AgentRuntime): JobRegistry {
+  const registry = new JobRegistry().register("demo.echo", demoEcho);
+  return agent ? agent.register(registry) : registry;
 }
 
 export interface StartWorkerOptions {
@@ -20,6 +26,11 @@ export interface StartWorkerOptions {
   logger: Logger;
   socketFactory?: SocketFactory;
   registry?: JobRegistry;
+  /**
+   * Claude-backed handlers. Its health decides which job types are announced; on a
+   * change the worker reconnects to announce the new set.
+   */
+  agent?: AgentRuntime;
   /** Defaults to a FileOutbox in `config.stateDir`. */
   outbox?: Outbox;
   onStateChange?: (state: ConnectionState) => void;
@@ -38,9 +49,25 @@ export interface RunningWorker {
 /** Wire config + registry + runner + hub connection together and start connecting. */
 export function startWorker(options: StartWorkerOptions): RunningWorker {
   const { config, logger } = options;
-  const registry = options.registry ?? createDefaultRegistry();
+  const agent = options.agent;
+  const registry = options.registry ?? createDefaultRegistry(agent);
+  const claudeTypes = new Set(["chat.turn", "content.generate"]);
+  const baseTypes = registry.types().filter((t) => !agent || !claudeTypes.has(t));
   const outbox = options.outbox ?? new FileOutbox(path.join(config.stateDir, "outbox.json"));
   let connection: HubConnection | undefined;
+  let usageUnsupported = false;
+  /** Latest subscription usage to the hub (`worker.usage`), when the contract knows the frame. */
+  const sendUsage = () => {
+    const report = agent?.usage.latest();
+    if (!report || !connection) return;
+    const frame = encodableUsageFrame(report);
+    if (!frame) {
+      if (!usageUnsupported) logger.debug("worker.usage is not in the contract yet; not sent");
+      usageUnsupported = true;
+      return;
+    }
+    connection.send(frame);
+  };
 
   const runner = new JobRunner({
     workerId: config.workerId,
@@ -60,13 +87,16 @@ export function startWorker(options: StartWorkerOptions): RunningWorker {
     url: config.hubUrl,
     token: config.token,
     workerId: config.workerId,
-    workerVersion: WORKER_VERSION,
-    capabilities: registry.types(),
+    capabilities: () => (agent ? agent.capabilities(baseTypes) : registry.types()),
+    workerVersion: () => `${WORKER_VERSION}${agent?.versionSuffix() ?? ""}`,
     backoff: config.backoff,
     pingIntervalMs: config.pingIntervalMs,
     socketFactory: options.socketFactory ?? nodeSocketFactory,
     helloFields: () => runner.helloFields(),
-    onReady: () => runner.onConnected(),
+    onReady: () => {
+      runner.onConnected();
+      sendUsage();
+    },
     onMessage: (message) => runner.handle(message),
     logger,
     ...(options.onStateChange ? { onStateChange: options.onStateChange } : {}),
@@ -76,6 +106,11 @@ export function startWorker(options: StartWorkerOptions): RunningWorker {
   connection.start();
 
   const conn = connection;
+  agent?.usage.onUpdate(() => sendUsage());
+  agent?.onHealthChange(() => {
+    logger.info("claude health changed: re-announcing capabilities to the hub");
+    conn.reannounce();
+  });
   return {
     connection: conn,
     runner,
@@ -85,10 +120,12 @@ export function startWorker(options: StartWorkerOptions): RunningWorker {
     async shutdown() {
       await runner.shutdown(config.shutdownTimeoutMs);
       conn.stop();
+      await agent?.stop();
     },
     stop() {
       runner.stop();
       conn.stop();
+      void agent?.stop();
     },
   };
 }

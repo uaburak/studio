@@ -1,3 +1,5 @@
+import { loadAgentSettings } from "./agent.ts";
+import { AgentRuntime } from "./agent-runtime.ts";
 import { loadConfig } from "./config.ts";
 import { createLogger } from "./log.ts";
 import { startWorker, WORKER_VERSION } from "./worker.ts";
@@ -16,7 +18,22 @@ if (!config.token) {
 logger.info(
   `studio worker ${WORKER_VERSION} (id: ${config.workerId}, concurrency: ${config.concurrency})`,
 );
-const worker = startWorker({ config, logger });
+const settings = loadAgentSettings();
+let agent: AgentRuntime | undefined;
+if (settings.enabled) {
+  agent = new AgentRuntime({ config, settings, logger });
+  // Self-test before connecting, so the first `hello` announces only what can run.
+  const health = await agent.start();
+  if (health.state === "unauthenticated" || health.state === "error") {
+    logger.error(
+      "Claude job types (chat.turn, content.generate) are NOT announced until this is fixed; " +
+        "such jobs wait in the queue. The worker re-checks every 5 minutes.",
+    );
+  }
+} else {
+  logger.warn("STUDIO_CLAUDE_ENABLED=0: running without the Claude-backed job types");
+}
+const worker = startWorker({ config, logger, ...(agent ? { agent } : {}) });
 
 let stopping = false;
 async function shutdown(signal: string) {

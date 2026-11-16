@@ -7,7 +7,10 @@ struct ComposerFooter: View {
     @Bindable var model: ConversationModel
 
     var body: some View {
+        // Mac status on the left; model, effort and usage grouped at the bottom right.
         HStack(spacing: 12) {
+            MacStatusView()
+            Spacer(minLength: 0)
             FooterMenu(title: model.agentChoice.model.displayName, help: "Model") {
                 Picker("Model", selection: $model.agentChoice.model) {
                     ForEach(AgentModel.knownCases, id: \.self) { Text($0.displayName).tag($0) }
@@ -23,8 +26,6 @@ struct ComposerFooter: View {
                 .labelsHidden()
             }
             UsageIndicator(usage: model.state?.presence?.usage ?? model.app.presence?.usage)
-            Spacer(minLength: 0)
-            MacStatusView()
         }
     }
 }

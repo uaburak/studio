@@ -195,6 +195,7 @@ export class JobRunner {
       this.logger.info(`[job ${job.id}] ${message}`, extra);
     const ctx: JobContext = {
       jobId: job.id,
+      job,
       attempt,
       workerId,
       signal: controller.signal,

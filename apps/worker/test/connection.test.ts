@@ -38,7 +38,7 @@ describe("HubConnection", () => {
       protocolVersion: 1,
       workerId: "mac-test",
       capabilities: ["demo.echo"],
-      workerVersion: "0.0.0",
+      workerVersion: "0.1.0",
       concurrency: 1,
       activeJobIds: [],
     });
