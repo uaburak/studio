@@ -184,6 +184,13 @@ final class LocalHost {
             lan = HostEnvironment.isPortFree(config.preferredLANPort, address: "0.0.0.0") && config.preferredLANPort != api
                 ? config.preferredLANPort : HostEnvironment.freePort(address: "0.0.0.0")
         }
+        // Remote Control must always go through the gateway: traffic sent straight to
+        // workerd on 127.0.0.1 counts as the Mac itself and skips device authentication.
+        // With LAN access off, run the gateway on loopback only, for the tunnel.
+        var tunnelGateway: Int?
+        if config.remoteControlEnabled, lan == nil {
+            tunnelGateway = HostEnvironment.freePort(address: "127.0.0.1")
+        }
         apiPort = api
         lanPort = lan
         try? JSONEncoder().encode(HostFile(apiPort: api, lanPort: lan, pid: getpid())).write(to: hostFile)
@@ -205,8 +212,17 @@ final class LocalHost {
             environment: wranglerEnv.merging(["CI": "1"]) { $1 }, workingDirectory: apiDir, logFile: logFile("migrate"))
         do {
             let process = try launcher.launch(migrate)
+            // A hung migration must not block startup forever (seen once on a first run).
+            let watchdog = Task {
+                try await Task.sleep(for: .seconds(120))
+                await process.terminate(grace: .seconds(3))
+            }
             let code = await process.waitForExit()
-            guard code == 0 else { return fail("Migration başarısız (çıkış kodu \(code)).", log: "migrate") }
+            let timedOut = watchdog.isCancelled == false && code == 143
+            watchdog.cancel()
+            guard code == 0 else {
+                return fail(timedOut ? "Migration 120 sn içinde bitmedi." : "Migration başarısız (çıkış kodu \(code)).", log: "migrate")
+            }
         } catch {
             return fail(error.localizedDescription, log: "migrate")
         }
@@ -238,6 +254,13 @@ final class LocalHost {
             supervise(.gateway, ProcessSpec(name: "gateway", executable: node, arguments: [gatewayScript.path],
                                             environment: env, workingDirectory: apiDir, logFile: logFile("gateway")))
             advertiser.start(name: BonjourAdvertiser.computerName, port: lan)
+        } else if let tunnelGateway {
+            var env = base
+            env["STUDIO_GATEWAY_HOST"] = "127.0.0.1"
+            env["STUDIO_GATEWAY_PORT"] = String(tunnelGateway)
+            env["STUDIO_API_PORT"] = String(api)
+            supervise(.gateway, ProcessSpec(name: "gateway", executable: node, arguments: [gatewayScript.path],
+                                            environment: env, workingDirectory: apiDir, logFile: logFile("gateway")))
         }
 
         // 7. Worker.
@@ -261,7 +284,13 @@ final class LocalHost {
         tunnelNote = nil
         if config.remoteControlEnabled {
             HostEnvironment.rotate(logFile("tunnel"))
-            let targetPort = lan ?? api
+            // Never the API port itself (see the gateway note above).
+            guard let targetPort = lan ?? tunnelGateway else {
+                tunnelNote = "Tünel için geçit başlatılamadı."
+                status = .running
+                onAPIURLChange?(apiURL)
+                return
+            }
             let localTargetURL = "http://127.0.0.1:\(targetPort)"
             if let cloudflared = HostEnvironment.which("cloudflared", path: path) {
                 let trimmedToken = config.tunnelToken?.trimmingCharacters(in: .whitespacesAndNewlines)

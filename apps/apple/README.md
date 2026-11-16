@@ -56,6 +56,64 @@ xcodebuild -project apps/apple/StudioIOS/StudioIOS.xcodeproj -scheme StudioIOS -
 - **Takvim**: Aylık ızgara + zamanlanmış post listesi, yayın bağlantısı ve iptal aksiyonu.
 - **Ayarlar & Eşleştirme**: Mac'teki 6 haneli kod ile eşleştirme (`PairingSheetViewController`), Anahtar Zinciri Bearer jetonu, Uzaktan Kumanda (`https://social.burakkoc.net`) anahtarı ve görünüm seçimi.
 
+## Mac sunucusu: API ve worker'ı uygulama çalıştırır (L1)
+
+Veriler ve üretim Mac'te. `StudioMac` açılınca (`studio.host.enabled`, varsayılan açık) `StudioMac/Host/LocalHost.swift`
+şunları alt süreç olarak başlatır, gözetir ve kapanışta durdurur:
+
+| Süreç | Komut | Adres |
+| --- | --- | --- |
+| migration (tek sefer) | `node wrangler.js d1 migrations apply DB --local --persist-to …` (120 sn zaman aşımı) | — |
+| API | `node wrangler.js dev --ip 127.0.0.1 --port 8790 --persist-to …` (`apps/api`) | `127.0.0.1:8790` |
+| yerel ağ geçidi | `node apps/api/scripts/lan-gateway.mjs` ("Yerel ağdan erişim" açıksa) | `0.0.0.0:8791` |
+| worker | `node --import tsx src/main.ts` (`apps/worker`) | API'ye `ws://127.0.0.1:8790/api/hub` |
+
+- **Durum klasörü:** `~/Library/Application Support/Studio/` → `api/state` (D1, R2, Durable Object), `worker/` (outbox,
+  Claude durum dosyaları), `logs/{migrate,api,gateway,worker}.log` (5 MB'ta bir önceki kuşak `.1` olur), `instance-id`,
+  `host.json` (son portlar). Repodaki `.wrangler/state` ile elle başlatılan geliştirme sunucusunun verisi ayrı kalır.
+- **Gözetim:** her alt süreç kendi süreç grubunda (`posix_spawn`); çökünce 1, 2, 4 … 30 sn beklemeyle yeniden başlar,
+  60 sn sağlıklı çalışınca sayaç sıfırlanır, art arda 8 hızlı çöküşte durur ("Yeniden başlat" ile tekrar). Lider süreç
+  bitince grubunda kalan her şey (ör. `workerd`) öldürülür. Durdurma: SIGTERM, 8 sn sonra SIGKILL; önce worker (işleri geri
+  verir), sonra geçit ve API. ⌘Q ve `kill <pid>` (SIGTERM) aynı yoldan kapatır.
+- **İkinci kopya yok:** açılışta son port ve 8790 `/api/health` ile yoklanır; yanıt bu durum klasörünün `instance-id`'sini
+  taşıyorsa (başka bir uygulama kopyası ya da çökmeden kalan süreçler) yeni süreç başlatılmaz, ona bağlanılır ("bağlandı").
+  Port başka bir şeyde (ör. elle açılmış `wrangler dev`) ise boş bir port seçilir.
+- **Araçlar:** Finder'dan açılan uygulamanın PATH'i kısadır; PATH bir kez giriş kabuğundan (`$SHELL -l -i -c`) okunur,
+  `node` ve `claude` oradan bulunur. Depo yolu Ayarlar → Mac sunucusu → "Depo klasörü" (varsayılan: uygulamanın derlendiği
+  depo, yoksa `~/Desktop/Burak/Code/Studio`); orada `pnpm install` yapılmış olmalı. **Node, wrangler ve worker'ın uygulama
+  paketine gömülmesi sonraki adım.**
+- **WORKER_TOKEN:** ilk açılışta rastgele üretilir, Anahtar Zinciri'nde (`net.burakkoc.studio` / `local-worker-token`)
+  saklanır, iki alt sürece yalnızca ortam değişkeniyle verilir (wrangler'a `--env-file` ile boş bir dosya gösterilir ki
+  `apps/api/.dev.vars` okunmasın). Depoya ya da diske yazılmaz.
+- **Ayarlar → "Mac sunucusu":** durum (çalışıyor / başlatılıyor / hata + son günlük satırları), süreç durumları,
+  "Yeniden başlat", "Yerel ağdan erişim", depo klasörü, kayıt klasörü. Anahtar kapatılırsa uygulama eskisi gibi "Sunucu"
+  adresine bağlanır.
+- **Bonjour:** geçit `_studio._tcp` olarak duyurulur (TXT: `name`, `api=1`, `pairing=required`). Info.plist:
+  `NSLocalNetworkUsageDescription`, `NSBonjourServices`. macOS güvenlik duvarı açıksa `node` için gelen bağlantı izni
+  sorulabilir.
+
+### Telefon eşleştirme
+
+1. Mac: Ayarlar → "Cihazlar" → **Telefon ekle**. 6 haneli kod çıkar (2 dakika, tek kullanımlık; yenisi eskisini geçersiz kılar).
+2. Telefon: Bonjour ile Mac'i bulur (`StudioBrowser`), kodu ve cihaz adını `POST /api/pairing/claim`'e gönderir
+   (`PairingClient`), dönen uzun cihaz anahtarını Anahtar Zinciri'ne yazar (`KeychainDeviceTokenStore`) ve sonraki her
+   istekte `Authorization: Bearer …` gönderir (`DeviceTokenAuth`).
+3. Mac: aynı bölümde eşleşmiş cihazlar listelenir; **Kaldır** anahtarı anında geçersiz kılar.
+
+Mac uygulamasının kendisi eşleşmez: `127.0.0.1`'e konuşur ve "yerel" sayılır. Elle deneme:
+
+```sh
+CODE=$(curl -s -X POST 127.0.0.1:8790/api/pairing/codes | jq -r .code)
+TOKEN=$(curl -s -X POST http://<mac-ip>:8791/api/pairing/claim -H 'content-type: application/json' \
+  -d "{\"code\":\"$CODE\",\"deviceName\":\"Deneme\",\"platform\":\"ios\"}" | jq -r .token)
+curl -s http://<mac-ip>:8791/api/brands                                  # 401
+curl -s http://<mac-ip>:8791/api/brands -H "Authorization: Bearer $TOKEN"  # 200
+```
+
+Testler: `StudioKitTests/PairingTests` (URLProtocol taklidiyle eşleştirme istemcisi, hata eşleme, Anahtar Zinciri gidiş-dönüş,
+TXT okuma), `StudioMacTests/HostSupervisorTests` (sahte süreç başlatıcıyla geri çekilme, sağlıklı çalışmada sıfırlama, pes
+etme, durdurma; gerçek `posix_spawn` ile günlük yakalama ve SIGTERM'i yok sayan süreç grubunun öldürülmesi).
+
 ## Kısayollar (`StudioMac`)
 
 ⌘N yeni sohbet · ⌘K ara · ⌃⌘S kenar çubuğu · ⌥⌘I sağ panel · ⌘[ / ⌘] geri / ileri · ⇧⌘P postlar · ⇧⌘K takvim · ⇧⌘M medya ·

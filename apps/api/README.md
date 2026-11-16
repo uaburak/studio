@@ -79,7 +79,52 @@ Listeler en yeniden eskiye sıralıdır; zamanlamalar `scheduledAt`'e göre arta
 **Yükleme sınırları:** izinli mime listesi ve tür başına boyut sınırı `ASSET_MIME_RULES` içinde (görsel 20 MiB, SVG 2 MiB, font 5 MiB, video ve ses 50 MiB, PDF 20 MiB).
 Dosya içeriği bildirilen türle eşleşmezse (ör. PNG adı altında metin) `415`. Dosyalar `nosniff` ve `sandbox` CSP ile sunulur (SVG içindeki betik çalışmaz).
 
-**Kimlik doğrulama:** `src/middleware/access.ts` içindeki `cloudflareAccess` tek giriş noktasıdır; şimdilik hiçbir şey yapmaz. Cloudflare Access kurulunca JWT doğrulaması buraya eklenecek.
+**Kimlik doğrulama:** `src/middleware/access.ts` içindeki `accessControl` tek giriş noktasıdır (aşağıda "Mac'te çalışma, erişim ve cihaz eşleştirme").
+
+## Mac'te çalışma, erişim ve cihaz eşleştirme (L1)
+
+API sahibin Mac'inde çalışır: Mac uygulaması `wrangler dev`'i `127.0.0.1:8790`'da, durumu
+`~/Library/Application Support/Studio/api/state` altında (`--persist-to`) başlatır, önce migration'ları uygular
+(ayrıntı: `apps/apple/README.md`). Telefonlar aynı ağdan **yerel ağ geçidi** ile gelir: `scripts/lan-gateway.mjs`
+(`0.0.0.0:8791` → `127.0.0.1:8790`, HTTP ve WebSocket, bağımlılıksız Node).
+
+**Neden geçit:** Miniflare `CF-Connecting-IP`'yi soketten yalnızca istemci göndermediyse yazar; ağdaki biri
+`CF-Connecting-IP: 127.0.0.1` gönderip "yerel" görünebilirdi (denendi). Bu yüzden workerd yalnızca `127.0.0.1`'i dinler;
+geçit başlığı gerçek karşı adresle **ezer** ve `X-Studio-Gateway: 1` ekler. Bu işareti taşıyan istek, karşı adresi
+`127.0.0.1` olsa bile (ör. ileride aynı Mac'teki tünel bağlayıcısı) asla yerel sayılmaz. L3'te tünel geçide bağlanmalı,
+doğrudan workerd'ye değil.
+
+**Kim girebilir** (`/api/*`, `accessControl`):
+
+| İstek                                                                | Sonuç                                                      |
+| -------------------------------------------------------------------- | ---------------------------------------------------------- |
+| `GET /api/health`, `POST /api/pairing/claim`                         | herkese açık (claim hız sınırlı)                           |
+| Bu Mac'ten doğrudan (`CF-Connecting-IP` loopback, geçit işareti yok) | `local`: her şey                                           |
+| `Authorization: Bearer <WORKER_TOKEN>`                               | `worker` (`/api/hub` ve `/api/worker/*` ayrıca bunu ister) |
+| `Authorization: Bearer <cihaz anahtarı>` (eşleşmiş, iptal edilmemiş) | `device`; `last_seen_at` en fazla dakikada bir yazılır     |
+| diğer her şey (adres bilinmiyorsa da)                                | `401 unauthorized`, `WWW-Authenticate: Bearer`             |
+
+Cihaz yönetimi (`POST /api/pairing/codes`, `GET /api/devices`, `POST /api/devices/{id}/revoke`) yalnızca `local`;
+cihaz ya da worker anahtarıyla `403 forbidden`. Yeni hata kodları: `unauthorized` 401, `forbidden` 403, `rate_limited` 429.
+
+**Eşleştirme** (şemalar: `packages/contract/src/device.ts`):
+
+1. Mac uygulaması `POST /api/pairing/codes` → `{ code, expiresAt }`: 6 hane, 2 dakika, tek kullanımlık; yeni kod
+   kullanılmamış eskileri geçersiz kılar (aynı anda tek geçerli kod).
+2. Telefon `POST /api/pairing/claim { code, deviceName, platform }` → `201 { device, token }`. Anahtar `sdt_` + 32
+   rastgele baytın base64url'i; sunucu yalnızca SHA-256'sını tutar, anahtar bir kez gösterilir. Kod koşullu bir
+   `UPDATE … WHERE used_at IS NULL AND expires_at > now` ile harcanır (yarışta ikinci istek kaybeder).
+   Yanlış, süresi dolmuş ya da kullanılmış kod aynı yanıtı alır: `401 unauthorized`.
+3. Hız sınırı: son 10 dakikada aynı adresten 5, tüm adreslerden toplam 20 başarısız deneme olunca her claim (doğru kod
+   dahil) `429 rate_limited` + `Retry-After` alır. 1 000 000 olasılığa karşı 10 dakikada en fazla 20 tahmin.
+4. `POST /api/devices/{id}/revoke` anahtarı anında geçersiz kılar (kayıt `revokedAt` ile listede kalır).
+
+Tablolar (`0006_devices`): `devices` (ad, platform, `token_hash` benzersiz, son görülme, iptal), `pairing_codes`
+(kod hash'i, bitiş, kullanım, cihaz), `pairing_failures` (adres, zaman; pencere dışındakiler her claim'de silinir).
+
+`GET /api/health` isteğe bağlı `instance` alanı taşır (`STUDIO_INSTANCE_ID`, Mac uygulaması verir): uygulama kendi çalışan
+kopyasını elle başlatılmış bir API'den ayırıp ona bağlanır. `wrangler.jsonc` `vars` içinde boş varsayılanla tanımlı;
+ortam değişkeni onu ezer. Elle `pnpm dev` ile çalışırken her şey eskisi gibidir (istekler 127.0.0.1'den gelir).
 
 ## İş kuyruğu ve Hub (F1-6)
 
@@ -355,7 +400,7 @@ indirgeyici `state.aliases`'ı tutar (snapshot'tan alır, `conversation.updated.
 
 ## Migration
 
-Şema `src/db/schema.ts`. Migration SQL'leri `migrations/` altında (`0000_init`, `0001_core_model`, `0002_job_queue`, `0003_chat`, `0004_attachment_aliases`).
+Şema `src/db/schema.ts`. Migration SQL'leri `migrations/` altında (`0000_init`, `0001_core_model`, `0002_job_queue`, `0003_chat`, `0004_attachment_aliases`, `0005_run_model_effort`, `0006_devices`, …).
 `0002` yalnızca `jobs` tablosuna sütun ve indeks ekler (tablo yeniden kurulmaz); yeni sütunların aralıkları API'de doğrulanır.
 `0003` yalnızca yeni tablolar ekler (konuşmalar, mesajlar, turlar, akış olayları, planlar, plan kalemleri).
 `0004` iki yeni tablo (`conversation_aliases`, `conversation_alias_names`) ve `messages.mentions` sütununu ekler (null = anma yok).
@@ -374,8 +419,8 @@ pnpm --filter @studio/api test
 ```
 
 Testler `@cloudflare/vitest-plugin` ile workerd içinde koşar. `test/apply-migrations.ts` her çalıştırmada tüm migration'ları
-test D1'ine uygular; R2 ve Durable Object da yerelde taklit edilir. Testlerde `WORKER_TOKEN` değeri `vitest.config.ts` içinde verilir.
-Dosyalar: `api.test.ts` (sağlık, OpenAPI, şema, hub), `brands`, `brand-profiles`, `assets`, `contents` (onay hash kuralı dahil),
+test D1'ine uygular; R2 ve Durable Object da yerelde taklit edilir. Testlerde `WORKER_TOKEN` değeri `vitest.config.ts` içinde verilir. Testlerin soketi olmadığı için istekler `test/helpers.ts` → `localFetch` ile `CF-Connecting-IP: 127.0.0.1` taşır (Mac'in kendisi gibi).
+Dosyalar: `api.test.ts` (sağlık, OpenAPI, şema, hub), `devices` (erişim matrisi: yerel, geçitten sahte 127.0.0.1, adres yok, worker anahtarı, cihaz anahtarı, iptal edilmiş anahtar, WebSocket; eşleştirme: mutlu yol, süresi dolmuş/tekrar kullanılan/yerine yenisi gelen kod, adres başına ve toplam hız sınırı, yalnızca hash saklanması), `brands`, `brand-profiles`, `assets`, `contents` (onay hash kuralı dahil),
 `jobs-schedules`, `hub` (yetkilendirme, bağlanınca dağıtım, öncelik/FIFO/kapasite, kiralama dolması ve yeniden kuyruk,
 en fazla deneme, heartbeat, tekrarlanan mesajlar, iptal, kopukken üretilen sonuç, Hub yeniden başlaması ve tahliye,
 düzgün kapanış, canlı akış), `chat` (tam akış: mesaj → tur + iş → worker deltaları ve plan → istemci akışı
