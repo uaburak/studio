@@ -1,0 +1,102 @@
+{
+  "source": "brand/venta/assets/product-venta-borinc.png",
+  "method": "median of ink pixels per region",
+  "regions": {
+    "band-green": [
+      420,
+      376,
+      360,
+      6
+    ],
+    "band-green-low": [
+      380,
+      902,
+      440,
+      6
+    ],
+    "hex-boron-orange": [
+      415,
+      412,
+      26,
+      26
+    ],
+    "hex-zinc-green": [
+      452,
+      412,
+      26,
+      26
+    ],
+    "wordmark-black": [
+      505,
+      515,
+      180,
+      45
+    ],
+    "borinc-green": [
+      535,
+      563,
+      120,
+      28
+    ],
+    "mtm-agro-grey": [
+      680,
+      422,
+      100,
+      12
+    ],
+    "body-text-grey": [
+      385,
+      650,
+      180,
+      10
+    ]
+  },
+  "samples": {
+    "band-green": {
+      "hex": "#66b052",
+      "inkPixels": 2160,
+      "of": 2160
+    },
+    "band-green-low": {
+      "hex": "#3c8529",
+      "inkPixels": 2616,
+      "of": 2640
+    },
+    "hex-boron-orange": {
+      "hex": "#e0a505",
+      "inkPixels": 675,
+      "of": 676
+    },
+    "hex-zinc-green": {
+      "hex": "#69b056",
+      "inkPixels": 669,
+      "of": 676
+    },
+    "wordmark-black": {
+      "hex": "#010101",
+      "inkPixels": 4304,
+      "of": 8100
+    },
+    "borinc-green": {
+      "hex": "#68a558",
+      "inkPixels": 1668,
+      "of": 3360
+    },
+    "mtm-agro-grey": {
+      "hex": "#2f2f2f",
+      "inkPixels": 368,
+      "of": 1200
+    },
+    "body-text-grey": {
+      "hex": "#777777",
+      "inkPixels": 457,
+      "of": 1800
+    },
+    "bag-surface": {
+      "hex": "#dadada"
+    },
+    "photo-background": {
+      "hex": "#ffffff"
+    }
+  }
+}

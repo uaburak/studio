@@ -1,0 +1,12 @@
+{
+  "id": "01-product-intro",
+  "brand": "venta",
+  "format": "1080x1350",
+  "slides": 1,
+  "brief": "Venta Borinc'i takipçilere tanıtan bir ürün postu. Gerçek ürün fotoğrafı büyük ve net görünsün. Mesaj: bor (B) ve çinkoyu (Zn) bir arada sunan bir mikro bitki besin maddeleri karışımı. Ambalajdaki B ve Zn altıgen rozetlerine gönderme yapılabilir. Çağrı: www.mtmagro.com.",
+  "requirements": [
+    "Use the real product photo /brand/assets/product-venta-borinc.png as an image layer.",
+    "One focal point: the pack. Headline short.",
+    "Include the brand sign-off (logo stand-in + www.mtmagro.com)."
+  ]
+}

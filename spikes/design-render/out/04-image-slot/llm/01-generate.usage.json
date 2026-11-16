@@ -1,0 +1,1 @@
+{"source":"Agent tool (fresh-context Opus 5.5 subagent standing in for claude -p)","wallMs":null,"subagentTokens":null,"note":"files were complete (written 13:15) but the subagent then hit the subscription 5-hour limit (HTTP 429) before replying, so the Agent tool returned no usage numbers"}

@@ -1,0 +1,11 @@
+{
+  "id": "02-typographic",
+  "brand": "venta",
+  "format": "1080x1350",
+  "slides": 1,
+  "brief": "Sadece tipografiyle kurulmuş bir bilgilendirme postu. Konu: etiketteki öneri — ürünün toprak ve/veya yaprak analizi yaptırılarak kullanılması tavsiye edilir. Ürün fotoğrafı kullanma. Güçlü, tek bir tipografik fikir; marka hissi ambalajdan gelsin.",
+  "requirements": [
+    "No photos. Type, colour fields and brand motifs only.",
+    "The message must stay faithful to the label sentence; do not add benefits or numbers."
+  ]
+}

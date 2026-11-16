@@ -1,0 +1,1 @@
+{"source":"Agent tool (fresh-context Opus 5.5 subagent standing in for claude -p)","wallMs":419237,"subagentTokens":130532,"toolUses":4,"note":"subagentTokens = total tokens processed by the subagent incl. its own Claude Code system prompt and tool round-trips; not directly comparable to a single claude -p call"}

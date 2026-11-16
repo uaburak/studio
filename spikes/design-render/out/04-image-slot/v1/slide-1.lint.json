@@ -1,0 +1,409 @@
+{
+  "contract": "v0",
+  "file": "out/04-image-slot/v1/slide-1.html",
+  "artboard": {
+    "width": 1080,
+    "height": 1350
+  },
+  "ok": false,
+  "summary": {
+    "errors": 2,
+    "warnings": 1,
+    "info": 1
+  },
+  "issues": [
+    {
+      "rule": "text-occluded",
+      "severity": "error",
+      "layer": "badge-b-label",
+      "message": "Text is painted underneath \"badge-b-hex\" (3/3 sample points covered), so it is not visible. Fix stacking (z-index / DOM order)."
+    },
+    {
+      "rule": "text-occluded",
+      "severity": "error",
+      "layer": "badge-zn-label",
+      "message": "Text is painted underneath \"badge-zn-hex\" (3/3 sample points covered), so it is not visible. Fix stacking (z-index / DOM order)."
+    },
+    {
+      "rule": "small-font-size",
+      "severity": "warning",
+      "layer": "web-address",
+      "message": "Smallest text is 24px; body copy reads better at ≥ 28px.",
+      "data": {
+        "fontSize": 24
+      }
+    },
+    {
+      "rule": "slot-empty",
+      "severity": "info",
+      "layer": "field-photo",
+      "message": "Slot is empty: fine for a draft, blocks publishing."
+    }
+  ],
+  "layers": [
+    {
+      "id": "field-photo",
+      "type": "slot",
+      "role": null,
+      "parent": null,
+      "rect": {
+        "x": 0,
+        "y": 0,
+        "w": 1080,
+        "h": 810
+      },
+      "visible": true
+    },
+    {
+      "id": "label-band",
+      "type": "shape",
+      "role": "decoration",
+      "parent": null,
+      "rect": {
+        "x": 0,
+        "y": 810,
+        "w": 1080,
+        "h": 16
+      },
+      "visible": true
+    },
+    {
+      "id": "copy",
+      "type": "group",
+      "role": null,
+      "parent": null,
+      "rect": {
+        "x": 72,
+        "y": 920,
+        "w": 936,
+        "h": 229
+      },
+      "visible": true
+    },
+    {
+      "id": "statement",
+      "type": "group",
+      "role": null,
+      "parent": "copy",
+      "rect": {
+        "x": 72,
+        "y": 920,
+        "w": 827,
+        "h": 156
+      },
+      "visible": true
+    },
+    {
+      "id": "headline",
+      "type": "text",
+      "role": "headline",
+      "parent": "statement",
+      "rect": {
+        "x": 72,
+        "y": 920,
+        "w": 827,
+        "h": 92
+      },
+      "visible": true
+    },
+    {
+      "id": "subhead",
+      "type": "text",
+      "role": "subhead",
+      "parent": "statement",
+      "rect": {
+        "x": 72,
+        "y": 1028,
+        "w": 528,
+        "h": 48
+      },
+      "visible": true
+    },
+    {
+      "id": "label-note",
+      "type": "text",
+      "role": "body",
+      "parent": "copy",
+      "rect": {
+        "x": 72,
+        "y": 1108,
+        "w": 558,
+        "h": 41
+      },
+      "visible": true
+    },
+    {
+      "id": "badge-b",
+      "type": "group",
+      "role": "badge",
+      "parent": null,
+      "rect": {
+        "x": 752,
+        "y": 1036,
+        "w": 120,
+        "h": 104
+      },
+      "visible": true
+    },
+    {
+      "id": "badge-b-hex",
+      "type": "shape",
+      "role": "decoration",
+      "parent": "badge-b",
+      "rect": {
+        "x": 752,
+        "y": 1036,
+        "w": 120,
+        "h": 104
+      },
+      "visible": true
+    },
+    {
+      "id": "badge-b-label",
+      "type": "text",
+      "role": "badge",
+      "parent": "badge-b",
+      "rect": {
+        "x": 794,
+        "y": 1064,
+        "w": 37,
+        "h": 48
+      },
+      "visible": true
+    },
+    {
+      "id": "badge-zn",
+      "type": "group",
+      "role": "badge",
+      "parent": null,
+      "rect": {
+        "x": 888,
+        "y": 1036,
+        "w": 120,
+        "h": 104
+      },
+      "visible": true
+    },
+    {
+      "id": "badge-zn-hex",
+      "type": "shape",
+      "role": "decoration",
+      "parent": "badge-zn",
+      "rect": {
+        "x": 888,
+        "y": 1036,
+        "w": 120,
+        "h": 104
+      },
+      "visible": true
+    },
+    {
+      "id": "badge-zn-label",
+      "type": "text",
+      "role": "badge",
+      "parent": "badge-zn",
+      "rect": {
+        "x": 915,
+        "y": 1064,
+        "w": 65,
+        "h": 48
+      },
+      "visible": true
+    },
+    {
+      "id": "sign-off",
+      "type": "group",
+      "role": null,
+      "parent": null,
+      "rect": {
+        "x": 72,
+        "y": 1238,
+        "w": 936,
+        "h": 40
+      },
+      "visible": true
+    },
+    {
+      "id": "logo-venta",
+      "type": "logo",
+      "role": null,
+      "parent": "sign-off",
+      "rect": {
+        "x": 72,
+        "y": 1238,
+        "w": 248,
+        "h": 40
+      },
+      "visible": true
+    },
+    {
+      "id": "web-address",
+      "type": "text",
+      "role": "caption",
+      "parent": "sign-off",
+      "rect": {
+        "x": 749,
+        "y": 1242,
+        "w": 259,
+        "h": 31
+      },
+      "visible": true
+    }
+  ],
+  "text": [
+    {
+      "id": "headline",
+      "role": "headline",
+      "lines": 1,
+      "fontSize": 88,
+      "minFontSize": 88,
+      "weight": "900",
+      "family": "Archivo",
+      "color": "rgb(11, 11, 11)",
+      "clipText": false,
+      "textRect": {
+        "x": 72,
+        "y": 931,
+        "w": 827,
+        "h": 65
+      },
+      "chars": 12,
+      "contrast": {
+        "median": 19.68,
+        "worst": 19.68,
+        "required": 3,
+        "background": "rgb(255,255,255)"
+      }
+    },
+    {
+      "id": "subhead",
+      "role": "subhead",
+      "lines": 1,
+      "fontSize": 40,
+      "minFontSize": 40,
+      "weight": "700",
+      "family": "Montserrat",
+      "color": "rgb(11, 11, 11)",
+      "clipText": false,
+      "textRect": {
+        "x": 72,
+        "y": 1033,
+        "w": 528,
+        "h": 33
+      },
+      "chars": 27,
+      "contrast": {
+        "median": 19.68,
+        "worst": 19.68,
+        "required": 3,
+        "background": "rgb(255,255,255)"
+      }
+    },
+    {
+      "id": "label-note",
+      "role": "body",
+      "lines": 1,
+      "fontSize": 30,
+      "minFontSize": 30,
+      "weight": "500",
+      "family": "Montserrat",
+      "color": "rgb(47, 47, 47)",
+      "clipText": false,
+      "textRect": {
+        "x": 72,
+        "y": 1115,
+        "w": 558,
+        "h": 25
+      },
+      "chars": 34,
+      "contrast": {
+        "median": 13.39,
+        "worst": 13.39,
+        "required": 4.5,
+        "background": "rgb(255,255,255)"
+      }
+    },
+    {
+      "id": "badge-b-label",
+      "role": "badge",
+      "lines": 1,
+      "fontSize": 48,
+      "minFontSize": 48,
+      "weight": "700",
+      "family": "Montserrat",
+      "color": "rgb(11, 11, 11)",
+      "clipText": false,
+      "textRect": {
+        "x": 794,
+        "y": 1067,
+        "w": 37,
+        "h": 39
+      },
+      "chars": 1,
+      "contrast": {
+        "median": 8.95,
+        "worst": 8.95,
+        "required": 3,
+        "background": "rgb(224,165,5)"
+      }
+    },
+    {
+      "id": "badge-zn-label",
+      "role": "badge",
+      "lines": 1,
+      "fontSize": 48,
+      "minFontSize": 48,
+      "weight": "700",
+      "family": "Montserrat",
+      "color": "rgb(11, 11, 11)",
+      "clipText": false,
+      "textRect": {
+        "x": 915,
+        "y": 1067,
+        "w": 65,
+        "h": 39
+      },
+      "chars": 2,
+      "contrast": {
+        "median": 7.4,
+        "worst": 7.4,
+        "required": 3,
+        "background": "rgb(102,176,82)"
+      }
+    },
+    {
+      "id": "web-address",
+      "role": "caption",
+      "lines": 1,
+      "fontSize": 24,
+      "minFontSize": 24,
+      "weight": "500",
+      "family": "Montserrat",
+      "color": "rgb(47, 47, 47)",
+      "clipText": false,
+      "textRect": {
+        "x": 749,
+        "y": 1247,
+        "w": 259,
+        "h": 20
+      },
+      "chars": 15,
+      "contrast": {
+        "median": 13.39,
+        "worst": 13.39,
+        "required": 4.5,
+        "background": "rgb(255,255,255)"
+      }
+    }
+  ],
+  "fontsLoaded": [
+    "Archivo italic 100 900 62% 125%",
+    "Archivo italic 100 900 62% 125%",
+    "Montserrat normal 100 900 normal",
+    "Montserrat normal 100 900 normal"
+  ],
+  "timing": {
+    "renderMs": 205,
+    "totalMs": 259
+  }
+}

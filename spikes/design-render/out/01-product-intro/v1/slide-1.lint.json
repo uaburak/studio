@@ -1,0 +1,420 @@
+{
+  "contract": "v0",
+  "file": "out/01-product-intro/v1/slide-1.html",
+  "artboard": {
+    "width": 1080,
+    "height": 1350
+  },
+  "ok": false,
+  "summary": {
+    "errors": 2,
+    "warnings": 0,
+    "info": 0
+  },
+  "issues": [
+    {
+      "rule": "text-occluded",
+      "severity": "error",
+      "layer": "badge-b-letter",
+      "message": "Text is painted underneath \"badge-b-hex\" (3/3 sample points covered), so it is not visible. Fix stacking (z-index / DOM order)."
+    },
+    {
+      "rule": "text-occluded",
+      "severity": "error",
+      "layer": "badge-zn-letter",
+      "message": "Text is painted underneath \"badge-zn-hex\" (3/3 sample points covered), so it is not visible. Fix stacking (z-index / DOM order)."
+    }
+  ],
+  "layers": [
+    {
+      "id": "product-photo",
+      "type": "image",
+      "role": null,
+      "parent": null,
+      "rect": {
+        "x": 108,
+        "y": 200,
+        "w": 1160,
+        "h": 1160
+      },
+      "visible": true
+    },
+    {
+      "id": "label-band",
+      "type": "shape",
+      "role": "decoration",
+      "parent": null,
+      "rect": {
+        "x": 0,
+        "y": 1326,
+        "w": 1080,
+        "h": 24
+      },
+      "visible": true
+    },
+    {
+      "id": "label-band-tab",
+      "type": "shape",
+      "role": "decoration",
+      "parent": null,
+      "rect": {
+        "x": 444,
+        "y": 1302,
+        "w": 192,
+        "h": 32
+      },
+      "visible": true
+    },
+    {
+      "id": "intro",
+      "type": "group",
+      "role": null,
+      "parent": null,
+      "rect": {
+        "x": 72,
+        "y": 72,
+        "w": 936,
+        "h": 319
+      },
+      "visible": true
+    },
+    {
+      "id": "eyebrow-stack",
+      "type": "group",
+      "role": null,
+      "parent": "intro",
+      "rect": {
+        "x": 72,
+        "y": 72,
+        "w": 936,
+        "h": 53
+      },
+      "visible": true
+    },
+    {
+      "id": "eyebrow",
+      "type": "text",
+      "role": "eyebrow",
+      "parent": "eyebrow-stack",
+      "rect": {
+        "x": 72,
+        "y": 72,
+        "w": 253,
+        "h": 31
+      },
+      "visible": true
+    },
+    {
+      "id": "eyebrow-rule",
+      "type": "shape",
+      "role": "decoration",
+      "parent": "eyebrow-stack",
+      "rect": {
+        "x": 72,
+        "y": 119,
+        "w": 56,
+        "h": 6
+      },
+      "visible": true
+    },
+    {
+      "id": "headline",
+      "type": "text",
+      "role": "headline",
+      "parent": "intro",
+      "rect": {
+        "x": 72,
+        "y": 149,
+        "w": 936,
+        "h": 176
+      },
+      "visible": true
+    },
+    {
+      "id": "subhead",
+      "type": "text",
+      "role": "subhead",
+      "parent": "intro",
+      "rect": {
+        "x": 72,
+        "y": 349,
+        "w": 936,
+        "h": 41
+      },
+      "visible": true
+    },
+    {
+      "id": "badge-b",
+      "type": "group",
+      "role": null,
+      "parent": null,
+      "rect": {
+        "x": 72,
+        "y": 720,
+        "w": 120,
+        "h": 104
+      },
+      "visible": true
+    },
+    {
+      "id": "badge-b-hex",
+      "type": "shape",
+      "role": "badge",
+      "parent": "badge-b",
+      "rect": {
+        "x": 72,
+        "y": 720,
+        "w": 120,
+        "h": 104
+      },
+      "visible": true
+    },
+    {
+      "id": "badge-b-letter",
+      "type": "text",
+      "role": "badge",
+      "parent": "badge-b",
+      "rect": {
+        "x": 115,
+        "y": 750,
+        "w": 34,
+        "h": 44
+      },
+      "visible": true
+    },
+    {
+      "id": "badge-zn",
+      "type": "group",
+      "role": null,
+      "parent": null,
+      "rect": {
+        "x": 168,
+        "y": 776,
+        "w": 120,
+        "h": 104
+      },
+      "visible": true
+    },
+    {
+      "id": "badge-zn-hex",
+      "type": "shape",
+      "role": "badge",
+      "parent": "badge-zn",
+      "rect": {
+        "x": 168,
+        "y": 776,
+        "w": 120,
+        "h": 104
+      },
+      "visible": true
+    },
+    {
+      "id": "badge-zn-letter",
+      "type": "text",
+      "role": "badge",
+      "parent": "badge-zn",
+      "rect": {
+        "x": 198,
+        "y": 806,
+        "w": 60,
+        "h": 44
+      },
+      "visible": true
+    },
+    {
+      "id": "sign-off",
+      "type": "group",
+      "role": null,
+      "parent": null,
+      "rect": {
+        "x": 72,
+        "y": 1232,
+        "w": 936,
+        "h": 48
+      },
+      "visible": true
+    },
+    {
+      "id": "logo-venta",
+      "type": "logo",
+      "role": null,
+      "parent": "sign-off",
+      "rect": {
+        "x": 72,
+        "y": 1236,
+        "w": 248,
+        "h": 40
+      },
+      "visible": true
+    },
+    {
+      "id": "web",
+      "type": "text",
+      "role": "cta",
+      "parent": "sign-off",
+      "rect": {
+        "x": 715,
+        "y": 1238,
+        "w": 293,
+        "h": 36
+      },
+      "visible": true
+    }
+  ],
+  "text": [
+    {
+      "id": "eyebrow",
+      "role": "eyebrow",
+      "lines": 1,
+      "fontSize": 26,
+      "minFontSize": 26,
+      "weight": "700",
+      "family": "Montserrat",
+      "color": "rgb(60, 133, 41)",
+      "clipText": false,
+      "textRect": {
+        "x": 72,
+        "y": 75,
+        "w": 253,
+        "h": 22
+      },
+      "chars": 12,
+      "contrast": {
+        "median": 4.59,
+        "worst": 4.59,
+        "required": 4.5,
+        "background": "rgb(255,255,255)"
+      }
+    },
+    {
+      "id": "headline",
+      "role": "headline",
+      "lines": 2,
+      "fontSize": 88,
+      "minFontSize": 88,
+      "weight": "900",
+      "family": "Archivo",
+      "color": "rgb(11, 11, 11)",
+      "clipText": false,
+      "textRect": {
+        "x": 72,
+        "y": 158,
+        "w": 827,
+        "h": 153
+      },
+      "chars": 21,
+      "contrast": {
+        "median": 19.68,
+        "worst": 19.68,
+        "required": 3,
+        "background": "rgb(255,255,255)"
+      }
+    },
+    {
+      "id": "subhead",
+      "role": "subhead",
+      "lines": 1,
+      "fontSize": 30,
+      "minFontSize": 30,
+      "weight": "500",
+      "family": "Montserrat",
+      "color": "rgb(47, 47, 47)",
+      "clipText": false,
+      "textRect": {
+        "x": 72,
+        "y": 356,
+        "w": 552,
+        "h": 25
+      },
+      "chars": 37,
+      "contrast": {
+        "median": 13.39,
+        "worst": 13.39,
+        "required": 4.5,
+        "background": "rgb(255,255,255)"
+      }
+    },
+    {
+      "id": "badge-b-letter",
+      "role": "badge",
+      "lines": 1,
+      "fontSize": 44,
+      "minFontSize": 44,
+      "weight": "700",
+      "family": "Montserrat",
+      "color": "rgb(11, 11, 11)",
+      "clipText": false,
+      "textRect": {
+        "x": 115,
+        "y": 753,
+        "w": 34,
+        "h": 37
+      },
+      "chars": 1,
+      "contrast": {
+        "median": 8.95,
+        "worst": 8.95,
+        "required": 3,
+        "background": "rgb(224,165,5)"
+      }
+    },
+    {
+      "id": "badge-zn-letter",
+      "role": "badge",
+      "lines": 1,
+      "fontSize": 44,
+      "minFontSize": 44,
+      "weight": "700",
+      "family": "Montserrat",
+      "color": "rgb(11, 11, 11)",
+      "clipText": false,
+      "textRect": {
+        "x": 198,
+        "y": 809,
+        "w": 60,
+        "h": 37
+      },
+      "chars": 2,
+      "contrast": {
+        "median": 7.4,
+        "worst": 7.4,
+        "required": 3,
+        "background": "rgb(102,176,82)"
+      }
+    },
+    {
+      "id": "web",
+      "role": "cta",
+      "lines": 1,
+      "fontSize": 28,
+      "minFontSize": 28,
+      "weight": "500",
+      "family": "Montserrat",
+      "color": "rgb(47, 47, 47)",
+      "clipText": false,
+      "textRect": {
+        "x": 715,
+        "y": 1244,
+        "w": 293,
+        "h": 23
+      },
+      "chars": 15,
+      "contrast": {
+        "median": 13.39,
+        "worst": 13.39,
+        "required": 4.5,
+        "background": "rgb(255,255,255)"
+      }
+    }
+  ],
+  "fontsLoaded": [
+    "Archivo italic 100 900 62% 125%",
+    "Archivo italic 100 900 62% 125%",
+    "Montserrat normal 100 900 normal",
+    "Montserrat normal 100 900 normal"
+  ],
+  "timing": {
+    "renderMs": 411,
+    "totalMs": 489
+  }
+}

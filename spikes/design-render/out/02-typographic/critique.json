@@ -1,0 +1,45 @@
+{
+  "critique": [
+    {
+      "issue": "Accidental void: the headline sits at the top of the field and ends at y≈504, leaving ~390px of empty mist above the band. Type and band/label block read as two unrelated halves, the post is top-heavy and the band's position looks arbitrary.",
+      "severity": "high",
+      "fix": "Anchor the display block to the band (last baseline ~72px above the tab) inside a full-height statement group with space-between, and put the label heading at the top of the field so the white space becomes a deliberate gap between heading and display type."
+    },
+    {
+      "issue": "The eyebrow 'Etiketteki öneri' sits below the band, ~500px from the headline it explains. On a phone the loud element reads as a bare noun phrase ('Toprak/yaprak analizi') with no context; the recommendation itself only appears in 36px body text.",
+      "severity": "high",
+      "fix": "Move eyebrow + green rule to the top of the statement so heading and display caps read as one line of thought: Etiketteki öneri, toprak/yaprak analizi."
+    },
+    {
+      "issue": "Body copy paraphrases the label with a mixed construction ('…’i analiz yaptırarak kullanmanız tavsiye edilir': second-person possessive plus impersonal passive) and drops 'toprak ve/veya yaprak', so the only full sentence on the post is looser than the label it presents.",
+      "severity": "medium",
+      "fix": "Use the label sentence near-verbatim, with the product name in place of 'ürünün': 'Venta Borinc’in toprak ve/veya yaprak analizi yaptırılarak kullanılması tavsiye edilir.'"
+    },
+    {
+      "issue": "The upper field is the mist tint, not the pack's white: the black wide italic caps sit on a greyish field and the pack's white, clinical feel is lost. Moving the green-deep eyebrow onto mist would also drop it to ~4.1:1, below the 4.5:1 minimum.",
+      "severity": "medium",
+      "fix": "Paper above the band (the bag), mist only below the band as the label panel that holds body and sign-off."
+    },
+    {
+      "issue": "Body wraps on its own into two uneven lines that use 569 of 776px; the rag is accidental and the lower block looks under-filled.",
+      "severity": "low",
+      "fix": "Three deliberate, balanced lines (~27–30 characters each) in the same 36px / 1.34 body style."
+    },
+    {
+      "issue": "Lower block spacing has no single rhythm: band→eyebrow 67px, rule→body 24px, body→sign-off 75px.",
+      "severity": "low",
+      "fix": "Lower panel uses 64px band→body and ~72px body→sign-off, with the 72px bottom margin kept."
+    }
+  ],
+  "changes": [
+    "Linter v1 had no errors or warnings; nothing to fix mechanically. Headline copy, 152px size, 0.98 leading, green-deep slash, band geometry, logo and sign-off position are kept.",
+    "Removed the upper mist field 'bag-field': the area above the band is now the paper artboard (the white bag). Added 'label-field', a mist panel from the band down to the bottom edge.",
+    "New group 'statement' (72,72, 936×792, flex column, space-between) holds 'label-text' at the top and 'headline' at the bottom, so the display caps rest ~72px above the band tab and stay anchored if the copy changes.",
+    "'label-text' now groups only 'eyebrow' and 'eyebrow-rule' (16px gap) and sits top-left of the white field; the eyebrow stays green-deep on paper (4.59:1).",
+    "Moved 'label-band' from y 892 to y 912.",
+    "'body' is now a top-level text layer at (72,1016), 776px wide, with the label sentence near-verbatim: 'Venta Borinc’in toprak ve/veya yaprak analizi yaptırılarak kullanılması tavsiye edilir.' in three deliberate lines; removed its 8px margin hack.",
+    "Rewrote the caption: first line works alone, product description from the label, closes with 'Kullanmadan önce etiketi okuyunuz.', six hashtags from VOICE.md, no numbers."
+  ],
+  "rationale_v1": "The idea comes from the label's own words: TOPRAK and YAPRAK differ only in their first two letters, so stacked in the wide black italic display caps their PRAK endings line up. The label's 've/veya' becomes the post's only colour accent, a green slash that echoes the slant of the VENTA logotype. The layout copies the pack: a mist 'bag surface' carries the one loud headline, and a green label band with the raised centre tab separates it from a white 'label' area, where the recommendation is set in label typography (green-deep eyebrow, short green rule, graphite text) above the standard sign-off. The copy stays with the label sentence, with no benefits, doses or numbers added. The B/Zn hexagon badges are left out because the topic is analysis, not the elements, and white letters on amber or leaf green would fail the contrast check.",
+  "rationale_v2": "The idea stays: the label's own words, TOPRAK/YAPRAK ANALİZİ, set in the pack's wide black italic caps and introduced by the label heading 'Etiketteki öneri' with its short green rule. The revision rebuilds the composition like the pack: a white bag field where the display block rests on the green label band, and a mist label panel below it that carries the label sentence near-verbatim and the fixed sign-off. Nothing is added beyond the label (no numbers, no benefits, no photo); the only shorthand is the '/' for 've/veya' in the display line, and the body spells it out."
+}

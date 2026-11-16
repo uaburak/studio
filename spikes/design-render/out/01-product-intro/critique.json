@@ -1,0 +1,52 @@
+{
+  "critique": [
+    {
+      "issue": "The B and Zn letters do not render: the hexagons show as plain amber and green blobs, so the pack's element-badge cue is lost and they read as decoration. The clip-path makes each hex its own paint layer, which covers the in-flow letter. The linter measured the letters but cannot see that they are hidden.",
+      "severity": "high",
+      "fix": "Give the letters position:relative and z-index:1 so they paint above the hex. Keep the letters ink: white measures about 2.2:1 on amber and 2.7:1 on green, below the 3:1 floor."
+    },
+    {
+      "issue": "The left third under the headline looks like leftover space. The bag is pushed right, leaving a ~360px empty column beside it, and the two hexagons float in that column at an arbitrary height that lines up with nothing on the pack or the grid. The composition reads as unresolved and the badges have no purpose.",
+      "severity": "high",
+      "fix": "Turn the left column into an element key: the nested B/Zn badges with the category line beneath them, as one group on the 72px margin, vertically centred on the bag. Put the bag's right edge on the 1008px margin so both outer axes are used."
+    },
+    {
+      "issue": "The 40px sign-off logo uses the same wide black italic as the headline and the pack's own logotype. The page shows three loud VENTA marks, and the bottom-left competes with the pack as the focal point. The logo is also centre-aligned, so its foot sits below the URL baseline.",
+      "severity": "medium",
+      "fix": "Reduce the logo to 32px high (height-driven) and baseline-align it with www.mtmagro.com."
+    },
+    {
+      "issue": "The raised centre tab on the bottom band sits under nothing, because the layout is left-aligned and the bag is off-centre. It reads like a phone home indicator or a pill button rather than the label quote.",
+      "severity": "medium",
+      "fix": "Remove the tab and keep the plain 24px green label band on the bottom edge."
+    },
+    {
+      "issue": "The vertical rhythm is uneven. The ~44px gap from the subhead to the top of the bag is the tightest on the page, so the bag's top corner crowds the subhead line, while every other gap is generous.",
+      "severity": "medium",
+      "fix": "Move the subhead into the element key, so the intro is eyebrow plus headline only. The gaps become ~72-86px from headline to bag, ~78px from bag base to sign-off, and 32px from badges to category line."
+    },
+    {
+      "issue": "The product photo is rendered at 96.7% of its native size, although the bag can be shown at 100% (its largest sharp size) and still fit between the headline and the sign-off.",
+      "severity": "low",
+      "fix": "Render the photo at 1200px (native). The bag is about 765px tall, 57% of the artboard height."
+    },
+    {
+      "issue": "The category line ends with a full stop. Placed under the badges it works as a label, and a noun-phrase label reads cleaner without one.",
+      "severity": "low",
+      "fix": "Drop the full stop and balance the line into 'Mikro bitki besin / maddeleri karışımı'."
+    }
+  ],
+  "changes": [
+    "badge-b-letter and badge-zn-letter: added position:relative and z-index:1 so B and Zn are visible on the hexagons. The letters stay ink rather than the pack's white, because white fails the 3:1 contrast floor on amber (~2.2:1) and green (~2.7:1).",
+    "New group element-key (left 72, top 640, width 320, flex column, 32px gap) containing a new group badge-pair and subhead. badge-pair is a CSS grid (96/24/96 x 56/48/56) that nests badge-b and badge-zn at the same 96/56 offset as before. badge-b and badge-zn are no longer absolutely positioned top-level layers.",
+    "subhead: moved out of intro into element-key, full stop removed, wraps to two balanced lines 'Mikro bitki besin / maddeleri karışımı' in the 320px column.",
+    "intro: now holds only eyebrow-stack and headline; the ids eyebrow, eyebrow-rule and headline are unchanged.",
+    "product-photo: 1160px to 1200px (native, no upscale), moved to left 147 / top 164. The bag spans about y 397-1162 and its right edge sits on the 1008px margin, in line with the URL.",
+    "label-band-tab removed; label-band kept unchanged.",
+    "logo-venta: 40px to 32px high (height-driven, width auto). The sign-off is now baseline-aligned, moved to top 1240 and has no fixed height.",
+    "The linter reported no errors or warnings, so there was nothing to fix from it. The type weights are still 900/700/500, there are still no numbers in the image copy, and the image has 15 words.",
+    "Caption rewritten. The first line works on its own. It refers to the pack's B/Zn badges, adds the label's soil/leaf analysis advice and 'Kullanmadan önce etiketi okuyunuz.', and ends with 'Detaylı bilgi: www.mtmagro.com' followed by 6 hashtags."
+  ],
+  "rationale_v1": "The idea is the pack's own story, two elements in one bag: the real Venta Borinc bag is the single focal point at about 56% of the artboard height, right-aligned to the margin on white, while the B and Zn hexagons from the label form a honeycomb pair on its left that leads the eye into it. A wide black italic display-caps headline (BOR VE ÇİNKO / BİR ARADA) quotes the VENTA logotype, and the bottom closes with the green label band and raised centre tab plus the VENTA logo and www.mtmagro.com sign-off. The badge letters are set in ink rather than the pack's white, because white on amber (about 2.2:1) and on green (about 2.7:1) fails the 3:1 contrast rule; BORINC is typed in capitals so that lang=tr uppercasing cannot turn it into BORİNC. No numbers, doses or benefits are stated; everything on the image comes from facts.json.",
+  "rationale_v2": "The pack-hero structure stays: one wide-italic statement on top, the real Venta Borinc bag at native size as the single focal point, and the sign-off at the bottom. The left column, which was leftover space in the first pass, now has a job. It holds the pack's B and Zn badges, nested as a pair to show 'bir arada', with the category line beneath them as the key to the headline. The column sits on the 72px margin, vertically centred on the bag, and the bag's right edge sits on the right margin together with the URL. All copy comes from facts.json (product name, elements, category, web address); the brief needed no numbers or claims and none were added."
+}

@@ -1,0 +1,12 @@
+{
+  "id": "04-image-slot",
+  "brand": "venta",
+  "format": "1080x1350",
+  "slides": 1,
+  "brief": "Sahadan bir uygulama fotoğrafı için hazırlanmış post: Burak fotoğrafı sonra yükleyecek. Tasarımda büyük, sabit oranlı bir görsel yuvası olsun (boş halde zarif bir yer tutucu görünsün). Metin: Venta Borinc ile bor ve çinko bir arada; kullanmadan önce etiketi okuyunuz hatırlatması.",
+  "requirements": [
+    "Exactly one image slot (data-type=slot), empty state, with a fixed ratio (4:5 or 4:3 or 1:1 — choose what suits the layout) and a short Turkish data-slot-label.",
+    "The layout must still work when a busy field photo fills the slot: no small text on top of it.",
+    "Do not use the product photo in this post."
+  ]
+}

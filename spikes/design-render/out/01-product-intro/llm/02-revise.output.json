@@ -1,0 +1,58 @@
+{
+  "slides": [
+    {
+      "id": "slide-1",
+      "html": "<!doctype html>\n<html lang=\"tr\">\n<head>\n  <meta charset=\"utf-8\">\n  <meta name=\"studio:contract\" content=\"v0\">\n  <meta name=\"studio:format\" content=\"1080x1350\">\n  <link rel=\"stylesheet\" href=\"/brand/brand.css\">\n  <style>\n    [data-artboard] { position: relative; background: var(--color-paper); }\n    [data-artboard] > [data-layer] { position: absolute; }\n    [data-type=\"text\"] { hyphens: none; }\n\n    /* label band (pack quote): plain full-width green edge */\n    .band { background: var(--color-green); }\n\n    /* intro stack: eyebrow + rule, display headline */\n    .intro { display: flex; flex-direction: column; gap: var(--space-24); }\n    .eyebrow-stack { display: flex; flex-direction: column; align-items: flex-start; gap: var(--space-16); }\n    .eyebrow { color: var(--color-green-deep); white-space: nowrap; }\n    .rule { margin: 0; width: 56px; height: 6px; background: var(--color-green); }\n    .headline {\n      font-family: var(--font-display);\n      font-size: 88px;\n      font-weight: 900;\n      font-stretch: 125%;\n      font-style: italic;\n      text-transform: uppercase;\n      letter-spacing: -0.01em;\n      line-height: 1;\n      color: var(--color-ink);\n      text-wrap: balance;\n    }\n\n    /* element key: nested B / Zn badges over the category line, left of the pack */\n    .element-key { display: flex; flex-direction: column; align-items: flex-start; gap: var(--space-32); }\n    .badge-pair {\n      display: grid;\n      grid-template-columns: 96px 24px 96px;\n      grid-template-rows: 56px 48px 56px;\n    }\n    .badge-pos-b { grid-column: 1 / 3; grid-row: 1 / 3; }\n    .badge-pos-zn { grid-column: 2 / 4; grid-row: 2 / 4; }\n    .badge { display: grid; place-items: center; width: 120px; height: 104px; }\n    .badge > * { grid-area: 1 / 1; }\n    .hex { width: 120px; height: 104px; clip-path: polygon(25% 0, 75% 0, 100% 50%, 75% 100%, 25% 100%, 0 50%); }\n    .hex-b { background: var(--color-amber); }\n    .hex-zn { background: var(--color-green); }\n    .badge-letter {\n      position: relative; /* clip-path puts the hex on its own paint layer: lift the letter above it */\n      z-index: 1;\n      font-family: var(--font-text);\n      font-size: 44px;\n      font-weight: 700;\n      line-height: 1;\n      letter-spacing: 0;\n      color: var(--color-ink);\n    }\n    .subhead { font-weight: 500; color: var(--color-graphite); text-wrap: balance; }\n\n    /* sign-off: logo left, web right, on one baseline */\n    .sign-off { display: flex; align-items: baseline; justify-content: space-between; }\n    .sign-off-logo { height: 32px; width: auto; }\n    .web {\n      font-family: var(--font-text);\n      font-size: 28px;\n      font-weight: 500;\n      line-height: 1.3;\n      letter-spacing: 0.02em;\n      color: var(--color-graphite);\n      white-space: nowrap;\n    }\n  </style>\n</head>\n<body>\n  <main data-artboard style=\"width:1080px;height:1350px\">\n\n    <img data-layer=\"product-photo\" data-type=\"image\"\n         src=\"/brand/assets/product-venta-borinc.png\" alt=\"Venta Borinc ambalajı\"\n         style=\"left:147px; top:164px; width:1200px; height:1200px\">\n\n    <div data-layer=\"label-band\" data-type=\"shape\" data-role=\"decoration\" class=\"band\"\n         style=\"left:0; top:1326px; width:1080px; height:24px\"></div>\n\n    <div data-layer=\"intro\" data-type=\"group\" class=\"intro\"\n         style=\"left:72px; top:72px; width:936px\">\n      <div data-layer=\"eyebrow-stack\" data-type=\"group\" class=\"eyebrow-stack\">\n        <p data-layer=\"eyebrow\" data-type=\"text\" data-role=\"eyebrow\" class=\"ts-eyebrow eyebrow\">VENTA BORINC</p>\n        <div data-layer=\"eyebrow-rule\" data-type=\"shape\" data-role=\"decoration\" class=\"brand-rule rule\"></div>\n      </div>\n      <h1 data-layer=\"headline\" data-type=\"text\" data-role=\"headline\" class=\"ts-display-m headline\">Bor ve çinko<br>bir arada</h1>\n    </div>\n\n    <div data-layer=\"element-key\" data-type=\"group\" class=\"element-key\"\n         style=\"left:72px; top:640px; width:320px\">\n      <div data-layer=\"badge-pair\" data-type=\"group\" class=\"badge-pair\">\n        <div data-layer=\"badge-b\" data-type=\"group\" class=\"badge badge-pos-b\">\n          <div data-layer=\"badge-b-hex\" data-type=\"shape\" data-role=\"badge\" class=\"hex hex-b\"></div>\n          <p data-layer=\"badge-b-letter\" data-type=\"text\" data-role=\"badge\" class=\"badge-letter\">B</p>\n        </div>\n        <div data-layer=\"badge-zn\" data-type=\"group\" class=\"badge badge-pos-zn\">\n          <div data-layer=\"badge-zn-hex\" data-type=\"shape\" data-role=\"badge\" class=\"hex hex-zn\"></div>\n          <p data-layer=\"badge-zn-letter\" data-type=\"text\" data-role=\"badge\" class=\"badge-letter\">Zn</p>\n        </div>\n      </div>\n      <p data-layer=\"subhead\" data-type=\"text\" data-role=\"subhead\" class=\"ts-body subhead\">Mikro bitki besin maddeleri karışımı</p>\n    </div>\n\n    <div data-layer=\"sign-off\" data-type=\"group\" class=\"sign-off\"\n         style=\"left:72px; top:1240px; width:936px\">\n      <img data-layer=\"logo-venta\" data-type=\"logo\" class=\"sign-off-logo\"\n           src=\"/brand/logos/venta-wordmark-black.standin.png\" alt=\"VENTA\">\n      <p data-layer=\"web\" data-type=\"text\" data-role=\"cta\" class=\"ts-caption web\">www.mtmagro.com</p>\n    </div>\n\n  </main>\n</body>\n</html>\n"
+    }
+  ],
+  "caption": "Venta Borinc; bor (B) ve çinko (Zn) içeren bir mikro bitki besin maddeleri karışımıdır.\n\nAmbalajdaki altıgen rozetler de bunu gösterir: B ve Zn, tek karışımda bir arada.\n\nToprak ve/veya yaprak analizi yaptırılarak kullanılması tavsiye edilir. Kullanmadan önce etiketi okuyunuz.\n\nDetaylı bilgi: www.mtmagro.com\n\n#Venta #MTMAgro #Borinc #Bor #Çinko #BitkiBesleme",
+  "rationale": "The pack-hero structure stays: one wide-italic statement on top, the real Venta Borinc bag at native size as the single focal point, and the sign-off at the bottom. The left column, which was leftover space in the first pass, now has a job. It holds the pack's B and Zn badges, nested as a pair to show 'bir arada', with the category line beneath them as the key to the headline. The column sits on the 72px margin, vertically centred on the bag, and the bag's right edge sits on the right margin together with the URL. All copy comes from facts.json (product name, elements, category, web address); the brief needed no numbers or claims and none were added.",
+  "critique": [
+    {
+      "issue": "The B and Zn letters do not render: the hexagons show as plain amber and green blobs, so the pack's element-badge cue is lost and they read as decoration. The clip-path makes each hex its own paint layer, which covers the in-flow letter. The linter measured the letters but cannot see that they are hidden.",
+      "severity": "high",
+      "fix": "Give the letters position:relative and z-index:1 so they paint above the hex. Keep the letters ink: white measures about 2.2:1 on amber and 2.7:1 on green, below the 3:1 floor."
+    },
+    {
+      "issue": "The left third under the headline looks like leftover space. The bag is pushed right, leaving a ~360px empty column beside it, and the two hexagons float in that column at an arbitrary height that lines up with nothing on the pack or the grid. The composition reads as unresolved and the badges have no purpose.",
+      "severity": "high",
+      "fix": "Turn the left column into an element key: the nested B/Zn badges with the category line beneath them, as one group on the 72px margin, vertically centred on the bag. Put the bag's right edge on the 1008px margin so both outer axes are used."
+    },
+    {
+      "issue": "The 40px sign-off logo uses the same wide black italic as the headline and the pack's own logotype. The page shows three loud VENTA marks, and the bottom-left competes with the pack as the focal point. The logo is also centre-aligned, so its foot sits below the URL baseline.",
+      "severity": "medium",
+      "fix": "Reduce the logo to 32px high (height-driven) and baseline-align it with www.mtmagro.com."
+    },
+    {
+      "issue": "The raised centre tab on the bottom band sits under nothing, because the layout is left-aligned and the bag is off-centre. It reads like a phone home indicator or a pill button rather than the label quote.",
+      "severity": "medium",
+      "fix": "Remove the tab and keep the plain 24px green label band on the bottom edge."
+    },
+    {
+      "issue": "The vertical rhythm is uneven. The ~44px gap from the subhead to the top of the bag is the tightest on the page, so the bag's top corner crowds the subhead line, while every other gap is generous.",
+      "severity": "medium",
+      "fix": "Move the subhead into the element key, so the intro is eyebrow plus headline only. The gaps become ~72-86px from headline to bag, ~78px from bag base to sign-off, and 32px from badges to category line."
+    },
+    {
+      "issue": "The product photo is rendered at 96.7% of its native size, although the bag can be shown at 100% (its largest sharp size) and still fit between the headline and the sign-off.",
+      "severity": "low",
+      "fix": "Render the photo at 1200px (native). The bag is about 765px tall, 57% of the artboard height."
+    },
+    {
+      "issue": "The category line ends with a full stop. Placed under the badges it works as a label, and a noun-phrase label reads cleaner without one.",
+      "severity": "low",
+      "fix": "Drop the full stop and balance the line into 'Mikro bitki besin / maddeleri karışımı'."
+    }
+  ],
+  "changes": [
+    "badge-b-letter and badge-zn-letter: added position:relative and z-index:1 so B and Zn are visible on the hexagons. The letters stay ink rather than the pack's white, because white fails the 3:1 contrast floor on amber (~2.2:1) and green (~2.7:1).",
+    "New group element-key (left 72, top 640, width 320, flex column, 32px gap) containing a new group badge-pair and subhead. badge-pair is a CSS grid (96/24/96 x 56/48/56) that nests badge-b and badge-zn at the same 96/56 offset as before. badge-b and badge-zn are no longer absolutely positioned top-level layers.",
+    "subhead: moved out of intro into element-key, full stop removed, wraps to two balanced lines 'Mikro bitki besin / maddeleri karışımı' in the 320px column.",
+    "intro: now holds only eyebrow-stack and headline; the ids eyebrow, eyebrow-rule and headline are unchanged.",
+    "product-photo: 1160px to 1200px (native, no upscale), moved to left 147 / top 164. The bag spans about y 397-1162 and its right edge sits on the 1008px margin, in line with the URL.",
+    "label-band-tab removed; label-band kept unchanged.",
+    "logo-venta: 40px to 32px high (height-driven, width auto). The sign-off is now baseline-aligned, moved to top 1240 and has no fixed height.",
+    "The linter reported no errors or warnings, so there was nothing to fix from it. The type weights are still 900/700/500, there are still no numbers in the image copy, and the image has 15 words.",
+    "Caption rewritten. The first line works on its own. It refers to the pack's B/Zn badges, adds the label's soil/leaf analysis advice and 'Kullanmadan önce etiketi okuyunuz.', and ends with 'Detaylı bilgi: www.mtmagro.com' followed by 6 hashtags."
+  ]
+}

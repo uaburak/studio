@@ -1,0 +1,11 @@
+{
+  "id": "03-carousel",
+  "brand": "venta",
+  "format": "1080x1350",
+  "slides": 3,
+  "brief": "Üç slaytlık bir carousel: 'Doğru saklama' rehberi. Slayt 1 kapak (dikkat çekici başlık). Slayt 2: nerede saklanır — serin, kuru, iyi havalandırılan ve güneş almayan yer, 5°C – 45°C. Slayt 3: nasıl saklanır — orijinal ambalajında ağzı kapalı; açılan ambalajı sıkıca kapatıp kısa sürede tüketin; gıda, yem ve ilaçlardan ayrı, çocukların ve hayvanların erişemeyeceği yerde. Uygun koşullarda raf ömrü 3 yıl bilgisi bir yerde yer alsın.",
+  "requirements": [
+    "Three separate HTML documents (slide-1, slide-2, slide-3) sharing one visual system: same margins, same counter and sign-off positions, same type styles.",
+    "Content only from facts.json storage statements."
+  ]
+}

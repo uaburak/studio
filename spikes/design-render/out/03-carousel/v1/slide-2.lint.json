@@ -1,0 +1,566 @@
+{
+  "contract": "v0",
+  "file": "out/03-carousel/v1/slide-2.html",
+  "artboard": {
+    "width": 1080,
+    "height": 1350
+  },
+  "ok": true,
+  "summary": {
+    "errors": 0,
+    "warnings": 4,
+    "info": 0
+  },
+  "issues": [
+    {
+      "rule": "small-font-size",
+      "severity": "warning",
+      "layer": "label-air",
+      "message": "Smallest text is 24px; body copy reads better at ≥ 28px.",
+      "data": {
+        "fontSize": 24
+      }
+    },
+    {
+      "rule": "small-font-size",
+      "severity": "warning",
+      "layer": "label-light",
+      "message": "Smallest text is 24px; body copy reads better at ≥ 28px.",
+      "data": {
+        "fontSize": 24
+      }
+    },
+    {
+      "rule": "small-font-size",
+      "severity": "warning",
+      "layer": "label-temperature",
+      "message": "Smallest text is 24px; body copy reads better at ≥ 28px.",
+      "data": {
+        "fontSize": 24
+      }
+    },
+    {
+      "rule": "small-font-size",
+      "severity": "warning",
+      "layer": "website",
+      "message": "Smallest text is 24px; body copy reads better at ≥ 28px.",
+      "data": {
+        "fontSize": 24
+      }
+    }
+  ],
+  "layers": [
+    {
+      "id": "counter",
+      "type": "text",
+      "role": "counter",
+      "parent": null,
+      "rect": {
+        "x": 72,
+        "y": 72,
+        "w": 400,
+        "h": 31
+      },
+      "visible": true
+    },
+    {
+      "id": "content",
+      "type": "group",
+      "role": null,
+      "parent": null,
+      "rect": {
+        "x": 72,
+        "y": 216,
+        "w": 936,
+        "h": 755
+      },
+      "visible": true
+    },
+    {
+      "id": "intro",
+      "type": "group",
+      "role": null,
+      "parent": "content",
+      "rect": {
+        "x": 72,
+        "y": 216,
+        "w": 936,
+        "h": 346
+      },
+      "visible": true
+    },
+    {
+      "id": "eyebrow-block",
+      "type": "group",
+      "role": null,
+      "parent": "intro",
+      "rect": {
+        "x": 72,
+        "y": 216,
+        "w": 936,
+        "h": 53
+      },
+      "visible": true
+    },
+    {
+      "id": "eyebrow",
+      "type": "text",
+      "role": "eyebrow",
+      "parent": "eyebrow-block",
+      "rect": {
+        "x": 72,
+        "y": 216,
+        "w": 936,
+        "h": 31
+      },
+      "visible": true
+    },
+    {
+      "id": "eyebrow-rule",
+      "type": "shape",
+      "role": "decoration",
+      "parent": "eyebrow-block",
+      "rect": {
+        "x": 72,
+        "y": 263,
+        "w": 56,
+        "h": 6
+      },
+      "visible": true
+    },
+    {
+      "id": "headline",
+      "type": "text",
+      "role": "headline",
+      "parent": "intro",
+      "rect": {
+        "x": 72,
+        "y": 301,
+        "w": 936,
+        "h": 261
+      },
+      "visible": true
+    },
+    {
+      "id": "spec",
+      "type": "group",
+      "role": null,
+      "parent": "content",
+      "rect": {
+        "x": 72,
+        "y": 626,
+        "w": 936,
+        "h": 345
+      },
+      "visible": true
+    },
+    {
+      "id": "row-air",
+      "type": "group",
+      "role": null,
+      "parent": "spec",
+      "rect": {
+        "x": 72,
+        "y": 626,
+        "w": 936,
+        "h": 114
+      },
+      "visible": true
+    },
+    {
+      "id": "label-air",
+      "type": "text",
+      "role": "caption",
+      "parent": "row-air",
+      "rect": {
+        "x": 72,
+        "y": 675,
+        "w": 296,
+        "h": 29
+      },
+      "visible": true
+    },
+    {
+      "id": "value-air",
+      "type": "text",
+      "role": "body",
+      "parent": "row-air",
+      "rect": {
+        "x": 392,
+        "y": 660,
+        "w": 616,
+        "h": 48
+      },
+      "visible": true
+    },
+    {
+      "id": "row-light",
+      "type": "group",
+      "role": null,
+      "parent": "spec",
+      "rect": {
+        "x": 72,
+        "y": 741,
+        "w": 936,
+        "h": 114
+      },
+      "visible": true
+    },
+    {
+      "id": "label-light",
+      "type": "text",
+      "role": "caption",
+      "parent": "row-light",
+      "rect": {
+        "x": 72,
+        "y": 790,
+        "w": 296,
+        "h": 29
+      },
+      "visible": true
+    },
+    {
+      "id": "value-light",
+      "type": "text",
+      "role": "body",
+      "parent": "row-light",
+      "rect": {
+        "x": 392,
+        "y": 775,
+        "w": 616,
+        "h": 48
+      },
+      "visible": true
+    },
+    {
+      "id": "row-temperature",
+      "type": "group",
+      "role": null,
+      "parent": "spec",
+      "rect": {
+        "x": 72,
+        "y": 855,
+        "w": 936,
+        "h": 114
+      },
+      "visible": true
+    },
+    {
+      "id": "label-temperature",
+      "type": "text",
+      "role": "caption",
+      "parent": "row-temperature",
+      "rect": {
+        "x": 72,
+        "y": 904,
+        "w": 296,
+        "h": 29
+      },
+      "visible": true
+    },
+    {
+      "id": "value-temperature",
+      "type": "text",
+      "role": "body",
+      "parent": "row-temperature",
+      "rect": {
+        "x": 392,
+        "y": 889,
+        "w": 616,
+        "h": 48
+      },
+      "visible": true
+    },
+    {
+      "id": "logo",
+      "type": "logo",
+      "role": null,
+      "parent": null,
+      "rect": {
+        "x": 72,
+        "y": 1232,
+        "w": 273,
+        "h": 44
+      },
+      "visible": true
+    },
+    {
+      "id": "website",
+      "type": "text",
+      "role": "caption",
+      "parent": null,
+      "rect": {
+        "x": 648,
+        "y": 1238,
+        "w": 360,
+        "h": 31
+      },
+      "visible": true
+    },
+    {
+      "id": "label-band",
+      "type": "shape",
+      "role": "decoration",
+      "parent": null,
+      "rect": {
+        "x": 0,
+        "y": 1310,
+        "w": 1080,
+        "h": 40
+      },
+      "visible": true
+    }
+  ],
+  "text": [
+    {
+      "id": "counter",
+      "role": "counter",
+      "lines": 1,
+      "fontSize": 26,
+      "minFontSize": 26,
+      "weight": "700",
+      "family": "Montserrat",
+      "color": "rgb(11, 11, 11)",
+      "clipText": false,
+      "textRect": {
+        "x": 72,
+        "y": 75,
+        "w": 66,
+        "h": 22
+      },
+      "chars": 5,
+      "contrast": {
+        "median": 19.68,
+        "worst": 19.68,
+        "required": 4.5,
+        "background": "rgb(255,255,255)"
+      }
+    },
+    {
+      "id": "eyebrow",
+      "role": "eyebrow",
+      "lines": 1,
+      "fontSize": 26,
+      "minFontSize": 26,
+      "weight": "700",
+      "family": "Montserrat",
+      "color": "rgb(60, 133, 41)",
+      "clipText": false,
+      "textRect": {
+        "x": 72,
+        "y": 219,
+        "w": 316,
+        "h": 22
+      },
+      "chars": 15,
+      "contrast": {
+        "median": 4.59,
+        "worst": 4.59,
+        "required": 4.5,
+        "background": "rgb(255,255,255)"
+      }
+    },
+    {
+      "id": "headline",
+      "role": "headline",
+      "lines": 2,
+      "fontSize": 136,
+      "minFontSize": 136,
+      "weight": "900",
+      "family": "Archivo",
+      "color": "rgb(11, 11, 11)",
+      "clipText": false,
+      "textRect": {
+        "x": 72,
+        "y": 313,
+        "w": 806,
+        "h": 231
+      },
+      "chars": 12,
+      "contrast": {
+        "median": 19.68,
+        "worst": 19.68,
+        "required": 3,
+        "background": "rgb(255,255,255)"
+      }
+    },
+    {
+      "id": "label-air",
+      "role": "caption",
+      "lines": 1,
+      "fontSize": 24,
+      "minFontSize": 24,
+      "weight": "700",
+      "family": "Montserrat",
+      "color": "rgb(110, 110, 110)",
+      "clipText": false,
+      "textRect": {
+        "x": 72,
+        "y": 678,
+        "w": 107,
+        "h": 20
+      },
+      "chars": 5,
+      "contrast": {
+        "median": 5.1,
+        "worst": 5.1,
+        "required": 4.5,
+        "background": "rgb(255,255,255)"
+      }
+    },
+    {
+      "id": "value-air",
+      "role": "body",
+      "lines": 1,
+      "fontSize": 36,
+      "minFontSize": 36,
+      "weight": "500",
+      "family": "Montserrat",
+      "color": "rgb(47, 47, 47)",
+      "clipText": false,
+      "textRect": {
+        "x": 392,
+        "y": 668,
+        "w": 434,
+        "h": 30
+      },
+      "chars": 26,
+      "contrast": {
+        "median": 13.39,
+        "worst": 13.39,
+        "required": 4.5,
+        "background": "rgb(255,255,255)"
+      }
+    },
+    {
+      "id": "label-light",
+      "role": "caption",
+      "lines": 1,
+      "fontSize": 24,
+      "minFontSize": 24,
+      "weight": "700",
+      "family": "Montserrat",
+      "color": "rgb(110, 110, 110)",
+      "clipText": false,
+      "textRect": {
+        "x": 72,
+        "y": 793,
+        "w": 60,
+        "h": 20
+      },
+      "chars": 4,
+      "contrast": {
+        "median": 5.1,
+        "worst": 5.1,
+        "required": 4.5,
+        "background": "rgb(255,255,255)"
+      }
+    },
+    {
+      "id": "value-light",
+      "role": "body",
+      "lines": 1,
+      "fontSize": 36,
+      "minFontSize": 36,
+      "weight": "500",
+      "family": "Montserrat",
+      "color": "rgb(47, 47, 47)",
+      "clipText": false,
+      "textRect": {
+        "x": 392,
+        "y": 783,
+        "w": 407,
+        "h": 30
+      },
+      "chars": 21,
+      "contrast": {
+        "median": 13.39,
+        "worst": 13.39,
+        "required": 4.5,
+        "background": "rgb(255,255,255)"
+      }
+    },
+    {
+      "id": "label-temperature",
+      "role": "caption",
+      "lines": 1,
+      "fontSize": 24,
+      "minFontSize": 24,
+      "weight": "700",
+      "family": "Montserrat",
+      "color": "rgb(110, 110, 110)",
+      "clipText": false,
+      "textRect": {
+        "x": 72,
+        "y": 907,
+        "w": 140,
+        "h": 20
+      },
+      "chars": 8,
+      "contrast": {
+        "median": 5.1,
+        "worst": 5.1,
+        "required": 4.5,
+        "background": "rgb(255,255,255)"
+      }
+    },
+    {
+      "id": "value-temperature",
+      "role": "body",
+      "lines": 1,
+      "fontSize": 36,
+      "minFontSize": 36,
+      "weight": "500",
+      "family": "Montserrat",
+      "color": "rgb(47, 47, 47)",
+      "clipText": false,
+      "textRect": {
+        "x": 392,
+        "y": 897,
+        "w": 278,
+        "h": 30
+      },
+      "chars": 16,
+      "contrast": {
+        "median": 13.39,
+        "worst": 13.39,
+        "required": 4.5,
+        "background": "rgb(255,255,255)"
+      }
+    },
+    {
+      "id": "website",
+      "role": "caption",
+      "lines": 1,
+      "fontSize": 24,
+      "minFontSize": 24,
+      "weight": "700",
+      "family": "Montserrat",
+      "color": "rgb(110, 110, 110)",
+      "clipText": false,
+      "textRect": {
+        "x": 742,
+        "y": 1243,
+        "w": 266,
+        "h": 20
+      },
+      "chars": 15,
+      "contrast": {
+        "median": 5.1,
+        "worst": 5.1,
+        "required": 4.5,
+        "background": "rgb(255,255,255)"
+      }
+    }
+  ],
+  "fontsLoaded": [
+    "Archivo italic 100 900 62% 125%",
+    "Archivo italic 100 900 62% 125%",
+    "Montserrat normal 100 900 normal",
+    "Montserrat normal 100 900 normal"
+  ],
+  "timing": {
+    "renderMs": 162,
+    "totalMs": 204
+  }
+}

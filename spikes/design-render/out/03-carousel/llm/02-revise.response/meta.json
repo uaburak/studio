@@ -1,0 +1,46 @@
+{
+  "caption": "Venta Borinc için doğru saklama rehberi: uygun koşullarda raf ömrü 3 yıldır.\n\nNerede? Serin, kuru, iyi havalandırılan ve güneş almayan bir yerde, 5°C – 45°C arasında saklayınız.\n\nNasıl? Orijinal ambalajında, ağzı kapalı muhafaza ediniz. Açılan ambalajı sıkıca kapatıp kısa sürede tüketiniz. Gıda, yem ve ilaçlardan ayrı; çocukların ve hayvanların erişemeyeceği yerlerde tutunuz.\n\nKullanmadan önce etiketi okuyunuz.\n\n#Venta #MTMAgro #Borinc #BitkiBesleme",
+  "rationale": "The cover opens with the one hard number on the label (3-year shelf life under proper conditions) and asks 'Bu koşullar neler?'; slides 2 and 3 answer with where and how, each led by one wide black italic display line and a label-like spec table taken word for word from the storage statements. The first-pass system was sound (forest cover, paper content slides, fixed counter, eyebrow and sign-off positions), so I kept it and fixed composition instead of starting over: the cover's hook now belongs to the headline instead of floating above the footer, and slide 3 finally shows the closed original pack next to 'AĞZI KAPALI', so the carousel is recognisably Venta. No doses, percentages or claims beyond facts.json were needed.",
+  "critique": [
+    {
+      "issue": "Cover: the hook line sits ~370px below the headline and only ~106px above the sign-off, so it reads as part of the footer; the middle of the slide is an accidental hole and 'Bu koşullar neler?' loses its link to the headline it continues.",
+      "severity": "high",
+      "fix": "Move the subhead into the intro group directly under the headline (32px, the headline-to-body step) so headline and hook read as one statement in the upper two thirds; the lower field stays deliberately open above the sign-off, as in the DESIGN.md statement archetype."
+    },
+    {
+      "issue": "The product never appears. Apart from the logo and the cover eyebrow, the carousel could be any brand's storage notice, and slide 3 says 'orijinal ambalajında' without showing the pack.",
+      "severity": "medium",
+      "fix": "Place the Venta Borinc pack shot on slide 3 in the empty area right of 'AĞZI KAPALI': bag right edge on the 1008px margin, as tall as the two headline lines, 64px above the table, on white with multiply, no type over it."
+    },
+    {
+      "issue": "Spec labels and the URL are 24px (linter small-font-size warnings on every slide); at phone scale (~8.6pt) the grey letter-spaced caps are the weakest text on the slides.",
+      "severity": "medium",
+      "fix": "Raise spec labels and the URL to 28px; reduce label tracking from 0.12em to 0.10em so the larger caps stay compact inside the 296px label column."
+    },
+    {
+      "issue": "Slide 3: 'Sıkıca kapatıp kısa / sürede tüketin.' splits the phrase 'kısa sürede' across lines.",
+      "severity": "medium",
+      "fix": "Break by meaning: 'Sıkıca kapatıp / kısa sürede tüketin.'"
+    },
+    {
+      "issue": "At leading 0.96 the dot of İ in REHBERİ sits only ~12px under the baseline of SAKLAMA; tight at feed size, the exact collision DESIGN.md warns about.",
+      "severity": "low",
+      "fix": "Display leading 0.96 to 1.0 in the shared style, so every slide gets the same clearance."
+    },
+    {
+      "issue": "The VENTA wordmark at 44px is a second wide black italic mass that competes with the display headline on the white slides.",
+      "severity": "low",
+      "fix": "Logo 44px to 40px tall, kept on the same sign-off centre line as the URL, identical on all three slides."
+    }
+  ],
+  "changes": [
+    "Slide 1: 'subhead' moved from its own absolute position (top 1040) into the 'intro' group, 32px under the headline; layer id kept.",
+    "Slide 3: new image layer 'product-photo' (/brand/assets/product-venta-borinc.png, 416x416 box at left 685 / top 221, about 35% of native size so no upscaling); the bag lands at about x 778-1008, y 301-574, right-aligned to the margin and level with the headline; mix-blend-mode: multiply via the new shared '.pack' class so the photo's white margin cannot cover the headline or the table rule.",
+    "Shared style (all slides): .display line-height 0.96 to 1.0.",
+    "Shared style: .spec-label 24px to 28px and tracking 0.12em to 0.10em; .web 24px to 28px. This clears all small-font-size warnings (no linter errors were reported).",
+    "Shared style: .lede gets max-width 776px so the hook keeps a body-text measure inside the full-width intro group.",
+    "Slide 3: explicit break 'Sıkıca kapatıp<br>kısa sürede tüketin.'",
+    "Sign-off on all slides: logo height 44 to 40px (top 1232 to 1234); URL top 1238 to 1236 for the 28px size; both stay centred on y 1254.",
+    "Caption rewritten: the shelf-life hook as the first line, one 'Nerede?' and one 'Nasıl?' paragraph using only the storage statements, closing with 'Kullanmadan önce etiketi okuyunuz.' and 4 hashtags."
+  ]
+}

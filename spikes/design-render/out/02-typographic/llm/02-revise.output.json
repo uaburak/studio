@@ -1,0 +1,51 @@
+{
+  "slides": [
+    {
+      "id": "slide-1",
+      "html": "<!doctype html>\n<html lang=\"tr\">\n<head>\n  <meta charset=\"utf-8\">\n  <meta name=\"studio:contract\" content=\"v0\">\n  <meta name=\"studio:format\" content=\"1080x1350\">\n  <link rel=\"stylesheet\" href=\"/brand/brand.css\">\n  <style>\n    [data-artboard] {\n      position: relative;\n      background: var(--color-paper);\n    }\n\n    /* Lower field: the label panel (mist), sits under the band and holds the label sentence + sign-off */\n    .label-field {\n      position: absolute;\n      left: 0;\n      top: 936px;\n      width: 1080px;\n      height: 414px;\n      background: var(--color-mist);\n    }\n\n    /* Label band with the raised centre tab, quoted from the pack's label edge */\n    .label-band {\n      position: absolute;\n      left: 0;\n      top: 912px;\n      width: 1080px;\n      height: 40px;\n      display: flex;\n      flex-direction: column;\n      align-items: center;\n    }\n    .label-band-tab {\n      flex: none;\n      width: 216px;\n      height: 24px;\n      background: var(--color-green);\n      border-radius: var(--radius-md) var(--radius-md) 0 0;\n    }\n    .label-band-bar {\n      flex: none;\n      width: 1080px;\n      height: 16px;\n      background: var(--color-green);\n    }\n\n    /* Statement: label heading at the top of the white bag field,\n       display caps anchored to the bottom so they rest on the band */\n    .statement {\n      position: absolute;\n      left: 72px;\n      top: 72px;\n      width: 936px;\n      height: 792px;\n      display: flex;\n      flex-direction: column;\n      justify-content: space-between;\n      align-items: flex-start;\n    }\n\n    .label-text {\n      flex: none;\n      display: flex;\n      flex-direction: column;\n      align-items: flex-start;\n      gap: var(--space-16);\n    }\n    .eyebrow {\n      font-family: var(--font-text);\n      font-size: 26px;\n      font-weight: 700;\n      line-height: 1.2;\n      letter-spacing: 0.14em;\n      text-transform: uppercase;\n      color: var(--color-green-deep);\n    }\n    .eyebrow-rule {\n      flex: none;\n      width: var(--rule-width);\n      height: var(--rule-thickness);\n      background: var(--color-green);\n    }\n\n    /* Display caps: wide black italic, TOPRAK / YAPRAK stacked so the rhyme reads */\n    .headline {\n      flex: none;\n      width: 100%;\n      font-family: var(--font-display);\n      font-size: 152px;\n      font-weight: 900;\n      font-style: italic;\n      font-stretch: 125%;\n      line-height: 0.98;\n      letter-spacing: -0.01em;\n      text-transform: uppercase;\n      text-wrap: balance;\n      hyphens: manual;\n      color: var(--color-ink);\n    }\n    .headline .slash {\n      color: var(--color-green-deep);\n    }\n\n    /* The label sentence, set as label running text */\n    .body {\n      position: absolute;\n      left: 72px;\n      top: 1016px;\n      width: 776px;\n      font-family: var(--font-text);\n      font-size: 36px;\n      font-weight: 500;\n      line-height: 1.34;\n      hyphens: manual;\n      color: var(--color-graphite);\n    }\n    .body b {\n      font-weight: 700;\n      color: var(--color-ink);\n    }\n\n    /* Sign-off: logo left, web address right, same position on every post */\n    .sign-off {\n      position: absolute;\n      left: 72px;\n      top: 1234px;\n      width: 936px;\n      height: 44px;\n      display: flex;\n      flex-direction: row;\n      align-items: center;\n      justify-content: space-between;\n    }\n    .logo {\n      flex: none;\n      height: 44px;\n      width: auto;\n    }\n    .web {\n      font-family: var(--font-text);\n      font-size: 28px;\n      font-weight: 500;\n      line-height: 1.2;\n      color: var(--color-graphite);\n    }\n  </style>\n</head>\n<body>\n  <main data-artboard style=\"width:1080px;height:1350px\">\n\n    <div data-layer=\"label-field\" data-type=\"shape\" data-role=\"decoration\" class=\"label-field\"></div>\n\n    <div data-layer=\"label-band\" data-type=\"group\" data-role=\"decoration\" class=\"label-band\">\n      <div data-layer=\"label-band-tab\" data-type=\"shape\" data-role=\"decoration\" class=\"label-band-tab\"></div>\n      <div data-layer=\"label-band-bar\" data-type=\"shape\" data-role=\"decoration\" class=\"label-band-bar\"></div>\n    </div>\n\n    <div data-layer=\"statement\" data-type=\"group\" class=\"statement\">\n      <div data-layer=\"label-text\" data-type=\"group\" class=\"label-text\">\n        <p data-layer=\"eyebrow\" data-type=\"text\" data-role=\"eyebrow\" class=\"eyebrow\">Etiketteki öneri</p>\n        <div data-layer=\"eyebrow-rule\" data-type=\"shape\" data-role=\"decoration\" class=\"eyebrow-rule\"></div>\n      </div>\n      <h1 data-layer=\"headline\" data-type=\"text\" data-role=\"headline\" class=\"headline\">Toprak<span class=\"slash\">/</span><br>yaprak<br>analizi</h1>\n    </div>\n\n    <p data-layer=\"body\" data-type=\"text\" data-role=\"body\" class=\"body\"><b>Venta Borinc</b>’in toprak ve/veya<br>yaprak analizi yaptırılarak<br>kullanılması tavsiye edilir.</p>\n\n    <div data-layer=\"sign-off\" data-type=\"group\" class=\"sign-off\">\n      <img data-layer=\"logo-venta\" data-type=\"logo\" class=\"logo\" src=\"/brand/logos/venta-wordmark-black.standin.png\" alt=\"Venta\">\n      <p data-layer=\"web\" data-type=\"text\" data-role=\"caption\" class=\"web\">www.mtmagro.com</p>\n    </div>\n\n  </main>\n</body>\n</html>\n"
+    }
+  ],
+  "caption": "Venta Borinc etiketindeki öneri: toprak ve/veya yaprak analizi.\n\nVenta Borinc; bor (B) ve çinko (Zn) içeren bir mikro bitki besin maddeleri karışımıdır. Etiketinde, toprak ve/veya yaprak analizi yaptırılarak kullanılması tavsiye edilir.\n\nKullanmadan önce etiketi okuyunuz.\n\n#Venta #MTMAgro #Borinc #Bor #Çinko #BitkiBesleme",
+  "rationale": "The idea stays: the label's own words, TOPRAK/YAPRAK ANALİZİ, set in the pack's wide black italic caps and introduced by the label heading 'Etiketteki öneri' with its short green rule. The revision rebuilds the composition like the pack: a white bag field where the display block rests on the green label band, and a mist label panel below it that carries the label sentence near-verbatim and the fixed sign-off. Nothing is added beyond the label (no numbers, no benefits, no photo); the only shorthand is the '/' for 've/veya' in the display line, and the body spells it out.",
+  "critique": [
+    {
+      "issue": "Accidental void: the headline sits at the top of the field and ends at y≈504, leaving ~390px of empty mist above the band. Type and band/label block read as two unrelated halves, the post is top-heavy and the band's position looks arbitrary.",
+      "severity": "high",
+      "fix": "Anchor the display block to the band (last baseline ~72px above the tab) inside a full-height statement group with space-between, and put the label heading at the top of the field so the white space becomes a deliberate gap between heading and display type."
+    },
+    {
+      "issue": "The eyebrow 'Etiketteki öneri' sits below the band, ~500px from the headline it explains. On a phone the loud element reads as a bare noun phrase ('Toprak/yaprak analizi') with no context; the recommendation itself only appears in 36px body text.",
+      "severity": "high",
+      "fix": "Move eyebrow + green rule to the top of the statement so heading and display caps read as one line of thought: Etiketteki öneri, toprak/yaprak analizi."
+    },
+    {
+      "issue": "Body copy paraphrases the label with a mixed construction ('…’i analiz yaptırarak kullanmanız tavsiye edilir': second-person possessive plus impersonal passive) and drops 'toprak ve/veya yaprak', so the only full sentence on the post is looser than the label it presents.",
+      "severity": "medium",
+      "fix": "Use the label sentence near-verbatim, with the product name in place of 'ürünün': 'Venta Borinc’in toprak ve/veya yaprak analizi yaptırılarak kullanılması tavsiye edilir.'"
+    },
+    {
+      "issue": "The upper field is the mist tint, not the pack's white: the black wide italic caps sit on a greyish field and the pack's white, clinical feel is lost. Moving the green-deep eyebrow onto mist would also drop it to ~4.1:1, below the 4.5:1 minimum.",
+      "severity": "medium",
+      "fix": "Paper above the band (the bag), mist only below the band as the label panel that holds body and sign-off."
+    },
+    {
+      "issue": "Body wraps on its own into two uneven lines that use 569 of 776px; the rag is accidental and the lower block looks under-filled.",
+      "severity": "low",
+      "fix": "Three deliberate, balanced lines (~27–30 characters each) in the same 36px / 1.34 body style."
+    },
+    {
+      "issue": "Lower block spacing has no single rhythm: band→eyebrow 67px, rule→body 24px, body→sign-off 75px.",
+      "severity": "low",
+      "fix": "Lower panel uses 64px band→body and ~72px body→sign-off, with the 72px bottom margin kept."
+    }
+  ],
+  "changes": [
+    "Linter v1 had no errors or warnings; nothing to fix mechanically. Headline copy, 152px size, 0.98 leading, green-deep slash, band geometry, logo and sign-off position are kept.",
+    "Removed the upper mist field 'bag-field': the area above the band is now the paper artboard (the white bag). Added 'label-field', a mist panel from the band down to the bottom edge.",
+    "New group 'statement' (72,72, 936×792, flex column, space-between) holds 'label-text' at the top and 'headline' at the bottom, so the display caps rest ~72px above the band tab and stay anchored if the copy changes.",
+    "'label-text' now groups only 'eyebrow' and 'eyebrow-rule' (16px gap) and sits top-left of the white field; the eyebrow stays green-deep on paper (4.59:1).",
+    "Moved 'label-band' from y 892 to y 912.",
+    "'body' is now a top-level text layer at (72,1016), 776px wide, with the label sentence near-verbatim: 'Venta Borinc’in toprak ve/veya yaprak analizi yaptırılarak kullanılması tavsiye edilir.' in three deliberate lines; removed its 8px margin hack.",
+    "Rewrote the caption: first line works alone, product description from the label, closes with 'Kullanmadan önce etiketi okuyunuz.', six hashtags from VOICE.md, no numbers."
+  ]
+}

@@ -1,0 +1,192 @@
+{
+  "contract": "v0",
+  "file": "fixtures/good.html",
+  "artboard": {
+    "width": 1080,
+    "height": 1350
+  },
+  "ok": true,
+  "summary": {
+    "errors": 0,
+    "warnings": 0,
+    "info": 0
+  },
+  "issues": [],
+  "layers": [
+    {
+      "id": "bottom-band",
+      "type": "shape",
+      "role": "decoration",
+      "parent": null,
+      "rect": {
+        "x": 0,
+        "y": 1130,
+        "w": 1080,
+        "h": 220
+      },
+      "visible": true
+    },
+    {
+      "id": "product-photo",
+      "type": "image",
+      "role": null,
+      "parent": null,
+      "rect": {
+        "x": 290,
+        "y": 430,
+        "w": 740,
+        "h": 740
+      },
+      "visible": true
+    },
+    {
+      "id": "intro",
+      "type": "group",
+      "role": null,
+      "parent": null,
+      "rect": {
+        "x": 72,
+        "y": 96,
+        "w": 936,
+        "h": 408
+      },
+      "visible": true
+    },
+    {
+      "id": "eyebrow",
+      "type": "text",
+      "role": "eyebrow",
+      "parent": "intro",
+      "rect": {
+        "x": 72,
+        "y": 96,
+        "w": 936,
+        "h": 31
+      },
+      "visible": true
+    },
+    {
+      "id": "headline",
+      "type": "text",
+      "role": "headline",
+      "parent": "intro",
+      "rect": {
+        "x": 72,
+        "y": 151,
+        "w": 936,
+        "h": 353
+      },
+      "visible": true
+    },
+    {
+      "id": "logo",
+      "type": "logo",
+      "role": null,
+      "parent": null,
+      "rect": {
+        "x": 72,
+        "y": 1206,
+        "w": 297,
+        "h": 48
+      },
+      "visible": true
+    },
+    {
+      "id": "cta",
+      "type": "text",
+      "role": "cta",
+      "parent": null,
+      "rect": {
+        "x": 703,
+        "y": 1205,
+        "w": 305,
+        "h": 41
+      },
+      "visible": true
+    }
+  ],
+  "text": [
+    {
+      "id": "eyebrow",
+      "role": "eyebrow",
+      "lines": 1,
+      "fontSize": 26,
+      "minFontSize": 26,
+      "weight": "700",
+      "family": "Montserrat",
+      "color": "rgb(60, 133, 41)",
+      "clipText": false,
+      "textRect": {
+        "x": 72,
+        "y": 99,
+        "w": 536,
+        "h": 22
+      },
+      "chars": 27,
+      "contrast": {
+        "median": 4.59,
+        "worst": 4.59,
+        "required": 4.5,
+        "background": "rgb(255,255,255)"
+      }
+    },
+    {
+      "id": "headline",
+      "role": "headline",
+      "lines": 3,
+      "fontSize": 120,
+      "minFontSize": 120,
+      "weight": "900",
+      "family": "Archivo",
+      "color": "rgb(11, 11, 11)",
+      "clipText": false,
+      "textRect": {
+        "x": 72,
+        "y": 162,
+        "w": 860,
+        "h": 324
+      },
+      "chars": 21,
+      "contrast": {
+        "median": 19.68,
+        "worst": 19.68,
+        "required": 3,
+        "background": "rgb(255,255,255)"
+      }
+    },
+    {
+      "id": "cta",
+      "role": "cta",
+      "lines": 1,
+      "fontSize": 30,
+      "minFontSize": 30,
+      "weight": "500",
+      "family": "Montserrat",
+      "color": "rgb(255, 255, 255)",
+      "clipText": false,
+      "textRect": {
+        "x": 703,
+        "y": 1212,
+        "w": 305,
+        "h": 25
+      },
+      "chars": 15,
+      "contrast": {
+        "median": 4.59,
+        "worst": 4.59,
+        "required": 4.5,
+        "background": "rgb(60,133,41)"
+      }
+    }
+  ],
+  "fontsLoaded": [
+    "Archivo italic 100 900 62% 125%",
+    "Archivo italic 100 900 62% 125%",
+    "Montserrat normal 100 900 normal",
+    "Montserrat normal 100 900 normal"
+  ],
+  "timing": {
+    "renderMs": 251,
+    "totalMs": 329
+  }
+}

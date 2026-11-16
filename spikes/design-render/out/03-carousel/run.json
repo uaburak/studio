@@ -1,0 +1,98 @@
+{
+  "brief": "03-carousel",
+  "transport": "handoff",
+  "model": "opus",
+  "steps": {
+    "01-generate": {
+      "transport": "handoff",
+      "pending": false,
+      "ok": true,
+      "usage": {
+        "source": "Agent tool (fresh-context Opus 5.5 subagent standing in for claude -p)",
+        "wallMs": 823865,
+        "subagentTokens": 177113,
+        "toolUses": 6
+      },
+      "requestPath": "/Users/burak/Desktop/Burak/Code/Studio/spikes/design-render/out/03-carousel/llm/01-generate.request.md",
+      "at": "2026-11-16T10:00:12.484Z"
+    },
+    "check-v1": {
+      "captionUnverifiedNumbers": [],
+      "slides": [
+        {
+          "id": "slide-1",
+          "ok": true,
+          "errors": 0,
+          "warnings": 1,
+          "info": 0,
+          "rules": [
+            "warning:small-font-size"
+          ]
+        },
+        {
+          "id": "slide-2",
+          "ok": true,
+          "errors": 0,
+          "warnings": 4,
+          "info": 0,
+          "rules": [
+            "warning:small-font-size"
+          ]
+        },
+        {
+          "id": "slide-3",
+          "ok": true,
+          "errors": 0,
+          "warnings": 4,
+          "info": 0,
+          "rules": [
+            "warning:small-font-size"
+          ]
+        }
+      ]
+    },
+    "02-revise": {
+      "transport": "handoff",
+      "pending": false,
+      "ok": true,
+      "usage": {
+        "source": "Agent tool (fresh-context Opus 5.5 subagent standing in for claude -p)",
+        "wallMs": 397628,
+        "subagentTokens": 150795,
+        "toolUses": 11
+      },
+      "requestPath": "/Users/burak/Desktop/Burak/Code/Studio/spikes/design-render/out/03-carousel/llm/02-revise.request.md",
+      "at": "2026-11-16T10:07:10.252Z"
+    },
+    "check-v2": {
+      "captionUnverifiedNumbers": [],
+      "slides": [
+        {
+          "id": "slide-1",
+          "ok": true,
+          "errors": 0,
+          "warnings": 0,
+          "info": 0,
+          "rules": []
+        },
+        {
+          "id": "slide-2",
+          "ok": true,
+          "errors": 0,
+          "warnings": 0,
+          "info": 0,
+          "rules": []
+        },
+        {
+          "id": "slide-3",
+          "ok": true,
+          "errors": 0,
+          "warnings": 0,
+          "info": 0,
+          "rules": []
+        }
+      ]
+    }
+  },
+  "pipelineMsThisInvocation": 1592
+}

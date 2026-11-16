@@ -1,0 +1,49 @@
+{
+  "critique": [
+    {
+      "issue": "The element badges are empty. The B and Zn letters are painted underneath the clip-path hexagons (two text-occluded errors), so the post's only chemistry cue reads as two blank coloured hexagons, like traffic lights.",
+      "severity": "high",
+      "fix": "Lift the letters above the hexes (position: relative; z-index: 1). Keep the letters in ink: white, as on the pack, is about 2.2:1 on amber and would fail the contrast check."
+    },
+    {
+      "issue": "The 120px badges float in the copy zone, under the end of the headline and beside the subhead and reminder. They are a second loud object that crowds the right side, and their edges line up with nothing in the type.",
+      "severity": "medium",
+      "fix": "Hang them from the green label band at the right margin: top on the band's top edge, 88x76, ending at x 1008. They link photo and copy, stay off the photo so a busy field shot cannot hurt them, share the right margin with www.mtmagro.com and leave the copy column clear."
+    },
+    {
+      "issue": "Too many type sizes for one post (88 / 48 / 40 / 30 / 24), and the 40px subhead is off the brand scale. The result reads as a template stack rather than a label hierarchy.",
+      "severity": "medium",
+      "fix": "Use three text sizes: 88 display; 36 for the subhead and badge letters (Montserrat 700); 28 for the reminder and the URL (Montserrat 500). That is three weights in total: 900 / 700 / 500."
+    },
+    {
+      "issue": "The VENTA wordmark at 40px is a second wide black italic shout directly below BOR VE ÇİNKO. The eye bounces between two equally heavy black lines.",
+      "severity": "medium",
+      "fix": "Reduce the logo to 32px height so the sign-off recedes and the headline stays the single loud type element."
+    },
+    {
+      "issue": "www.mtmagro.com at 24px triggers the small-font warning and is faint at phone size (about 8.6pt).",
+      "severity": "low",
+      "fix": "Set it at 28px, weight 500, tracking 0.02em."
+    },
+    {
+      "issue": "The copy starts 94px below the band, which is off the 8px spacing scale.",
+      "severity": "low",
+      "fix": "Start the copy group 96px below the band (top 922). This also leaves 36px of clear space between the hanging badges and the headline."
+    }
+  ],
+  "changes": [
+    "Fixed both text-occluded errors: .hex-label now has position: relative; z-index: 1, so B and Zn render above their hexagons.",
+    "Badge letters stay ink (not white as DESIGN.md says) because white on amber is about 2.2:1. Ink measures 8.95:1 on amber and 7.4:1 on green.",
+    "Moved badge-b and badge-zn from the copy zone (top 1036, 120x104) to hang from the label band at the right margin (top 810, 88x76, left 816 / 920). They no longer overlap the copy or the photo slot.",
+    "Reduced the badge letters from 48px to 36px to match the subhead size.",
+    "Subhead: 40px to 36px, weight 700, class ts-title to ts-body-l (on the brand scale). Venta Borinc stays green-deep.",
+    "Reminder (label-note): 30px to 28px, so the reminder and the URL share one small size and the post has three text sizes.",
+    "web-address: 24px to 28px, weight 500, tracking 0.02em. This fixes the small-font-size warning.",
+    "VENTA logo: height 40px to 32px, so the sign-off no longer competes with the headline.",
+    "Copy group top: 920 to 922 (96px below the band, on the 8px scale).",
+    "Slot unchanged: field-photo, 4:3, full-bleed 1080x810, empty, label 'Saha fotoğrafı'. No text over it.",
+    "Caption rewritten: the opener works alone, the body uses the product description and analysis recommendation from FACTS, it ends with the label reminder, and it has 6 hashtags."
+  ],
+  "rationale_v1": "The field photo is the hero: one full-bleed 4:3 slot fills the top 60% of the post and ends on the pack's green label band, so even a busy photo closes on a clean brand edge and no type ever sits on it. Below, on white, a single wide black italic shout 'BOR VE ÇİNKO' carries the packaging's display language, followed by 'Venta Borinc ile bir arada.' (product name in green-deep, echoing the green BORINC on the pack), the label's own reminder 'Kullanmadan önce etiketi okuyunuz.', and the B and Zn hexagon badges on the right as the chemistry cue, with the Venta logo and www.mtmagro.com as the sign-off. The badge letters are ink instead of the pack's white because white fails the contrast rule on both green (about 2.7:1) and amber (about 2.2:1); the product photo is not used, as the brief asks.",
+  "rationale_v2": "Photo-slot archetype: a full-bleed 4:3 field-photo slot carries the post, closed by the pack's green label band. The B and Zn hexagons now hang from that band at the right margin like tags on the label, so the idea 'bor ve çinko' is shown where photo and copy meet without ever touching the photo. Below, on paper, there is one loud display line, the product line with Venta Borinc in green-deep, and the label's own reminder, set in three sizes only. All copy comes from FACTS and VOICE. The badge letters are ink rather than the pack's white, because white on amber measures about 2.2:1 and fails contrast."
+}

@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="studio:contract" content="v0">
+<meta name="studio:format" content="1080x1350">
+<link rel="stylesheet" href="/brand/brand.css">
+<style>
+  .stack { position:absolute; left:72px; top:96px; width:936px; display:flex; flex-direction:column; gap:24px; }
+  .band { position:absolute; left:0; bottom:0; width:1080px; height:220px; background:var(--color-green-deep); }
+  .photo { position:absolute; left:290px; top:430px; width:740px; height:740px; object-fit:contain; mix-blend-mode:multiply; }
+  .logo { position:absolute; left:72px; bottom:96px; height:48px; width:auto; }
+  .cta { position:absolute; right:72px; bottom:104px; color:var(--color-paper); }
+</style>
+</head>
+<body>
+<main data-artboard style="width:1080px;height:1350px">
+  <div class="band" data-layer="bottom-band" data-type="shape" data-role="decoration"></div>
+  <img class="photo" data-layer="product-photo" data-type="image" src="/brand/assets/product-venta-borinc.png" alt="Venta Borinc ambalajı">
+  <div class="stack" data-layer="intro" data-type="group">
+    <p class="ts-eyebrow" data-layer="eyebrow" data-type="text" data-role="eyebrow" style="color:var(--color-green-deep)">Mikro bitki besin maddeleri</p>
+    <h1 class="ts-display-l" data-layer="headline" data-type="text" data-role="headline" style="color:var(--color-ink)">Bor ve çinko<br>bir arada</h1>
+  </div>
+  <img class="logo" data-layer="logo" data-type="logo" src="/brand/logos/venta-wordmark-white.standin.png" alt="Venta">
+  <p class="ts-body" data-layer="cta" data-type="text" data-role="cta" style="position:absolute; right:72px; bottom:104px; color:var(--color-paper)">www.mtmagro.com</p>
+</main>
+</body>
+</html>

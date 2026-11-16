@@ -1,0 +1,63 @@
+{
+  "brief": "01-product-intro",
+  "transport": "handoff",
+  "model": "opus",
+  "steps": {
+    "01-generate": {
+      "transport": "handoff",
+      "pending": false,
+      "ok": true,
+      "usage": {
+        "source": "Agent tool (fresh-context Opus 5.5 subagent standing in for claude -p)",
+        "wallMs": 419237,
+        "subagentTokens": 130532,
+        "toolUses": 4,
+        "note": "subagentTokens = total tokens processed by the subagent incl. its own Claude Code system prompt and tool round-trips; not directly comparable to a single claude -p call"
+      },
+      "requestPath": "/Users/burak/Desktop/Burak/Code/Studio/spikes/design-render/out/01-product-intro/llm/01-generate.request.md",
+      "at": "2026-11-16T09:20:12.072Z"
+    },
+    "check-v1": {
+      "captionUnverifiedNumbers": [],
+      "slides": [
+        {
+          "id": "slide-1",
+          "ok": false,
+          "errors": 2,
+          "warnings": 0,
+          "info": 0,
+          "rules": [
+            "error:text-occluded"
+          ]
+        }
+      ]
+    },
+    "02-revise": {
+      "transport": "handoff",
+      "pending": false,
+      "ok": true,
+      "usage": {
+        "source": "Agent tool (fresh-context Opus 5.5 subagent standing in for claude -p)",
+        "wallMs": 511169,
+        "subagentTokens": 144664,
+        "toolUses": 5
+      },
+      "requestPath": "/Users/burak/Desktop/Burak/Code/Studio/spikes/design-render/out/01-product-intro/llm/02-revise.request.md",
+      "at": "2026-11-16T09:28:59.950Z"
+    },
+    "check-v2": {
+      "captionUnverifiedNumbers": [],
+      "slides": [
+        {
+          "id": "slide-1",
+          "ok": true,
+          "errors": 0,
+          "warnings": 0,
+          "info": 0,
+          "rules": []
+        }
+      ]
+    }
+  },
+  "pipelineMsThisInvocation": 971
+}

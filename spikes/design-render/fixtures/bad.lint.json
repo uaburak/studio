@@ -1,0 +1,344 @@
+{
+  "contract": "v0",
+  "file": "fixtures/bad.html",
+  "artboard": {
+    "width": 1080,
+    "height": 1350
+  },
+  "ok": false,
+  "summary": {
+    "errors": 24,
+    "warnings": 9,
+    "info": 0
+  },
+  "issues": [
+    {
+      "rule": "lang",
+      "severity": "error",
+      "layer": null,
+      "message": "<html lang=\"tr\"> is required (Turkish casing İ/ı in text-transform)."
+    },
+    {
+      "rule": "forbidden-element",
+      "severity": "error",
+      "layer": null,
+      "message": "<script> is not allowed in a static design."
+    },
+    {
+      "rule": "forbidden-element",
+      "severity": "error",
+      "layer": null,
+      "message": "<button> is not allowed in a static design."
+    },
+    {
+      "rule": "forbidden-link",
+      "severity": "error",
+      "layer": null,
+      "message": "Only <link rel=\"stylesheet\" href=\"/brand/brand.css\"> is allowed, found: <link rel=\"stylesheet\" href=\"https://fonts.googleapis.com/css2?family=Roboto\">"
+    },
+    {
+      "rule": "event-handler",
+      "severity": "error",
+      "layer": null,
+      "message": "Event handler attribute \"onclick\" is not allowed."
+    },
+    {
+      "rule": "css-font-face",
+      "severity": "error",
+      "layer": null,
+      "message": "<style>: @font-face is only allowed in brand.css."
+    },
+    {
+      "rule": "css-url",
+      "severity": "error",
+      "layer": null,
+      "message": "<style>: \"src: url(\"/brand/fonts/nope.woff2\")\" uses url(); images must be <img> layers and fonts come from brand.css."
+    },
+    {
+      "rule": "css-url",
+      "severity": "error",
+      "layer": null,
+      "message": "<style> .hero: \"background-image: url(\"/brand/assets/product-venta-borinc.png\")\" uses url(); images must be <img> layers and fonts come from brand.css."
+    },
+    {
+      "rule": "layer-id-format",
+      "severity": "error",
+      "layer": "Headline",
+      "message": "data-layer must be kebab-case: [a-z][a-z0-9-]*."
+    },
+    {
+      "rule": "layer-type",
+      "severity": "error",
+      "layer": "Headline",
+      "message": "data-type=\"title\" is not one of text, image, shape, logo, slot, group."
+    },
+    {
+      "rule": "layer-id-duplicate",
+      "severity": "error",
+      "layer": "sub",
+      "message": "Duplicate data-layer id \"sub\"."
+    },
+    {
+      "rule": "image-src",
+      "severity": "error",
+      "layer": "logo",
+      "message": "Image src must start with /brand/ or /media/, got \"https://example.com/logo.png\"."
+    },
+    {
+      "rule": "image-broken",
+      "severity": "error",
+      "layer": "logo",
+      "message": "Image did not load: https://example.com/logo.png"
+    },
+    {
+      "rule": "text-outside-text-layer",
+      "severity": "error",
+      "layer": "Headline",
+      "message": "Text \"Verimi yüzde 30 artırır\" is not inside a data-type=\"text\" layer, so it is not editable."
+    },
+    {
+      "rule": "text-outside-text-layer",
+      "severity": "error",
+      "layer": null,
+      "message": "Text \"Loose text\" is not inside a data-type=\"text\" layer, so it is not editable."
+    },
+    {
+      "rule": "text-outside-text-layer",
+      "severity": "error",
+      "layer": null,
+      "message": "Text \"Tıkla\" is not inside a data-type=\"text\" layer, so it is not editable."
+    },
+    {
+      "rule": "min-font-size",
+      "severity": "error",
+      "layer": "sub",
+      "message": "Smallest text is 18px; minimum is 24px at 1080 width (≈9px on a phone).",
+      "data": {
+        "fontSize": 18
+      }
+    },
+    {
+      "rule": "unverified-number",
+      "severity": "error",
+      "layer": "sub",
+      "message": "\"150 g\" is not a high-confidence fact from facts.json; remove it or use only verified numbers."
+    },
+    {
+      "rule": "unverified-number",
+      "severity": "error",
+      "layer": "sub",
+      "message": "\"10 bo\" is not a high-confidence fact from facts.json; remove it or use only verified numbers."
+    },
+    {
+      "rule": "min-font-size",
+      "severity": "error",
+      "layer": "sub",
+      "message": "Smallest text is 18px; minimum is 24px at 1080 width (≈9px on a phone).",
+      "data": {
+        "fontSize": 18
+      }
+    },
+    {
+      "rule": "network-request",
+      "severity": "error",
+      "layer": null,
+      "message": "Blocked/missing request: https://fonts.googleapis.com/css2?family=Roboto"
+    },
+    {
+      "rule": "network-request",
+      "severity": "error",
+      "layer": null,
+      "message": "Blocked/missing request: https://example.com/logo.png"
+    },
+    {
+      "rule": "contrast",
+      "severity": "error",
+      "layer": "sub",
+      "message": "Contrast 1.61:1 against its background (needs 4.5:1 for normal text).",
+      "data": {
+        "median": 1.61,
+        "worst": 1.61,
+        "required": 4.5,
+        "background": "rgb(255,255,255)"
+      }
+    },
+    {
+      "rule": "contrast",
+      "severity": "error",
+      "layer": "sub",
+      "message": "Contrast 1.61:1 against its background (needs 4.5:1 for normal text).",
+      "data": {
+        "median": 1.61,
+        "worst": 1.61,
+        "required": 4.5,
+        "background": "rgb(255,255,255)"
+      }
+    },
+    {
+      "rule": "css-unreadable",
+      "severity": "warning",
+      "layer": null,
+      "message": "SecurityError: Failed to read the 'cssRules' property from 'CSSStyleSheet': Cannot access rules"
+    },
+    {
+      "rule": "colour-literal",
+      "severity": "warning",
+      "layer": null,
+      "message": "Hard-coded colours found; use brand tokens var(--color-*) or color-mix() with tokens: rgb(127, 209, 127), rgb(204, 204, 204), rgb(224, 165, 5)"
+    },
+    {
+      "rule": "undeclared-visual",
+      "severity": "warning",
+      "layer": null,
+      "message": "A visible <div class=\"hero\"> is not a layer and cannot be selected in the editor."
+    },
+    {
+      "rule": "undeclared-visual",
+      "severity": "warning",
+      "layer": null,
+      "message": "A visible <div class=\"\"> is not a layer and cannot be selected in the editor."
+    },
+    {
+      "rule": "undeclared-visual",
+      "severity": "warning",
+      "layer": null,
+      "message": "A visible <button class=\"\"> is not a layer and cannot be selected in the editor."
+    },
+    {
+      "rule": "safe-area",
+      "severity": "warning",
+      "layer": "sub",
+      "message": "Text is 24px outside the 64px safe margin (left 40, top 563, right 675, bottom 772 from the edges)."
+    },
+    {
+      "rule": "percentage",
+      "severity": "warning",
+      "layer": "sub",
+      "message": "Percent sign in copy: make sure it is a verified fact (the label percentages are low confidence)."
+    },
+    {
+      "rule": "safe-area",
+      "severity": "warning",
+      "layer": "sub",
+      "message": "Text is 32px outside the 64px safe margin (left 40, top 1303, right 695, bottom 32 from the edges)."
+    },
+    {
+      "rule": "safe-area",
+      "severity": "warning",
+      "layer": "logo",
+      "message": "Logo is 64px outside the 64px safe margin."
+    }
+  ],
+  "layers": [
+    {
+      "id": "Headline",
+      "type": "title",
+      "role": null,
+      "parent": null,
+      "rect": {
+        "x": 20,
+        "y": 500,
+        "w": 400,
+        "h": 120
+      },
+      "visible": true
+    },
+    {
+      "id": "sub",
+      "type": "text",
+      "role": null,
+      "parent": null,
+      "rect": {
+        "x": 40,
+        "y": 560,
+        "w": 900,
+        "h": 22
+      },
+      "visible": true
+    },
+    {
+      "id": "sub",
+      "type": "text",
+      "role": null,
+      "parent": null,
+      "rect": {
+        "x": 40,
+        "y": 1300,
+        "w": 900,
+        "h": 22
+      },
+      "visible": true
+    },
+    {
+      "id": "logo",
+      "type": "logo",
+      "role": null,
+      "parent": null,
+      "rect": {
+        "x": 0,
+        "y": 0,
+        "w": 1080,
+        "h": 16
+      },
+      "visible": true
+    }
+  ],
+  "text": [
+    {
+      "id": "sub",
+      "role": null,
+      "lines": 1,
+      "fontSize": 18,
+      "minFontSize": 18,
+      "weight": "400",
+      "family": "Montserrat",
+      "color": "rgb(204, 204, 204)",
+      "clipText": false,
+      "textRect": {
+        "x": 40,
+        "y": 563,
+        "w": 365,
+        "h": 15
+      },
+      "chars": 42,
+      "contrast": {
+        "median": 1.61,
+        "worst": 1.61,
+        "required": 4.5,
+        "background": "rgb(255,255,255)"
+      }
+    },
+    {
+      "id": "sub",
+      "role": null,
+      "lines": 1,
+      "fontSize": 18,
+      "minFontSize": 18,
+      "weight": "400",
+      "family": "Montserrat",
+      "color": "rgb(204, 204, 204)",
+      "clipText": false,
+      "textRect": {
+        "x": 40,
+        "y": 1303,
+        "w": 345,
+        "h": 15
+      },
+      "chars": 39,
+      "contrast": {
+        "median": 1.61,
+        "worst": 1.61,
+        "required": 4.5,
+        "background": "rgb(255,255,255)"
+      }
+    }
+  ],
+  "fontsLoaded": [
+    "Montserrat normal 100 900 normal",
+    "Montserrat normal 100 900 normal"
+  ],
+  "timing": {
+    "renderMs": 211,
+    "totalMs": 264
+  }
+}

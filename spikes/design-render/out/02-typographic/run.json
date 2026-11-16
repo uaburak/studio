@@ -1,0 +1,60 @@
+{
+  "brief": "02-typographic",
+  "transport": "handoff",
+  "model": "opus",
+  "steps": {
+    "01-generate": {
+      "transport": "handoff",
+      "pending": false,
+      "ok": true,
+      "usage": {
+        "source": "Agent tool (fresh-context Opus 5.5 subagent standing in for claude -p)",
+        "wallMs": 541451,
+        "subagentTokens": 142117,
+        "toolUses": 4
+      },
+      "requestPath": "/Users/burak/Desktop/Burak/Code/Studio/spikes/design-render/out/02-typographic/llm/01-generate.request.md",
+      "at": "2026-11-16T09:38:51.517Z"
+    },
+    "check-v1": {
+      "captionUnverifiedNumbers": [],
+      "slides": [
+        {
+          "id": "slide-1",
+          "ok": true,
+          "errors": 0,
+          "warnings": 0,
+          "info": 0,
+          "rules": []
+        }
+      ]
+    },
+    "02-revise": {
+      "transport": "handoff",
+      "pending": false,
+      "ok": true,
+      "usage": {
+        "source": "Agent tool (fresh-context Opus 5.5 subagent standing in for claude -p)",
+        "wallMs": 422291,
+        "subagentTokens": 135730,
+        "toolUses": 5
+      },
+      "requestPath": "/Users/burak/Desktop/Burak/Code/Studio/spikes/design-render/out/02-typographic/llm/02-revise.request.md",
+      "at": "2026-11-16T09:46:13.622Z"
+    },
+    "check-v2": {
+      "captionUnverifiedNumbers": [],
+      "slides": [
+        {
+          "id": "slide-1",
+          "ok": true,
+          "errors": 0,
+          "warnings": 0,
+          "info": 0,
+          "rules": []
+        }
+      ]
+    }
+  },
+  "pipelineMsThisInvocation": 1989
+}

@@ -1,0 +1,63 @@
+{
+  "brief": "04-image-slot",
+  "transport": "handoff",
+  "model": "opus",
+  "steps": {
+    "01-generate": {
+      "transport": "handoff",
+      "pending": false,
+      "ok": true,
+      "usage": {
+        "source": "Agent tool (fresh-context Opus 5.5 subagent standing in for claude -p)",
+        "wallMs": null,
+        "subagentTokens": null,
+        "note": "files were complete (written 13:15) but the subagent then hit the subscription 5-hour limit (HTTP 429) before replying, so the Agent tool returned no usage numbers"
+      },
+      "requestPath": "/Users/burak/Desktop/Burak/Code/Studio/spikes/design-render/out/04-image-slot/llm/01-generate.request.md",
+      "at": "2026-11-16T11:10:40.930Z"
+    },
+    "check-v1": {
+      "captionUnverifiedNumbers": [],
+      "slides": [
+        {
+          "id": "slide-1",
+          "ok": false,
+          "errors": 2,
+          "warnings": 1,
+          "info": 1,
+          "rules": [
+            "error:text-occluded",
+            "warning:small-font-size"
+          ]
+        }
+      ]
+    },
+    "02-revise": {
+      "transport": "handoff",
+      "pending": false,
+      "ok": true,
+      "usage": {
+        "source": "Agent tool (fresh-context Opus 5.5 subagent standing in for claude -p)",
+        "wallMs": 367814,
+        "subagentTokens": 130301,
+        "toolUses": 5
+      },
+      "requestPath": "/Users/burak/Desktop/Burak/Code/Studio/spikes/design-render/out/04-image-slot/llm/02-revise.request.md",
+      "at": "2026-11-16T11:17:03.015Z"
+    },
+    "check-v2": {
+      "captionUnverifiedNumbers": [],
+      "slides": [
+        {
+          "id": "slide-1",
+          "ok": true,
+          "errors": 0,
+          "warnings": 0,
+          "info": 1,
+          "rules": []
+        }
+      ]
+    }
+  },
+  "pipelineMsThisInvocation": 642
+}

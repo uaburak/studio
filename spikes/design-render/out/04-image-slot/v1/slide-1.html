@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8">
+  <meta name="studio:contract" content="v0">
+  <meta name="studio:format" content="1080x1350">
+  <link rel="stylesheet" href="/brand/brand.css">
+  <style>
+    main[data-artboard] { position: relative; background: var(--color-paper); }
+
+    /* Field photo: one full-bleed 4:3 slot, top 60% of the post */
+    .field-photo { margin: 0; }
+
+    /* Pack label edge: green band closes the photo */
+    .label-band { background: var(--color-green); }
+
+    /* Copy stack on paper, below the band */
+    .copy { display: flex; flex-direction: column; align-items: flex-start; gap: var(--space-32); }
+    .statement { display: flex; flex-direction: column; align-items: flex-start; gap: var(--space-16); }
+    .shout {
+      font-family: var(--font-display); font-size: 88px; font-weight: 900; font-stretch: 125%;
+      font-style: italic; text-transform: uppercase; letter-spacing: -0.01em; line-height: 1.04;
+      color: var(--color-ink); text-wrap: balance; hyphens: none;
+    }
+    .subhead {
+      font-family: var(--font-text); font-size: 40px; font-weight: 700; line-height: 1.2;
+      letter-spacing: -0.01em; color: var(--color-ink); max-width: 616px; text-wrap: balance; hyphens: none;
+    }
+    .subhead .product { color: var(--color-green-deep); }
+    .note {
+      font-family: var(--font-text); font-size: 30px; font-weight: 500; line-height: 1.38;
+      color: var(--color-graphite); max-width: 616px; hyphens: none;
+    }
+
+    /* Element badges (regular flat-top hexagons) */
+    .badge { display: grid; }
+    .badge > * { grid-area: 1 / 1; }
+    .hex { width: 120px; height: 104px; clip-path: polygon(25% 0, 75% 0, 100% 50%, 75% 100%, 25% 100%, 0 50%); }
+    .hex-b { background: var(--color-amber); }
+    .hex-zn { background: var(--color-green); }
+    .hex-label {
+      align-self: center; justify-self: center;
+      font-family: var(--font-text); font-size: 48px; font-weight: 700; line-height: 1;
+      color: var(--color-ink);
+    }
+
+    /* Sign-off: logo left, web address right */
+    .sign-off { display: flex; align-items: center; justify-content: space-between; }
+    .logo { height: 40px; width: auto; flex: none; }
+    .url {
+      font-family: var(--font-text); font-size: 24px; font-weight: 500; line-height: 1.3;
+      letter-spacing: 0.04em; color: var(--color-graphite);
+    }
+  </style>
+</head>
+<body>
+  <main data-artboard style="width:1080px;height:1350px">
+
+    <figure data-layer="field-photo" data-type="slot" data-slot-ratio="4:3" data-slot-state="empty"
+            data-slot-label="Saha fotoğrafı" data-slot-fit="cover" class="field-photo"
+            style="position:absolute; left:0px; top:0px; width:1080px; height:810px"></figure>
+
+    <div data-layer="label-band" data-type="shape" data-role="decoration" class="label-band"
+         style="position:absolute; left:0px; top:810px; width:1080px; height:16px"></div>
+
+    <div data-layer="copy" data-type="group" class="copy"
+         style="position:absolute; left:72px; top:920px; width:936px">
+      <div data-layer="statement" data-type="group" class="statement">
+        <h1 data-layer="headline" data-type="text" data-role="headline" class="ts-display-m shout">Bor ve çinko</h1>
+        <p data-layer="subhead" data-type="text" data-role="subhead" class="ts-title subhead"><span class="product">Venta Borinc</span> ile bir arada.</p>
+      </div>
+      <p data-layer="label-note" data-type="text" data-role="body" class="ts-body note">Kullanmadan önce etiketi okuyunuz.</p>
+    </div>
+
+    <div data-layer="badge-b" data-type="group" data-role="badge" class="badge"
+         style="position:absolute; left:752px; top:1036px; width:120px; height:104px">
+      <div data-layer="badge-b-hex" data-type="shape" data-role="decoration" class="hex hex-b"></div>
+      <p data-layer="badge-b-label" data-type="text" data-role="badge" class="hex-label">B</p>
+    </div>
+
+    <div data-layer="badge-zn" data-type="group" data-role="badge" class="badge"
+         style="position:absolute; left:888px; top:1036px; width:120px; height:104px">
+      <div data-layer="badge-zn-hex" data-type="shape" data-role="decoration" class="hex hex-zn"></div>
+      <p data-layer="badge-zn-label" data-type="text" data-role="badge" class="hex-label">Zn</p>
+    </div>
+
+    <div data-layer="sign-off" data-type="group" class="sign-off"
+         style="position:absolute; left:72px; top:1238px; width:936px; height:40px">
+      <img data-layer="logo-venta" data-type="logo" class="logo"
+           src="/brand/logos/venta-wordmark-black.standin.png" alt="Venta">
+      <p data-layer="web-address" data-type="text" data-role="caption" class="ts-caption url">www.mtmagro.com</p>
+    </div>
+
+  </main>
+</body>
+</html>
