@@ -1,0 +1,13 @@
+{
+  "name": "video-bakeoff-tools",
+  "private": true,
+  "description": "Local ffmpeg/ffprobe binaries for normalization and probing (no system install).",
+  "dependencies": {
+    "@expo-google-fonts/montserrat": "0.4.2",
+    "@ffprobe-installer/darwin-arm64": "5.0.1",
+    "ffmpeg-static": "5.3.0"
+  },
+  "scripts": {
+    "normalize": "for e in hyperframes remotion; do ./normalize.sh ../out/$e-raw.mp4 ../out/$e-reels.mp4 && (. ./env.sh && python3 verify_reels.py ../out/$e-reels.mp4 --json ../out/$e-reels.verify.json); done"
+  }
+}

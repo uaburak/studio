@@ -1,0 +1,173 @@
+{
+  "version": 1,
+  "historyId": "062c4295-4791-4a23-b3da-68906a40db88",
+  "currentRevision": "ac420b76-41ee-4cdb-b124-ca2aba23fe4f",
+  "pendingChanges": false,
+  "files": {
+    "assets/fonts/Montserrat-OFL.txt": {
+      "hash": "8b7141c03fa4f8d44e6345d5d4931709290f0f67875e452e95ac1fd3a027802e",
+      "content": "/Users/burak/.cache/hyperframes/history/062c4295-4791-4a23-b3da-68906a40db88/blobs/8b/8b7141c03fa4f8d44e6345d5d4931709290f0f67875e452e95ac1fd3a027802e"
+    },
+    "assets/fonts/Montserrat_600SemiBold.ttf": {
+      "hash": "9c4db3814875410e7d64fdc8e69676c3b84968bb15bf3ace8b3944c59fbc56b6",
+      "content": "/Users/burak/.cache/hyperframes/history/062c4295-4791-4a23-b3da-68906a40db88/blobs/9c/9c4db3814875410e7d64fdc8e69676c3b84968bb15bf3ace8b3944c59fbc56b6"
+    },
+    "assets/fonts/Montserrat_800ExtraBold.ttf": {
+      "hash": "5cf0a23133ccce35f9e115b8dbbf90434201827bc2465d12f9d91bbf02cf9466",
+      "content": "/Users/burak/.cache/hyperframes/history/062c4295-4791-4a23-b3da-68906a40db88/blobs/5c/5cf0a23133ccce35f9e115b8dbbf90434201827bc2465d12f9d91bbf02cf9466"
+    },
+    "assets/vendor/gsap.min.js": {
+      "hash": "3d1bea374ab1b703cc5c4105358eec63c4465efdc573931dc116e34a0a190c1b",
+      "content": "/Users/burak/.cache/hyperframes/history/062c4295-4791-4a23-b3da-68906a40db88/blobs/3d/3d1bea374ab1b703cc5c4105358eec63c4465efdc573931dc116e34a0a190c1b"
+    },
+    "assets/venta-borinc.png": {
+      "hash": "eaab3aa850e693b7df397b07ee4171fd1dafcb48ac2ab21ada077f5b5542225c",
+      "content": "/Users/burak/.cache/hyperframes/history/062c4295-4791-4a23-b3da-68906a40db88/blobs/ea/eaab3aa850e693b7df397b07ee4171fd1dafcb48ac2ab21ada077f5b5542225c"
+    },
+    "index.html": {
+      "hash": "67f6786aa008f70f1c2f6a03a2d8057657dab9e81977041103dd33dea5c379aa",
+      "content": "/Users/burak/.cache/hyperframes/history/062c4295-4791-4a23-b3da-68906a40db88/blobs/67/67f6786aa008f70f1c2f6a03a2d8057657dab9e81977041103dd33dea5c379aa"
+    },
+    "package-lock.json": {
+      "hash": "02f31402c33a7a9a9faf85e4c7b55352fc548e1340e1ec316e077a42adff68b0",
+      "content": "/Users/burak/.cache/hyperframes/history/062c4295-4791-4a23-b3da-68906a40db88/blobs/02/02f31402c33a7a9a9faf85e4c7b55352fc548e1340e1ec316e077a42adff68b0"
+    },
+    "package.json": {
+      "hash": "865499eaf67704965c0a37afb1e7d672c0bec9e7aa577b06a0b72669c64a8887",
+      "content": "/Users/burak/.cache/hyperframes/history/062c4295-4791-4a23-b3da-68906a40db88/blobs/86/865499eaf67704965c0a37afb1e7d672c0bec9e7aa577b06a0b72669c64a8887"
+    }
+  },
+  "revisions": {
+    "ec4c4bd3-0b4b-4790-84be-f45a7eb3c179": {
+      "actor": {
+        "kind": "outside",
+        "name": "Outside"
+      },
+      "label": "Changed outside the app",
+      "startedAt": 1794819546721,
+      "endedAt": 1794819546721,
+      "files": {
+        "index.html": {
+          "before": "/Users/burak/.cache/hyperframes/history/062c4295-4791-4a23-b3da-68906a40db88/blobs/4f/4f9201258b3aa423aafb517d7c04acb6edd9f387af91f08fbd853864d4a82c45",
+          "after": "/Users/burak/.cache/hyperframes/history/062c4295-4791-4a23-b3da-68906a40db88/blobs/62/62bf69fa18648a7f9c9a338a2c56e9f70d4919e65b5b877664d2f94e98485d34"
+        }
+      }
+    },
+    "ac420b76-41ee-4cdb-b124-ca2aba23fe4f": {
+      "actor": {
+        "kind": "outside",
+        "name": "Outside"
+      },
+      "label": "Changed outside the app",
+      "startedAt": 1794819598450,
+      "endedAt": 1794819598450,
+      "files": {
+        "index.html": {
+          "before": "/Users/burak/.cache/hyperframes/history/062c4295-4791-4a23-b3da-68906a40db88/blobs/62/62bf69fa18648a7f9c9a338a2c56e9f70d4919e65b5b877664d2f94e98485d34",
+          "after": "/Users/burak/.cache/hyperframes/history/062c4295-4791-4a23-b3da-68906a40db88/blobs/67/67f6786aa008f70f1c2f6a03a2d8057657dab9e81977041103dd33dea5c379aa"
+        }
+      }
+    }
+  },
+  "checks": {
+    "latest": {
+      "revision": "ec4c4bd3-0b4b-4790-84be-f45a7eb3c179",
+      "id": "106bd1d4-67a6-46c2-855c-1a25a7b1b7a3"
+    },
+    "revisions": {
+      "ec4c4bd3-0b4b-4790-84be-f45a7eb3c179": [
+        {
+          "id": "106bd1d4-67a6-46c2-855c-1a25a7b1b7a3",
+          "scope": "project",
+          "report": "/Users/burak/Desktop/Burak/Code/Studio/spikes/video-bakeoff/hyperframes/.hyperframes/artifacts/checks/106bd1d4-67a6-46c2-855c-1a25a7b1b7a3.json",
+          "metadata": {
+            "ok": true,
+            "browserSkipped": false,
+            "options": {
+              "samples": 9,
+              "atTransitions": false,
+              "maxIssues": 80,
+              "collapseStatic": true,
+              "tolerance": 2,
+              "timeout": 45000,
+              "cache": true,
+              "contrast": true,
+              "craft": true,
+              "strict": false,
+              "snapshots": false,
+              "safeZones": [
+                "tiktok",
+                "reels",
+                "shorts"
+              ],
+              "browserGpuMode": "auto",
+              "includeUnmounted": false
+            }
+          },
+          "createdAt": 1794819547888,
+          "contentHash": "5c214780ebb1ac42224a05c334352b7bfd18c37ca3d3b166d87361914962f18c",
+          "revision": "ec4c4bd3-0b4b-4790-84be-f45a7eb3c179",
+          "inputFingerprint": "6f46b7fe2ef9b75dead12463f9d4c9dc990d0ff8d867ad4996c8ab144ddb7c5a",
+          "inputScope": "local-project-files",
+          "attribution": "recorded-revision"
+        }
+      ]
+    },
+    "unversioned": [
+      {
+        "id": "c1e27f60-9840-44c0-a739-726b8dbefaf0",
+        "scope": "project",
+        "report": "/Users/burak/Desktop/Burak/Code/Studio/spikes/video-bakeoff/hyperframes/.hyperframes/artifacts/checks/c1e27f60-9840-44c0-a739-726b8dbefaf0.json",
+        "metadata": {
+          "ok": true,
+          "browserSkipped": false,
+          "options": {
+            "samples": 9,
+            "atTransitions": false,
+            "maxIssues": 80,
+            "collapseStatic": true,
+            "tolerance": 2,
+            "timeout": 45000,
+            "cache": true,
+            "contrast": true,
+            "craft": true,
+            "strict": false,
+            "snapshots": false,
+            "safeZones": [
+              "tiktok",
+              "reels",
+              "shorts"
+            ],
+            "browserGpuMode": "auto",
+            "includeUnmounted": false
+          }
+        },
+        "createdAt": 1794819521958,
+        "contentHash": "1945c068f9ced981c1cdab95ecc36d7d967ed8637c6d655e82bd0d7cf8c565c2",
+        "revision": null,
+        "inputFingerprint": "a182144c6a51bfdf0b910f4aae4c42cf02f66c64815ea1709dae0235415d8150",
+        "inputScope": "local-project-files",
+        "attribution": "unversioned"
+      }
+    ]
+  },
+  "snapshots": {
+    "latest": null,
+    "revisions": {},
+    "unversioned": []
+  },
+  "renders": {
+    "latest": {
+      "id": "e59fe665-4776-4079-ad83-70da968fc7bc",
+      "completedAt": 1794819666420,
+      "output": "/private/tmp/claude-501/-Users-burak-Desktop-Burak-Code-Studio/0a04f682-8f15-4601-9ca9-ba4ffb2235a9/scratchpad/hf-swgpu.mp4",
+      "status": "completed",
+      "revision": "ac420b76-41ee-4cdb-b124-ca2aba23fe4f"
+    },
+    "retainedRevisions": [
+      "ac420b76-41ee-4cdb-b124-ca2aba23fe4f",
+      "ec4c4bd3-0b4b-4790-84be-f45a7eb3c179"
+    ]
+  },
+  "pendingArtifactCleanup": []
+}

@@ -1,0 +1,33 @@
+<!doctype html>
+<!-- Embeds the composition with the <hyperframes-player> web component and edits it live through the
+     same-origin iframe DOM (the shape a DOM/property-panel editor would use). Serve from hyperframes/ after `npm run bundle:player` (the raw index.html lacks the runtime that applies variables). -->
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <title>HyperFrames Player demo</title>
+    <script src="../node_modules/@hyperframes/player/dist/hyperframes-player.global.js"></script>
+  </head>
+  <body style="margin: 0; font-family: system-ui">
+    <div style="display: flex; gap: 24px; padding: 16px">
+      <hyperframes-player id="p" src="../player-dist/index.html" width="1080" height="1920" controls loop
+        style="height: 85vh; aspect-ratio: 9 / 16"></hyperframes-player>
+      <div style="display: grid; gap: 8px; align-content: start">
+        <label>Product name <input id="productName" value="VENTA BORINC" /></label>
+        <label>Brand green <input id="colorPrimary" type="color" value="#3E9B3A" /></label>
+        <pre id="status"></pre>
+      </div>
+    </div>
+    <script>
+      const player = document.getElementById("p");
+      const doc = () => player.iframeElement.contentDocument;
+      player.addEventListener("ready", (e) => (document.getElementById("status").textContent = "ready " + JSON.stringify(e.detail)));
+      document.getElementById("productName").addEventListener("input", (e) => {
+        doc().getElementById("productName").textContent = e.target.value;
+      });
+      document.getElementById("colorPrimary").addEventListener("input", (e) => {
+        // The runtime writes variable values as inline custom properties on the composition root.
+        doc().querySelector('[data-composition-id="main"]').style.setProperty("--colorPrimary", e.target.value);
+      });
+    </script>
+  </body>
+</html>

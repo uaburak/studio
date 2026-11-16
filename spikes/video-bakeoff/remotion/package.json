@@ -1,0 +1,19 @@
+{
+  "name": "video-bakeoff-remotion",
+  "private": true,
+  "dependencies": {
+    "@remotion/cli": "4.0.544",
+    "@remotion/fonts": "4.0.544",
+    "@remotion/player": "4.0.544",
+    "@remotion/zod-types": "4.0.544",
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
+    "remotion": "4.0.544",
+    "zod": "4.6.7"
+  },
+  "scripts": {
+    "studio": "DO_NOT_TRACK=1 remotion studio src/index.ts",
+    "render": "DO_NOT_TRACK=1 remotion render src/index.ts Venta ../out/remotion-raw.mp4",
+    "build:player": "esbuild player-demo/main.tsx --bundle --minify --format=iife --jsx=automatic --define:process.env.NODE_ENV='\"production\"' --outfile=player-demo/dist/main.js"
+  }
+}

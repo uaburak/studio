@@ -1,0 +1,19 @@
+{
+  "name": "video-bakeoff-hyperframes",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@hyperframes/player": "0.9.56",
+    "@hyperframes/sdk": "0.9.56",
+    "gsap": "3.15.1",
+    "hyperframes": "0.9.56"
+  },
+  "scripts": {
+    "doctor": ". ../tools/env.sh && hyperframes doctor",
+    "lint": ". ../tools/env.sh && hyperframes lint",
+    "check": ". ../tools/env.sh && hyperframes check",
+    "preview": ". ../tools/env.sh && hyperframes preview",
+    "render": ". ../tools/env.sh && hyperframes render --output ../out/hyperframes-raw.mp4",
+    "bundle:player": "node scripts/bundle-for-player.mjs"
+  }
+}

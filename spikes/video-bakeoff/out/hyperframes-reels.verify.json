@@ -1,0 +1,38 @@
+{
+  "file": "hyperframes-reels.mp4",
+  "pass": true,
+  "checks": {
+    "codec h264": true,
+    "profile High": true,
+    "pix_fmt yuv420p": true,
+    "1080x1920": true,
+    "30 fps (r & avg)": true,
+    "bt709 primaries/trc/matrix": true,
+    "limited (tv) range": true,
+    "keyframes every 2 s": true,
+    "closed GOP (x264 open_gop=0)": true,
+    "every keyframe is IDR": true,
+    "moov before mdat (faststart)": true,
+    "no edit lists (elst)": true,
+    "audio AAC 48 kHz stereo": true,
+    "video starts at pts 0": true,
+    "duration ~8 s": true
+  },
+  "top_level_atoms": [
+    "ftyp",
+    "moov",
+    "free",
+    "mdat"
+  ],
+  "keyframe_times": [
+    0.0,
+    2.0,
+    4.0,
+    6.0
+  ],
+  "idr_nal_count": 4,
+  "video_bitrate": "2588515",
+  "nb_frames": "240",
+  "duration": "8.022000",
+  "size_bytes": 2600855
+}

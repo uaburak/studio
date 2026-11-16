@@ -10,3 +10,9 @@ coverage/
 .wrangler/
 .dev.vars
 .dev.vars.*
+
+# spike çıktıları
+spikes/**/node_modules/
+spikes/video-bakeoff/**/player-dist/
+spikes/**/work/
+spikes/**/logs/

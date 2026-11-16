@@ -62,7 +62,7 @@ Henüz karar verilmeyenler 14. bölümde.
 
 - HTML/CSS, dil modellerinin en iyi görünen sonucu verdiği biçim; bu alandaki güncel ürünler (Claude Design, Open Design, HyperFrames) aynı yolu seçmiş. Koordinat tabanlı JSON sahne grafiklerinde modeller uzamsal yerleşimde zayıf kalıyor. Birebir karşılaştırmalı bir ölçüm yok; kanıt dolaylı.
 - Sonuç: statik ve video için tek kaynak HTML/CSS. Canvas kütüphanesi (Fabric, Konva, Polotno) kullanılmayacak.
-- Video motoru adayları: HyperFrames (Apache-2.0; HTML + GSAP, statiklerle aynı gösterim; 1.0 öncesi, çok sık sürüm çıkıyor) ve Remotion (olgun; bireyler ve 3 kişiye kadar şirketler için ücretsiz). Seçim Faz 0'daki karşılaştırma testiyle yapılacak.
+- Video motoru adayları: HyperFrames (Apache-2.0; HTML + GSAP, statiklerle aynı gösterim; 1.0 öncesi, çok sık sürüm çıkıyor) ve Remotion (olgun; bireyler ve 3 kişiye kadar şirketler için ücretsiz). Karşılaştırma yapıldı (2026-11-16, `spikes/video-bakeoff/REPORT.md`): **HyperFrames seçildi**, 0.9.56 sürümüne sabitlenerek. 8 saniyelik klip 7 saniyede render ediliyor (Remotion 16–25 saniye), çıktı tekrarlanabilir, lisans Apache-2.0. Her çıktı `normalize.sh` geçişinden sonra Reels ölçütlerini karşılıyor.
 - Dışa aktarım: Mac'te Playwright/Chromium. Editör önizlemesi de Chromium olduğu için gördüğün ile çıkan aynı olur.
 
 ### 3.5 AI görsel üretimi

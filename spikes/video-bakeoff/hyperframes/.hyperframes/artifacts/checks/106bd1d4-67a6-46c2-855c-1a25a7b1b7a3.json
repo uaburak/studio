@@ -1,0 +1,321 @@
+{
+  "ok": true,
+  "strict": false,
+  "browserSkipped": false,
+  "lint": {
+    "ok": true,
+    "errorCount": 0,
+    "warningCount": 3,
+    "infoCount": 0,
+    "findings": [
+      {
+        "code": "nested_structure_needs_subcomposition",
+        "severity": "warning",
+        "message": "<section id=\"s1\"> is a timeline element that contains nested <h1 id=\"headline\">. The timeline shows one row per top-level element, and the root composition is built only from sub-compositions.",
+        "selector": "#s1",
+        "dataAttributes": {},
+        "sourceFile": "/Users/burak/Desktop/Burak/Code/Studio/spikes/video-bakeoff/hyperframes/index.html",
+        "bbox": {
+          "x": 0,
+          "y": 0,
+          "width": 0,
+          "height": 0
+        },
+        "time": 0,
+        "fixHint": "Move <section id=\"s1\"> and its contents into a sub-composition file and mount it with data-composition-src."
+      },
+      {
+        "code": "nested_structure_needs_subcomposition",
+        "severity": "warning",
+        "message": "<section id=\"s2\"> is a timeline element that contains nested <div id=\"card\">. The timeline shows one row per top-level element, and the root composition is built only from sub-compositions.",
+        "selector": "#s2",
+        "dataAttributes": {},
+        "sourceFile": "/Users/burak/Desktop/Burak/Code/Studio/spikes/video-bakeoff/hyperframes/index.html",
+        "bbox": {
+          "x": 0,
+          "y": 0,
+          "width": 0,
+          "height": 0
+        },
+        "time": 0,
+        "fixHint": "Move <section id=\"s2\"> and its contents into a sub-composition file and mount it with data-composition-src."
+      },
+      {
+        "code": "nested_structure_needs_subcomposition",
+        "severity": "warning",
+        "message": "<section id=\"s3\"> is a timeline element that contains nested <h2 id=\"companyName\">. The timeline shows one row per top-level element, and the root composition is built only from sub-compositions.",
+        "selector": "#s3",
+        "dataAttributes": {},
+        "sourceFile": "/Users/burak/Desktop/Burak/Code/Studio/spikes/video-bakeoff/hyperframes/index.html",
+        "bbox": {
+          "x": 0,
+          "y": 0,
+          "width": 0,
+          "height": 0
+        },
+        "time": 0,
+        "fixHint": "Move <section id=\"s3\"> and its contents into a sub-composition file and mount it with data-composition-src."
+      }
+    ],
+    "filesScanned": 1
+  },
+  "runtime": {
+    "ok": true,
+    "errorCount": 0,
+    "warningCount": 0,
+    "infoCount": 0,
+    "findings": []
+  },
+  "layout": {
+    "ok": true,
+    "errorCount": 0,
+    "warningCount": 4,
+    "infoCount": 0,
+    "findings": [
+      {
+        "selector": "#headline",
+        "dataAttributes": {
+          "data-var-text": "headline"
+        },
+        "sourceFile": "index.html",
+        "bbox": {
+          "x": 96,
+          "y": 697.84,
+          "width": 599.03,
+          "height": 161
+        },
+        "time": 0.444,
+        "rect": {
+          "left": 96,
+          "top": 697.84,
+          "right": 695.03,
+          "bottom": 858.84,
+          "width": 599.03,
+          "height": 161
+        },
+        "code": "outside_safe_zone",
+        "severity": "warning",
+        "text": "Toprağın",
+        "message": "<h1> \"Toprağın\" is outside the safe area: TikTok (left edge).",
+        "fixHint": "Move the text inside the safe area, or mark text meant to sit there with data-layout-allow-safe-zone.",
+        "firstSeen": 0.444,
+        "lastSeen": 2.222,
+        "occurrences": 3,
+        "heldMs": 1778,
+        "times": [
+          0.444,
+          1.333,
+          2.222
+        ]
+      },
+      {
+        "selector": "#productName",
+        "dataAttributes": {
+          "data-var-text": "productName"
+        },
+        "sourceFile": "index.html",
+        "bbox": {
+          "x": 104.44,
+          "y": 1000.04,
+          "width": 871.11,
+          "height": 127
+        },
+        "time": 4,
+        "rect": {
+          "left": 104.44,
+          "top": 1000.04,
+          "right": 975.55,
+          "bottom": 1127.04,
+          "width": 871.11,
+          "height": 127
+        },
+        "code": "outside_safe_zone",
+        "severity": "warning",
+        "text": "VENTA BORINC",
+        "message": "<h2> \"VENTA BORINC\" is outside the safe area: TikTok (left and right edges), YouTube Shorts (right edge).",
+        "fixHint": "Move the text inside the safe area, or mark text meant to sit there with data-layout-allow-safe-zone.",
+        "firstSeen": 4,
+        "lastSeen": 4.889,
+        "occurrences": 2,
+        "heldMs": 889.0000000000002,
+        "times": [
+          4,
+          4.889
+        ]
+      },
+      {
+        "selector": "#productLine",
+        "dataAttributes": {
+          "data-var-text": "productLine"
+        },
+        "sourceFile": "index.html",
+        "bbox": {
+          "x": 233.64,
+          "y": 1145.79,
+          "width": 612.72,
+          "height": 71
+        },
+        "time": 4,
+        "rect": {
+          "left": 233.64,
+          "top": 1145.79,
+          "right": 846.36,
+          "bottom": 1216.79,
+          "width": 612.72,
+          "height": 71
+        },
+        "code": "outside_safe_zone",
+        "severity": "warning",
+        "text": "Bor (B) ve Çinko (Zn)",
+        "message": "<p> \"Bor (B) ve Çinko (Zn)\" is outside the safe area: TikTok (right edge).",
+        "fixHint": "Move the text inside the safe area, or mark text meant to sit there with data-layout-allow-safe-zone.",
+        "firstSeen": 4,
+        "lastSeen": 4.889,
+        "occurrences": 2,
+        "heldMs": 889.0000000000002,
+        "times": [
+          4,
+          4.889
+        ]
+      },
+      {
+        "selector": "#companyName",
+        "dataAttributes": {
+          "data-var-text": "companyName"
+        },
+        "sourceFile": "index.html",
+        "bbox": {
+          "x": 137.69,
+          "y": 841.32,
+          "width": 804.61,
+          "height": 156
+        },
+        "time": 5.778,
+        "rect": {
+          "left": 137.69,
+          "top": 841.32,
+          "right": 942.3,
+          "bottom": 997.32,
+          "width": 804.61,
+          "height": 156
+        },
+        "code": "outside_safe_zone",
+        "severity": "warning",
+        "text": "MTM AGRO",
+        "message": "<h2> \"MTM AGRO\" is outside the safe area: TikTok (right edge), YouTube Shorts (right edge).",
+        "fixHint": "Move the text inside the safe area, or mark text meant to sit there with data-layout-allow-safe-zone.",
+        "firstSeen": 5.778,
+        "lastSeen": 7.556,
+        "occurrences": 3,
+        "heldMs": 1778.0000000000005,
+        "times": [
+          5.778,
+          6.667,
+          7.556
+        ]
+      }
+    ],
+    "duration": 8,
+    "samples": [
+      0.444,
+      1.333,
+      2.222,
+      3.111,
+      4,
+      4.889,
+      5.778,
+      6.667,
+      7.556
+    ],
+    "transitionSamples": [],
+    "transitionSamplesDropped": 0,
+    "tolerance": 2,
+    "totalIssueCount": 4,
+    "truncated": false
+  },
+  "motion": {
+    "ok": true,
+    "errorCount": 0,
+    "warningCount": 0,
+    "infoCount": 0,
+    "findings": [],
+    "enabled": false,
+    "samples": 0
+  },
+  "contrast": {
+    "ok": true,
+    "errorCount": 0,
+    "warningCount": 0,
+    "infoCount": 0,
+    "findings": [],
+    "enabled": true,
+    "samples": [
+      0.444,
+      2.222,
+      4,
+      5.778,
+      7.556
+    ],
+    "checked": 10,
+    "passed": 10
+  },
+  "craft": {
+    "ok": true,
+    "errorCount": 0,
+    "warningCount": 1,
+    "infoCount": 0,
+    "findings": [
+      {
+        "code": "first_frame_empty",
+        "severity": "warning",
+        "message": "Frame 0 shows only the background, and the first frame is the thumbnail on social players: have the title or key image already on screen at 0 s instead of entering from nothing; see references/review.md.",
+        "selector": "[data-composition-id]",
+        "dataAttributes": {},
+        "sourceFile": "index.html",
+        "bbox": {
+          "x": 0,
+          "y": 0,
+          "width": 0,
+          "height": 0
+        },
+        "time": 0
+      }
+    ],
+    "enabled": true,
+    "step": 0.125,
+    "samples": 64
+  },
+  "audio": {
+    "ok": true,
+    "errorCount": 0,
+    "warningCount": 0,
+    "infoCount": 1,
+    "findings": [
+      {
+        "code": "audio_none",
+        "severity": "info",
+        "message": "The film has no sound: no clip in it plays audio.",
+        "selector": "[data-composition-id]",
+        "dataAttributes": {},
+        "sourceFile": "index.html",
+        "bbox": {
+          "x": 0,
+          "y": 0,
+          "width": 0,
+          "height": 0
+        },
+        "time": 0
+      }
+    ]
+  },
+  "hdr": {
+    "autoPromotion": null,
+    "inspection": "available"
+  },
+  "snapshots": {
+    "enabled": false,
+    "files": [],
+    "times": [],
+    "findingFiles": []
+  }
+}
