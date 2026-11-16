@@ -42,3 +42,19 @@ Kod tarafındaki tüm motorlar ve arayüzler hazırdır; dış servislerle canl�
 1. **Hemen yerel kullanım (Mac + Gemini Chat & Üretim):** `.env` dosyanızdaki `GEMINI_API_KEY` sayesinde Claude limitiniz doluyken bile `open apps/apple/StudioMac/build/DerivedData/Build/Products/Debug/Studio.app` komutuyla uygulamayı açıp **Gemini Flash-Lite / Gemini Flash** ile hemen sohbet edebilir, plan çıkarabilir, AI görsel, post ve Reels üretebilirsiniz.
 2. **Meta & LinkedIn canlı hesap bağlama:** Sağ paneldeki **Bağla** butonundan Meta erişim anahtarı (Sayfa + Instagram otomatik keşif) veya LinkedIn anahtarı girildiğinde şifreli kasaya kaydedilir.
 3. **Bulut yayıncı / Tünel (isteğe bağlı, Mac kapalıyken yayın & dış ağ erişimi):** `apps/cloud-publisher/README.md` içindeki `wrangler login` + `wrangler deploy` adımları ve Ayarlar → Bu Mac altındaki Cloudflare Tunnel anahtarı.
+
+## Ürünü tamamlama dalgaları (Burak, 2026-11-16 22:30: "olması gereken ne varsa yap, arayüzü nihai ürün yap; önce Mac, sonra iOS; onay bekleme")
+
+Yukarıdaki "Tamam" satırlarının bir kısmı dış katkıyla (Gemini) yazıldı ve yönetici tarafından uçtan uca denenmedi. Bu dalgalarda her ajan önce kendi alanında gerçekte neyin çalıştığını yerel API'ye karşı teknik olarak denetler, sonra eksikleri tamamlar ve hataları düzeltir.
+
+Kurallar: ajanlar en fazla Opus 5.5 / xhigh; aynı anda en fazla 3 ajan; para harcanmaz; dağıtım ve hesap değişikliği yapılmaz; yalnızca teknik test (ekran görüntüsü, pencere açan UI testi yok); her dalga yönetici tarafından doğrulanıp commit edilir.
+
+| Dalga | No | İş | Efor | Durum |
+|---|---|---|---|---|
+| 1 | A5 | Sohbet ajanı (Wecra yöntemi) — ajan çalışmaya devam ediyor | xhigh | Çalışıyor |
+| 1 | P1 | Mac postlar ve editör: postlar ızgarası, açık post, katman düzenleme, görsel yuvası doldurma, sürüm geçmişi ve geri al, "Neyi değiştireyim?", dışa aktarım (JPEG/PNG/PDF, paylaş) | xhigh | Çalışıyor |
+| 1 | P2 | Mac ilk açılış ve marka: ilk açılış akışı (Claude girişi, Mac sunucusu, ilk marka), marka sihirbazı, marka kiti, örnek postlardan profil çıkarma, profil düzenleme ve onay | high | Çalışıyor |
+| 2 | P3 | Mac yayın, hesaplar, takvim, bildirimler: hesap bağlama, zamanlama ve takvim, bulut yayıncı eşitleme, yayın günlüğü, macOS bildirimleri | high | Sırada |
+| 2 | P4 | Mac nihai cila: menüler ve kısayollar, boş/yükleniyor/hata durumları, arama, medya, tutarlılık ve erişilebilirlik | high | Sırada |
+| 3 | P5 | iOS: Mac ile eş düzey | xhigh | Sırada |
+| 3 | P6 | Reels'in Mac arayüzünde uçtan uca kullanımı | high | Sırada |
