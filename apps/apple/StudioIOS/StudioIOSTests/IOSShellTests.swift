@@ -163,8 +163,8 @@ struct IOSShellTests {
         #expect(!DrawerMath.settlesOpen(progress: 0.8, velocity: -800))
         #expect(DrawerMath.settlesOpen(progress: 0.6, velocity: 0))
         #expect(!DrawerMath.settlesOpen(progress: 0.4, velocity: 0))
-        #expect(DrawerMath.width(for: 402) == 330)
-        #expect(DrawerMath.width(for: 1024) == 380)
+        #expect(DrawerMath.width(for: 402) == 310)
+        #expect(DrawerMath.width(for: 1024) == 360)
     }
 
     @Test func everyFormerTabIsReachableFromTheDrawer() async throws {

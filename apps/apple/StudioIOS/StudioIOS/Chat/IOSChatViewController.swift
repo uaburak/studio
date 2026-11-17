@@ -75,7 +75,7 @@ final class IOSChatViewController: UIViewController, UITableViewDelegate {
 
         composer.host = self
         composer.onSendTapped = { [weak self] in self?.send() }
-        composer.starters = Self.starters
+        // No ready-made starter prompts on the empty chat: just the greeting and the composer.
         composer.onStarter = { [weak self] starter in self?.useStarter(starter) }
         // The composer floats over the messages: the scroll view softens its edge under it.
         let edge = UIScrollEdgeElementContainerInteraction()

@@ -23,7 +23,7 @@ enum ConversationSearch {
 enum DrawerMath {
     /// Width of the drawer: most of the screen, leaving a strip of the chat visible.
     static func width(for containerWidth: CGFloat) -> CGFloat {
-        max(0, min(containerWidth - 72, 380))
+        max(0, min(containerWidth - 92, 360))
     }
 
     /// Open when flicked right, closed when flicked left, else the nearer side.

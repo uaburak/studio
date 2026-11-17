@@ -142,9 +142,18 @@ final class StudioRootViewController: UIViewController, UINavigationControllerDe
         mainContainer.layer.borderWidth = visible ? 1 : 0
         scrim.alpha = progress
         scrim.isHidden = !visible
-        // Like the Claude app the drawer stays still under the chat; only the chat card moves.
-        // (Scaling it made the text shimmer up and down while opening.)
-        drawer.view.transform = .identity
+        // Like the Claude app the drawer stays under the chat and grows slightly into place.
+        // While it moves it is drawn as one flattened image (at the screen's scale), so the
+        // GPU scales a bitmap smoothly instead of re-snapping every label to the pixel grid,
+        // which made the text shimmer up and down.
+        let layer = drawer.view.layer
+        let moving = !settled || (progress > 0.001 && progress < 0.999)
+        if layer.shouldRasterize != moving {
+            layer.rasterizationScale = view.window?.screen.scale ?? UIScreen.main.scale
+            layer.shouldRasterize = moving
+        }
+        let scale = 0.94 + 0.06 * progress
+        drawer.view.transform = CGAffineTransform(scaleX: scale, y: scale)
         drawer.view.alpha = 1
         drawer.view.isHidden = !visible
     }
