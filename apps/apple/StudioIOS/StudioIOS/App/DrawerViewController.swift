@@ -87,7 +87,7 @@ final class DrawerViewController: UIViewController, UITableViewDelegate, UITextF
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        view.backgroundColor = IOSTheme.canvas
+        view.backgroundColor = IOSTheme.drawer
 
         titleLabel.translatesAutoresizingMaskIntoConstraints = false
         titleLabel.text = "Studio"
@@ -229,7 +229,7 @@ final class DrawerViewController: UIViewController, UITableViewDelegate, UITextF
     private func buildBottomBar() {
         bottomBar.translatesAutoresizingMaskIntoConstraints = false
         avatarDot.layer.borderWidth = 2
-        avatarDot.layer.borderColor = IOSTheme.canvas.cgColor
+        avatarDot.layer.borderColor = IOSTheme.drawer.cgColor
         avatarButton.addSubview(avatarDot)
         avatarDot.isUserInteractionEnabled = false
         NSLayoutConstraint.activate([
@@ -250,7 +250,7 @@ final class DrawerViewController: UIViewController, UITableViewDelegate, UITextF
         edge.edge = .bottom
         bottomBar.addInteraction(edge)
         registerForTraitChanges([UITraitUserInterfaceStyle.self]) { (self: Self, _) in
-            self.avatarDot.layer.borderColor = IOSTheme.canvas.cgColor
+            self.avatarDot.layer.borderColor = IOSTheme.drawer.cgColor
         }
     }
 

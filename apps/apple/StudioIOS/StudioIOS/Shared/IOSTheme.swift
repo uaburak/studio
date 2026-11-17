@@ -7,6 +7,8 @@ import UIKit
 
 enum IOSTheme {
     static let canvas = UIColor(light: 0xFFFFFF, dark: 0x161617)
+    /// The drawer under the chat card: a step darker than the chat (lighter grey in light mode).
+    static let drawer = UIColor(light: 0xF2F2F3, dark: 0x0A0A0B)
     static let groupedBackground = UIColor(light: 0xF5F5F6, dark: 0x0E0E10)
     static let elevated = UIColor(light: 0xFFFFFF, dark: 0x1E1E20)
     static let fill = UIColor(light: 0xF2F2F3, dark: 0x262628)

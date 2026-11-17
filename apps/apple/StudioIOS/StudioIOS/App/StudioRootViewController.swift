@@ -41,7 +41,7 @@ final class StudioRootViewController: UIViewController, UINavigationControllerDe
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        view.backgroundColor = IOSTheme.canvas
+        view.backgroundColor = IOSTheme.drawer
 
         addChild(drawer)
         view.addSubview(drawer.view)
