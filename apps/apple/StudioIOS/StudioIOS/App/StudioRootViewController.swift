@@ -112,6 +112,8 @@ final class StudioRootViewController: UIViewController, UINavigationControllerDe
 
     /// True while the open/close animation or a drag is running.
     private var isSliding = false
+    /// Stand-in for the drawer while it moves (scaled instead of the real view).
+    private var drawerSnapshot: UIView?
 
     /// The display's corner radius (55 pt on current iPhones); the system does not publish it.
     static let screenCornerRadius: CGFloat = {
@@ -143,18 +145,32 @@ final class StudioRootViewController: UIViewController, UINavigationControllerDe
         scrim.alpha = progress
         scrim.isHidden = !visible
         // Like the Claude app the drawer stays under the chat and grows slightly into place.
-        // While it moves it is drawn as one flattened image (at the screen's scale), so the
-        // GPU scales a bitmap smoothly instead of re-snapping every label to the pixel grid,
-        // which made the text shimmer up and down.
-        let layer = drawer.view.layer
-        let moving = !settled || (progress > 0.001 && progress < 0.999)
-        if layer.shouldRasterize != moving {
-            layer.rasterizationScale = view.window?.screen.scale ?? UIScreen.main.scale
-            layer.shouldRasterize = moving
-        }
-        let scale = 0.94 + 0.06 * progress
-        drawer.view.transform = CGAffineTransform(scaleX: scale, y: scale)
+        // Scaling the drawer itself makes UIKit recompute its safe area every frame, so its
+        // content jumped up and down. Instead a snapshot is scaled while the drawer moves
+        // (the approach of common side-menu libraries); the real drawer never transforms.
+        drawer.view.transform = .identity
         drawer.view.alpha = 1
+        let moving = !settled || (progress > 0.001 && progress < 0.999)
+        if moving, isOnScreen {
+            if drawerSnapshot == nil {
+                drawer.view.isHidden = false
+                drawer.view.layoutIfNeeded()
+                if let snapshot = drawer.view.snapshotView(afterScreenUpdates: true) {
+                    snapshot.frame = drawer.view.frame
+                    snapshot.isUserInteractionEnabled = false
+                    view.insertSubview(snapshot, aboveSubview: drawer.view)
+                    drawerSnapshot = snapshot
+                }
+            }
+            if let snapshot = drawerSnapshot {
+                let scale = 0.94 + 0.06 * progress
+                snapshot.transform = CGAffineTransform(scaleX: scale, y: scale)
+                drawer.view.isHidden = true
+                return
+            }
+        }
+        drawerSnapshot?.removeFromSuperview()
+        drawerSnapshot = nil
         drawer.view.isHidden = !visible
     }
 
