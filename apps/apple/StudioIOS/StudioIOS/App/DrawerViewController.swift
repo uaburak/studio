@@ -64,8 +64,6 @@ final class DrawerViewController: UIViewController, UITableViewDelegate, UITextF
     let searchField = UISearchTextField()
     private lazy var cancelSearch = UIButton(configuration: .plain(), primaryAction: UIAction(title: "Vazgeç") { [weak self] _ in self?.setSearching(false) })
     /// The brand list is open under the brand row.
-    var brandsExpanded: Bool { brandDropdown != nil }
-    private var brandDropdown: BrandDropdown?
     private let titleRow = UIStackView()
     private let searchRow = UIStackView()
     private(set) lazy var avatarButton = UIButton.glassCircle(nil, label: "Ayarlar", side: 44) { [weak self] in self?.onDestination?(.settings) }
@@ -269,7 +267,6 @@ final class DrawerViewController: UIViewController, UITableViewDelegate, UITextF
 
     func willOpen() {
         pickedConversationId = nil
-        brandDropdown?.dismiss(animated: false)
         reload()
         if let id = currentConversationId?(), let indexPath = dataSource.indexPath(for: .conversation(id)) {
             tableView.scrollToRow(at: indexPath, at: .none, animated: false)
@@ -279,47 +276,16 @@ final class DrawerViewController: UIViewController, UITableViewDelegate, UITextF
     /// First element VoiceOver lands on when the drawer opens.
     var firstAccessibilityElement: UIView { titleLabel }
 
-    /// Opens or closes the brand dropdown: a glass panel that grows out of the brand row
-    /// and floats over the list (nothing below moves or reloads).
-    func setBrandsExpanded(_ expanded: Bool, completion: (() -> Void)? = nil) {
-        if !expanded {
-            if let brandDropdown {
-                brandDropdown.dismiss(animated: view.window != nil, completion: completion)
-            } else {
-                completion?()
-            }
-            return
-        }
-        guard brandDropdown == nil, let indexPath = dataSource.indexPath(for: .brandPicker) else { completion?(); return }
-        tableView.layoutIfNeeded()
-        let rowRect = tableView.convert(tableView.rectForRow(at: indexPath), to: view)
-        let anchor = rowRect.insetBy(dx: 10, dy: 1)
-        let dropdown = BrandDropdown(
-            title: app.currentBrand?.name ?? (app.brands.isEmpty ? "Marka yok" : "Marka seç"),
-            brands: app.brands.map { ($0.id, $0.name) },
-            currentId: app.currentBrandId)
-        dropdown.onPick = { [weak self] id in self?.pickBrand(id) }
-        dropdown.onProfile = { [weak self] in
-            guard let self, let id = self.app.currentBrandId else { return }
-            self.setBrandsExpanded(false) { self.app.open(.brand(id)) }
-        }
-        dropdown.onDismissed = { [weak self, weak dropdown] in
-            if self?.brandDropdown === dropdown { self?.brandDropdown = nil }
-        }
-        brandDropdown = dropdown
-        dropdown.present(in: view, from: anchor, source: tableView.cellForRow(at: indexPath), animated: view.window != nil)
-        completion?()
-    }
-
-    /// Pick a brand from the dropdown: it folds back into the row, then the brand changes.
-    func pickBrand(_ id: EntityID) {
-        Haptics.selection()
-        if let name = app.brand(id)?.name { brandDropdown?.showPicked(name) }
-        setBrandsExpanded(false) { [weak self] in
+    /// The brand row's menu (the system menu, which grows out of the row): brands with a
+    /// check on the current one, then "Marka profili".
+    func brandMenuElements() -> [UIMenuElement] {
+        StudioMenus.brandSection(app, onPick: { [weak self] id in
             guard let self, id != self.app.currentBrandId else { return }
             self.app.selectBrand(id)
-        }
+        }, onProfile: { [weak self] id in self?.app.open(.brand(id)) })
     }
+
+    private static let brandMenuButtonTag = 0xB4A2D
 
         // MARK: Search
 
@@ -328,7 +294,6 @@ final class DrawerViewController: UIViewController, UITableViewDelegate, UITextF
         isSearching = on
         titleRow.isHidden = on
         searchRow.isHidden = !on
-        if on { brandDropdown?.dismiss(animated: false) }
         if on {
             searchField.text = query
             searchField.becomeFirstResponder()
@@ -512,6 +477,28 @@ final class DrawerViewController: UIViewController, UITableViewDelegate, UITextF
             cell.accessibilityLabel = "Marka: \(app.currentBrand?.name ?? "seçilmedi")"
             cell.accessibilityHint = "Marka seçimini açar"
         }
+        // The brand row opens the native menu: a clear button over the row is the menu's
+        // source, so the system menu grows out of the row and folds back into it.
+        let menuButton = cell.viewWithTag(Self.brandMenuButtonTag) as? UIButton
+        if item == .brandPicker {
+            let button = menuButton ?? {
+                let button = UIButton(type: .custom)
+                button.tag = Self.brandMenuButtonTag
+                button.frame = cell.bounds
+                button.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+                button.showsMenuAsPrimaryAction = true
+                button.isAccessibilityElement = false
+                cell.addSubview(button)
+                return button
+            }()
+            button.menu = UIMenu(children: [UIDeferredMenuElement.uncached { [weak self] completion in
+                completion(self?.brandMenuElements() ?? [])
+            }])
+            cell.bringSubviewToFront(button)
+            cell.accessibilityCustomActions = nil
+        } else {
+            menuButton?.removeFromSuperview()
+        }
         cell.contentConfiguration = content
         cell.backgroundColor = .clear
         let selectable: Bool = if case .placeholder = item { false } else { true }
@@ -601,8 +588,8 @@ final class DrawerViewController: UIViewController, UITableViewDelegate, UITextF
         case .placeholder:
             if app.connection == .notPaired { onDestination?(.settings) }
         case .brandPicker:
-            Haptics.selection()
-            setBrandsExpanded(!brandsExpanded)
+            // VoiceOver activation of the row: the button behind it shows the menu.
+            break
         }
     }
 
@@ -681,225 +668,3 @@ private extension UIView {
 /// The brand dropdown: a Liquid Glass panel that grows out of the brand row (its top is
 /// the row itself) and floats over the drawer. Brands with a check on the current one,
 /// then "Marka profili". Tapping outside or picking folds it back into the row.
-@MainActor
-final class BrandDropdown {
-    var onPick: ((EntityID) -> Void)?
-    var onProfile: (() -> Void)?
-    var onDismissed: (() -> Void)?
-
-    private let catcher = UIControl()
-    private let panel = UIVisualEffectView(effect: nil)
-    private let list = UIStackView()
-    private let chevron = UIImageView(image: UIImage(systemName: "chevron.up.chevron.down", withConfiguration: UIImage.SymbolConfiguration(pointSize: 12, weight: .medium)))
-    private var anchor: CGRect = .zero
-    private var isDismissing = false
-    private weak var headerLabel: UILabel?
-
-    /// Shows the picked brand in the card's top row before it folds back into the row.
-    func showPicked(_ name: String) {
-        guard let headerLabel else { return }
-        UIView.transition(with: headerLabel, duration: 0.15, options: .transitionCrossDissolve) {
-            headerLabel.text = name
-        }
-    }
-    private var columnLeading: NSLayoutConstraint!
-    private var columnTrailing: NSLayoutConstraint!
-    private var columnTop: NSLayoutConstraint!
-    /// The row the panel grows out of: hidden while the panel stands in for it.
-    private weak var source: UIView?
-    /// How far the card reaches past the row, and the padding the row slides into.
-    private static let outset: CGFloat = 6
-    private static let padding: CGFloat = 8
-
-    private func setInset(_ open: Bool) {
-        let pad = open ? Self.padding : 0
-        columnLeading.constant = pad
-        columnTrailing.constant = -pad
-        columnTop.constant = pad
-        panel.contentView.layoutIfNeeded()
-    }
-
-    private static let rowHeight: CGFloat = 44
-
-    init(title: String, brands: [(id: EntityID, name: String)], currentId: EntityID?) {
-        catcher.backgroundColor = .clear
-        catcher.accessibilityLabel = "Marka seçimini kapat"
-        catcher.addAction(UIAction { [weak self] _ in self?.dismiss(animated: true) }, for: .touchUpInside)
-
-        panel.clipsToBounds = true
-        panel.cornerConfiguration = .corners(radius: .fixed(23))
-
-        // The header repeats the row exactly, so the row seems to open up.
-        let header = Self.makeRow(title: title, icon: "tag", trailing: chevron, font: IOSTheme.font(17), color: IOSTheme.textPrimary, iconColor: IOSTheme.textPrimary)
-        header.addAction(UIAction { [weak self] _ in self?.dismiss(animated: true) }, for: .touchUpInside)
-        header.accessibilityHint = "Marka seçimini kapatır"
-        headerLabel = header.subviews.first?.subviews.compactMap { $0 as? UILabel }.first
-        chevron.tintColor = IOSTheme.textTertiary
-
-        list.axis = .vertical
-        list.addArrangedSubview(Self.separator())
-        if brands.isEmpty {
-            let empty = Self.makeRow(title: "Henüz marka yok", icon: nil, trailing: nil, font: IOSTheme.font(16), color: IOSTheme.textTertiary, iconColor: .clear)
-            empty.isEnabled = false
-            list.addArrangedSubview(empty)
-        }
-        for brand in brands {
-            let current = brand.id == currentId
-            let row = Self.makeRow(
-                title: brand.name, icon: current ? "checkmark" : nil, trailing: nil,
-                font: IOSTheme.font(16, current ? .semibold : .regular),
-                color: IOSTheme.textPrimary, iconColor: IOSTheme.accent, iconSize: 13)
-            row.accessibilityTraits = current ? [.button, .selected] : .button
-            row.addAction(UIAction { [weak self] _ in self?.onPick?(brand.id) }, for: .touchUpInside)
-            list.addArrangedSubview(row)
-        }
-        if currentId != nil {
-            list.addArrangedSubview(Self.separator())
-            let profile = Self.makeRow(title: "Marka profili", icon: "person.crop.square", trailing: nil, font: IOSTheme.font(16), color: IOSTheme.textSecondary, iconColor: IOSTheme.textSecondary, iconSize: 14)
-            profile.addAction(UIAction { [weak self] _ in self?.onProfile?() }, for: .touchUpInside)
-            list.addArrangedSubview(profile)
-        }
-        let bottom = UIView()
-        bottom.heightAnchor.constraint(equalToConstant: 6).isActive = true
-        list.addArrangedSubview(bottom)
-
-        let column = UIStackView(arrangedSubviews: [header, list])
-        column.axis = .vertical
-        column.translatesAutoresizingMaskIntoConstraints = false
-        panel.contentView.addSubview(column)
-        columnLeading = column.leadingAnchor.constraint(equalTo: panel.contentView.leadingAnchor)
-        columnTrailing = column.trailingAnchor.constraint(equalTo: panel.contentView.trailingAnchor)
-        columnTop = column.topAnchor.constraint(equalTo: panel.contentView.topAnchor)
-        NSLayoutConstraint.activate([
-            columnLeading,
-            columnTrailing,
-            columnTop,
-            header.heightAnchor.constraint(equalToConstant: 46),
-        ])
-        // Gives the panel its fitting height; gives way while it is shorter (growing).
-        let fit = column.bottomAnchor.constraint(equalTo: panel.contentView.bottomAnchor)
-        fit.priority = .defaultLow
-        fit.isActive = true
-    }
-
-    private static func separator() -> UIView {
-        let holder = UIView()
-        let line = UIView()
-        line.backgroundColor = IOSTheme.hairline
-        line.translatesAutoresizingMaskIntoConstraints = false
-        holder.addSubview(line)
-        NSLayoutConstraint.activate([
-            holder.heightAnchor.constraint(equalToConstant: 9),
-            line.heightAnchor.constraint(equalToConstant: 1 / UIScreen.main.scale),
-            line.leadingAnchor.constraint(equalTo: holder.leadingAnchor, constant: 16),
-            line.trailingAnchor.constraint(equalTo: holder.trailingAnchor, constant: -16),
-            line.centerYAnchor.constraint(equalTo: holder.centerYAnchor),
-        ])
-        return holder
-    }
-
-    /// One row: a 22 pt icon slot, the title, an optional trailing view. Dims while pressed.
-    private static func makeRow(title: String, icon: String?, trailing: UIView?, font: UIFont, color: UIColor, iconColor: UIColor, iconSize: CGFloat = 16) -> UIControl {
-        let control = UIControl()
-        let mark = UIImageView()
-        if let icon { mark.image = UIImage(systemName: icon, withConfiguration: UIImage.SymbolConfiguration(pointSize: iconSize, weight: icon == "checkmark" ? .semibold : .regular)) }
-        mark.tintColor = iconColor
-        mark.contentMode = .center
-        let label = UILabel()
-        label.text = title
-        label.font = font
-        label.textColor = color
-        label.lineBreakMode = .byTruncatingTail
-        var views: [UIView] = [mark, label, UIView()]
-        if let trailing { views.append(trailing) }
-        let stack = UIStackView(arrangedSubviews: views)
-        stack.axis = .horizontal
-        stack.alignment = .center
-        stack.spacing = 16
-        stack.setCustomSpacing(8, after: label)
-        stack.isUserInteractionEnabled = false
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        control.addSubview(stack)
-        NSLayoutConstraint.activate([
-            control.heightAnchor.constraint(greaterThanOrEqualToConstant: rowHeight),
-            mark.widthAnchor.constraint(equalToConstant: 22),
-            stack.leadingAnchor.constraint(equalTo: control.leadingAnchor, constant: 10),
-            stack.trailingAnchor.constraint(equalTo: control.trailingAnchor, constant: -12),
-            stack.centerYAnchor.constraint(equalTo: control.centerYAnchor),
-        ])
-        if let trailing { trailing.widthAnchor.constraint(equalToConstant: 22).isActive = true }
-        control.isAccessibilityElement = true
-        control.accessibilityLabel = title
-        control.accessibilityTraits = .button
-        control.addAction(UIAction { [weak control] _ in UIView.animate(withDuration: 0.08) { control?.alpha = 0.5 } }, for: [.touchDown, .touchDragEnter])
-        control.addAction(UIAction { [weak control] _ in UIView.animate(withDuration: 0.2) { control?.alpha = 1 } }, for: [.touchUpInside, .touchUpOutside, .touchCancel, .touchDragExit])
-        return control
-    }
-
-    func present(in container: UIView, from anchor: CGRect, source: UIView?, animated: Bool) {
-        self.anchor = anchor
-        self.source = source
-        catcher.frame = container.bounds
-        catcher.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-        container.addSubview(catcher)
-        container.addSubview(panel)
-
-        // Final size: a card a little wider than the row, as tall as its content (on
-        // screen). The row's icon, name and chevron slide from the row into the card.
-        let width = anchor.width + 2 * Self.outset
-        setInset(true)
-        let fitting = panel.contentView.systemLayoutSizeFitting(
-            CGSize(width: width, height: UIView.layoutFittingCompressedSize.height),
-            withHorizontalFittingPriority: .required, verticalFittingPriority: .fittingSizeLevel)
-        let top = anchor.minY - Self.outset
-        let maxHeight = container.bounds.height - top - container.safeAreaInsets.bottom - 90
-        let target = CGRect(x: anchor.minX - Self.outset, y: top, width: width, height: min(fitting.height + Self.padding, max(anchor.height, maxHeight)))
-
-        panel.frame = anchor
-        setInset(false)
-        source?.alpha = 0
-        list.alpha = 0
-        UIAccessibility.post(notification: .screenChanged, argument: panel)
-        guard animated else {
-            panel.frame = target
-            setInset(true)
-            panel.effect = UIGlassEffect(style: .regular)
-            list.alpha = 1
-            return
-        }
-        UIView.animate(springDuration: 0.42, bounce: 0.18, initialSpringVelocity: 0, delay: 0, options: [.allowUserInteraction]) {
-            self.panel.frame = target
-            self.setInset(true)
-            self.panel.effect = UIGlassEffect(style: .regular)
-            self.chevron.transform = CGAffineTransform(scaleX: 1, y: 0.85)
-        }
-        UIView.animate(withDuration: 0.22, delay: 0.06, options: [.curveEaseOut]) {
-            self.list.alpha = 1
-        }
-    }
-
-    func dismiss(animated: Bool, completion: (() -> Void)? = nil) {
-        guard !isDismissing else { return }
-        isDismissing = true
-        let finish = {
-            // The brand changes first, so the row reappears already showing the pick.
-            completion?()
-            self.source?.alpha = 1
-            self.panel.removeFromSuperview()
-            self.catcher.removeFromSuperview()
-            self.onDismissed?()
-        }
-        guard animated, panel.window != nil else { finish(); return }
-        UIView.animate(withDuration: 0.12, delay: 0, options: [.curveEaseIn]) {
-            self.list.alpha = 0
-        }
-        UIView.animate(springDuration: 0.34, bounce: 0, initialSpringVelocity: 0, delay: 0, options: []) {
-            self.panel.frame = self.anchor
-            self.setInset(false)
-            self.panel.effect = nil
-            self.chevron.transform = .identity
-        } completion: { _ in
-            finish()
-        }
-    }
-}
