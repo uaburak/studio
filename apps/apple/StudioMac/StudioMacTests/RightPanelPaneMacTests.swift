@@ -359,6 +359,31 @@ struct PhonePaneTests {
 @Suite("Settings panel in the window", .serialized)
 @MainActor
 struct SettingsPanelTests {
+    @Test func clickingASidebarSectionKeepsThePanelOpen() async throws {
+        let (app, _) = await makeApp()
+        let root = RootViewController(app: app, settings: app.settings, host: nil)
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1424, height: 949), styleMask: [.titled], backing: .buffered, defer: false)
+        window.contentViewController = root
+        window.setFrame(NSRect(x: 0, y: 0, width: 1424, height: 949), display: false)
+        root.view.layoutSubtreeIfNeeded()
+        await settle()
+        app.openSettings(.appearance)
+        await settle()
+        root.view.layoutSubtreeIfNeeded()
+        let panel = try #require(root.settingsPanel)
+        let row = try #require(panel.sidebar.rows.first { $0.section == .notifications })
+        let point = row.convert(NSPoint(x: row.bounds.midX, y: row.bounds.midY), to: nil)
+        let hit = window.contentView?.superview?.hitTest(point)
+        #expect(hit === row, "the row itself takes the click, not its label")
+        let down = try #require(NSEvent.mouseEvent(with: .leftMouseDown, location: point, modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1))
+        row.mouseDown(with: down)
+        row.mouseUp(with: down)
+        await settle()
+        #expect(app.settingsPresented, "a click on a section must not close Settings")
+        #expect(root.settingsPanel?.selectedSection == .notifications)
+        window.close()
+    }
+
     @Test func opensOverTheWindowAndClosesWithEscapeOrTheBackdrop() async throws {
         let (app, _) = await makeApp()
         let root = RootViewController(app: app, settings: app.settings, host: nil)

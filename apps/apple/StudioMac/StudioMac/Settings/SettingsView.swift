@@ -16,7 +16,7 @@ final class SettingsSheetViewController: NSViewController, NSSearchFieldDelegate
     private var widthConstraint: NSLayoutConstraint?
     private var heightConstraint: NSLayoutConstraint?
 
-    private let sidebar = SettingsSidebarView()
+    let sidebar = SettingsSidebarView()
     private let contentStack = NSStackView()
     private let scroll = NSScrollView()
     private let emptyLabel = NSTextField.styledLabel("Sonuç yok", font: Theme.Settings.rowTitleFont, color: Theme.textSecondary)

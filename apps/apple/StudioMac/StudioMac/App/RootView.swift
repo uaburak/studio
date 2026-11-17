@@ -403,9 +403,13 @@ final class SettingsBackdropView: ThemedView {
     var onClick: (() -> Void)?
 
     override var mouseDownCanMoveWindow: Bool { false }
-    override func mouseDown(with event: NSEvent) {}
+    /// Closes only for a click that both started and ended on the dimmed area, never for a
+    /// mouse-up left over from a press inside the panel.
+    private var pressed = false
+    override func mouseDown(with event: NSEvent) { pressed = true }
     override func mouseUp(with event: NSEvent) {
-        if bounds.contains(convert(event.locationInWindow, from: nil)) { onClick?() }
+        defer { pressed = false }
+        if pressed, bounds.contains(convert(event.locationInWindow, from: nil)) { onClick?() }
     }
     override func rightMouseDown(with event: NSEvent) {}
     override func scrollWheel(with event: NSEvent) {}

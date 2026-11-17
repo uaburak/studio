@@ -602,7 +602,16 @@ final class SettingsSidebarRow: TapControl {
 
     override func performTap() { onSelect?(section) }
 
+    /// The whole row is the click target: its icon and label must not take the click
+    /// (a label swallowed the press, and the stray mouse-up then closed Settings).
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        guard !isHidden, let superview else { return nil }
+        return frame.contains(superview.convert(point, to: superview)) ? self : nil
+    }
+
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
     override func mouseDown(with event: NSEvent) { performTap() }
+    override func mouseUp(with event: NSEvent) {}
 
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
