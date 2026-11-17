@@ -494,6 +494,8 @@ final class DrawerViewController: UIViewController, UITableViewDelegate, UITextF
             content.text = app.currentBrand?.name ?? (app.brands.isEmpty ? "Marka yok" : "Marka seç")
             content.image = Self.rowIcon("tag")
             cell.accessoryView = brandChevron
+            // While its list is open the brand row wears the active background.
+            isCurrent = brandsExpanded
             cell.accessibilityLabel = "Marka: \(app.currentBrand?.name ?? "seçilmedi")"
             cell.accessibilityValue = brandsExpanded ? "Açık" : "Kapalı"
             cell.accessibilityHint = "Markaları bu listede açar"
