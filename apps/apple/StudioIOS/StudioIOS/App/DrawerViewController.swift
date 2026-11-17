@@ -70,7 +70,7 @@ final class DrawerViewController: UIViewController, UITableViewDelegate, UITextF
     private let brandChevron = UIImageView(image: UIImage(systemName: "chevron.down", withConfiguration: UIImage.SymbolConfiguration(pointSize: 13, weight: .semibold)))
     private let titleRow = UIStackView()
     private let searchRow = UIStackView()
-    private(set) lazy var avatarButton = UIButton.glassCircle(nil, label: "Ayarlar", side: 52) { [weak self] in self?.onDestination?(.settings) }
+    private(set) lazy var avatarButton = UIButton.glassCircle(nil, label: "Ayarlar", side: 44) { [weak self] in self?.onDestination?(.settings) }
     private let avatarDot = IOSStatusDotView(color: IOSTheme.textTertiary, size: 10)
     private(set) lazy var newChatButton = UIButton(configuration: Self.newChatConfig(), primaryAction: UIAction { [weak self] _ in
         Haptics.selection()
@@ -184,7 +184,7 @@ final class DrawerViewController: UIViewController, UITableViewDelegate, UITextF
 
             bottomBar.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 14),
             bottomBar.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -14),
-            bottomBar.bottomAnchor.constraint(equalTo: view.keyboardLayoutGuide.topAnchor, constant: -8),
+            bottomBar.bottomAnchor.constraint(equalTo: view.keyboardLayoutGuide.topAnchor, constant: 4),
         ])
 
         dataSource = UITableViewDiffableDataSource(tableView: tableView) { [weak self] table, indexPath, item in
@@ -222,15 +222,15 @@ final class DrawerViewController: UIViewController, UITableViewDelegate, UITextF
         config.cornerStyle = .capsule
         config.baseBackgroundColor = IOSTheme.ink
         config.baseForegroundColor = IOSTheme.onInk
-        config.image = UIImage(systemName: "plus", withConfiguration: UIImage.SymbolConfiguration(pointSize: 16, weight: .medium))
+        config.image = UIImage(systemName: "plus", withConfiguration: UIImage.SymbolConfiguration(pointSize: 15, weight: .medium))
         config.imagePadding = 8
         config.title = "Yeni sohbet"
         // One line, always: never wrap "Yeni / sohbet" into two lines.
         config.titleLineBreakMode = .byClipping
-        config.contentInsets = NSDirectionalEdgeInsets(top: 14, leading: 20, bottom: 14, trailing: 22)
+        config.contentInsets = NSDirectionalEdgeInsets(top: 0, leading: 16, bottom: 0, trailing: 18)
         config.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { incoming in
             var out = incoming
-            out.font = IOSTheme.font(17, .medium, style: .body)
+            out.font = IOSTheme.font(16, .medium, style: .body)
             return out
         }
         return config
@@ -254,7 +254,7 @@ final class DrawerViewController: UIViewController, UITableViewDelegate, UITextF
         let row = UIStackView.h([avatarButton, UIView.spacer(), newChatButton], spacing: 12)
         bottomBar.addSubview(row)
         row.pin(to: bottomBar)
-        newChatButton.heightAnchor.constraint(greaterThanOrEqualToConstant: 52).isActive = true
+        newChatButton.heightAnchor.constraint(equalToConstant: 44).isActive = true
         let edge = UIScrollEdgeElementContainerInteraction()
         edge.scrollView = tableView
         edge.edge = .bottom
@@ -401,6 +401,19 @@ final class DrawerViewController: UIViewController, UITableViewDelegate, UITextF
         renderChrome()
     }
 
+    enum GroupPosition { case top, middle, bottom }
+
+    /// Where a row sits in the open brand block (nil: not part of it).
+    private func brandGroupPosition(_ item: Item) -> GroupPosition? {
+        guard brandsExpanded else { return nil }
+        let last: Item? = app.currentBrandId != nil ? .brandProfile : app.brands.last.map { .brandOption($0.id) }
+        switch item {
+        case .brandPicker: return last == nil ? nil : .top
+        case .brandOption, .brandProfile: return item == last ? .bottom : .middle
+        default: return nil
+        }
+    }
+
     /// An empty 22 pt box: keeps unchecked brand names aligned with the checked one.
     private static let blankIcon = UIGraphicsImageRenderer(size: CGSize(width: 22, height: 22)).image { _ in }
 
@@ -418,7 +431,7 @@ final class DrawerViewController: UIViewController, UITableViewDelegate, UITextF
         if let initial = app.settings.greetingName?.first {
             avatar.image = nil
             avatar.attributedTitle = AttributedString(String(initial).uppercased(with: TurkishFormat.locale), attributes: AttributeContainer([
-                .font: IOSTheme.font(19, .semibold, style: .headline), .foregroundColor: IOSTheme.textPrimary,
+                .font: IOSTheme.font(17, .semibold, style: .headline), .foregroundColor: IOSTheme.textPrimary,
             ]))
         } else {
             avatar.attributedTitle = nil
@@ -520,12 +533,30 @@ final class DrawerViewController: UIViewController, UITableViewDelegate, UITextF
         cell.contentConfiguration = content
         cell.backgroundColor = .clear
         let selectable: Bool = if case .placeholder = item { false } else { true }
+        let group = brandGroupPosition(item)
         cell.configurationUpdateHandler = { cell, state in
             var background = UIBackgroundConfiguration.clear()
             let highlighted = selectable && (state.isHighlighted || state.isSelected)
-            background.backgroundColor = highlighted || isCurrent ? IOSTheme.fill : .clear
-            background.cornerRadius = 16
-            background.backgroundInsets = NSDirectionalEdgeInsets(top: 1, leading: 10, bottom: 1, trailing: 10)
+            if let group {
+                // The open brand list is one active block: the brand row and its sub-rows
+                // share a fill, rounded only at the block's top and bottom.
+                let block = UIView()
+                block.backgroundColor = highlighted && group != .top ? IOSTheme.fillStrong : IOSTheme.fill
+                block.layer.cornerRadius = 16
+                block.layer.cornerCurve = .continuous
+                block.layer.maskedCorners = switch group {
+                case .top: [.layerMinXMinYCorner, .layerMaxXMinYCorner]
+                case .middle: []
+                case .bottom: [.layerMinXMaxYCorner, .layerMaxXMaxYCorner]
+                }
+                background.customView = block
+                background.backgroundInsets = NSDirectionalEdgeInsets(
+                    top: group == .top ? 1 : 0, leading: 10, bottom: group == .bottom ? 1 : 0, trailing: 10)
+            } else {
+                background.backgroundColor = highlighted || isCurrent ? IOSTheme.fill : .clear
+                background.cornerRadius = 16
+                background.backgroundInsets = NSDirectionalEdgeInsets(top: 1, leading: 10, bottom: 1, trailing: 10)
+            }
             cell.backgroundConfiguration = background
         }
         // No system selection fill (it drew a full-width grey band behind the row): the
