@@ -97,30 +97,57 @@ final class ComposerFooterControlView: NSView {
     var agentTitle: String { agentButton.titleText }
     var macStatusShown: Bool { !macStatus.isHidden }
 
-    /// One menu, Claude Code style: the models (Gemini, Claude), then the thinking effort.
+    /// Claude Code's model menu: the Claude models (1, 2, 3), "Çaba ›" with the current effort,
+    /// then "Diğer modeller ›" (Gemini).
     private func makeAgentMenu() -> NSMenu {
-        let menu = NSMenu(title: "Model ve düşünme düzeyi")
+        let menu = NSMenu(title: "Model")
         let current = getChoice()
 
-        menu.addItem(.sectionHeader(title: "Gemini (API / CLI)"))
-        for candidate in AgentModel.geminiCases {
-            menu.addItem(modelItem(candidate, current: current.model))
+        for (index, candidate) in AgentModel.claudeCases.enumerated() {
+            let item = modelItem(candidate, current: current.model)
+            item.keyEquivalent = "\(index + 1)"
+            item.keyEquivalentModifierMask = []
+            menu.addItem(item)
         }
         menu.addItem(.separator())
-        menu.addItem(.sectionHeader(title: "Claude"))
-        for candidate in AgentModel.claudeCases {
-            menu.addItem(modelItem(candidate, current: current.model))
-        }
-        menu.addItem(.separator())
-        menu.addItem(.sectionHeader(title: "Düşünme düzeyi"))
+
+        let effortMenu = NSMenu(title: "Çaba")
         for candidate in AgentEffort.knownCases {
             let item = NSMenuItem(title: candidate.displayName, action: #selector(pickEffort(_:)), keyEquivalent: "")
             item.target = self
             item.representedObject = candidate.rawValue
             item.state = candidate == current.effort ? .on : .off
-            menu.addItem(item)
+            effortMenu.addItem(item)
         }
+        let effort = NSMenuItem(title: "Çaba", action: nil, keyEquivalent: "")
+        effort.submenu = effortMenu
+        effort.attributedTitle = Self.trailingDetail("Çaba", detail: current.effort.displayName)
+        menu.addItem(effort)
+        menu.addItem(.separator())
+
+        let others = NSMenu(title: "Diğer modeller")
+        for candidate in AgentModel.geminiCases {
+            others.addItem(modelItem(candidate, current: current.model))
+        }
+        let othersItem = NSMenuItem(title: "Diğer modeller", action: nil, keyEquivalent: "")
+        othersItem.submenu = others
+        if current.model.isGemini {
+            othersItem.attributedTitle = Self.trailingDetail("Diğer modeller", detail: current.model.displayName)
+        }
+        menu.addItem(othersItem)
         return menu
+    }
+
+    /// "Çaba        Orta": the title, then the current value in grey (as Claude Code shows it).
+    private static func trailingDetail(_ title: String, detail: String) -> NSAttributedString {
+        let text = NSMutableAttributedString(string: title, attributes: [.font: NSFont.menuFont(ofSize: 0)])
+        let tab = NSMutableParagraphStyle()
+        tab.tabStops = [NSTextTab(textAlignment: .right, location: 150)]
+        text.append(NSAttributedString(string: "\t" + detail, attributes: [
+            .font: NSFont.menuFont(ofSize: 0), .foregroundColor: NSColor.secondaryLabelColor,
+        ]))
+        text.addAttribute(.paragraphStyle, value: tab, range: NSRange(location: 0, length: text.length))
+        return text
     }
 
     private func modelItem(_ candidate: AgentModel, current: AgentModel) -> NSMenuItem {
@@ -220,9 +247,12 @@ private final class FooterMenuButton: NSControl {
 
     override func accessibilityPerformShowMenu() -> Bool { accessibilityPerformPress() }
 
+    /// Opens above the control, its right edge over the control's right edge (Claude Code).
     private func showMenu() {
         guard let menu = buildMenu?() else { return }
-        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: bounds.height + 4), in: self)
+        let size = menu.size
+        let top = isFlipped ? -6 : bounds.height + 6 + size.height
+        menu.popUp(positioning: nil, at: NSPoint(x: bounds.maxX - size.width + 14, y: top), in: self)
     }
 }
 
@@ -268,7 +298,6 @@ private final class UsageIndicatorControlView: NSControl {
     private let getPresence: @MainActor () -> WorkerPresence?
     private let ring = UsageRingView()
     private let label = NSTextField(labelWithString: "—")
-    private var activePopover: NSPopover?
 
     init(app: AppModel, getPresence: @escaping @MainActor () -> WorkerPresence?) {
         self.app = app
@@ -321,19 +350,180 @@ private final class UsageIndicatorControlView: NSControl {
     }
 
     override func mouseDown(with event: NSEvent) {
-        if let popover = activePopover, popover.isShown {
-            popover.close()
-            activePopover = nil
+        if let card = UsageCard.current {
+            card.close()
             return
         }
-        let popover = NSPopover()
-        popover.behavior = .transient
-        popover.contentViewController = UsagePopoverViewController(app: app, presence: getPresence()) { [weak popover, weak self] section in
-            popover?.close()
+        guard let window else { return }
+        let card = UsageCard(presence: getPresence()) { [weak self] section in
+            UsageCard.current?.close()
             self?.app.openSettings(section)
         }
-        popover.show(relativeTo: bounds, of: self, preferredEdge: .minY)
-        activePopover = popover
+        card.show(above: self, in: window)
+    }
+}
+
+/// Claude Code's usage card: a glass card that opens above the ring, its right edge on the
+/// ring's: "Kullanım limitlerin · Plan", "Tümünü gör →", one row per limit with reset time,
+/// percent and a bar (blue, yellow from 70 %, orange from 90 %). Click outside or Esc closes.
+@MainActor
+final class UsageCard {
+    static weak var current: UsageCard?
+    private let card = GlassContainerView(cornerRadius: 14)
+    private var monitor: Any?
+    private let onOpenSettings: (SettingsSection) -> Void
+
+    init(presence: WorkerPresence?, onOpenSettings: @escaping (SettingsSection) -> Void) {
+        self.onOpenSettings = onOpenSettings
+        card.translatesAutoresizingMaskIntoConstraints = true
+        let stack = NSStackView()
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 12
+        stack.edgeInsets = NSEdgeInsets(top: 14, left: 16, bottom: 16, right: 16)
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        card.contentContainer.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: card.contentContainer.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: card.contentContainer.trailingAnchor),
+            stack.topAnchor.constraint(equalTo: card.contentContainer.topAnchor),
+            stack.bottomAnchor.constraint(equalTo: card.contentContainer.bottomAnchor),
+            stack.widthAnchor.constraint(equalToConstant: 360),
+        ])
+
+        // Header
+        let plan = presence?.claude?.plan.map { " · \($0.capitalized)" } ?? ""
+        let title = NSTextField.styledLabel("Kullanım limitlerin\(plan)", font: Theme.captionFont, color: Theme.textSecondary)
+        let seeAll = PaneLinkView(title: "Tümünü gör") { [weak self] in self?.onOpenSettings(.usage) }
+        let header = NSStackView(views: [title, NSView(), seeAll])
+        header.orientation = .horizontal
+        stack.addArrangedSubview(header)
+        header.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -32).isActive = true
+
+        let windows = presence?.usage?.windows.filter { $0.kind == .fiveHour || $0.kind == .weekly } ?? []
+        if windows.isEmpty {
+            let note: String
+            switch presence?.claude?.status {
+            case .signedOut, .signingIn: note = "Claude'a giriş yapılmadı."
+            default: note = presence?.online == true ? "Kullanım henüz bildirilmedi." : "Mac çevrimdışı."
+            }
+            stack.addArrangedSubview(NSTextField.styledLabel(note, font: Theme.captionFont, color: Theme.textSecondary))
+        }
+        for window in windows {
+            let name = NSTextField.styledLabel(Self.title(window.kind), font: Theme.captionFont, color: Theme.textPrimary)
+            var right = ""
+            if let resets = window.resetsAt { right = "Sıfırlanma \(Self.resetText(resets))   " }
+            right += window.limited ? "Sınırda" : UsageIndicator.percentText(window.effectivePercent)
+            let value = NSTextField.styledLabel(right, font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .regular), color: Theme.textSecondary)
+            let row = NSStackView(views: [name, NSView(), value])
+            row.orientation = .horizontal
+            let bar = UsageLimitBarView(fraction: window.limited ? 1 : window.effectivePercent / 100)
+            let block = NSStackView(views: [row, bar])
+            block.orientation = .vertical
+            block.alignment = .leading
+            block.spacing = 6
+            stack.addArrangedSubview(block)
+            block.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -32).isActive = true
+            row.widthAnchor.constraint(equalTo: block.widthAnchor).isActive = true
+            bar.widthAnchor.constraint(equalTo: block.widthAnchor).isActive = true
+        }
+    }
+
+    static func title(_ kind: UsageWindow.Kind) -> String {
+        switch kind {
+        case .fiveHour: "5 saatlik limit"
+        case .weekly: "Haftalık · tüm modeller"
+        case .other, .unknown: "Diğer"
+        }
+    }
+
+    /// "22:30" today, "Çar 14:00" later in the week.
+    static func resetText(_ date: Date, now: Date = Date()) -> String {
+        let calendar = Calendar.current
+        let time = date.formatted(.dateTime.hour(.twoDigits(amPM: .omitted)).minute(.twoDigits).locale(Locale(identifier: "tr_TR")))
+        if calendar.isDate(date, inSameDayAs: now) { return time }
+        let day = date.formatted(.dateTime.weekday(.abbreviated).locale(Locale(identifier: "tr_TR")))
+        return "\(day) \(time)"
+    }
+
+    func show(above anchor: NSView, in window: NSWindow) {
+        guard let content = window.contentView else { return }
+        UsageCard.current?.close()
+        content.addSubview(card, positioned: .above, relativeTo: nil)
+        card.layoutSubtreeIfNeeded()
+        let size = card.fittingSize
+        let anchorFrame = anchor.convert(anchor.bounds, to: content)
+        var origin = NSPoint(x: anchorFrame.maxX - size.width + 6, y: anchorFrame.maxY + 8)
+        if content.isFlipped { origin.y = anchorFrame.minY - 8 - size.height }
+        origin.x = max(8, origin.x)
+        card.frame = NSRect(origin: origin, size: size)
+        card.alphaValue = 0
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.15
+            card.animator().alphaValue = 1
+        }
+        UsageCard.current = self
+        monitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .keyDown]) { [weak self] event in
+            guard let self else { return event }
+            if event.type == .keyDown {
+                if event.keyCode == 53 { self.close(); return nil }
+                return event
+            }
+            let point = self.card.convert(event.locationInWindow, from: nil)
+            if event.window !== window || !self.card.bounds.contains(point) {
+                // A click on the ring itself toggles: let the ring see "no card" and stop there.
+                let onAnchor = anchor.bounds.contains(anchor.convert(event.locationInWindow, from: nil))
+                self.close()
+                return onAnchor && event.window === window ? nil : event
+            }
+            return event
+        }
+        objc_setAssociatedObject(card, &UsageCard.retainKey, self, .OBJC_ASSOCIATION_RETAIN)
+    }
+
+    private static var retainKey: UInt8 = 0
+
+    func close() {
+        if let monitor { NSEvent.removeMonitor(monitor) }
+        monitor = nil
+        if UsageCard.current === self { UsageCard.current = nil }
+        let card = card
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.12
+            card.animator().alphaValue = 0
+        } completionHandler: {
+            MainActor.assumeIsolated {
+                card.removeFromSuperview()
+                objc_setAssociatedObject(card, &UsageCard.retainKey, nil, .OBJC_ASSOCIATION_RETAIN)
+            }
+        }
+    }
+}
+
+/// A thin rounded usage bar.
+final class UsageLimitBarView: NSView {
+    let fraction: Double
+    init(fraction: Double) {
+        self.fraction = max(0, min(fraction, 1))
+        super.init(frame: .zero)
+        translatesAutoresizingMaskIntoConstraints = false
+        heightAnchor.constraint(equalToConstant: 6).isActive = true
+    }
+    required init?(coder: NSCoder) { fatalError("not used") }
+
+    static func color(_ fraction: Double) -> NSColor {
+        fraction >= 0.9 ? Theme.accent : fraction >= 0.7 ? NSColor.systemYellow : NSColor.systemBlue
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let track = NSBezierPath(roundedRect: bounds, xRadius: 3, yRadius: 3)
+        Theme.fillStrong.setFill()
+        track.fill()
+        guard fraction > 0.005 else { return }
+        var fill = bounds
+        fill.size.width = max(6, bounds.width * fraction)
+        Self.color(fraction).setFill()
+        NSBezierPath(roundedRect: fill, xRadius: 3, yRadius: 3).fill()
     }
 }
 

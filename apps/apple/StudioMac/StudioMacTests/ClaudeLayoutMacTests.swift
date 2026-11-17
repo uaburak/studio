@@ -129,7 +129,7 @@ struct SidebarLayoutTests {
     @Test func conversationMenuOffersRenameAndArchive() async throws {
         let (app, _) = await makeApp()
         let menu = ConversationActions.makeMenu(app: app, conversationId: SampleData.kasimConversation) { nil }
-        #expect(menu.items.map(\.title) == ["Yeniden adlandır…", "Sohbeti arşivle"])
+        #expect(menu.items.map(\.title) == ["Yeniden adlandır", "Arşivle"])
         #expect(menu.items.allSatisfy { $0.target != nil && $0.action != nil })
     }
 }

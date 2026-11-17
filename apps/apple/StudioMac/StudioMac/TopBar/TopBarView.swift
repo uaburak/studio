@@ -161,6 +161,14 @@ final class TopBarView: NSView {
         sidebarButton.toolTip = app.sidebarPresented ? "Kenar çubuğunu gizle (⌃⌘S)" : "Kenar çubuğunu göster (⌃⌘S)"
         modePill.selected = app.mode
         titleControl.titleText = app.title
+        if case .conversation(let id) = app.route {
+            titleControl.onRename = { [weak app] title in
+                guard let app else { return }
+                Task { await app.renameConversation(id, to: title) }
+            }
+        } else {
+            titleControl.onRename = nil
+        }
         window?.title = app.title
 
         let presented = app.inspectorPresented
@@ -601,8 +609,13 @@ final class TopBarTitleControl: NSControl, TopBarInteractive {
         }
     }
     var buildMenu: (() -> NSMenu)?
+    /// Set for a conversation: double-clicking the title renames it in place (Claude Code).
+    var onRename: ((String) -> Void)?
+    var canRenameInline: Bool { onRename != nil && window != nil }
 
     private let label = NSTextField(labelWithString: "")
+    private let chevron = NSImageView()
+    private var editor: NSTextField?
     private var hovering = false { didSet { refreshStyle() } }
     private var trackingArea: NSTrackingArea?
 
@@ -622,7 +635,6 @@ final class TopBarTitleControl: NSControl, TopBarInteractive {
         label.maximumNumberOfLines = 1
         label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
-        let chevron = NSImageView()
         chevron.image = NSImage(systemSymbolName: "chevron.down", accessibilityDescription: nil)?
             .withSymbolConfiguration(.init(pointSize: 10, weight: .medium))
         chevron.contentTintColor = Theme.textSecondary
@@ -669,12 +681,64 @@ final class TopBarTitleControl: NSControl, TopBarInteractive {
     override func mouseEntered(with event: NSEvent) { hovering = true }
     override func mouseExited(with event: NSEvent) { hovering = false }
 
-    override func mouseDown(with event: NSEvent) { showMenu() }
+    /// The chevron (or anywhere when the title can't be renamed) opens the menu; on the title,
+    /// a double-click renames and a single click does nothing (Claude Code).
+    override func mouseDown(with event: NSEvent) {
+        guard editor == nil else { return }
+        let point = convert(event.locationInWindow, from: nil)
+        let onChevron = point.x >= chevron.frame.minX - 6
+        if onRename != nil, !onChevron {
+            if event.clickCount >= 2 { beginRename() }
+            return
+        }
+        showMenu()
+    }
 
     private func showMenu() {
         guard let menu = buildMenu?() else { return }
-        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: -4), in: self)
+        // Opens under the title, aligned with its left edge, like Claude Code.
+        menu.popUp(positioning: nil, at: NSPoint(x: label.frame.minX - 4, y: isFlipped ? bounds.maxY + 4 : -4), in: self)
         hovering = false
+    }
+
+    /// The title becomes a text field: Return saves, Esc or clicking away cancels.
+    func beginRename() {
+        guard editor == nil, onRename != nil else { return }
+        let field = InlineRenameField(string: titleText)
+        field.font = label.font
+        field.textColor = Theme.textPrimary
+        field.isBordered = false
+        field.drawsBackground = true
+        field.backgroundColor = Theme.fill
+        field.focusRingType = .none
+        field.wantsLayer = true
+        field.layer?.cornerRadius = 5
+        field.translatesAutoresizingMaskIntoConstraints = false
+        field.onFinish = { [weak self] commit in self?.endRename(commit: commit) }
+        addSubview(field)
+        NSLayoutConstraint.activate([
+            field.leadingAnchor.constraint(equalTo: label.leadingAnchor, constant: -3),
+            field.centerYAnchor.constraint(equalTo: centerYAnchor),
+            field.widthAnchor.constraint(equalToConstant: max(label.frame.width + 60, 220)),
+        ])
+        label.isHidden = true
+        chevron.isHidden = true
+        editor = field
+        window?.makeFirstResponder(field)
+        field.currentEditor()?.selectAll(nil)
+    }
+
+    private func endRename(commit: Bool) {
+        guard let field = editor else { return }
+        editor = nil
+        let text = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        field.removeFromSuperview()
+        label.isHidden = false
+        chevron.isHidden = false
+        if commit, !text.isEmpty, text != titleText {
+            titleText = text
+            onRename?(text)
+        }
     }
 
     override func accessibilityPerformPress() -> Bool {
@@ -683,4 +747,43 @@ final class TopBarTitleControl: NSControl, TopBarInteractive {
     }
 
     override func accessibilityPerformShowMenu() -> Bool { accessibilityPerformPress() }
+}
+
+/// The title's in-place editor: Return commits, Esc cancels, losing focus commits.
+final class InlineRenameField: NSTextField, NSTextFieldDelegate {
+    var onFinish: ((Bool) -> Void)?
+    private var finished = false
+
+    convenience init(string: String) {
+        self.init(frame: .zero)
+        stringValue = string
+        delegate = self
+        cell?.isScrollable = true
+        cell?.wraps = false
+    }
+
+    private func finish(_ commit: Bool) {
+        guard !finished else { return }
+        finished = true
+        onFinish?(commit)
+    }
+
+    func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
+        if selector == #selector(NSResponder.insertNewline(_:)) { finish(true); return true }
+        if selector == #selector(NSResponder.cancelOperation(_:)) { finish(false); return true }
+        return false
+    }
+
+    func controlTextDidEndEditing(_ obj: Notification) { finish(true) }
+}
+
+extension NSView {
+    /// First descendant of a type (depth first).
+    func firstDescendant<T: NSView>(of type: T.Type) -> T? {
+        for sub in subviews {
+            if let match = sub as? T { return match }
+            if let match = sub.firstDescendant(of: type) { return match }
+        }
+        return nil
+    }
 }

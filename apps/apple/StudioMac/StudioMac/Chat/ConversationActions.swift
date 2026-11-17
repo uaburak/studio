@@ -5,8 +5,8 @@ import StudioKit
 /// and the title chevron in the top bar.
 @MainActor
 enum ConversationActions {
-    static let renameTitle = "Yeniden adlandır…"
-    static let archiveTitle = "Sohbeti arşivle"
+    static let renameTitle = "Yeniden adlandır"
+    static let archiveTitle = "Arşivle"
 
     /// The menu items, in order (tests read the titles).
     static func makeMenu(app: AppModel, conversationId: EntityID, window: @escaping @MainActor () -> NSWindow?) -> NSMenu {
@@ -16,17 +16,25 @@ enum ConversationActions {
     }
 
     static func items(app: AppModel, conversationId: EntityID, window: @escaping @MainActor () -> NSWindow?) -> [NSMenuItem] {
-        [
-            ClosureMenuItem(title: renameTitle) { [weak app] in
-                guard let app else { return }
+        let rename = ClosureMenuItem(title: renameTitle) { [weak app] in
+            guard let app else { return }
+            // In the top bar the title turns into a text field; elsewhere a small prompt.
+            if let topBar = window()?.contentView?.firstDescendant(of: TopBarTitleControl.self), topBar.canRenameInline {
+                topBar.beginRename()
+            } else {
                 promptRename(app: app, conversationId: conversationId, window: window())
-            },
-            ClosureMenuItem(title: archiveTitle) { [weak app] in
-                guard let app else { return }
-                // Through the app: no stream is opened just to archive, errors reach the banner.
-                Task { await app.archiveConversation(conversationId) }
-            },
-        ]
+            }
+        }
+        rename.keyEquivalent = "r"
+        rename.keyEquivalentModifierMask = []
+        let archive = ClosureMenuItem(title: archiveTitle) { [weak app] in
+            guard let app else { return }
+            // Through the app: no stream is opened just to archive, errors reach the banner.
+            Task { await app.archiveConversation(conversationId) }
+        }
+        archive.keyEquivalent = "a"
+        archive.keyEquivalentModifierMask = []
+        return [rename, archive]
     }
 
     static func promptRename(app: AppModel, conversationId: EntityID, window: NSWindow?) {
