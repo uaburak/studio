@@ -67,7 +67,15 @@ import {
   type ContentVersionRestore,
   type ContentVersionUpdate,
 } from "./content.ts";
-import { Device, DeviceList, type PairingClaim, PairingCode, PairingResult } from "./device.ts";
+import {
+  Device,
+  DeviceList,
+  MacRoutes,
+  type MacRoutesInput,
+  type PairingClaim,
+  PairingCode,
+  PairingResult,
+} from "./device.ts";
 import { HealthResponse } from "./health.ts";
 import {
   Job,
@@ -615,9 +623,14 @@ export function createApiClient(options: ApiClientOptions = {}) {
       /** New 6-digit code (the Mac itself only; invalidates the previous unused code). */
       createCode: (init?: RequestInit) =>
         call(PairingCode, "/api/pairing/codes", { method: "POST", init }),
-      /** Phone side: trade a code for a device token (public, rate-limited). */
+      /** Phone side: trade a code or QR secret for a device token (public, rate-limited). */
       claim: (input: PairingClaim, init?: RequestInit) =>
         call(PairingResult, "/api/pairing/claim", { method: "POST", json: input, init }),
+      /** Where phones can reach this Mac (paired devices and the Mac itself). */
+      routes: (init?: RequestInit) => call(MacRoutes, "/api/pairing/routes", { init }),
+      /** Publish where phones can reach this Mac (the Mac itself only). */
+      updateRoutes: (input: MacRoutesInput, init?: RequestInit) =>
+        call(MacRoutes, "/api/pairing/routes", { method: "PUT", json: input, init }),
     },
 
     devices: {

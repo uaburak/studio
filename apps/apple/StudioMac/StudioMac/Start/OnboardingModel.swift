@@ -12,7 +12,7 @@ enum OnboardingStep: String, CaseIterable {
         switch self {
         case .welcome: "Hoş geldin"
         case .claude: "Claude hesabı"
-        case .server: "Mac sunucusu"
+        case .server: "Mac ve iPhone"
         case .brand: "İlk marka"
         case .done: "Hazır"
         }
@@ -234,7 +234,7 @@ final class OnboardingModel {
 
     static func describeLoginError(_ error: any Error) -> String {
         if let api = error as? StudioAPIError, api.code == .conflict {
-            return "Mac worker bağlı değil. Mac sunucusu çalışınca tekrar dene."
+            return "Mac worker bağlı değil. Studio hazır olunca tekrar dene."
         }
         if let api = error as? StudioAPIError, api.code == .forbidden {
             return "Giriş yalnızca bu Mac'ten başlatılabilir."

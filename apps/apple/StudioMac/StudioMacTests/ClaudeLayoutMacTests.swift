@@ -87,10 +87,14 @@ struct SidebarLayoutTests {
     }
 
     @Test func footerShowsNameAndBrand() {
-        #expect(SidebarFooter.title(brandName: "MTM Agro") == "Burak · MTM Agro")
-        #expect(SidebarFooter.title(brandName: nil) == "Burak")
-        #expect(SidebarFooter.title(brandName: "") == "Burak")
-        #expect(SidebarFooter.initial == "B")
+        #expect(SidebarFooter.title(owner: "Burak", brandName: "MTM Agro") == "Burak · MTM Agro")
+        #expect(SidebarFooter.title(owner: "Burak", brandName: nil) == "Burak")
+        #expect(SidebarFooter.title(owner: " Burak ", brandName: "") == "Burak")
+        #expect(SidebarFooter.initial("Burak") == "B")
+        #expect(SidebarFooter.initial("ışıl") == "I")
+        // No name typed and none from the Claude account: a neutral fallback, never someone else's name.
+        #expect(SidebarFooter.title(owner: nil, brandName: nil) == "Studio")
+        #expect(SidebarFooter.title(owner: "  ", brandName: "MTM Agro") == "Studio · MTM Agro")
     }
 
     @Test func sidebarLaysOutOffscreenAndFollowsTheRoute() async throws {
@@ -200,7 +204,7 @@ struct InspectorContentTests {
             isSample: false, host: host, hostEnabled: true, serverURL: nil, lanEnabled: true, remoteEnabled: true,
             remoteHostname: "https://social.burakkoc.net/", issue: nil, presence: WorkerPresence(online: true, queueLength: 2)
         )
-        #expect(rows.map(\.label) == ["Mac sunucusu", "API", "Worker", "Yerel ağ", "Uzaktan erişim"])
+        #expect(rows.map(\.label) == ["Arka plan", "API", "Worker", "Yerel ağ", "Uzaktan erişim"])
         #expect(rows.map(\.value) == ["Çalışıyor", "Çalışıyor", "Hazır · 2 sırada", "192.168.1.20:8791", "Açık · social.burakkoc.net"])
         #expect(rows[3].help == "http://192.168.1.20:8791, http://10.0.0.5:8791")
 
@@ -224,13 +228,13 @@ struct InspectorContentTests {
             isSample: false, host: HostSnapshot(status: .error("node bulunamadı")), hostEnabled: true, serverURL: nil,
             lanEnabled: true, remoteEnabled: false, remoteHostname: "x", issue: .hostFailed("node bulunamadı"), presence: nil
         )
-        #expect(failed[0] == PanelRow(label: "Mac sunucusu", value: "Hata", tone: .attention, help: "node bulunamadı"))
+        #expect(failed[0] == PanelRow(label: "Arka plan", value: "Hata", tone: .attention, help: "node bulunamadı"))
 
         let external = InspectorContent.environment(
             isSample: false, host: HostSnapshot(status: .running), hostEnabled: false, serverURL: URL(string: "https://studio.example.com"),
             lanEnabled: true, remoteEnabled: true, remoteHostname: "x", issue: .apiUnreachable, presence: nil
         )
-        #expect(external.map(\.label) == ["Mac sunucusu", "API", "Worker"], "LAN and tunnel belong to the own host only")
+        #expect(external.map(\.label) == ["Arka plan", "API", "Worker"], "LAN and tunnel belong to the own host only")
         #expect(external[0].value == "Harici · studio.example.com")
         #expect(external[1].value == "Ulaşılamıyor")
         #expect(external[1].tone == .attention)
@@ -285,7 +289,7 @@ struct InspectorContentTests {
         let meters = all(UsageMeterView.self, in: view)
         #expect(meters.map(\.meter.title) == ["5 saatlik", "Haftalık"])
         let rows = all(PanelRowView.self, in: view)
-        #expect(rows.contains { $0.labelText == "Mac sunucusu" && $0.valueText == "Örnek veri" })
+        #expect(rows.contains { $0.labelText == "Arka plan" && $0.valueText == "Örnek veri" })
         #expect(rows.contains { $0.labelText == "Marka" && $0.valueText == "MTM Agro" })
         #expect(rows.contains { $0.labelText == "Instagram" && $0.valueText == "mtmagro" })
         #expect(rows.contains { $0.labelText == "Claude" })

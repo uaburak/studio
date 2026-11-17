@@ -245,7 +245,7 @@ final class IOSCalendarViewController: UIViewController, UITableViewDataSource, 
         cell.backgroundColor = IOSTheme.elevated
         guard !sections.isEmpty else {
             var content = UIListContentConfiguration.cell()
-            content.text = app.connection == .notPaired ? "Mac'e bağlı değil." : (model.mode == .month ? "Bu gün boş." : "Bu ayda zamanlanmış post yok.")
+            content.text = app.connection == .notPaired ? "iPhone bir Mac'e bağlı değil." : (model.mode == .month ? "Bu gün boş." : "Bu ayda zamanlanmış post yok.")
             content.secondaryText = "Postu açıp Zamanla ile takvime ekle."
             content.textProperties.color = IOSTheme.textSecondary
             content.secondaryTextProperties.color = IOSTheme.textTertiary

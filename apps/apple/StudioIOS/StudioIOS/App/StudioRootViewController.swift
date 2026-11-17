@@ -312,6 +312,10 @@ final class StudioRootViewController: UIViewController, UINavigationControllerDe
     /// Go where a route points (drawer rows, notifications, links in chat).
     func follow(_ route: IOSRoute) {
         if app.pendingRoute == route { app.pendingRoute = nil }
+        if route == .pair {
+            presentPairing()
+            return
+        }
         if presentedViewController != nil { dismiss(animated: isOnScreen) }
         setDrawer(open: false, animated: true)
         switch route {
@@ -331,10 +335,31 @@ final class StudioRootViewController: UIViewController, UINavigationControllerDe
             show(.jobs)
         case .settings:
             show(.settings)
+        case .pair:
+            break
         case .brand(let id):
             guard let root = mainNav.viewControllers.first else { return }
             if let top = mainNav.topViewController as? BrandProfileViewController, top.brandId == id { return }
             mainNav.setViewControllers([root, BrandsViewController(app: app), BrandProfileViewController(app: app, brandId: id)], animated: isOnScreen)
+        }
+    }
+
+    /// The QR scanner ("iPhone'u bağla", "Yeniden bağla", or an opened `studio://pair` link).
+    private func presentPairing() {
+        let invite = app.pendingInvite
+        app.pendingInvite = nil
+        let show = { [weak self] in
+            guard let self else { return }
+            self.setDrawer(open: false, animated: true)
+            let scanner = PairingScannerViewController(app: self.app, invite: invite)
+            let nav = UINavigationController(rootViewController: scanner)
+            nav.modalPresentationStyle = .fullScreen
+            self.present(nav, animated: self.isOnScreen)
+        }
+        if presentedViewController != nil {
+            dismiss(animated: false, completion: show)
+        } else {
+            show()
         }
     }
 

@@ -254,7 +254,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         helpMenu.addItem(item("Klavye Kısayolları", #selector(showShortcutsMenu), "/", [.command, .shift], target: self))
         helpMenu.addItem(item("Başlangıç Rehberi…", #selector(openOnboardingMenu), target: self))
         helpMenu.addItem(.separator())
-        helpMenu.addItem(item("Sunucu Günlüklerini Göster", #selector(revealLogsMenu), target: self))
+        helpMenu.addItem(item("Studio Günlüklerini Göster", #selector(revealLogsMenu), target: self))
         add(helpMenu, to: mainMenu)
         NSApp?.helpMenu = helpMenu
 

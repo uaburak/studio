@@ -10,8 +10,8 @@ enum SettingsSection: String, CaseIterable, Sendable {
     case notifications
     case accounts
     case publishing
-    case macServer
     case devices
+    case macServer
     case about
 
     /// First open (nothing remembered yet).
@@ -26,7 +26,7 @@ enum SettingsSection: String, CaseIterable, Sendable {
         case .notifications: "Bildirimler"
         case .accounts: "Hesaplar"
         case .publishing: "Yayın"
-        case .macServer: "Mac sunucusu"
+        case .macServer: "Gelişmiş"
         case .devices: "Cihazlar"
         case .about: "Hakkında"
         }
@@ -42,7 +42,7 @@ enum SettingsSection: String, CaseIterable, Sendable {
         case .notifications: "bell"
         case .accounts: "person.2"
         case .publishing: "paperplane"
-        case .macServer: "desktopcomputer"
+        case .macServer: "gearshape.2"
         case .devices: "iphone"
         case .about: "info.circle"
         }
@@ -54,7 +54,7 @@ enum SettingsSection: String, CaseIterable, Sendable {
         case .brands, .usage: 0
         case .appearance, .ai, .notifications: 1
         case .accounts, .publishing: 2
-        case .macServer, .devices, .about: 3
+        case .devices, .macServer, .about: 3
         }
     }
 
@@ -68,8 +68,8 @@ enum SettingsSection: String, CaseIterable, Sendable {
         case .notifications: "bildirim uyarı"
         case .accounts: "instagram facebook linkedin meta sosyal"
         case .publishing: "bulut yayıncı zamanlama"
-        case .macServer: "sunucu api worker ağ tünel"
-        case .devices: "telefon iphone eşleştir"
+        case .macServer: "mac sunucusu sunucu api worker ağ tünel adres port"
+        case .devices: "telefon iphone eşleştir bağla qr kod"
         case .about: "sürüm versiyon"
         }
     }
@@ -121,6 +121,7 @@ enum SettingsCatalog {
 
     // Görünüm
     static let theme = SettingsItem("appearance.theme", .appearance, "Tema", "Sistem, macOS ayarını izler. ⇧⌘L ile de değişir.", keywords: "dark light")
+    static let ownerName = SettingsItem("appearance.name", .appearance, "Adın", "Kenar çubuğunda görünür. Boş bırakırsan Claude hesabındaki adın kullanılır.", keywords: "isim ad profil selam")
 
     // Yapay zekâ
     static let defaultModel = SettingsItem("ai.model", .ai, "Varsayılan model", "Yeni sohbetler bu modelle başlar; sohbette değiştirilebilir.", keywords: "opus sonnet haiku flash pro")
@@ -161,7 +162,7 @@ enum SettingsCatalog {
     static let forgetAccess = SettingsItem("macServer.forgetAccess", .macServer, "Access anahtarını sil", "Access arkasındaki harici sunucuya bağlanılamaz.", keywords: "kaldır cloudflare")
 
     // Cihazlar
-    static let pairPhone = SettingsItem("devices.pair", .devices, "Telefon ekle", "Tek kullanımlık 6 haneli kod; telefondaki Studio'ya girilir.", keywords: "eşleştir iphone kod")
+    static let pairPhone = SettingsItem("devices.pair", .devices, "iPhone'u bağla", "iPhone'daki Studio ile QR kodu okut; kod tek kullanımlık.", keywords: "eşleştir iphone kod qr telefon ekle")
 
     // Hakkında
     static let version = SettingsItem("about.version", .about, "Sürüm", "", keywords: "versiyon")
@@ -172,7 +173,7 @@ enum SettingsCatalog {
     static let items: [SettingsItem] = [
         newBrand,
         claudeUsage,
-        theme,
+        theme, ownerName,
         defaultModel, defaultEffort, claude, gemini,
         notifications, notificationPermission,
         accountsBrand, connectMeta, connectLinkedIn, metaApp, linkedInApp, forgetMetaSecret,

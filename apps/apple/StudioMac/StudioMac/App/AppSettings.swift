@@ -14,6 +14,7 @@ final class AppSettings {
     static let repoPathKey = "studio.host.repoPath"
     static let remoteControlEnabledKey = "studio.host.remoteControlEnabled"
     static let remoteHostnameKey = "studio.host.remoteHostname"
+    static let ownerNameKey = "studio.ownerName"
     nonisolated static let defaultRemoteHostname = "social.burakkoc.net"
 
     let defaults: UserDefaults
@@ -58,6 +59,11 @@ final class AppSettings {
         didSet { defaults.set(remoteHostname, forKey: Self.remoteHostnameKey) }
     }
 
+    /// "Adın": the name the sidebar shows ("" = the Claude account's name).
+    var ownerName: String {
+        didSet { defaults.set(ownerName, forKey: Self.ownerNameKey) }
+    }
+
     /// The running host's API (`http://127.0.0.1:<port>`); set at runtime, not saved.
     var hostAPIURL: URL?
 
@@ -94,6 +100,7 @@ final class AppSettings {
         repoPath = defaults.string(forKey: Self.repoPathKey) ?? HostEnvironment.defaultRepoPath
         remoteControlEnabled = defaults.object(forKey: Self.remoteControlEnabledKey) as? Bool ?? false
         remoteHostname = defaults.string(forKey: Self.remoteHostnameKey) ?? Self.defaultRemoteHostname
+        ownerName = defaults.string(forKey: Self.ownerNameKey) ?? ""
     }
 
     var serverURL: URL? {

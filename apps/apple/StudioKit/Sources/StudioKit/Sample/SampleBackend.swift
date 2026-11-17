@@ -1237,6 +1237,7 @@ public actor SampleBackend: ConversationService, StudioDataService {
             plan: data.presence.claude?.plan ?? "Claude Max",
             cliVersion: data.presence.claude?.cliVersion ?? "1.0.24",
             detail: "Giriş yapıldı · Claude Max",
+            displayName: data.presence.claude?.displayName ?? "Burak",
             checkedAt: now
         )
         broadcastJobs()

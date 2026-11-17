@@ -190,13 +190,13 @@ final class SettingsSheetViewController: NSViewController, NSSearchFieldDelegate
         let pane: SettingsPaneView = switch section {
         case .brands: BrandsSectionView(app: app)
         case .usage: UsagePaneView(app: app)
-        case .appearance: AppearancePaneView(settings: settings)
+        case .appearance: AppearancePaneView(settings: settings, app: app)
         case .ai: AIPaneView(app: app)
         case .notifications: NotificationsPaneView(app: app)
         case .accounts: AccountsSectionView(app: app)
         case .publishing: PublishingSectionView(app: app)
         case .macServer: MacServerSectionView(app: app, settings: settings, host: app.isSample ? nil : host)
-        case .devices: DevicesSectionView(host: app.isSample ? nil : host)
+        case .devices: DevicesSectionView(model: app.phonePairing)
         case .about: AboutPaneView(app: app, host: host)
         }
         pane.refresh()
@@ -270,24 +270,51 @@ private final class SettingsRootView: ThemedView {
 
 // MARK: - Görünüm
 
-final class AppearancePaneView: SettingsPaneView {
+final class AppearancePaneView: SettingsPaneView, NSTextFieldDelegate {
     private unowned let settings: AppSettings
+    private weak var app: AppModel?
     private var control: NSSegmentedControl!
+    private let nameField = SettingsControls.field("Adın")
     private var observation: ObservationToken?
 
-    init(settings: AppSettings) {
+    init(settings: AppSettings, app: AppModel? = nil) {
         self.settings = settings
+        self.app = app
         super.init(section: .appearance)
         control = NSSegmentedControl(labels: AppearancePreference.allCases.map(\.label), trackingMode: .selectOne, target: self, action: #selector(changed))
         control.setAccessibilityLabel("Tema")
         addRow(SettingsCatalog.theme, accessory: control)
+        nameField.stringValue = settings.ownerName
+        nameField.delegate = self
+        nameField.setAccessibilityLabel(SettingsCatalog.ownerName.title)
+        addRow(SettingsCatalog.ownerName, accessory: nameField)
         observation = observe { [weak self] in
-            guard let self, let index = AppearancePreference.allCases.firstIndex(of: self.settings.appearance) else { return }
-            self.control.selectedSegment = index
+            guard let self else { return }
+            if let index = AppearancePreference.allCases.firstIndex(of: self.settings.appearance) {
+                self.control.selectedSegment = index
+            }
+            // The Claude account's name shows as the placeholder while nothing is typed.
+            self.nameField.placeholderString = self.app?.presence?.claude?.greetingName ?? "Adın"
         }
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
+
+    func controlTextDidEndEditing(_ obj: Notification) {
+        saveName()
+    }
+
+    func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+        guard control === nameField, commandSelector == #selector(NSResponder.insertNewline(_:)) else { return false }
+        saveName()
+        return true
+    }
+
+    private func saveName() {
+        let trimmed = nameField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        nameField.stringValue = trimmed
+        if settings.ownerName != trimmed { settings.ownerName = trimmed }
+    }
 
     @objc private func changed() {
         let index = control.selectedSegment
@@ -640,7 +667,7 @@ final class AboutPaneView: SettingsPaneView {
     }
 }
 
-// MARK: - Harici sunucu (address + Cloudflare Access), shown in "Mac sunucusu"
+// MARK: - Harici sunucu (address + Cloudflare Access), shown in "Gelişmiş"
 
 /// The server the app talks to when it does not run its own (or in sample mode),
 /// and the Cloudflare Access service token for it (Keychain).

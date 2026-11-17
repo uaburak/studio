@@ -63,7 +63,7 @@ struct PairingTests {
         let wrong = await #expect(throws: StudioAPIError.self) {
             try await pairing.pair(baseURL: url, serverName: "Mac", code: "000000", deviceName: "x")
         }
-        #expect(wrong?.code == .unauthorized)
+        #expect(wrong?.errorDescription == "Kod yanlış ya da süresi dolmuş. Mac'teki güncel kodu gir.")
         let limited = await #expect(throws: StudioAPIError.self) {
             try await pairing.pair(baseURL: url, serverName: "Mac", code: "000000", deviceName: "x")
         }

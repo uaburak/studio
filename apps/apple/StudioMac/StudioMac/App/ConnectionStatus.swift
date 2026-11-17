@@ -1,7 +1,7 @@
 import Foundation
 import StudioKit
 
-/// What the Mac server (embedded host + API + worker + Claude) looks like right now.
+/// What Studio's background (embedded host + API + worker + Claude) looks like right now.
 /// One honest place that turns raw state into the status line and the app-wide banner.
 enum ConnectionIssue: Equatable {
     /// The embedded host is starting its children (`starting("API")`).
@@ -31,12 +31,12 @@ enum ConnectionIssue: Equatable {
     /// Turkish, honest, one sentence: what is wrong and what it means.
     var message: String {
         switch self {
-        case .hostStarting(let what): "Mac sunucusu başlatılıyor: \(what)…"
-        case .hostFailed(let reason): "Mac sunucusu çalışmıyor: \(reason)"
-        case .apiUnreachable: "Sunucuya ulaşılamıyor. Mac sunucusu kapalı ya da ağ bağlantısı yok."
-        case .unauthorized: "Sunucu erişimi reddetti. Ayarlar → Mac sunucusu → Cloudflare Access anahtarını denetle."
-        case .apiError(let detail): "Sunucu hatası: \(detail)"
-        case .workerOffline: "Mac worker bağlı değil; yeni işler sırada bekliyor."
+        case .hostStarting(let what): "Studio hazırlanıyor: \(what)…"
+        case .hostFailed(let reason): "Studio başlatılamadı: \(reason)"
+        case .apiUnreachable: "Studio'nun arka planına ulaşılamıyor. Yeniden dene; sürerse Studio'yu yeniden başlat."
+        case .unauthorized: "Erişim reddedildi. Ayarlar → Gelişmiş → Cloudflare Access anahtarını denetle."
+        case .apiError(let detail): "Beklenmeyen hata: \(detail)"
+        case .workerOffline: "Arka plan işçisi bağlı değil; yeni işler sırada bekliyor."
         case .claudeSignedOut: "Claude hesabına giriş yapılmadı; sohbet ve içerik üretimi çalışmaz."
         case .claudeSigningIn: "Claude girişi bekleniyor; tarayıcıdaki adımı tamamla."
         case .claudeNotInstalled: "Bu Mac'te Claude Code kurulu değil; sohbet ve içerik üretimi çalışmaz."
@@ -73,12 +73,12 @@ enum ConnectionIssue: Equatable {
     /// Short form for the sidebar status line.
     var shortLabel: String {
         switch self {
-        case .hostStarting: "Sunucu başlatılıyor"
-        case .hostFailed: "Sunucu çalışmıyor"
-        case .apiUnreachable: "Sunucuya ulaşılamıyor"
+        case .hostStarting: "Hazırlanıyor"
+        case .hostFailed: "Başlatılamadı"
+        case .apiUnreachable: "Bağlantı yok"
         case .unauthorized: "Erişim reddedildi"
-        case .apiError: "Sunucu hatası"
-        case .workerOffline: "Worker çevrimdışı"
+        case .apiError: "Hata"
+        case .workerOffline: "İşçi bağlı değil"
         case .claudeSignedOut: "Claude girişi yok"
         case .claudeSigningIn: "Claude girişi bekleniyor"
         case .claudeNotInstalled: "Claude kurulu değil"

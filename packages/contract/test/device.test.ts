@@ -3,6 +3,8 @@ import {
   createApiClient,
   ERROR_STATUS,
   HealthResponse,
+  MacRoutes,
+  MacRoutesInput,
   PairingClaim,
   PairingCode,
   PairingResult,
@@ -22,6 +24,44 @@ describe("device pairing schemas", () => {
     const parsed = PairingClaim.parse({ code: "000001", deviceName: "  Burak'ın iPhone'u " });
     expect(parsed).toEqual({ code: "000001", deviceName: "Burak'ın iPhone'u", platform: "other" });
     expect(PairingClaim.safeParse({ code: "000001", deviceName: "   " }).success).toBe(false);
+  });
+
+  it("claims with exactly one of a code and a QR secret", () => {
+    const secret = "A".repeat(43);
+    expect(PairingClaim.safeParse({ secret, deviceName: "iPhone" }).success).toBe(true);
+    expect(PairingClaim.safeParse({ code: "000001", secret, deviceName: "iPhone" }).success).toBe(
+      false,
+    );
+    expect(PairingClaim.safeParse({ deviceName: "iPhone" }).success).toBe(false);
+    expect(PairingClaim.safeParse({ secret: "short", deviceName: "iPhone" }).success).toBe(false);
+    expect(PairingClaim.safeParse({ secret: "a/b+c=".repeat(8), deviceName: "x" }).success).toBe(
+      false,
+    );
+    expect(
+      PairingCode.parse({
+        code: "123456",
+        expiresAt: "2026-11-16T10:02:00.000Z",
+        secret,
+        secretExpiresAt: "2026-11-16T10:10:00.000Z",
+      }).secret,
+    ).toBe(secret);
+  });
+
+  it("describes the Mac's routes", () => {
+    const routes = {
+      macName: "Burak's MacBook Pro",
+      macId: null,
+      lanAddresses: ["192.168.1.20"],
+      lanPort: 8791,
+      bonjourName: "Burak's MacBook Pro",
+      tunnelUrl: "https://social.example.net",
+      updatedAt: "2026-11-16T10:00:00.000Z",
+    };
+    expect(MacRoutes.parse(routes)).toEqual(routes);
+    expect(MacRoutes.safeParse({ ...routes, lanAddresses: ["fe80::1"] }).success).toBe(false);
+    expect(MacRoutes.safeParse({ ...routes, tunnelUrl: "http://x.example" }).success).toBe(false);
+    const { updatedAt: _ignored, ...input } = routes;
+    expect(MacRoutesInput.safeParse(input).success).toBe(true);
   });
 
   it("requires a long token in the claim result", () => {

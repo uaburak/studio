@@ -4,20 +4,30 @@ import Synchronization
 
 /// What a paired phone remembers about its Mac: the device token (secret)
 /// plus where and who it paired with. Kept in the Keychain as one item.
+/// Items written before QR pairing decode with `macId` and `routes` nil.
 public struct DeviceCredential: Codable, Sendable, Equatable {
     public var token: String
     public var deviceId: EntityID
-    /// Last known address of the Mac's API (Bonjour may later resolve another).
+    /// The address that answered last (a LAN address or the tunnel); tried early next time.
     public var serverURL: URL
-    /// Bonjour service name of the Mac (`TXT name`), for display and rediscovery.
+    /// The Mac's name (`TXT name` / `MacRoutes.macName`), for display and rediscovery.
     public var serverName: String
+    /// Host id of the paired Mac (`HealthResponse.instance`), when known.
+    public var macId: String?
+    /// Every way to reach the Mac, from the QR code and refreshed after each connect.
+    public var routes: MacRoutes?
 
-    public init(token: String, deviceId: EntityID, serverURL: URL, serverName: String) {
+    public init(token: String, deviceId: EntityID, serverURL: URL, serverName: String, macId: String? = nil, routes: MacRoutes? = nil) {
         self.token = token
         self.deviceId = deviceId
         self.serverURL = serverURL
         self.serverName = serverName
+        self.macId = macId
+        self.routes = routes
     }
+
+    /// The Bonjour service name to look for (saved routes, else the Mac's name).
+    public var bonjourName: String { routes?.bonjourName ?? serverName }
 }
 
 /// Where the device token lives.

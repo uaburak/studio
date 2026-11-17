@@ -78,6 +78,13 @@
       "when": 1794860917929,
       "tag": "0010_publishing",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "6",
+      "when": 1794924645452,
+      "tag": "0011_qr_pairing",
+      "breakpoints": true
     }
   ]
 }

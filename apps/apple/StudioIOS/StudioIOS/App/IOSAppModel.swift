@@ -1,4 +1,5 @@
 import Foundation
+import Network
 import Observation
 import StudioKit
 import UIKit
@@ -26,7 +27,8 @@ final class IOSAppSettings {
         didSet { defaults.set(appearance.rawValue, forKey: Self.appearanceKey) }
     }
 
-    /// When true, connects through the Remote Control tunnel with the paired Bearer token.
+    /// Gelişmiş → "Ek uzak adres": also try `remoteURLString` when looking for the Mac (after
+    /// the addresses the Mac itself sent, which include its tunnel when it has one).
     var useRemoteControlURL: Bool {
         didSet { defaults.set(useRemoteControlURL, forKey: Self.remoteEnabledKey) }
     }
@@ -81,10 +83,13 @@ final class IOSAppSettings {
         return url
     }
 
-    /// The address requests go to right now.
+    /// The extra address to try (Gelişmiş), when switched on and valid.
+    var manualRemoteURL: URL? { useRemoteControlURL ? remoteURL : nil }
+
+    /// Where requests start out: the address that answered last time. The connection manager
+    /// moves the client when the Mac answers somewhere else.
     var activeBaseURL: URL? {
-        if useRemoteControlURL, let remoteURL { return remoteURL }
-        return savedCredential?.serverURL
+        savedCredential?.serverURL ?? manualRemoteURL
     }
 
     func makeClient() -> APIClient {
@@ -105,7 +110,8 @@ final class IOSAppSettings {
         defaults.set(enabled, forKey: Self.noticePrefix + category.rawValue)
     }
 
-    /// Name used by the greeting and the avatar: the setting, else the paired Mac's owner.
+    /// Name typed in Settings, else a guess from the paired Mac's name (the model prefers the
+    /// Claude account's name over the guess: `IOSAppModel.greetingName`).
     var greetingName: String? {
         let typed = ownerName.trimmingCharacters(in: .whitespacesAndNewlines)
         if !typed.isEmpty { return typed }
@@ -130,6 +136,9 @@ enum IOSRoute: Equatable {
     case brand(EntityID)
     case jobs
     case settings
+    /// "iPhone'u bağla" / "Yeniden bağla": the QR scanner (with `IOSAppModel.pendingInvite`
+    /// when a `studio://pair` link was opened).
+    case pair
 }
 
 /// Full pages pushed over the chat from the drawer (each former tab and more).
@@ -192,26 +201,6 @@ enum IOSDestination: String, CaseIterable {
     }
 }
 
-/// Connection to the Mac as the UI shows it.
-enum IOSConnection: Equatable {
-    case notPaired
-    case connecting
-    case online
-    /// The API answers but no worker is connected.
-    case macOffline
-    case unreachable(String)
-
-    var label: String {
-        switch self {
-        case .notPaired: "Eşleşmedi"
-        case .connecting: "Bağlanıyor"
-        case .online: "Mac hazır"
-        case .macOffline: "Mac çevrimdışı"
-        case .unreachable: "Ulaşılamıyor"
-        }
-    }
-}
-
 /// Root observable state of `StudioIOS`.
 @MainActor
 @Observable
@@ -244,27 +233,54 @@ final class IOSAppModel {
     private(set) var conversationModels: [EntityID: IOSConversationModel] = [:]
     @ObservationIgnored private var feedTask: Task<Void, Never>?
     @ObservationIgnored private var noticeTracker = ActivityNoticeTracker()
-    @ObservationIgnored private var isRediscovering = false
+
+    // Connection to the Mac (see `connectToMac`).
+    /// The one client every remote service uses; its address follows the Mac.
+    private(set) var client: APIClient
+    /// What the connection manager is doing; `connection` turns it into the four plain states.
+    private(set) var linkPhase: MacLinkPhase = .idle
+    /// A `studio://pair` link waiting for the scanner sheet to pair with it.
+    var pendingInvite: PairingInvite?
+    /// Tries addresses (tests inject a fake probe).
+    @ObservationIgnored var connector = MacConnector()
+    /// Looks for the Mac with Bonjour (tests inject a fake).
+    @ObservationIgnored var locateOnNetwork: @Sendable (_ macId: String?, _ names: [String]) async -> [URL] = { macId, names in
+        await StudioBrowser.locate(macId: macId, names: names)
+    }
+    /// Reads the Mac's current routes after a connect (tests inject a fake).
+    @ObservationIgnored var fetchRoutes: @Sendable (APIClient) async -> MacRoutes? = { client in try? await client.macRoutes() }
+    /// Waits between searches after a failure: 2 s, 4 s, 8 s … at most a minute.
+    @ObservationIgnored var retryBackoff = Backoff(initial: .seconds(2), maximum: .seconds(60))
+    /// Off in tests: no retries scheduled, no network monitor.
+    @ObservationIgnored var autoRetry = true
+    @ObservationIgnored private var linkTask: Task<Void, Never>?
+    @ObservationIgnored private var retryTask: Task<Void, Never>?
+    @ObservationIgnored private var linkFailures = 0
+    @ObservationIgnored private var lastSearchAt: Date?
+    @ObservationIgnored private var pathMonitor: NWPathMonitor?
 
     init(
         settings: IOSAppSettings,
         conversationService: (any ConversationService)? = nil,
         dataService: (any StudioDataService)? = nil,
-        notifier: IOSNotifier? = nil
+        notifier: IOSNotifier? = nil,
+        treatAsRemote: Bool = false
     ) {
         self.settings = settings
         self.notifier = notifier ?? IOSNotifier(delivering: settings.useSampleData ? .silent : .system)
+        let client = settings.makeClient()
+        self.client = client
         if let conversationService, let dataService {
             self.conversationService = conversationService
             self.dataService = dataService
-            self.isSample = conversationService is SampleBackend
+            // Tests may drive the connection manager over in-memory services.
+            self.isSample = !treatAsRemote && conversationService is SampleBackend
         } else if settings.useSampleData {
             let sample = SampleBackend()
             self.conversationService = sample
             self.dataService = sample
             self.isSample = true
         } else {
-            let client = settings.makeClient()
             self.conversationService = RemoteConversationService(client: client)
             self.dataService = RemoteStudioDataService(client: client)
             self.isSample = false
@@ -278,11 +294,22 @@ final class IOSAppModel {
     var presence: WorkerPresence? { jobBoard.presence }
     var isOnline: Bool { presence?.online == true }
 
-    var connection: IOSConnection {
-        if !isSample && !settings.isConnectedSetup && !settings.useRemoteControlURL { return .notPaired }
-        if let loadError, brands.isEmpty, hasLoaded { return .unreachable(loadError) }
-        guard let presence else { return hasLoaded ? (loadError.map { .unreachable($0) } ?? .connecting) : .connecting }
-        return presence.online ? .online : .macOffline
+    /// The connection in plain words: "Mac'e bağlı", "Mac'e bağlanıyor…", "Mac'e ulaşılamıyor"
+    /// (with one reason and one action) or "Bağlı değil".
+    var connection: MacLinkState {
+        if isSample { return .connected }
+        return MacLinkState.make(isPaired: settings.savedCredential != nil, phase: linkPhase)
+    }
+
+    /// Connected, but the Mac's worker is not taking jobs (messages wait until it is back).
+    var isMacIdle: Bool { connection == .connected && presence?.online == false }
+
+    /// The greeting name: typed in Settings, else the name of the Claude account on the Mac,
+    /// else a guess from the Mac's name.
+    var greetingName: String? {
+        let typed = settings.ownerName.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !typed.isEmpty { return typed }
+        return presence?.claude?.greetingName ?? settings.greetingName
     }
 
     var currentBrand: Brand? { brands.first { $0.id == currentBrandId } }
@@ -304,10 +331,12 @@ final class IOSAppModel {
 
     // MARK: Connection
 
-    /// Rebuild the services for the current address (pairing, remote switch) and reload.
+    /// Start over after pairing changed (new Mac, forgotten pairing): drop what the old
+    /// connection loaded and connect again.
     func reconnect() {
         guard !isSample else { return }
         let client = settings.makeClient()
+        self.client = client
         conversationService = RemoteConversationService(client: client)
         dataService = RemoteStudioDataService(client: client)
         conversationModels.values.forEach { $0.stop() }
@@ -320,14 +349,153 @@ final class IOSAppModel {
         loadError = nil
         posts.reset()
         calendar.reset()
+        linkTask?.cancel()
+        linkTask = nil
+        retryTask?.cancel()
+        retryTask = nil
+        linkFailures = 0
+        linkPhase = .idle
         Task { await load() }
     }
 
+    /// Load everything; finds the Mac first when not connected yet.
     func load() async {
-        guard isSample || settings.isConnectedSetup || settings.useRemoteControlURL else {
+        if isSample {
+            await loadData()
+            return
+        }
+        guard settings.savedCredential != nil else {
+            linkPhase = .idle
             hasLoaded = true
             return
         }
+        if case .connected = linkPhase {
+            await loadData()
+        } else {
+            await connectToMac()
+        }
+    }
+
+    /// Find the paired Mac and connect: the Bonjour service, the last answering address, the
+    /// LAN addresses, then the tunnel (`MacConnector`). On success the shared client moves to
+    /// that address and data loads; on failure it tries again with backoff. One search at a time.
+    func connectToMac() async {
+        guard !isSample, let credential = settings.savedCredential else { return }
+        if let running = linkTask {
+            await running.value
+            return
+        }
+        retryTask?.cancel()
+        retryTask = nil
+        if !connection.isConnected { linkPhase = .searching }
+        let task = Task { await self.search(credential) }
+        linkTask = task
+        await task.value
+        // `reconnect()` may have replaced it meanwhile.
+        if linkTask == task { linkTask = nil }
+    }
+
+    private func search(_ credential: DeviceCredential) async {
+        lastSearchAt = Date()
+        let candidates = MacRoutePlanner.candidates(
+            lastKnown: credential.serverURL, routes: credential.routes, manual: settings.manualRemoteURL)
+        let locate = locateOnNetwork
+        let macId = credential.macId
+        let names = [credential.bonjourName, credential.serverName]
+        let found = await connector.firstReachable(candidates, macId: macId) {
+            await locate(macId, names).map { MacRoute(.bonjour, $0) }
+        }
+        if Task.isCancelled { return }
+        guard let found else {
+            linkLost(.notFound)
+            return
+        }
+        if client.baseURL != found.url {
+            client.updateBaseURL(found.url)
+            try? settings.pairingClient.updateServerURL(found.url)
+            settings.credentialChanged()
+            // Live streams reconnect to the new address now instead of after their backoff.
+            if hasLoaded { conversationModels.values.forEach { $0.stop(); $0.start() } }
+        }
+        linkPhase = .connected(found)
+        linkFailures = 0
+        await loadData()
+        if case .connected = linkPhase, let routes = await fetchRoutes(client) {
+            try? settings.pairingClient.updateRoutes(routes)
+            settings.credentialChanged()
+        }
+    }
+
+    /// A request showed the Mac is gone (`notFound`) or no longer knows this phone
+    /// (`notRecognized`). The first searches again with backoff; the second waits for "Yeniden bağla".
+    func linkLost(_ failure: MacLinkFailure) {
+        guard !isSample else { return }
+        // It was working a moment ago: the Mac probably moved. Look again right away, quietly.
+        if failure == .notFound, connection.isConnected, linkTask == nil, autoRetry {
+            linkPhase = .searching
+            Task { await connectToMac() }
+            return
+        }
+        linkPhase = .failed(failure)
+        guard failure != .notRecognized, autoRetry, isInForeground else { return }
+        linkFailures += 1
+        let delay = retryBackoff.delay(afterFailures: linkFailures, random: Double.random(in: 0...1))
+        retryTask?.cancel()
+        retryTask = Task { [weak self] in
+            try? await Task.sleep(for: delay)
+            guard let self, !Task.isCancelled else { return }
+            await self.connectToMac()
+        }
+    }
+
+    /// "Tekrar dene": search now (resets the backoff).
+    func retryConnection() {
+        linkFailures = 0
+        Task { await connectToMac() }
+    }
+
+    /// The job feed keeps failing: the Mac may have moved (new Wi-Fi address, left home).
+    private func feedTrouble(_ state: LiveState) {
+        guard !isSample, linkTask == nil, isInForeground else { return }
+        switch state {
+        case .waiting(let failures, _) where failures >= 2: break
+        case .polling: break
+        default: return
+        }
+        if let last = lastSearchAt, Date().timeIntervalSince(last) < 10 { return }
+        Task { await connectToMac() }
+    }
+
+    /// Follow network changes (Wi-Fi on/off, another network): look for the Mac again.
+    func startNetworkMonitor() {
+        guard autoRetry, pathMonitor == nil, !isSample else { return }
+        let monitor = NWPathMonitor()
+        monitor.pathUpdateHandler = { [weak self] path in
+            let satisfied = path.status == .satisfied
+            Task { @MainActor [weak self] in self?.networkChanged(satisfied: satisfied) }
+        }
+        monitor.start(queue: .global(qos: .utility))
+        pathMonitor = monitor
+    }
+
+    private func networkChanged(satisfied: Bool) {
+        guard satisfied, isInForeground, settings.savedCredential != nil, hasLoaded else { return }
+        linkFailures = 0
+        Task {
+            // Addresses settle a moment after the change.
+            try? await Task.sleep(for: .seconds(1))
+            await connectToMac()
+        }
+    }
+
+    /// Map a failed request: connection problems go to the connection manager.
+    private func handleLoadFailure(_ error: any Error) {
+        guard !isSample, let failure = MacLinkState.failure(for: StudioAPIError.from(error)) else { return }
+        linkLost(failure)
+    }
+
+    /// Brands, accounts and conversations, then the live job feed and the posts.
+    private func loadData() async {
         isLoading = true
         defer {
             isLoading = false
@@ -347,44 +515,35 @@ final class IOSAppModel {
             if !isSample { notifier.requestAuthorizationIfNeeded() }
         } catch {
             loadError = Self.describe(error)
-            // The Mac may have a new address on this network (DHCP): find it again with Bonjour.
-            if await rediscoverPairedMac() { return }
+            handleLoadFailure(error)
+            if case .failed = linkPhase { return }
         }
         startJobFeed()
         await posts.load()
     }
 
-    /// When the saved Mac address does not answer, browse `_studio._tcp` for a few
-    /// seconds, resolve the Mac with the same name and switch to its new address.
-    /// Returns true when it reconnected (a fresh `load()` is then running).
-    func rediscoverPairedMac() async -> Bool {
-        guard !isSample, !isRediscovering, !settings.useRemoteControlURL,
-              let credential = settings.savedCredential else { return false }
-        isRediscovering = true
-        defer { isRediscovering = false }
-        let browser = StudioBrowser()
-        let found: DiscoveredStudio? = await withTaskGroup(of: DiscoveredStudio?.self) { group in
-            group.addTask {
-                for await list in browser.results() {
-                    if let match = list.first(where: { $0.displayName == credential.serverName || $0.serviceName == credential.serverName }) {
-                        return match
-                    }
-                }
-                return nil
-            }
-            group.addTask {
-                try? await Task.sleep(for: .seconds(6))
-                return nil
-            }
-            let first = await group.next() ?? nil
-            group.cancelAll()
-            return first
-        }
-        guard let found, let url = try? await StudioBrowser.resolve(found), url != credential.serverURL else { return false }
-        try? settings.pairingClient.updateServerURL(url)
+    // MARK: Pairing
+
+    /// Pair with the Mac whose QR code was scanned (or whose link was opened), then connect.
+    func pair(with invite: PairingInvite) async throws(StudioAPIError) {
+        _ = try await settings.pairingClient.pair(invite: invite, deviceName: UIDevice.current.name, connector: connector)
         settings.credentialChanged()
         reconnect()
+    }
+
+    /// A `studio://pair` link: keep it for the scanner sheet, which pairs with it.
+    @discardableResult
+    func openLink(_ url: URL) -> Bool {
+        guard PairingInvite.isPairingLink(url) else { return false }
+        pendingInvite = try? PairingInvite.parse(url)
+        open(.pair)
         return true
+    }
+
+    /// Forget the Mac on this phone (the Mac lists it until removed there).
+    func forgetMac() {
+        settings.forgetPairing()
+        reconnect()
     }
 
     private func startJobFeed() {
@@ -401,6 +560,8 @@ final class IOSAppModel {
     private func handle(_ event: JobFeedEvent) {
         jobBoard.apply(event)
         switch event {
+        case .state(let state):
+            feedTrouble(state)
         case .message(.snapshot(let jobs, _)):
             if !noticeTracker.hasBaseline { noticeTracker.baseline(jobs) }
         case .message(.jobUpdated(let job)):
@@ -434,11 +595,17 @@ final class IOSAppModel {
         let wasBackground = !isInForeground
         isInForeground = true
         notifier.clearDelivered()
-        if wasBackground, hasLoaded { Task { await refreshAfterForeground() } }
+        startNetworkMonitor()
+        if wasBackground, hasLoaded {
+            linkFailures = 0
+            Task { await refreshAfterForeground() }
+        }
     }
 
     func sceneDidEnterBackground() {
         isInForeground = false
+        retryTask?.cancel()
+        retryTask = nil
         settings.defaults.set(Date(), forKey: IOSAppSettings.lastBackgroundKey)
         notifier.scheduleBackgroundRefresh()
     }

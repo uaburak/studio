@@ -194,8 +194,8 @@ final class IOSPostsViewController: UIViewController, UICollectionViewDelegate {
         // Empty / error / loading states
         if app.connection == .notPaired {
             emptyView.isHidden = false
-            emptyView.configure(icon: "laptopcomputer.and.iphone", title: "Mac'e bağlı değil", message: "Postlar Mac'te üretilir. Önce Ayarlar'dan eşleştir.",
-                                actions: [UIButton.studioPill(title: "Eşleştir", kind: .primary) { [weak self] in self?.app.open(.settings) }])
+            emptyView.configure(icon: "laptopcomputer.and.iphone", title: MacLinkState.notPaired.title, message: "Postlar Mac'te üretilir. Mac'teki QR kodu okutarak iPhone'u bağla.",
+                                actions: [UIButton.studioPill(title: MacLinkAction.pair.title, kind: .primary) { [weak self] in self?.app.open(.pair) }])
         } else if let error = model.error, model.board.cards.isEmpty {
             emptyView.isHidden = false
             emptyView.configure(icon: "exclamationmark.triangle", title: "Postlar yüklenemedi", message: error,

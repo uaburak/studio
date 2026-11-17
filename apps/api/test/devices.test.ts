@@ -4,7 +4,9 @@ import {
   type Device,
   type DeviceList,
   HealthResponse,
+  type MacRoutes,
   PAIRING_MAX_FAILURES_PER_CLIENT,
+  PAIRING_SECRET_TTL_MS,
   type PairingCode,
   type PairingResult,
 } from "@studio/contract";
@@ -43,11 +45,15 @@ async function call<T = unknown>(
   return { status: res.status, body: parsed as T, headers: res.headers };
 }
 
-async function newCode(): Promise<string> {
+async function newOffer(): Promise<PairingCode> {
   const res = await call<PairingCode>("POST", "/api/pairing/codes", LOCAL);
   expect(res.status, JSON.stringify(res.body)).toBe(201);
   expect(res.body.code).toMatch(/^\d{6}$/);
-  return res.body.code;
+  return res.body;
+}
+
+async function newCode(): Promise<string> {
+  return (await newOffer()).code;
 }
 
 async function pair(name = "Burak'ın iPhone'u", client = lan()): Promise<PairingResult> {
@@ -233,6 +239,142 @@ describe("pairing", () => {
       deviceName: "x",
     });
     expect(res.status).toBe(429);
+  });
+});
+
+describe("QR pairing", () => {
+  it("issues a long secret next to the code, valid for ten minutes", async () => {
+    const before = Date.now();
+    const offer = await newOffer();
+    expect(offer.secret).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    const lifetime = new Date(offer.secretExpiresAt ?? 0).getTime() - before;
+    expect(lifetime).toBeGreaterThan(PAIRING_SECRET_TTL_MS - 5_000);
+    expect(lifetime).toBeLessThanOrEqual(PAIRING_SECRET_TTL_MS + 1_000);
+    const stored = await env.DB.prepare(
+      "select secret_hash from pairing_codes where used_at is null order by created_at desc limit 1",
+    ).first<{ secret_hash: string }>();
+    expect(stored?.secret_hash).toMatch(/^[0-9a-f]{64}$/);
+    expect(stored?.secret_hash).not.toBe(offer.secret);
+  });
+
+  it("pairs with the QR secret once; the code of the same offer is used up too", async () => {
+    const offer = await newOffer();
+    const res = await call<PairingResult>("POST", "/api/pairing/claim", lan(), {
+      secret: offer.secret,
+      deviceName: "QR iPhone",
+      platform: "ios",
+    });
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect((await call("GET", "/api/brands", { ...lan(), ...bearer(res.body.token) })).status).toBe(
+      200,
+    );
+
+    const again = await call<ApiErrorBody>("POST", "/api/pairing/claim", lan(), {
+      secret: offer.secret,
+      deviceName: "QR iPhone",
+    });
+    expect(again.status).toBe(401);
+    expect(again.body.error.code).toBe("unauthorized");
+    const byCode = await call("POST", "/api/pairing/claim", lan(), {
+      code: offer.code,
+      deviceName: "QR iPhone",
+    });
+    expect(byCode.status).toBe(401);
+  });
+
+  it("rejects an expired secret even while the offer is otherwise unused", async () => {
+    const offer = await newOffer();
+    await env.DB.prepare("update pairing_codes set secret_expires_at = ? where used_at is null")
+      .bind(Date.now() - 1000)
+      .run();
+    const res = await call<ApiErrorBody>("POST", "/api/pairing/claim", lan(), {
+      secret: offer.secret,
+      deviceName: "A",
+    });
+    expect(res.status).toBe(401);
+  });
+
+  it("keeps the secret valid after the 2-minute code ran out", async () => {
+    const offer = await newOffer();
+    await env.DB.prepare("update pairing_codes set expires_at = ? where used_at is null")
+      .bind(Date.now() - 1000)
+      .run();
+    const res = await call("POST", "/api/pairing/claim", lan(), {
+      secret: offer.secret,
+      deviceName: "A",
+    });
+    expect(res.status).toBe(201);
+  });
+
+  it("refuses a claim with both or neither of code and secret", async () => {
+    const offer = await newOffer();
+    for (const body of [
+      { code: offer.code, secret: offer.secret, deviceName: "A" },
+      { deviceName: "A" },
+    ]) {
+      expect((await call("POST", "/api/pairing/claim", lan(), body)).status).toBe(400);
+    }
+  });
+
+  it("retires the phone's previous device when it pairs again", async () => {
+    const first = await pair("Aynı iPhone");
+    const offer = await newOffer();
+    const second = await call<PairingResult>("POST", "/api/pairing/claim", lan(), {
+      secret: offer.secret,
+      deviceName: "Aynı iPhone",
+      replacesToken: first.token,
+    });
+    expect(second.status).toBe(201);
+    const list = await call<DeviceList>("GET", "/api/devices", LOCAL);
+    expect(list.body.items.find((d) => d.id === first.device.id)?.revokedAt).not.toBeNull();
+    expect(list.body.items.find((d) => d.id === second.body.device.id)?.revokedAt).toBeNull();
+    expect((await call("GET", "/api/brands", { ...lan(), ...bearer(first.token) })).status).toBe(
+      401,
+    );
+  });
+});
+
+describe("routes", () => {
+  const input = {
+    macName: "Burak's MacBook Pro",
+    macId: "mac-1",
+    lanAddresses: ["192.168.1.20", "10.0.0.5"],
+    lanPort: 8791,
+    bonjourName: "Burak's MacBook Pro",
+    tunnelUrl: "https://social.example.net",
+  };
+
+  it("lets only the Mac publish them; paired phones read them and get them when pairing", async () => {
+    const { token } = await pair();
+    const phone = { ...lan(), ...bearer(token) };
+    expect((await call("PUT", "/api/pairing/routes", phone, input)).status).toBe(403);
+
+    const saved = await call<MacRoutes>("PUT", "/api/pairing/routes", LOCAL, input);
+    expect(saved.status, JSON.stringify(saved.body)).toBe(200);
+    expect(saved.body).toMatchObject(input);
+    expect(Date.parse(saved.body.updatedAt)).not.toBeNaN();
+
+    const read = await call<MacRoutes>("GET", "/api/pairing/routes", phone);
+    expect(read.status).toBe(200);
+    expect(read.body).toEqual(saved.body);
+    expect((await call("GET", "/api/pairing/routes", lan())).status).toBe(401);
+
+    const offer = await newOffer();
+    const paired = await call<PairingResult>("POST", "/api/pairing/claim", lan(), {
+      secret: offer.secret,
+      deviceName: "B",
+    });
+    expect(paired.body.routes).toEqual(saved.body);
+  });
+
+  it("validates addresses and the tunnel scheme", async () => {
+    for (const bad of [
+      { ...input, lanAddresses: ["not-an-ip"] },
+      { ...input, tunnelUrl: "http://plain.example.net" },
+      { ...input, lanPort: 0 },
+    ]) {
+      expect((await call("PUT", "/api/pairing/routes", LOCAL, bad)).status).toBe(400);
+    }
   });
 });
 

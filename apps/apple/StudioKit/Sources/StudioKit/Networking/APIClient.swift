@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 
 /// `GET /api/health`.
 public struct HealthResponse: Codable, Sendable, Equatable {
@@ -16,7 +17,7 @@ public struct HealthResponse: Codable, Sendable, Equatable {
 /// packages/contract/src/client.ts). Every method throws `StudioAPIError`
 /// only; responses are decoded strictly against the contract models.
 public final class APIClient: Sendable {
-    public let baseURL: URL
+    private let base: Mutex<URL>
     public let session: URLSession
     public let auth: any AuthProvider
 
@@ -24,9 +25,18 @@ public final class APIClient: Sendable {
     public static let localDefaultURL = URL(string: "http://127.0.0.1:8787")!
 
     public init(baseURL: URL, auth: any AuthProvider = NoAuth(), session: URLSession = .shared) {
-        self.baseURL = baseURL
+        self.base = Mutex(baseURL)
         self.auth = auth
         self.session = session
+    }
+
+    /// Where requests go. A phone moves it when the Mac shows up at another address (another
+    /// Wi-Fi address, the tunnel): services and streams built on this client follow at their
+    /// next request or reconnect, without being rebuilt.
+    public var baseURL: URL { base.withLock { $0 } }
+
+    public func updateBaseURL(_ url: URL) {
+        base.withLock { $0 = url }
     }
 
     // MARK: - Core
@@ -38,13 +48,13 @@ public final class APIClient: Sendable {
         var base = baseURL.absoluteString
         while base.hasSuffix("/") { base.removeLast() }
         guard var components = URLComponents(string: base + path) else {
-            throw .invalidConfiguration("Sunucu adresi geçersiz: \(baseURL.absoluteString)")
+            throw .invalidConfiguration("Adres geçersiz: \(baseURL.absoluteString)")
         }
         let items = query.compactMap { key, value in value.map { URLQueryItem(name: key, value: $0) } }
             .sorted { $0.name < $1.name }
         if !items.isEmpty { components.queryItems = items }
         guard let url = components.url, url.scheme == "http" || url.scheme == "https" else {
-            throw .invalidConfiguration("Sunucu adresi http ya da https olmalı: \(baseURL.absoluteString)")
+            throw .invalidConfiguration("Adres http ya da https olmalı: \(baseURL.absoluteString)")
         }
         return url
     }

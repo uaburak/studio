@@ -11,7 +11,11 @@ final class StartViewController: NSViewController {
     private var composerView: ComposerControlView!
     private var footerView: ComposerFooterControlView!
     private let errorBanner = InlineErrorBannerView()
+    /// "iPhone'u bağla" with the QR code, while no iPhone is paired (first run).
+    private(set) var pairingCard: PhonePairingCardView!
+    private let pairingContainer = ThemedView()
     private var observation: ObservationToken?
+    private var pairingObservation: ObservationToken?
     private var lastFocusRequest = 0
 
     init(app: AppModel) {
@@ -70,7 +74,22 @@ final class StartViewController: NSViewController {
         suggestionsRow.alignment = .centerY
         suggestionsRow.spacing = 6
 
-        let centerStack = NSStackView(views: [heading, composerGroup, errorBanner, suggestionsRow])
+        pairingCard = PhonePairingCardView(model: app.phonePairing, qrSize: 120)
+        pairingCard.onDismiss = { [weak app] in app?.phonePairingHintDismissed = true }
+        pairingContainer.backgroundColor = Theme.fill
+        pairingContainer.cornerRadius = Theme.cardRadius
+        pairingContainer.translatesAutoresizingMaskIntoConstraints = false
+        pairingContainer.addSubview(pairingCard)
+        NSLayoutConstraint.activate([
+            pairingCard.leadingAnchor.constraint(equalTo: pairingContainer.leadingAnchor, constant: 16),
+            pairingCard.trailingAnchor.constraint(equalTo: pairingContainer.trailingAnchor, constant: -16),
+            pairingCard.topAnchor.constraint(equalTo: pairingContainer.topAnchor, constant: 16),
+            pairingCard.bottomAnchor.constraint(equalTo: pairingContainer.bottomAnchor, constant: -16),
+        ])
+        pairingContainer.isHidden = true
+        pairingCard.isHidden = true
+
+        let centerStack = NSStackView(views: [heading, composerGroup, errorBanner, suggestionsRow, pairingContainer])
         centerStack.orientation = .vertical
         centerStack.alignment = .centerX
         centerStack.spacing = 24
@@ -93,6 +112,7 @@ final class StartViewController: NSViewController {
             composerView.widthAnchor.constraint(equalTo: composerGroup.widthAnchor),
             footerWrapper.widthAnchor.constraint(equalTo: composerGroup.widthAnchor),
             errorBanner.widthAnchor.constraint(lessThanOrEqualToConstant: 566),
+            pairingContainer.widthAnchor.constraint(equalTo: composerGroup.widthAnchor),
         ])
 
         self.view = root
@@ -103,6 +123,8 @@ final class StartViewController: NSViewController {
         app.newChat.updatePlaceholder()
         lastFocusRequest = app.newChat.focusRequest
 
+        app.phonePairing.startWatching()
+        pairingObservation = observe { [weak self] in self?.renderPairingCard() }
         observation = observe { [weak self] in
             guard let self else { return }
             _ = self.app.currentBrandId
@@ -132,6 +154,17 @@ final class StartViewController: NSViewController {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
             self?.app.newChat.composer.bridge?.focus()
         }
+    }
+
+    /// Shown on the empty start screen until the first iPhone is paired (or "Sonra"); it stays
+    /// for its "bağlandı" moment after the phone paired.
+    private func renderPairingCard() {
+        let pairing = app.phonePairing
+        var justPaired = false
+        if case .paired = pairing.phase { justPaired = !pairingCard.isHidden }
+        let show = !app.isSample && !app.phonePairingHintDismissed && (pairing.needsFirstPhone || justPaired)
+        pairingContainer.isHidden = !show
+        pairingCard.isHidden = !show
     }
 
     private func prefill(_ suggestion: String) {

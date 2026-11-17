@@ -240,7 +240,7 @@ final class ChatViewController: NSViewController {
             var views: [NSView] = [spinner]
             if key.connectionTrouble {
                 let note = NSTextField.styledLabel(
-                    "Sohbete bağlanılamıyor; yeniden deneniyor. Mac sunucusu kapalı olabilir.",
+                    "Sohbete bağlanılamıyor; yeniden deneniyor. Studio'nun arka planı kapalı olabilir.",
                     font: Theme.captionFont, color: Theme.textSecondary
                 )
                 views.append(note)

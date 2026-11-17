@@ -30,7 +30,8 @@ struct IOSModelTests {
         #expect(app.brands.count == 4)
         #expect(app.currentBrandId == SampleData.mtm)
         #expect(app.pendingRoute == nil)
-        #expect(app.connection == .online || app.connection == .connecting)
+        #expect(app.connection == .connected)
+        #expect(app.connection.title == "Mac'e bağlı")
 
         app.selectBrand("b-koc")
         #expect(app.currentBrandId == "b-koc")
@@ -49,8 +50,11 @@ struct IOSModelTests {
         app.settings.credentialChanged()
         #expect(app.settings.savedCredential?.serverName == "Burak MacBook Pro")
         #expect(app.settings.makeClient().baseURL.absoluteString == "http://192.168.1.25:8791")
+        // Gelişmiş → "Ek uzak adres" is one more address to try, not a switch away from the Mac's own.
+        #expect(app.settings.manualRemoteURL == nil)
         app.settings.useRemoteControlURL = true
-        #expect(app.settings.makeClient().baseURL.absoluteString == "https://social.burakkoc.net")
+        #expect(app.settings.manualRemoteURL?.absoluteString == "https://social.burakkoc.net")
+        #expect(app.settings.makeClient().baseURL.absoluteString == "http://192.168.1.25:8791")
         app.settings.forgetPairing()
         #expect(app.settings.savedCredential == nil)
 

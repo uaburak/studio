@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import Network
 import Security
 import StudioKit
 
@@ -55,6 +56,12 @@ final class LocalHost {
     private(set) var tunnelNote: String?
     /// Last lines of the log that explains the current error.
     private(set) var errorLog = ""
+    /// Id of this Mac's host (`HealthResponse.instance`); phones use it to tell this Mac from others.
+    private(set) var instance: String?
+    /// `https://<hostname>` while the Remote Control tunnel is configured and supervised.
+    private(set) var tunnelURL: URL?
+    /// Bumped each time the routes were published to the API (the pairing pane re-reads them).
+    private(set) var routesRevision = 0
     /// Called when the API address changes (the app rebuilds its client).
     var onAPIURLChange: ((URL?) -> Void)?
 
@@ -73,6 +80,10 @@ final class LocalHost {
     private let advertiser = BonjourAdvertiser()
     private var attachMonitor: Task<Void, Never>?
     private var startTask: Task<Void, Never>?
+    private var pathMonitor: NWPathMonitor?
+    private var publishedAddresses: [String]?
+    /// The Mac's name, read once per start (it is also the Bonjour service name).
+    private var macName = ""
 
     init(stateDirectory: URL = HostEnvironment.stateDirectory,
          launcher: any ProcessLauncher = PosixProcessLauncher(),
@@ -119,6 +130,9 @@ final class LocalHost {
         }
         attachMonitor?.cancel()
         attachMonitor = nil
+        pathMonitor?.cancel()
+        pathMonitor = nil
+        publishedAddresses = nil
         advertiser.stop()
         for service in [Service.tunnel, .worker, .gateway, .api] {
             if let supervisor = supervisors[service] { await supervisor.stop() }
@@ -126,6 +140,7 @@ final class LocalHost {
         supervisors = [:]
         phases = [:]
         tunnelNote = nil
+        tunnelURL = nil
         if status != .stopped { status = .stopped }
     }
 
@@ -154,6 +169,8 @@ final class LocalHost {
             return fail("Durum klasörü oluşturulamadı: \(error.localizedDescription)")
         }
         let instance = instanceId()
+        self.instance = instance
+        macName = BonjourAdvertiser.computerName
 
         // 1. Attach to our own running copy (another app instance or crash leftovers).
         let lastPort = (try? JSONDecoder().decode(HostFile.self, from: Data(contentsOf: hostFile)))?.apiPort
@@ -181,7 +198,7 @@ final class LocalHost {
         let gatewayScript = apiDir.appending(path: "scripts/lan-gateway.mjs")
         for required in [wrangler, gatewayScript, workerDir.appending(path: "node_modules/tsx"), workerDir.appending(path: "src/main.ts")]
         where !fm.fileExists(atPath: required.path) {
-            return fail("Depo klasörü eksik ya da `pnpm install` yapılmamış: \(required.path) yok. Ayarlar → Mac sunucusu → Depo klasörü.")
+            return fail("Depo klasörü eksik ya da `pnpm install` yapılmamış: \(required.path) yok. Ayarlar → Gelişmiş → Depo klasörü.")
         }
 
         // Privacy protection: the children count as this app, and without a Desktop/Documents
@@ -288,7 +305,7 @@ final class LocalHost {
             env["STUDIO_API_PORT"] = String(api)
             supervise(.gateway, ProcessSpec(name: "gateway", executable: node, arguments: [gatewayScript.path],
                                             environment: env, workingDirectory: apiDir, logFile: logFile("gateway")))
-            advertiser.start(name: BonjourAdvertiser.computerName, port: lan)
+            advertiser.start(name: macName, port: lan, macId: instance)
         } else if let tunnelGateway {
             var env = base
             env["STUDIO_GATEWAY_HOST"] = "127.0.0.1"
@@ -324,6 +341,7 @@ final class LocalHost {
                 tunnelNote = "Tünel için geçit başlatılamadı."
                 status = .running
                 onAPIURLChange?(apiURL)
+                startNetworkMonitor()
                 return
             }
             let localTargetURL = "http://127.0.0.1:\(targetPort)"
@@ -339,6 +357,7 @@ final class LocalHost {
                         environment: tunnelEnv, workingDirectory: stateDirectory, logFile: logFile("tunnel")
                     ))
                     tunnelNote = "Aktif hedef: https://\(cleanHost) → \(localTargetURL)"
+                    tunnelURL = URL(string: "https://\(cleanHost)")
                 } else {
                     let cfDir = URL(fileURLWithPath: NSHomeDirectory()).appending(path: ".cloudflared")
                     if FileManager.default.fileExists(atPath: cfDir.appending(path: "cert.pem").path), !cleanHost.isEmpty {
@@ -348,17 +367,70 @@ final class LocalHost {
                             environment: base, workingDirectory: stateDirectory, logFile: logFile("tunnel")
                         ))
                         tunnelNote = "Adlandırılmış tünel çalışıyor: https://\(cleanHost) → \(localTargetURL)"
+                        tunnelURL = URL(string: "https://\(cleanHost)")
                     } else {
                         tunnelNote = "CLOUDFLARE_TUNNEL_TOKEN girilmedi. Cloudflare Zero Trust panelinden tünel anahtarını yapıştırıp Kaydet'e tıkla."
                     }
                 }
             } else {
-                tunnelNote = "cloudflared bulunamadı (`brew install cloudflared` ile kurup Mac sunucusunu yeniden başlat)."
+                tunnelNote = "cloudflared bulunamadı (`brew install cloudflared` ile kurup Studio'yu yeniden başlat)."
             }
         }
 
         status = .running
         onAPIURLChange?(apiURL)
+        startNetworkMonitor()
+    }
+
+    // MARK: Routes for phones
+
+    /// Where phones can reach this Mac right now (nil unless this app runs the server).
+    var routes: MacRoutes? {
+        guard status == .running else { return nil }
+        let lan = lanPort == nil ? [] : Array(HostEnvironment.lanAddresses().prefix(8))
+        let name = macName.isEmpty ? BonjourAdvertiser.computerName : macName
+        return MacRoutes(
+            macName: String(name.prefix(120)), macId: instance, lanAddresses: lan, lanPort: lanPort,
+            bonjourName: advertiser.isAdvertising ? String(name.prefix(63)) : nil, tunnelUrl: tunnelURL)
+    }
+
+    /// Tell the API where phones can reach this Mac (`PUT /api/pairing/routes`); paired phones
+    /// pick it up at their next connect. Quietly does nothing when the API does not answer.
+    func publishRoutes() async {
+        guard let routes, let apiURL else { return }
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.timeoutIntervalForRequest = 5
+        let session = URLSession(configuration: configuration)
+        defer { session.finishTasksAndInvalidate() }
+        if (try? await APIClient(baseURL: apiURL, session: session).publishMacRoutes(routes)) != nil {
+            publishedAddresses = routes.lanAddresses
+            routesRevision += 1
+        }
+    }
+
+    /// Wi-Fi changes (new DHCP address, another network): advertise the new addresses with
+    /// Bonjour and publish them, so phones follow without the owner doing anything.
+    private func startNetworkMonitor() {
+        pathMonitor?.cancel()
+        let monitor = NWPathMonitor()
+        monitor.pathUpdateHandler = { [weak self] _ in
+            Task { @MainActor [weak self] in
+                // Addresses arrive a moment after the path changes.
+                try? await Task.sleep(for: .seconds(2))
+                await self?.networkChanged()
+            }
+        }
+        monitor.start(queue: .global(qos: .utility))
+        pathMonitor = monitor
+        Task { await publishRoutes() }
+    }
+
+    private func networkChanged() async {
+        guard status == .running, let routes, routes.lanAddresses != publishedAddresses else { return }
+        if let lanPort, advertiser.isAdvertising {
+            advertiser.start(name: macName, port: lanPort, macId: instance)
+        }
+        await publishRoutes()
     }
 
     static func migrationTimeoutMessage(seconds: Int64, repo: URL) -> String {

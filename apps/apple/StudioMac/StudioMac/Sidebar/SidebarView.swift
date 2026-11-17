@@ -162,12 +162,22 @@ enum SidebarRows {
 
 /// Footer text: who is working and on which brand.
 enum SidebarFooter {
-    static let userName = "Burak"
-    static var initial: String { String(userName.prefix(1)) }
+    /// When neither "Adın" nor the Claude account gives a name.
+    static let fallbackName = "Studio"
 
-    static func title(brandName: String?) -> String {
-        guard let brandName, !brandName.isEmpty else { return userName }
-        return "\(userName) · \(brandName)"
+    static func name(_ owner: String?) -> String {
+        let trimmed = owner?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? fallbackName : trimmed
+    }
+
+    static func initial(_ owner: String?) -> String {
+        String(name(owner).prefix(1)).uppercased(with: Locale(identifier: "tr_TR"))
+    }
+
+    static func title(owner: String?, brandName: String?) -> String {
+        let name = name(owner)
+        guard let brandName, !brandName.isEmpty else { return name }
+        return "\(name) · \(brandName)"
     }
 }
 
@@ -749,6 +759,7 @@ private final class SidebarFooterView: NSView {
     private unowned let app: AppModel
     private unowned let settings: AppSettings
     private let nameLabel = NSTextField(labelWithString: "")
+    private let initialLabel = NSTextField(labelWithString: "")
     private let statusDot = StatusDotView(color: Theme.textTertiary, size: 6)
     private let statusLabel = NSTextField(labelWithString: "")
     private let profileControl: SidebarMenuTrigger
@@ -766,7 +777,9 @@ private final class SidebarFooterView: NSView {
         avatar.translatesAutoresizingMaskIntoConstraints = false
         avatar.backgroundColor = Theme.ink
         avatar.cornerRadius = 12
-        let initial = NSTextField.styledLabel(SidebarFooter.initial, font: NSFont.systemFont(ofSize: 11, weight: .semibold), color: Theme.canvas)
+        initialLabel.font = NSFont.systemFont(ofSize: 11, weight: .semibold)
+        initialLabel.textColor = Theme.canvas
+        let initial = initialLabel
         initial.translatesAutoresizingMaskIntoConstraints = false
         avatar.addSubview(initial)
         NSLayoutConstraint.activate([
@@ -806,7 +819,7 @@ private final class SidebarFooterView: NSView {
         nameColumn.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
         profileControl.onClick = { [weak self] anchor in self?.showMenu(from: anchor) }
-        profileControl.toolTip = "Marka, Mac sunucusu, görünüm ve ayarlar"
+        profileControl.toolTip = "Marka, durum, görünüm ve ayarlar"
         profileControl.setAccessibilityRole(.popUpButton)
         let profileStack = NSStackView(views: [avatar, nameColumn])
         profileStack.orientation = .horizontal
@@ -852,7 +865,8 @@ private final class SidebarFooterView: NSView {
 
     /// Name + working brand, and the Mac server status (accent only when it waits on the owner).
     private func sync() {
-        let title = SidebarFooter.title(brandName: app.brand(app.currentBrandId)?.name)
+        let title = SidebarFooter.title(owner: app.ownerName, brandName: app.brand(app.currentBrandId)?.name)
+        initialLabel.stringValue = SidebarFooter.initial(app.ownerName)
         nameLabel.stringValue = title
         let status = app.serverStatus
         statusLabel.stringValue = status.text
@@ -880,7 +894,7 @@ private final class SidebarFooterView: NSView {
         }
 
         menu.addItem(.separator())
-        let statusItem = NSMenuItem(title: "Mac sunucusu: \(app.serverStatus.text)", action: nil, keyEquivalent: "")
+        let statusItem = NSMenuItem(title: "Durum: \(app.serverStatus.text)", action: nil, keyEquivalent: "")
         statusItem.isEnabled = false
         menu.addItem(statusItem)
         if let issue = app.connectionIssue {
@@ -898,6 +912,7 @@ private final class SidebarFooterView: NSView {
             menu.addItem(item)
         }
         menu.addItem(.separator())
+        menu.addItem(ClosureMenuItem(title: "iPhone'u bağla…") { [weak app] in app?.openSettings(.devices) })
         menu.addItem(ClosureMenuItem(title: "Ayarlar…") { [weak app] in app?.openSettings() })
         menu.popUp(positioning: nil, at: NSPoint(x: 0, y: anchor.bounds.height + 4), in: anchor)
     }

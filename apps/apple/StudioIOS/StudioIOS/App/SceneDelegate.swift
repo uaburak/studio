@@ -30,10 +30,20 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
            let route = IOSNotifier.route(from: response.notification.request.content.userInfo) {
             model.open(route)
         }
+        // Opened from a scanned `studio://pair` link (the system Camera app).
+        if let url = connectionOptions.urlContexts.first?.url {
+            model.openLink(url)
+        }
 
         if !AppDelegate.isUnderTest {
             Task { @MainActor in await model.load() }
         }
+    }
+
+    /// `studio://pair?...` while running: pair with that Mac.
+    func scene(_ scene: UIScene, openURLContexts URLContexts: Set<UIOpenURLContext>) {
+        guard let url = URLContexts.first?.url else { return }
+        model?.openLink(url)
     }
 
     func sceneDidBecomeActive(_ scene: UIScene) {

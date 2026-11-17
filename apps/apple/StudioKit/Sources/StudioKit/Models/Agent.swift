@@ -156,11 +156,14 @@ public struct ClaudeAccount: Codable, Sendable, Hashable {
     public var cliVersion: String?
     public var loginUrl: String?
     public var detail: String?
+    /// First name from Claude Code's local profile on the Mac (`~/.claude.json`); the apps greet
+    /// with it unless the owner typed a name. Nil from older workers or when signed out.
+    public var displayName: String?
     public var checkedAt: Date
 
     public init(
         status: ClaudeAccountStatus, email: String? = nil, plan: String? = nil, cliVersion: String? = nil,
-        loginUrl: String? = nil, detail: String? = nil, checkedAt: Date
+        loginUrl: String? = nil, detail: String? = nil, displayName: String? = nil, checkedAt: Date
     ) {
         self.status = status
         self.email = email
@@ -168,7 +171,14 @@ public struct ClaudeAccount: Codable, Sendable, Hashable {
         self.cliVersion = cliVersion
         self.loginUrl = loginUrl
         self.detail = detail
+        self.displayName = displayName
         self.checkedAt = checkedAt
+    }
+
+    /// The greeting name the Mac reported, cleaned (nil when absent or blank).
+    public var greetingName: String? {
+        guard status == .signedIn, let name = displayName?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty else { return nil }
+        return name
     }
 }
 

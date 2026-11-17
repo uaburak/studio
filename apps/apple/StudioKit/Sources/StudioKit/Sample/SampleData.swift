@@ -264,6 +264,7 @@ public struct SampleData: Sendable {
                 plan: "Claude Max",
                 cliVersion: "1.0.24",
                 detail: "Giriş yapıldı · Claude Max",
+                displayName: "Burak",
                 checkedAt: ago(1)
             ),
             gemini: GeminiAccount(

@@ -12,6 +12,8 @@ public struct DiscoveredStudio: Sendable, Hashable, Identifiable {
     public var apiVersion: String?
     /// TXT `pairing`: "required" when a device token is needed.
     public var pairingRequired: Bool
+    /// TXT `id`: the Mac host id (`HealthResponse.instance`), when advertised.
+    public var macId: String?
     public var endpoint: NWEndpoint
     /// `http://<ipv4>:<port>` candidates from TXT `addr` / `port` (fallback when resolving fails).
     public var advertisedURLs: [URL]
@@ -20,12 +22,19 @@ public struct DiscoveredStudio: Sendable, Hashable, Identifiable {
 
     public var isSupported: Bool { apiVersion == StudioBrowser.supportedAPIVersion }
 
+    /// Whether this result is the paired Mac: the same host id when both are known, else the same name.
+    public func matches(macId: String?, names: [String]) -> Bool {
+        if let macId, let own = self.macId { return macId == own }
+        return names.contains { !$0.isEmpty && ($0 == displayName || $0 == serviceName) }
+    }
+
     /// Build from a Bonjour TXT record (missing keys fall back to safe values).
     public init(serviceName: String, txt: [String: String], endpoint: NWEndpoint) {
         self.serviceName = serviceName
         displayName = txt["name"].flatMap { $0.isEmpty ? nil : $0 } ?? serviceName
         apiVersion = txt["api"]
         pairingRequired = txt["pairing"] != "none"
+        macId = txt["id"].flatMap { $0.isEmpty ? nil : $0 }
         self.endpoint = endpoint
         if let port = txt["port"].flatMap(Int.init), (1...65535).contains(port) {
             advertisedURLs = (txt["addr"] ?? "").split(separator: ",")
@@ -87,6 +96,33 @@ public final class StudioBrowser: Sendable {
             return url
         }
         throw lastError
+    }
+
+    /// Look for the paired Mac on this network for up to `timeout` and return the addresses to
+    /// try: the resolved Bonjour endpoint first, then the addresses its TXT record lists.
+    /// Empty when it is not found (other network, Studio closed, no local network permission).
+    public static func locate(macId: String?, names: [String], timeout: Duration = .seconds(3)) async -> [URL] {
+        let browser = StudioBrowser()
+        let found: DiscoveredStudio? = await withTaskGroup(of: DiscoveredStudio?.self) { group in
+            group.addTask {
+                for await list in browser.results() {
+                    if let match = list.first(where: { $0.matches(macId: macId, names: names) }) { return match }
+                }
+                return nil
+            }
+            group.addTask {
+                try? await Task.sleep(for: timeout)
+                return nil
+            }
+            let first = await group.next() ?? nil
+            group.cancelAll()
+            return first
+        }
+        guard let found else { return [] }
+        var urls: [URL] = []
+        if let resolved = try? await resolve(found.endpoint, timeout: timeout) { urls.append(resolved) }
+        for url in found.advertisedURLs where !urls.contains(url) { urls.append(url) }
+        return urls
     }
 
     /// True when `<url>/api/health` answers 200 within a few seconds.

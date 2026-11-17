@@ -146,7 +146,7 @@ public final class PostEditSession {
         if !isViewingCurrentVersion { return "Eski bir sürümü görüntülüyorsun; önce güncel sürüme dön ya da bu sürümü geri yükle." }
         if content.currentVersion == nil { return "Henüz bir sürüm yok." }
         if card.version == nil { return "Sürüm yükleniyor." }
-        if card.approvableHash == nil { return "Gösterilen sürüm sunucudakiyle eşleşmiyor; yenile." }
+        if card.approvableHash == nil { return "Gösterilen sürüm Mac'tekiyle eşleşmiyor; yenile." }
         return nil
     }
 

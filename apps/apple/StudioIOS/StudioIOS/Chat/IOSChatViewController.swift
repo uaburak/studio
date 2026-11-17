@@ -307,23 +307,24 @@ final class IOSChatViewController: UIViewController, UITableViewDelegate {
         let brandTitle = app.currentBrand?.name ?? (app.brands.isEmpty ? "Marka yok" : "Marka seç")
         var detail: String?
         var action: (title: String, primary: Bool, run: () -> Void)?
-        switch app.connection {
+        let connection = app.connection
+        switch connection {
         case .notPaired:
-            detail = "Studio Mac'te çalışır. Aynı Wi-Fi'deki Mac'i 6 haneli kodla eşleştir."
-            action = ("Eşleştir", true, { [weak self] in self?.app.open(.settings) })
-        case .unreachable(let message):
-            detail = "Mac'e ulaşılamıyor. \(message)"
-            action = ("Yeniden dene", false, { [weak self] in
+            detail = "Studio Mac'inde çalışır. Mac'teki QR kodu okutarak iPhone'u bağla."
+            action = (MacLinkAction.pair.title, true, { [weak self] in self?.app.open(.pair) })
+        case .unreachable(let reason, let linkAction):
+            detail = "\(connection.title). \(reason)"
+            action = (linkAction.title, linkAction == .repair, { [weak self] in
                 guard let self else { return }
-                Task { await self.app.load() }
+                if linkAction == .repair { self.app.open(.pair) } else { self.app.retryConnection() }
             })
-        case .macOffline:
-            detail = "Mac çevrimdışı; mesajın Mac açılınca yanıtlanır."
-        case .connecting, .online:
+        case .connected:
+            detail = app.isMacIdle ? "Mac'e bağlı; Studio şu an iş almıyor, mesajın sonra yanıtlanır." : nil
+        case .connecting:
             detail = nil
         }
         home.configure(
-            greeting: StudioGreeting.text(at: Date(), name: app.settings.greetingName),
+            greeting: StudioGreeting.text(at: Date(), name: app.greetingName),
             brandTitle: model.isNew ? brandTitle : (app.brand(model.brandId)?.name ?? brandTitle),
             brandMenu: model.isNew ? UIMenu(children: [UIDeferredMenuElement.uncached { [weak self] completion in
                 guard let self else { return completion([]) }

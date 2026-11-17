@@ -160,10 +160,10 @@ extension StudioDataService {
     }
     public func publishLogs(brandId: EntityID?, finishedAfter: Date?) async throws -> [PublishLogFeedItem] { [] }
     public func exchangeMeta(_ input: MetaExchangeInput) async throws -> MetaExchangeResult {
-        throw StudioAPIError.invalidConfiguration("Hesap bağlama yalnızca Mac sunucusuyla çalışır.")
+        throw StudioAPIError.invalidConfiguration("Hesap bağlama yalnızca Mac'te çalışan Studio ile yapılır.")
     }
     public func linkedInOAuth(_ input: LinkedInOAuthInput) async throws -> SocialAccount {
-        throw StudioAPIError.invalidConfiguration("Hesap bağlama yalnızca Mac sunucusuyla çalışır.")
+        throw StudioAPIError.invalidConfiguration("Hesap bağlama yalnızca Mac'te çalışan Studio ile yapılır.")
     }
     public func checkSocialAccount(id: EntityID, _ input: SocialAccountCheckInput) async throws -> SocialAccount {
         try await checkSocialAccountToken(id: id)

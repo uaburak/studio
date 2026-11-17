@@ -738,7 +738,10 @@ export const devices = sqliteTable(
   ],
 );
 
-/** Single-use codes; creating a new one invalidates the unused ones. */
+/**
+ * Single-use pairing offers: a 6-digit code and (since QR pairing) a long QR secret that
+ * unlock the same claim. Creating a new offer invalidates the unused ones.
+ */
 export const pairingCodes = sqliteTable(
   "pairing_codes",
   {
@@ -746,12 +749,18 @@ export const pairingCodes = sqliteTable(
     /** Hex SHA-256 of the 6-digit code. */
     codeHash: text("code_hash").notNull(),
     expiresAt: integer("expires_at", { mode: "timestamp_ms" }).notNull(),
-    /** Set when claimed or superseded; a used code never works again. */
+    /** Hex SHA-256 of the QR secret (null for offers made before QR pairing). */
+    secretHash: text("secret_hash"),
+    secretExpiresAt: integer("secret_expires_at", { mode: "timestamp_ms" }),
+    /** Set when claimed or superseded; a used offer never works again (code or secret). */
     usedAt: integer("used_at", { mode: "timestamp_ms" }),
     deviceId: text("device_id").references(() => devices.id, { onDelete: "set null" }),
     createdAt: createdAt(),
   },
-  (t) => [index("pairing_codes_hash_idx").on(t.codeHash)],
+  (t) => [
+    index("pairing_codes_hash_idx").on(t.codeHash),
+    index("pairing_codes_secret_idx").on(t.secretHash),
+  ],
 );
 
 /** Failed claims, for rate limiting (per client address and in total). */

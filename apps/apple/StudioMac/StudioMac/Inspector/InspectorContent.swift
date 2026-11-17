@@ -83,7 +83,7 @@ enum InspectorContent {
     ) -> [PanelRow] {
         if isSample {
             return [
-                PanelRow(label: "Mac sunucusu", value: "Örnek veri", tone: .muted, help: "Örnek verilerle açıldı; sunucu ayarları bu oturumda kullanılmıyor."),
+                PanelRow(label: "Arka plan", value: "Örnek veri", tone: .muted, help: "Örnek verilerle açıldı; arka plan bu oturumda kullanılmıyor."),
                 worker(presence),
             ]
         }
@@ -99,7 +99,7 @@ enum InspectorContent {
     }
 
     private static func server(host: HostSnapshot?, serverURL: URL?) -> PanelRow {
-        let label = "Mac sunucusu"
+        let label = "Arka plan"
         guard let host else {
             let address = serverURL?.host ?? "—"
             return PanelRow(label: label, value: "Harici · \(address)", tone: .normal, help: serverURL?.absoluteString)
@@ -108,13 +108,13 @@ enum InspectorContent {
         case .running:
             return PanelRow(label: label, value: "Çalışıyor", help: host.apiURL?.absoluteString)
         case .attached:
-            return PanelRow(label: label, value: "Bağlandı", help: "Bu Mac'te zaten çalışan Studio sunucusuna bağlandı.")
+            return PanelRow(label: label, value: "Bağlandı", help: "Bu Mac'te zaten çalışan Studio'ya bağlandı.")
         case .starting(let step):
             return PanelRow(label: label, value: "Başlatılıyor", tone: .muted, help: "\(step)…")
         case .error(let message):
             return PanelRow(label: label, value: "Hata", tone: .attention, help: message)
         case .stopped:
-            return PanelRow(label: label, value: "Durdu", tone: .attention, help: "Ayarlar → Mac sunucusu'ndan başlat.")
+            return PanelRow(label: label, value: "Durdu", tone: .attention, help: "Ayarlar → Gelişmiş'ten başlat.")
         }
     }
 
@@ -179,7 +179,7 @@ enum InspectorContent {
         case .failed(let message)?:
             return PanelRow(label: label, value: "Hata", tone: .attention, help: message)
         case .idle?, .stopped?, nil:
-            return PanelRow(label: label, value: "Kurulum gerekli", tone: .attention, help: host.tunnelNote ?? "Ayarlar → Mac sunucusu → Uzaktan erişim.")
+            return PanelRow(label: label, value: "Kurulum gerekli", tone: .attention, help: host.tunnelNote ?? "Ayarlar → Gelişmiş → Uzaktan erişim.")
         }
     }
 

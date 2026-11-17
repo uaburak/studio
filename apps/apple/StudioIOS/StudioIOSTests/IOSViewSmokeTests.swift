@@ -114,6 +114,9 @@ struct IOSViewSmokeTests {
         await exercise(BrandsViewController(app: app))
         await exercise(BrandProfileViewController(app: app, brandId: SampleData.mtm))
         await exercise(PairingSheetViewController(app: app, baseURL: URL(string: "http://192.168.1.10:8791"), serverName: "Mac") {})
+        await exercise(PairingSheetViewController(app: app) {})
+        await exercise(IOSAdvancedConnectionViewController(app: app))
+        await exercise(PairingScannerViewController(app: app))
         await exercise(TextReaderViewController(title: "DESIGN.md", text: "# Başlık\n\nMetin"))
     }
 }

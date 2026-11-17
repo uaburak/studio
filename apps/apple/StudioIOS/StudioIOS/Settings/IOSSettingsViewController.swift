@@ -2,23 +2,22 @@ import StudioKit
 import UIKit
 import UserNotifications
 
-/// Ayarlar: the paired Mac (status, address, rediscovery, forget), pairing with Macs found
-/// on Wi-Fi, remote access, AI status and usage, brands, notifications, appearance, devices.
+/// Ayarlar: the Mac connection in plain words (one state, one action), AI status and usage,
+/// brands, notifications, appearance, the greeting name, and "Gelişmiş" for the technical
+/// details (addresses, extra remote address, manual pairing).
 final class IOSSettingsViewController: UITableViewController {
     private enum Section: Int, CaseIterable {
-        case mac, pairing, remote, ai, brands, notifications, appearance, greeting, device, about
+        case mac, ai, brands, notifications, appearance, greeting, advanced, about
 
         var title: String? {
             switch self {
-            case .mac: "Bu Mac"
-            case .pairing: "Eşleştirme"
-            case .remote: "Uzaktan erişim"
+            case .mac: "Mac"
             case .ai: "Yapay zekâ"
             case .brands: nil
             case .notifications: "Bildirimler"
             case .appearance: "Görünüm"
             case .greeting: "Karşılama"
-            case .device: "Bu iPhone"
+            case .advanced: nil
             case .about: nil
             }
         }
@@ -40,10 +39,11 @@ final class IOSSettingsViewController: UITableViewController {
     }
 
     private unowned let app: IOSAppModel
-    private var discovered: [DiscoveredStudio] = []
-    private var bonjourTask: Task<Void, Never>?
     private var observation: IOSObservationToken?
     private var rows: [Section: [Row]] = [:]
+
+    /// Titles of the Mac section's rows (tests).
+    var macRowTitles: [String] { rows[.mac]?.map(\.title) ?? [] }
 
     init(app: IOSAppModel) {
         self.app = app
@@ -52,8 +52,6 @@ final class IOSSettingsViewController: UITableViewController {
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
-
-    deinit { bonjourTask?.cancel() }
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -74,27 +72,7 @@ final class IOSSettingsViewController: UITableViewController {
 
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
-        startBonjour()
         Task { await app.notifier.refreshAuthorization() }
-    }
-
-    override func viewWillDisappear(_ animated: Bool) {
-        super.viewWillDisappear(animated)
-        bonjourTask?.cancel()
-        bonjourTask = nil
-    }
-
-    private func startBonjour() {
-        guard !app.isSample else { return }
-        bonjourTask?.cancel()
-        let browser = StudioBrowser()
-        bonjourTask = Task { @MainActor [weak self] in
-            for await list in browser.results() {
-                guard let self, !Task.isCancelled else { return }
-                self.discovered = list
-                self.rebuild()
-            }
-        }
     }
 
     // MARK: Model -> rows
@@ -105,77 +83,41 @@ final class IOSSettingsViewController: UITableViewController {
         let credential = settings.savedCredential
         var rows: [Section: [Row]] = [:]
 
-        // Mac
+        // Mac: one plain state and one action.
         var mac: [Row] = []
+        let connection = app.connection
         if app.isSample {
             mac.append(Row(title: "Örnek veri", detail: "-StudioSampleData YES ile açıldı", icon: "testtube.2"))
         } else if let credential {
-            let address = settings.useRemoteControlURL ? (settings.remoteURL?.absoluteString ?? "—") : credential.serverURL.absoluteString
-            mac.append(Row(title: credential.serverName, detail: address, icon: "laptopcomputer"))
-        } else {
-            mac.append(Row(title: "Eşleşmiş Mac yok", detail: "Aşağıdan aynı Wi-Fi'deki Mac'i seç", icon: "laptopcomputer.slash", tint: IOSTheme.accent))
-        }
-        let connection = app.connection
-        var connectionDetail = AssistantStatus.macLine(presence)
-        if case .unreachable(let message) = connection { connectionDetail = message }
-        mac.append(Row(title: connection.label, detail: connectionDetail, icon: "circle.fill", tint: connection == .online ? IOSTheme.accent : IOSTheme.textTertiary))
-        if credential != nil || app.isSample {
+            var detail = connection.title
+            if let reason = connection.reason { detail += " · \(reason)" }
+            if connection.isConnected, app.isMacIdle { detail += " · Studio şu an iş almıyor" }
+            mac.append(Row(title: credential.serverName, detail: detail, icon: "laptopcomputer", tint: connection.isConnected ? IOSTheme.accent : IOSTheme.textTertiary))
+            if let action = connection.action {
+                mac.append(Row(title: action.title, icon: action == .repair ? "qrcode.viewfinder" : "arrow.clockwise", tint: IOSTheme.accent) { [weak self] in
+                    self?.perform(action)
+                })
+            }
             mac.append(Row(title: "Mac durumu ve işler", detail: jobsSummary(), icon: "list.bullet.rectangle", accessory: .disclosureIndicator) { [weak self] in
                 guard let self else { return }
                 self.navigationController?.pushViewController(JobsViewController(app: self.app), animated: true)
             })
-            mac.append(Row(title: "Yeniden bağlan", icon: "arrow.clockwise") { [weak self] in
+            mac.append(Row(title: "Bağlantıyı kaldır", icon: "minus.circle", tint: IOSTheme.accent, destructive: true) { [weak self] in
                 guard let self else { return }
-                Task {
-                    if await self.app.rediscoverPairedMac() == false { self.app.reconnect() }
-                    Toast.show("Mac aranıyor…", in: self.view)
+                self.confirm("Bağlantı kaldırılsın mı?", message: "Bu iPhone Mac'i unutur. Yeniden bağlamak için Mac'teki QR kodu okutman yeter.", action: "Kaldır") {
+                    self.app.forgetMac()
                 }
+            })
+        } else {
+            mac.append(Row(title: connection.title, detail: "Studio Mac'inde çalışır. Mac'teki QR kodu okutarak bağla.", icon: "laptopcomputer.slash"))
+            mac.append(Row(title: MacLinkAction.pair.title, icon: "qrcode.viewfinder", tint: IOSTheme.accent) { [weak self] in
+                self?.app.open(.pair)
+            })
+            mac.append(Row(title: "Kodu elle gir", icon: "keyboard", accessory: .disclosureIndicator) { [weak self] in
+                self?.openCodeEntry()
             })
         }
         rows[.mac] = mac
-
-        // Pairing
-        var pairing: [Row] = []
-        for studio in discovered {
-            let isPaired = studio.displayName == credential?.serverName || studio.serviceName == credential?.serverName
-            pairing.append(Row(title: studio.displayName, detail: isPaired ? "Eşleşmiş" : "Eşleştirmek için dokun", icon: "wifi", accessory: isPaired ? .checkmark : .disclosureIndicator) { [weak self] in
-                self?.pair(with: studio)
-            })
-        }
-        if discovered.isEmpty && !app.isSample {
-            pairing.append(Row(title: "Aynı Wi-Fi'de Mac aranıyor…", detail: "Mac'te Studio açık ve Mac sunucusu çalışıyor olmalı", icon: "antenna.radiowaves.left.and.right"))
-        }
-        pairing.append(Row(title: "Adres ve kodu elle gir…", icon: "keyboard", accessory: .disclosureIndicator) { [weak self] in
-            self?.openPairingSheet(baseURL: nil, serverName: "Studio Mac")
-        })
-        if credential != nil {
-            pairing.append(Row(title: "Eşleştirmeyi kaldır", icon: "minus.circle", tint: IOSTheme.accent, destructive: true) { [weak self] in
-                guard let self else { return }
-                self.confirm("Eşleştirme kaldırılsın mı?", message: "Bu iPhone'daki anahtar silinir. Mac'te de Ayarlar → Cihazlar'dan kaldırabilirsin.", action: "Kaldır") {
-                    self.app.settings.forgetPairing()
-                    self.app.reconnect()
-                }
-            })
-        }
-        rows[.pairing] = pairing
-
-        // Remote
-        rows[.remote] = [
-            Row(title: "Ev dışından bağlan", detail: "Remote Control tüneli (Cloudflare)", icon: "globe", toggle: settings.useRemoteControlURL) { [weak self] on in
-                guard let self else { return }
-                self.app.settings.useRemoteControlURL = on
-                self.app.reconnect()
-            },
-            Row(title: "Uzak adres", detail: settings.remoteURLString, icon: "link", accessory: .disclosureIndicator) { [weak self] in
-                guard let self else { return }
-                self.prompt("Uzak adres", message: "Mac'teki Uzaktan Erişim adresi.", text: self.app.settings.remoteURLString, placeholder: IOSAppSettings.defaultRemoteURLString, keyboard: .URL) { text in
-                    let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-                    self.app.settings.remoteURLString = trimmed.isEmpty ? IOSAppSettings.defaultRemoteURLString : trimmed
-                    if self.app.settings.remoteURL == nil { self.presentError("Geçerli bir https:// adresi gir.") }
-                    if self.app.settings.useRemoteControlURL { self.app.reconnect() }
-                }
-            },
-        ]
 
         // AI
         var ai: [Row] = [
@@ -235,20 +177,28 @@ final class IOSSettingsViewController: UITableViewController {
 
         // Greeting name (home screen, drawer avatar)
         let typedName = settings.ownerName.trimmingCharacters(in: .whitespacesAndNewlines)
-        let nameDetail = typedName.isEmpty
-            ? (settings.greetingName.map { "Mac'in adından: \($0)" } ?? "Ayarlanmadı")
-            : typedName
+        let accountName = presence?.claude?.greetingName
+        let nameDetail: String = if !typedName.isEmpty {
+            typedName
+        } else if let accountName {
+            "Claude hesabından: \(accountName)"
+        } else if let guess = settings.greetingName {
+            "Mac'in adından: \(guess)"
+        } else {
+            "Ayarlanmadı"
+        }
         rows[.greeting] = [Row(title: "Adın", detail: nameDetail, icon: "person.crop.circle", accessory: .disclosureIndicator) { [weak self] in
             guard let self else { return }
-            self.prompt("Adın", message: "Ana ekrandaki selamlamada kullanılır. Boş bırakırsan eşleşmiş Mac'in adından tahmin edilir.", text: self.app.settings.ownerName, placeholder: settings.greetingName ?? "Adın") { name in
+            self.prompt("Adın", message: "Ana ekrandaki selamlamada kullanılır. Boş bırakırsan Mac'teki Claude hesabındaki adın kullanılır.", text: self.app.settings.ownerName, placeholder: self.app.greetingName ?? "Adın") { name in
                 self.app.settings.ownerName = name.trimmingCharacters(in: .whitespacesAndNewlines)
             }
         }]
 
-        // Device
-        var device: [Row] = [Row(title: UIDevice.current.name, detail: credential.map { "Cihaz no: \($0.deviceId.suffix(8))" } ?? "Eşleşmedi", icon: "iphone")]
-        device.append(Row(title: "Diğer cihazlar", detail: "Mac → Ayarlar → Cihazlar'da listelenir ve kaldırılır", icon: "person.2"))
-        rows[.device] = device
+        // Technical details live one level down.
+        rows[.advanced] = [Row(title: "Gelişmiş", detail: "Bağlantı ayrıntıları ve elle bağlanma", icon: "gearshape.2", accessory: .disclosureIndicator) { [weak self] in
+            guard let self else { return }
+            self.navigationController?.pushViewController(IOSAdvancedConnectionViewController(app: self.app), animated: true)
+        }]
 
         let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"
         let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?"
@@ -288,8 +238,7 @@ final class IOSSettingsViewController: UITableViewController {
 
     override func tableView(_ tableView: UITableView, titleForFooterInSection section: Int) -> String? {
         switch Section(rawValue: section)! {
-        case .pairing: "Mac'te Ayarlar → Cihazlar → Telefon ekle ile 6 haneli kod çıkar."
-        case .remote: "Açıkken istekler tünel adresine gider; eşleştirme anahtarı aynı kalır."
+        case .mac where app.connection == .notPaired && !app.isSample: "Kod, Mac'te Studio → Ayarlar → Cihazlar'da görünür."
         case .notifications: "Uygulama açıkken ve kısa süre arka plandayken anında; kapalıyken iOS'un izin verdiği aralıklarla gelir."
         default: nil
         }
@@ -340,31 +289,22 @@ final class IOSSettingsViewController: UITableViewController {
         rows[Section(rawValue: indexPath.section)!]?[indexPath.row].action?()
     }
 
-    // MARK: Pairing
+    // MARK: Actions
 
-    private func pair(with studio: DiscoveredStudio) {
-        Task {
-            do {
-                let url = try await StudioBrowser.resolve(studio)
-                openPairingSheet(baseURL: url, serverName: studio.displayName)
-            } catch {
-                let alert = UIAlertController(
-                    title: "Mac'e ulaşılamadı",
-                    message: IOSAppModel.describe(error) + "\n\nMac'te Studio açık ve Ayarlar → Mac sunucusu çalışıyor olmalı.",
-                    preferredStyle: .alert)
-                alert.addAction(UIAlertAction(title: "Adresi elle gir", style: .default) { _ in
-                    self.openPairingSheet(baseURL: studio.advertisedURLs.first, serverName: studio.displayName)
-                })
-                alert.addAction(UIAlertAction(title: "Vazgeç", style: .cancel))
-                present(alert, animated: true)
-            }
+    private func perform(_ action: MacLinkAction) {
+        switch action {
+        case .retry:
+            app.retryConnection()
+            Toast.show(MacLinkState.connecting.title, in: view)
+        case .repair, .pair:
+            app.open(.pair)
         }
     }
 
-    private func openPairingSheet(baseURL: URL?, serverName: String) {
-        let vc = PairingSheetViewController(app: app, baseURL: baseURL, serverName: serverName) { [weak self] in
+    private func openCodeEntry() {
+        let vc = PairingSheetViewController(app: app) { [weak self] in
             self?.rebuild()
-            Toast.show("Mac ile eşleşildi", in: self?.view)
+            Toast.show("Mac'e bağlandı", in: self?.view)
         }
         presentSheet(vc, detents: [.large()])
     }

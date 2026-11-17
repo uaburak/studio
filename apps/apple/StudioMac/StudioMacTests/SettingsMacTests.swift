@@ -29,13 +29,13 @@ struct SettingsSectionTests {
             "Markalar", "Kullanım",
             "Görünüm", "Yapay zekâ", "Bildirimler",
             "Hesaplar", "Yayın",
-            "Mac sunucusu", "Cihazlar", "Hakkında",
+            "Cihazlar", "Gelişmiş", "Hakkında",
         ])
         #expect(SettingsSection.groups == [
             [.brands, .usage],
             [.appearance, .ai, .notifications],
             [.accounts, .publishing],
-            [.macServer, .devices, .about],
+            [.devices, .macServer, .about],
         ])
         #expect(SettingsSection.default == .brands)
     }
@@ -156,7 +156,7 @@ struct SettingsNavigationTests {
 
         sheet.search("tema")
         #expect(sheet.displayedSections == [.appearance])
-        #expect(sheet.pane(for: .appearance).visibleRowTitles == ["Tema"])
+        #expect(sheet.pane(for: .appearance).visibleRowTitles == ["Tema", "Adın"])
 
         sheet.search("bildirim")
         #expect(sheet.displayedSections.contains(.notifications))
@@ -173,7 +173,7 @@ struct SettingsNavigationTests {
         // Clearing returns to the selected section with every row back.
         sheet.search("")
         #expect(sheet.displayedSections == [.ai])
-        #expect(sheet.pane(for: .appearance).visibleRowTitles == ["Tema"])
+        #expect(sheet.pane(for: .appearance).visibleRowTitles == ["Tema", "Adın"])
         #expect(sheet.pane(for: .ai).visibleRowTitles.starts(with: ["Varsayılan model", "Varsayılan efor", "Claude Code", "Gemini"]))
 
         // Picking a section in the sidebar ends the search.

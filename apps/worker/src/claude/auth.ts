@@ -10,6 +10,7 @@ import type { ClaudeAccount } from "@studio/contract";
 import type { Logger } from "../log.ts";
 import { silentLogger } from "../log.ts";
 import { buildClaudeEnv, type ClaudeEnvOptions } from "./args.ts";
+import { claudeProfilePath, readClaudeProfileName } from "./profile.ts";
 
 const DEFAULT_LOGIN_TIMEOUT_MS = 10 * 60_000;
 
@@ -31,6 +32,11 @@ export interface ClaudeAuthControllerOptions {
   loginPollMs?: number;
   logger?: Logger;
   onLoginComplete?: () => void | Promise<void>;
+  /**
+   * The signed-in person's name (`~/.claude.json` → `oauthAccount`, see profile.ts). Defaults
+   * to reading the profile file, except when `probe` is injected (tests stay hermetic).
+   */
+  profileName?: () => Promise<string | null>;
   /** Test seams. */
   probe?: () => Promise<RawClaudeAuthInfo>;
   spawn?: typeof nodeSpawn;
@@ -197,6 +203,7 @@ export class ClaudeAuthController {
         cliVersion: info.cliVersion,
         loginUrl: null,
         detail: plan ? `Claude oturumu açık (${plan})` : "Claude oturumu açık",
+        displayName: await this.readProfileName(env),
         checkedAt,
       };
     } else {
@@ -213,6 +220,12 @@ export class ClaudeAuthController {
 
     this.set(next);
     return next;
+  }
+
+  private async readProfileName(env: Record<string, string>): Promise<string | null> {
+    if (this.options.profileName) return this.options.profileName().catch(() => null);
+    if (this.options.probe) return null;
+    return readClaudeProfileName(claudeProfilePath(env));
   }
 
   /** Sync account state when a runtime call discovers an auth failure. */

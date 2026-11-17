@@ -1,7 +1,7 @@
 import dnssd
 import Foundation
 
-/// Advertises the LAN gateway as `_studio._tcp` (TXT: name, api, pairing) so
+/// Advertises the LAN gateway as `_studio._tcp` (TXT: name, api, pairing, id, addr, port) so
 /// phones on the same network find the Mac (StudioKit `StudioBrowser`). Uses
 /// `DNSServiceRegister`: it announces a port another process listens on.
 @MainActor
@@ -17,7 +17,7 @@ final class BonjourAdvertiser {
 
     /// Returns false when mDNSResponder refused the registration.
     @discardableResult
-    func start(name: String, port: Int) -> Bool {
+    func start(name: String, port: Int, macId: String? = nil) -> Bool {
         stop()
         var txt = TXTRecordRef()
         TXTRecordCreate(&txt, 0, nil)
@@ -25,8 +25,10 @@ final class BonjourAdvertiser {
         // `addr` / `port`: the Mac's LAN IPv4 addresses and the gateway port, so a phone
         // can still reach the Mac when resolving the Bonjour endpoint itself fails.
         let addresses = HostEnvironment.lanAddresses().prefix(4).joined(separator: ",")
-        let entries = ["name": name, "api": Self.apiVersion, "pairing": "required",
+        // `id`: the host id, so a phone recognises its Mac even after a rename.
+        var entries = ["name": name, "api": Self.apiVersion, "pairing": "required",
                        "addr": addresses, "port": String(port)]
+        if let macId, !macId.isEmpty { entries["id"] = macId }
         for (key, value) in entries {
             let bytes = Array(value.utf8.prefix(255))
             _ = bytes.withUnsafeBufferPointer { TXTRecordSetValue(&txt, key, UInt8(bytes.count), $0.baseAddress) }

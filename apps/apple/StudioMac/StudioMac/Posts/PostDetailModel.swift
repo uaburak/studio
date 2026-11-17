@@ -185,7 +185,7 @@ final class PostDetailModel {
         if !isViewingCurrentVersion { return "Eski bir sürümü görüntülüyorsun; onaylamak için güncel sürüme geç ya da bu sürümü geri yükle." }
         if content.currentVersion == nil { return "Henüz bir sürüm yok." }
         if card.version == nil { return "Sürüm yükleniyor." }
-        if card.approvableHash == nil { return "Gösterilen sürüm sunucudakiyle eşleşmiyor; yenile." }
+        if card.approvableHash == nil { return "Gösterilen sürüm Mac'tekiyle eşleşmiyor; yenile." }
         return "Bu sürümü onayla (⌘↩)"
     }
 

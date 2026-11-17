@@ -159,6 +159,12 @@ export const ClaudeAccount = z
     loginUrl: z.string().max(2_000).nullable(),
     /** Turkish one-liner: why signed out, what failed. */
     detail: z.string().max(500).nullable(),
+    /**
+     * The signed-in person's first name from Claude Code's local profile on the Mac
+     * (`~/.claude.json` → `oauthAccount.displayName`, else the first word of `fullName`).
+     * The apps greet with it unless the owner typed a name. Absent from older workers.
+     */
+    displayName: z.string().max(80).nullable().optional(),
     checkedAt: Timestamp,
   })
   .meta({ id: "ClaudeAccount" });

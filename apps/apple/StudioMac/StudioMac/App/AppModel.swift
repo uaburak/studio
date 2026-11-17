@@ -104,7 +104,13 @@ final class AppModel {
     /// Global search over brands, conversations and every brand's posts.
     let search: SearchModel
     /// The embedded Mac server, when this app runs it (nil: remote server or sample data).
-    weak var host: LocalHost?
+    weak var host: LocalHost? {
+        didSet { phonePairing.host = isSample ? nil : host }
+    }
+    /// "iPhone'u bağla": the QR offer and the paired iPhones (Settings → Cihazlar, start screen).
+    let phonePairing = PhonePairingModel()
+    /// The start screen's "iPhone'u bağla" card was put off for this session ("Sonra").
+    var phonePairingHintDismissed = false
     /// The connection banner the owner closed; it comes back when the issue changes.
     var dismissedIssue: ConnectionIssue?
     private let sessionStore: SessionStore
@@ -315,6 +321,14 @@ final class AppModel {
 
     var presence: WorkerPresence? { jobBoard.presence }
     var isOnline: Bool { presence?.online == true }
+
+    /// The owner's name: Settings → Görünüm → "Adın", else the name of the Claude account
+    /// signed in on this Mac (read from Claude Code's local profile by the worker).
+    var ownerName: String? {
+        let typed = settings.ownerName.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !typed.isEmpty { return typed }
+        return presence?.claude?.greetingName
+    }
 
     func brand(_ id: EntityID?) -> Brand? { brands.first { $0.id == id } }
     func accounts(of brandId: EntityID?) -> [SocialAccount] {

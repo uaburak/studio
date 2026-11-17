@@ -8,7 +8,7 @@
 		<true/>
 	</dict>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>Studio, aynı Wi-Fi ağındaki Mac sunucunu Bonjour ile bulup bağlanmak için yerel ağı kullanır.</string>
+	<string>Studio, aynı Wi-Fi ağındaki Mac'ini bulup ona bağlanmak için yerel ağı kullanır.</string>
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_studio._tcp</string>
@@ -18,7 +18,18 @@
 	<key>NSPhotoLibraryAddUsageDescription</key>
 	<string>Post görsellerini Fotoğraflar'a kaydetmek için fotoğraf arşivine ekleme izni gerekir.</string>
 	<key>NSCameraUsageDescription</key>
-	<string>Sohbete ve post görsel yuvalarına kamerayla çektiğin fotoğrafı eklemek için kameraya erişilir.</string>
+	<string>Mac'teki QR kodu okutarak iPhone'u bağlamak ve sohbete ya da post görsellerine kamerayla çektiğin fotoğrafı eklemek için kameraya erişilir.</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>net.burakkoc.studio.pair</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>studio</string>
+			</array>
+		</dict>
+	</array>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Sohbette mesajını sesle yazdırmak (dikte) için mikrofon kullanılır.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>

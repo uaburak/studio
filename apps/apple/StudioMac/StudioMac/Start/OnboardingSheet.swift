@@ -223,7 +223,7 @@ final class OnboardingSheetController: NSViewController {
     private func makeWelcome() -> NSView {
         let items: [(String, String)] = [
             ("person.crop.circle.badge.checkmark", "Claude hesabını bağla: içerikleri Mac'indeki Claude aboneliğinle üretirsin."),
-            ("desktopcomputer", "Mac sunucusu: veriler ve üretim bu Mac'te; telefonun aynı ağdan bağlanır."),
+            ("laptopcomputer.and.iphone", "Veriler ve üretim bu Mac'te; iPhone'unu bir QR kodla bağlarsın."),
             ("square.stack.3d.up", "İlk markanı ekle: örnek postlardan marka profilini çıkarırsın."),
         ]
         let rows = items.map { symbol, text -> NSView in
@@ -316,10 +316,10 @@ final class OnboardingSheetController: NSViewController {
         stack.addArrangedSubview(workerStatus)
         stack.addArrangedSubview(lanStatus)
         BrandUI.addFull(lanDetail, to: stack)
-        let pairing = BrandUI.note("Telefonu eşleştirmek için: Ayarlar (⌘,) → Cihazlar → Telefon ekle. Telefondaki Studio 6 haneli kodu ister.")
+        let pairing = PhonePairingCardView(model: app.phonePairing, qrSize: 148)
         return page(
-            title: "Mac sunucusu",
-            text: "Veriler, üretim ve yayın bu Mac'te çalışır. Studio açıkken sunucu da açıktır; telefonun aynı Wi-Fi'dan bağlanır.",
+            title: "Mac ve iPhone",
+            text: "Veriler, üretim ve yayın bu Mac'te çalışır. iPhone'dan da kullanmak için kodu okut; istersen bu adımı geçip sonra Ayarlar → Cihazlar'dan bağlarsın.",
             extra: [card, BrandUI.hstack([restartButton, BrandUI.spacer()]), pairing]
         )
     }
@@ -328,33 +328,34 @@ final class OnboardingSheetController: NSViewController {
         let online = app.presence?.online == true
         if let host {
             let (text, color): (String, NSColor) = switch host.status {
-            case .running: ("Sunucu çalışıyor", .systemGreen)
-            case .attached: ("Çalışan sunucuya bağlandı", .systemGreen)
+            case .running: ("Studio bu Mac'te çalışıyor", .systemGreen)
+            case .attached: ("Studio bu Mac'te çalışıyor", .systemGreen)
             case .starting(let what): ("Başlatılıyor: \(what)", Theme.accent)
             case .stopped: ("Durdu", Theme.textTertiary)
             case .error(let message): ("Hata: \(message)", .systemRed)
             }
             (serverStatus.arrangedSubviews.first as? StatusDotView)?.color = color
             (serverStatus.arrangedSubviews.last as? NSTextField)?.stringValue = text
-            serverDetail.stringValue = host.apiURL.map { "Adres: \($0.absoluteString)" } ?? "Adres henüz yok."
+            serverDetail.stringValue = ""
             restartButton.isHidden = false
             let lan = host.lanURLs
             (lanStatus.arrangedSubviews.first as? StatusDotView)?.color = lan.isEmpty ? Theme.textTertiary : .systemGreen
-            (lanStatus.arrangedSubviews.last as? NSTextField)?.stringValue = lan.isEmpty ? "Yerel ağdan erişim kapalı" : "Yerel ağdan erişim açık"
+            (lanStatus.arrangedSubviews.last as? NSTextField)?.stringValue = lan.isEmpty ? "iPhone şu an bağlanamaz" : "iPhone bağlanabilir"
             lanDetail.stringValue = lan.isEmpty
-                ? "Telefonun bağlanabilmesi için Ayarlar → Mac sunucusu → Yerel ağdan erişim açık olmalı."
-                : lan.joined(separator: "  ·  ")
+                ? "iPhone'un bağlanabilmesi için Ayarlar → Gelişmiş → Yerel ağdan erişim açık olmalı."
+                : ""
         } else {
             (serverStatus.arrangedSubviews.first as? StatusDotView)?.color = Theme.textTertiary
-            (serverStatus.arrangedSubviews.last as? NSTextField)?.stringValue = "Bu oturumda sunucuyu uygulama çalıştırmıyor"
-            serverDetail.stringValue = "Ayarlar → Mac sunucusu'ndan açılabilir; şu an Sunucu adresine bağlanılıyor."
+            (serverStatus.arrangedSubviews.last as? NSTextField)?.stringValue = "Studio bu oturumda başka bir yere bağlı"
+            serverDetail.stringValue = "Ayarlar → Gelişmiş'ten değiştirilebilir."
             restartButton.isHidden = true
-            (lanStatus.arrangedSubviews.last as? NSTextField)?.stringValue = "Yerel ağ durumu bilinmiyor"
+            (lanStatus.arrangedSubviews.last as? NSTextField)?.stringValue = "iPhone bağlantısı bilinmiyor"
             lanDetail.stringValue = ""
         }
         (workerStatus.arrangedSubviews.first as? StatusDotView)?.color = online ? .systemGreen : Theme.textTertiary
-        (workerStatus.arrangedSubviews.last as? NSTextField)?.stringValue = online ? "Worker bağlı: işler hemen çalışır" : "Worker bağlı değil: işler sırada bekler"
+        (workerStatus.arrangedSubviews.last as? NSTextField)?.stringValue = online ? "Hazır: işler hemen çalışır" : "Arka plan işçisi bağlı değil: işler sırada bekler"
         lanDetail.isHidden = lanDetail.stringValue.isEmpty
+        serverDetail.isHidden = serverDetail.stringValue.isEmpty
     }
 
     // MARK: Brand

@@ -354,7 +354,7 @@ final class DrawerViewController: UIViewController, UITableViewDelegate, UITextF
             let text: String = if isSearching {
                 query.trimmingCharacters(in: .whitespaces).isEmpty ? "Başlıkta aramak için yaz" : "Sonuç yok"
             } else if app.connection == .notPaired {
-                "Mac'e bağlı değil"
+                "iPhone'u bağla"
             } else {
                 app.isLoading ? "Yükleniyor…" : "Henüz sohbet yok"
             }
@@ -371,7 +371,7 @@ final class DrawerViewController: UIViewController, UITableViewDelegate, UITextF
             case .destination(let destination):
                 hasher.combine(destination)
                 if destination == .posts { hasher.combine(app.posts.attentionCount) }
-                if destination == .jobs { hasher.combine(app.connection.label) }
+                if destination == .jobs { hasher.combine(app.connection.title) }
             case .conversation(let id):
                 hasher.combine(rows[id])
                 hasher.combine(id == current)
@@ -405,7 +405,7 @@ final class DrawerViewController: UIViewController, UITableViewDelegate, UITextF
 
     private func renderChrome() {
         var avatar = avatarButton.configuration ?? .glass()
-        if let initial = app.settings.greetingName?.first {
+        if let initial = app.greetingName?.first {
             avatar.image = nil
             avatar.attributedTitle = AttributedString(String(initial).uppercased(with: TurkishFormat.locale), attributes: AttributeContainer([
                 .font: IOSTheme.font(17, .semibold, style: .headline), .foregroundColor: IOSTheme.textPrimary,
@@ -417,9 +417,9 @@ final class DrawerViewController: UIViewController, UITableViewDelegate, UITextF
         avatarButton.configuration = avatar
         let connection = app.connection
         // Same as the Mac: an orange dot means the Mac is ready, grey that it is not.
-        avatarDot.dotColor = connection == .online ? IOSTheme.accent : IOSTheme.textTertiary
-        avatarButton.accessibilityValue = connection.label
-        avatarButton.accessibilityHint = "Eşleştirme, bağlantı, bildirimler ve görünüm"
+        avatarDot.dotColor = connection.isConnected && !app.isMacIdle ? IOSTheme.accent : IOSTheme.textTertiary
+        avatarButton.accessibilityValue = connection.title
+        avatarButton.accessibilityHint = "Mac bağlantısı, bildirimler ve görünüm"
     }
 
     private func configure(_ cell: UITableViewCell, item: Item) {
@@ -448,11 +448,11 @@ final class DrawerViewController: UIViewController, UITableViewDelegate, UITextF
                 cell.accessoryView = Self.countBadge(count)
                 cell.accessibilityValue = "\(count) post onayını bekliyor"
             } else if destination == .jobs {
-                let label = UILabel.studio(app.connection.label, size: 13, color: IOSTheme.textTertiary, style: .footnote)
+                let label = UILabel.studio(app.connection.title, size: 13, color: IOSTheme.textTertiary, style: .footnote)
                 label.translatesAutoresizingMaskIntoConstraints = true
                 label.sizeToFit()
                 cell.accessoryView = label
-                cell.accessibilityValue = app.connection.label
+                cell.accessibilityValue = app.connection.title
             }
         case .conversation(let id):
             guard let conversation = rows[id] else { break }
@@ -601,7 +601,7 @@ final class DrawerViewController: UIViewController, UITableViewDelegate, UITextF
             reload()
             onConversation?(id)
         case .placeholder:
-            if app.connection == .notPaired { onDestination?(.settings) }
+            if app.connection == .notPaired { app.open(.pair) }
         case .brandPicker:
             // VoiceOver activation of the row: the button behind it shows the menu.
             break

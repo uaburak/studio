@@ -146,19 +146,19 @@ enum RepoAccess {
 
     static func waitingMessage(repo: URL) -> String {
         "macOS, Studio'nun depo klasörüne erişim izni istiyor. Açılan pencerede “İzin Ver”e tıkla "
-            + "(ya da \(settingsHint(for: repo)) iznini aç); izin gelince sunucu kendiliğinden başlar."
+            + "(ya da \(settingsHint(for: repo)) iznini aç); izin gelince Studio kendiliğinden başlar."
     }
 
     static func failureMessage(_ outcome: Outcome, repo: URL, probe: URL) -> String {
         switch outcome {
         case .denied(let error) where error == EPERM || error == EACCES:
             return "macOS, Studio'nun depo klasörünü okumasına izin vermiyor (\(probe.path)). "
-                + "\(settingsHint(for: repo)) iznini açıp Mac sunucusunu yeniden başlat."
+                + "\(settingsHint(for: repo)) iznini açıp Studio'yu yeniden başlat."
         case .denied(let error):
             return "Depo dosyası okunamadı (\(probe.path)): \(String(cString: strerror(error)))."
         case .stillWaiting:
             return "Depo klasörüne erişim izni yanıtsız kaldı (macOS izin penceresi onaylanmadı). "
-                + "\(settingsHint(for: repo)) iznini açıp Mac sunucusunu yeniden başlat."
+                + "\(settingsHint(for: repo)) iznini açıp Studio'yu yeniden başlat."
         case .readable, .cancelled:
             return ""
         }
