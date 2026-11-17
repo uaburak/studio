@@ -3,7 +3,7 @@ import StudioKit
 
 /// Pure AppKit Start screen (04):
 /// - Centred `"Ne üretelim?"` (30pt bold)
-/// - `ComposerControlView` (max width 566) + `ComposerFooterControlView` underneath (Mac status, Model menu, Effort menu, Usage ring)
+/// - `ComposerControlView` (max width 566) + `ComposerFooterControlView` underneath (Mac status, usage ring, "Opus Orta" model + effort menu)
 /// - Inline error banner
 /// - Three suggestion pills (`"Bu ayın postlarını üret"`, `"Yeni ürün duyurusu"`, `"Bu haftayı planla"`).
 final class StartViewController: NSViewController {

@@ -1,35 +1,195 @@
 import AppKit
 import StudioKit
 
-/// Pure AppKit left sidebar (`NSSplitViewItem(sidebarWithViewController:)`):
-/// - Uses a native `.sourceList` `NSTableView` for macOS sidebar styling & keyboard navigation
-/// - Top actions: Yeni sohbet (`+`), Ara (`magnifyingglass`), Postlar (`square.grid.2x2`), Takvim (`calendar`), Medya
-/// - Collapsible brand sections with conversation rows (orange dot when `activeRunId != nil`, right-click archive)
-/// - Bottom `UserRowView` (monogram, Mac server status, appearance menu + Settings gear).
+// MARK: - Sidebar rows (pure: built from the app state, tested)
+
+/// The fixed actions at the top of the sidebar (Claude Code: "New session", "Search", …).
+enum SidebarAction: CaseIterable, Equatable {
+    case newChat, search, posts, calendar, media, brands
+
+    var title: String {
+        switch self {
+        case .newChat: "Yeni sohbet"
+        case .search: "Ara"
+        case .posts: "Postlar"
+        case .calendar: "Takvim"
+        case .media: "Medya"
+        case .brands: "Markalar"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .newChat: "plus"
+        case .search: "magnifyingglass"
+        case .posts: "square.grid.2x2"
+        case .calendar: "calendar"
+        case .media: "photo.on.rectangle.angled"
+        case .brands: "tag"
+        }
+    }
+
+    var help: String {
+        switch self {
+        case .newChat: "Yeni sohbet (⌘N)"
+        case .search: "Sohbetlerde, postlarda ve markalarda ara (⌘K)"
+        case .posts: "Postlar (⇧⌘P)"
+        case .calendar: "Yayın takvimi (⇧⌘K)"
+        case .media: "Medya kütüphanesi ve AI görsel üretimi (⇧⌘M)"
+        case .brands: "Markalar: ekle, arşivle, ayarlar"
+        }
+    }
+
+    /// Shortcut shown greyed on the right of the row.
+    var shortcutHint: String? {
+        switch self {
+        case .search: "⌘K"
+        default: nil
+        }
+    }
+
+    /// The screen this row stands for: it is highlighted while that screen is shown.
+    var route: Route? {
+        switch self {
+        case .newChat: .newChat
+        case .posts: .posts
+        case .calendar: .calendar
+        case .media: .media
+        case .search, .brands: nil
+        }
+    }
+}
+
+/// A collapsible history group: one brand's conversations, or the unbranded ones.
+struct SidebarGroup: Equatable {
+    /// nil: the "Markasız" group.
+    var brandId: EntityID?
+    var title: String
+    var expanded: Bool
+    /// The working brand (new chats, posts, calendar and media follow it).
+    var current: Bool
+}
+
+enum SidebarRow: Equatable {
+    case action(SidebarAction)
+    case spacer(CGFloat)
+    case groupHeader(SidebarGroup)
+    case conversation(Conversation)
+    case emptyGroup
+    case loadError(String)
+
+    var height: CGFloat {
+        switch self {
+        case .action: 32
+        case .spacer(let height): height
+        case .groupHeader: 28
+        case .conversation: 30
+        case .emptyGroup: 26
+        case .loadError: 62
+        }
+    }
+
+    /// Rows that get the rounded hover fill.
+    var isHoverable: Bool {
+        switch self {
+        case .action, .conversation: true
+        default: false
+        }
+    }
+}
+
+enum SidebarRows {
+    static let unbrandedTitle = "Markasız"
+
+    /// Actions, then the history grouped by brand (sidebar order), then unbranded conversations.
+    static func build(
+        brands: [Brand],
+        conversations: (EntityID) -> [Conversation],
+        unbranded: [Conversation],
+        expandedBrands: Set<EntityID>,
+        unbrandedExpanded: Bool,
+        currentBrandId: EntityID?,
+        loadError: String?
+    ) -> [SidebarRow] {
+        var list: [SidebarRow] = SidebarAction.allCases.map { .action($0) }
+        list.append(.spacer(14))
+        for brand in brands {
+            let expanded = expandedBrands.contains(brand.id)
+            list.append(.groupHeader(SidebarGroup(brandId: brand.id, title: brand.name, expanded: expanded, current: brand.id == currentBrandId)))
+            if expanded {
+                let items = conversations(brand.id)
+                if items.isEmpty {
+                    list.append(.emptyGroup)
+                } else {
+                    list += items.map { .conversation($0) }
+                }
+            }
+            list.append(.spacer(8))
+        }
+        if !unbranded.isEmpty {
+            list.append(.groupHeader(SidebarGroup(brandId: nil, title: unbrandedTitle, expanded: unbrandedExpanded, current: false)))
+            if unbrandedExpanded { list += unbranded.map { .conversation($0) } }
+            list.append(.spacer(8))
+        }
+        if let loadError { list.append(.loadError(loadError)) }
+        return list
+    }
+
+    @MainActor
+    static func build(app: AppModel, unbrandedExpanded: Bool = true) -> [SidebarRow] {
+        build(
+            brands: app.sidebarBrands,
+            conversations: { app.conversations(of: $0) },
+            unbranded: app.unbrandedConversations,
+            expandedBrands: app.expandedBrands,
+            unbrandedExpanded: unbrandedExpanded,
+            currentBrandId: app.currentBrandId,
+            loadError: app.loadError
+        )
+    }
+
+    /// The row highlighted for `route` (nil: none stands for it).
+    static func index(of route: Route, in rows: [SidebarRow]) -> Int? {
+        rows.firstIndex { row in
+            switch row {
+            case .action(let action): action.route == route
+            case .conversation(let conversation): route == .conversation(conversation.id)
+            default: false
+            }
+        }
+    }
+}
+
+/// Footer text: who is working and on which brand.
+enum SidebarFooter {
+    static let userName = "Burak"
+    static var initial: String { String(userName.prefix(1)) }
+
+    static func title(brandName: String?) -> String {
+        guard let brandName, !brandName.isEmpty else { return userName }
+        return "\(userName) · \(brandName)"
+    }
+}
+
+// MARK: - SidebarViewController
+
+/// Flush left sidebar in the Claude Code layout (pure AppKit, plain `NSTableView`):
+/// - Actions with SF Symbols: Yeni sohbet, Ara, Postlar, Takvim, Medya, Markalar
+/// - History grouped by brand: small grey header with a chevron (click folds, hover "+" starts a
+///   chat in that brand, right-click: brand menu); single-line conversation rows with a rounded
+///   selection, an orange dot while a reply runs and a "…" menu on hover (rename, archive)
+/// - Footer: "B" avatar, "Burak · <marka>" menu (brand switch, Mac server, appearance) and a gear.
 final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTableViewDelegate {
     private unowned let app: AppModel
     private unowned let settings: AppSettings
 
     private let scrollView = NSScrollView()
     private let tableView = SidebarTableView()
-    private var rows: [Row] = []
+    /// What the table shows now (tests read it).
+    private(set) var rows: [SidebarRow] = []
+    private var unbrandedExpanded = true
     private var isSyncingSelection = false
     private var observation: ObservationToken?
-
-    private enum Row: Equatable {
-        case actionNewChat
-        case actionSearch
-        case posts
-        case calendar
-        case media
-        case spacer
-        case brandHeader(Brand, expanded: Bool, current: Bool)
-        case conversation(Conversation)
-        case emptyBrand(EntityID)
-        case actionNewBrand
-        case unbrandedHeader
-        case loadError(String)
-    }
 
     init(app: AppModel, settings: AppSettings) {
         self.app = app
@@ -40,25 +200,28 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
     required init?(coder: NSCoder) { fatalError("not used") }
 
     override func loadView() {
-        let root = NSView()
+        let root = ThemedView()
+        root.backgroundColor = Theme.sidebarBackground
         root.translatesAutoresizingMaskIntoConstraints = false
 
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("main"))
         column.resizingMask = .autoresizingMask
         tableView.addTableColumn(column)
         tableView.headerView = nil
-        tableView.style = .sourceList
+        tableView.style = .plain
         tableView.backgroundColor = .clear
         tableView.rowSizeStyle = .custom
-        tableView.intercellSpacing = NSSize(width: 0, height: 2)
+        tableView.intercellSpacing = NSSize(width: 0, height: 0)
+        tableView.columnAutoresizingStyle = .uniformColumnAutoresizingStyle
+        tableView.focusRingType = .none
         tableView.floatsGroupRows = false
+        tableView.allowsEmptySelection = true
         tableView.dataSource = self
         tableView.delegate = self
-        tableView.onArchiveConversation = { [weak self] convId in
-            guard let self else { return }
-            Task { await self.app.conversationModel(convId).archive() }
-        }
-        tableView.brandMenu = { [weak self] brandId in self?.brandMenu(brandId) }
+        tableView.target = self
+        tableView.action = #selector(rowClicked)
+        tableView.setAccessibilityLabel("Kenar çubuğu")
+        tableView.menuProvider = { [weak self] row in self?.contextMenu(forRow: row) }
 
         scrollView.drawsBackground = false
         scrollView.borderType = .noBorder
@@ -68,20 +231,20 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
         scrollView.translatesAutoresizingMaskIntoConstraints = false
         scrollView.applyMinimalScroller()
 
-        let userRow = SidebarUserRowView(app: app, settings: settings)
+        let footer = SidebarFooterView(app: app, settings: settings)
 
         root.addSubview(scrollView)
-        root.addSubview(userRow)
+        root.addSubview(footer)
 
         NSLayoutConstraint.activate([
             scrollView.leadingAnchor.constraint(equalTo: root.leadingAnchor),
             scrollView.trailingAnchor.constraint(equalTo: root.trailingAnchor),
             scrollView.topAnchor.constraint(equalTo: root.topAnchor),
-            scrollView.bottomAnchor.constraint(equalTo: userRow.topAnchor),
+            scrollView.bottomAnchor.constraint(equalTo: footer.topAnchor),
 
-            userRow.leadingAnchor.constraint(equalTo: root.leadingAnchor),
-            userRow.trailingAnchor.constraint(equalTo: root.trailingAnchor),
-            userRow.bottomAnchor.constraint(equalTo: root.bottomAnchor),
+            footer.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+            footer.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            footer.bottomAnchor.constraint(equalTo: root.bottomAnchor),
         ])
 
         self.view = root
@@ -94,259 +257,78 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
         }
     }
 
-    private func buildRows() -> [Row] {
-        var list: [Row] = [
-            .actionNewChat,
-            .actionSearch,
-            .posts,
-            .calendar,
-            .media,
-        ]
-        for brand in app.sidebarBrands {
-            list.append(.spacer)
-            let expanded = app.expandedBrands.contains(brand.id)
-            list.append(.brandHeader(brand, expanded: expanded, current: brand.id == app.currentBrandId))
-            if expanded {
-                let convs = app.conversations(of: brand.id)
-                if convs.isEmpty {
-                    list.append(.emptyBrand(brand.id))
-                } else {
-                    for conv in convs { list.append(.conversation(conv)) }
-                }
-            }
-        }
-        list.append(.spacer)
-        list.append(.actionNewBrand)
-        let unbranded = app.unbrandedConversations
-        if !unbranded.isEmpty {
-            list.append(.spacer)
-            list.append(.unbrandedHeader)
-            for conv in unbranded { list.append(.conversation(conv)) }
-        }
-        if let err = app.loadError {
-            list.append(.spacer)
-            list.append(.loadError(err))
-        }
-        return list
-    }
-
     private func reloadSidebar() {
-        let next = buildRows()
-        let selection = app.sidebarSelection
+        let next = SidebarRows.build(app: app, unbrandedExpanded: unbrandedExpanded)
+        let route = app.route
         if next != rows {
             rows = next
-            tableView.rowConversationIds = rows.map {
-                if case .conversation(let c) = $0 { return c.id }
-                return nil
-            }
-            tableView.rowBrandIds = rows.map {
-                if case .brandHeader(let brand, _, _) = $0 { return brand.id }
-                return nil
-            }
             isSyncingSelection = true
             tableView.reloadData()
             isSyncingSelection = false
         }
-        syncSelection(to: selection)
+        syncSelection(to: route)
     }
 
-    private func syncSelection(to item: SidebarItem?) {
+    private func syncSelection(to route: Route) {
         isSyncingSelection = true
         defer { isSyncingSelection = false }
-        guard let item else {
+        if let target = SidebarRows.index(of: route, in: rows) {
+            if tableView.selectedRow != target {
+                tableView.selectRowIndexes(IndexSet(integer: target), byExtendingSelection: false)
+            }
+        } else {
             tableView.deselectAll(nil)
+        }
+    }
+
+    // MARK: Actions
+
+    /// A click on the already highlighted "Yeni sohbet" row (no selection change) still
+    /// brings the focus back to the composer.
+    @objc private func rowClicked() {
+        let row = tableView.clickedRow
+        guard rows.indices.contains(row), rows[row] == .action(.newChat), row == tableView.selectedRow, app.route == .newChat else { return }
+        app.newChat.focusRequest += 1
+    }
+
+    private func perform(_ action: SidebarAction) {
+        switch action {
+        case .newChat: app.startNewChat()
+        case .search: app.searchPresented = true
+        case .posts: app.sidebarSelection = .posts
+        case .calendar: app.sidebarSelection = .calendar
+        case .media: app.sidebarSelection = .media
+        case .brands: app.openSettings(.brands)
+        }
+    }
+
+    private func toggle(_ group: SidebarGroup) {
+        if let brandId = group.brandId {
+            app.toggleBrand(brandId)
+        } else {
+            unbrandedExpanded.toggle()
+            reloadSidebar()
+        }
+    }
+
+    /// "+" on a brand header: a new chat in that brand.
+    private func startChat(inBrand brandId: EntityID) {
+        guard app.switchToBrand(brandId) else {
+            app.banner = "Eklenmiş görseller markaya bağlı; markayı değiştirmek için önce onları kaldır."
             return
         }
-        let targetIndex = rows.firstIndex { row in
-            switch (row, item) {
-            case (.posts, .posts): true
-            case (.calendar, .calendar): true
-            case (.media, .media): true
-            case (.conversation(let c), .conversation(let id)): c.id == id
-            default: false
-            }
-        }
-        if let targetIndex {
-            if tableView.selectedRow != targetIndex {
-                tableView.selectRowIndexes(IndexSet(integer: targetIndex), byExtendingSelection: false)
-            }
-        } else {
-            tableView.deselectAll(nil)
-        }
+        app.startNewChat()
     }
 
-    // MARK: NSTableViewDataSource / Delegate
-
-    func numberOfRows(in tableView: NSTableView) -> Int { rows.count }
-
-    func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
+    private func contextMenu(forRow row: Int) -> NSMenu? {
+        guard rows.indices.contains(row) else { return nil }
         switch rows[row] {
-        case .spacer: 10
-        case .brandHeader, .unbrandedHeader: 24
-        case .loadError: 62
-        default: 28
-        }
-    }
-
-    func tableView(_ tableView: NSTableView, shouldSelectRow row: Int) -> Bool {
-        guard rows.indices.contains(row) else { return false }
-        switch rows[row] {
-        case .actionNewChat:
-            app.startNewChat()
-            return false
-        case .actionSearch:
-            app.searchPresented = true
-            return false
-        case .actionNewBrand:
-            app.newBrandPresented = true
-            return false
-        case .brandHeader(let brand, _, _):
-            activateBrand(brand.id)
-            return false
-        case .posts, .calendar, .media, .conversation:
-            return true
-        case .spacer, .emptyBrand, .unbrandedHeader, .loadError:
-            return false
-        }
-    }
-
-    func tableViewSelectionDidChange(_ notification: Notification) {
-        guard !isSyncingSelection else { return }
-        let idx = tableView.selectedRow
-        guard rows.indices.contains(idx) else { return }
-        switch rows[idx] {
-        case .posts:
-            app.sidebarSelection = .posts
-        case .calendar:
-            app.sidebarSelection = .calendar
-        case .media:
-            app.sidebarSelection = .media
-        case .conversation(let conv):
-            app.sidebarSelection = .conversation(conv.id)
+        case .groupHeader(let group):
+            return group.brandId.flatMap { brandMenu($0) }
+        case .conversation(let conversation):
+            return ConversationActions.makeMenu(app: app, conversationId: conversation.id) { [weak self] in self?.view.window }
         default:
-            break
-        }
-    }
-
-    func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
-        let item = rows[row]
-        switch item {
-        case .spacer:
-            return NSView()
-
-        case .actionNewChat:
-            return makeIconLabelCell(symbol: "plus", title: "Yeni sohbet", help: "Yeni sohbet (⌘N)")
-
-        case .actionSearch:
-            return makeIconLabelCell(symbol: "magnifyingglass", title: "Ara", help: "Markalarda, sohbetlerde ve postlarda ara (⌘F)")
-
-        case .posts:
-            return makeIconLabelCell(symbol: "square.grid.2x2", title: "Postlar", help: "Postlar (⇧⌘P)")
-
-        case .calendar:
-            return makeIconLabelCell(symbol: "calendar", title: "Takvim", help: "Yayın takvimi (⇧⌘K)")
-
-        case .media:
-            return makeIconLabelCell(symbol: "photo.on.rectangle.angled", title: "Medya", help: "Medya kütüphanesi ve AI görsel üretimi (⇧⌘M)")
-
-        case .actionNewBrand:
-            return makeIconLabelCell(symbol: "plus.circle", title: "Yeni marka…", muted: false, help: "Yeni müşteri markası ekle (⇧⌘N)")
-
-        case .brandHeader(let brand, let expanded, let current):
-            return makeBrandHeaderCell(brand: brand, expanded: expanded, current: current)
-
-        case .unbrandedHeader:
-            let cell = NSTableCellView()
-            let label = NSTextField.styledLabel("Markasız", font: Theme.captionFont, color: Theme.textSecondary)
-            label.translatesAutoresizingMaskIntoConstraints = false
-            cell.addSubview(label)
-            NSLayoutConstraint.activate([
-                label.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 6),
-                label.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
-            ])
-            return cell
-
-        case .emptyBrand:
-            let cell = NSTableCellView()
-            let label = NSTextField.styledLabel("Henüz sohbet yok", font: Theme.captionFont, color: Theme.textTertiary)
-            label.translatesAutoresizingMaskIntoConstraints = false
-            cell.addSubview(label)
-            NSLayoutConstraint.activate([
-                label.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 8),
-                label.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
-            ])
-            return cell
-
-        case .conversation(let conv):
-            return makeConversationCell(conv)
-
-        case .loadError(let message):
-            let cell = NSTableCellView()
-            let lbl = NSTextField.styledLabel(message, font: Theme.smallFont, color: Theme.textSecondary, wraps: true)
-            let btn = PillButton(title: "Yeniden dene", kind: .secondary, height: 22) { [weak app] in
-                guard let app else { return }
-                Task { await app.load() }
-            }
-            let stack = NSStackView(views: [lbl, btn])
-            stack.orientation = .vertical
-            stack.alignment = .leading
-            stack.spacing = 6
-            stack.translatesAutoresizingMaskIntoConstraints = false
-            cell.addSubview(stack)
-            NSLayoutConstraint.activate([
-                stack.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 6),
-                stack.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -6),
-                stack.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
-            ])
-            return cell
-        }
-    }
-
-    private func makeIconLabelCell(symbol: String, title: String, trailingText: String? = nil, muted: Bool = false, help: String?) -> NSView {
-        let cell = NSTableCellView()
-        cell.toolTip = help
-
-        let icon = NSImageView()
-        icon.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)?
-            .withSymbolConfiguration(.init(pointSize: 13, weight: .regular))
-        icon.contentTintColor = muted ? Theme.textTertiary : Theme.textSecondary
-        icon.translatesAutoresizingMaskIntoConstraints = false
-        icon.widthAnchor.constraint(equalToConstant: 18).isActive = true
-
-        let label = NSTextField.styledLabel(title, font: Theme.rowFont, color: muted ? Theme.textTertiary : Theme.textPrimary)
-        label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        cell.textField = label
-
-        let spacer = NSView()
-        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
-
-        var views: [NSView] = [icon, label, spacer]
-        if let trailingText {
-            views.append(NSTextField.styledLabel(trailingText, font: Theme.smallFont, color: Theme.textTertiary))
-        }
-
-        let row = NSStackView(views: views)
-        row.orientation = .horizontal
-        row.alignment = .centerY
-        row.spacing = 8
-        row.translatesAutoresizingMaskIntoConstraints = false
-        cell.addSubview(row)
-
-        NSLayoutConstraint.activate([
-            row.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 6),
-            row.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -8),
-            row.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
-        ])
-        return cell
-    }
-
-    /// Brand header click: switch to that brand (chat, posts, calendar and media follow);
-    /// clicking the current brand again folds or unfolds its conversations.
-    private func activateBrand(_ id: EntityID) {
-        if app.currentBrandId == id {
-            app.toggleBrand(id)
-        } else {
-            app.selectBrand(id)
+            return nil
         }
     }
 
@@ -354,13 +336,13 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
         guard let brand = app.brand(brandId) else { return nil }
         let menu = NSMenu()
         func item(_ title: String, _ action: @escaping () -> Void) {
-            let entry = ClosureMenuItem(title: title, action: action)
-            menu.addItem(entry)
+            menu.addItem(ClosureMenuItem(title: title, action: action))
         }
         if app.currentBrandId != brandId {
             item("Bu markaya geç") { [weak app] in app?.selectBrand(brandId) }
-            menu.addItem(.separator())
         }
+        item("Bu markada yeni sohbet") { [weak self] in self?.startChat(inBrand: brandId) }
+        menu.addItem(.separator())
         item("Marka ayarları…") { [weak app] in app?.openBrandSettings(brandId) }
         item("Marka kiti…") { [weak app] in app?.openBrandSettings(brandId, tab: .kit) }
         item("Marka profili…") { [weak app] in app?.openBrandSettings(brandId, tab: .profile) }
@@ -398,43 +380,304 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
         if let window = view.window { alert.beginSheetModal(for: window, completionHandler: run) } else { run(alert.runModal()) }
     }
 
-    private func makeBrandHeaderCell(brand: Brand, expanded: Bool, current: Bool) -> NSView {
-        let cell = BrandHeaderCellView { [weak self] in
-            self?.activateBrand(brand.id)
-        }
-        cell.setAccessibilityLabel("\(brand.name)\(current ? ", seçili marka" : ""), \(expanded ? "daralt" : "genişlet")")
-        cell.toolTip = current ? "Seçili marka · tıkla: sohbetleri aç/kapat · sağ tık: marka ayarları" : "Bu markaya geç · sağ tık: marka ayarları"
+    // MARK: NSTableViewDataSource / Delegate
 
-        let label = NSTextField.styledLabel(
-            brand.name,
-            font: current ? NSFont.systemFont(ofSize: 12, weight: .semibold) : Theme.captionFont,
-            color: current ? Theme.textPrimary : Theme.textSecondary
-        )
-        let chevron = NSImageView()
-        chevron.image = NSImage(systemSymbolName: expanded ? "chevron.down" : "chevron.right", accessibilityDescription: nil)?
-            .withSymbolConfiguration(.init(pointSize: 8, weight: .semibold))
-        chevron.contentTintColor = Theme.textSecondary
+    func numberOfRows(in tableView: NSTableView) -> Int { rows.count }
 
-        let row = NSStackView(views: [label, chevron])
-        row.orientation = .horizontal
-        row.alignment = .centerY
-        row.spacing = 4
-        row.translatesAutoresizingMaskIntoConstraints = false
-        cell.addSubview(row)
-
-        NSLayoutConstraint.activate([
-            row.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 6),
-            row.trailingAnchor.constraint(lessThanOrEqualTo: cell.trailingAnchor, constant: -8),
-            row.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
-        ])
-        return cell
+    func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
+        rows.indices.contains(row) ? rows[row].height : 28
     }
 
-    private func makeConversationCell(_ conversation: Conversation) -> NSView {
-        let cell = NSTableCellView()
+    func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
+        let view = SidebarRowView()
+        view.isHoverable = rows.indices.contains(row) && rows[row].isHoverable
+        return view
+    }
+
+    func tableView(_ tableView: NSTableView, shouldSelectRow row: Int) -> Bool {
+        guard rows.indices.contains(row) else { return false }
+        switch rows[row] {
+        case .action(let action):
+            switch action {
+            case .posts, .calendar, .media:
+                return true
+            case .newChat, .search, .brands:
+                perform(action)
+                return false
+            }
+        case .conversation:
+            return true
+        case .spacer, .groupHeader, .emptyGroup, .loadError:
+            return false
+        }
+    }
+
+    func tableViewSelectionDidChange(_ notification: Notification) {
+        guard !isSyncingSelection else { return }
+        let index = tableView.selectedRow
+        guard rows.indices.contains(index) else { return }
+        switch rows[index] {
+        case .action(let action):
+            perform(action)
+        case .conversation(let conversation):
+            app.sidebarSelection = .conversation(conversation.id)
+        default:
+            break
+        }
+    }
+
+    func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
+        switch rows[row] {
+        case .spacer:
+            return NSView()
+
+        case .action(let action):
+            return SidebarActionCellView(action: action)
+
+        case .groupHeader(let group):
+            let cell = SidebarGroupHeaderCellView(group: group)
+            cell.onToggle = { [weak self] in self?.toggle(group) }
+            if let brandId = group.brandId {
+                cell.onNewChat = { [weak self] in self?.startChat(inBrand: brandId) }
+            }
+            return cell
+
+        case .conversation(let conversation):
+            let cell = SidebarConversationCellView(conversation: conversation)
+            cell.makeMenu = { [weak self] in
+                guard let self else { return NSMenu() }
+                return ConversationActions.makeMenu(app: self.app, conversationId: conversation.id) { [weak self] in self?.view.window }
+            }
+            return cell
+
+        case .emptyGroup:
+            let cell = NSTableCellView()
+            let label = NSTextField.styledLabel("Henüz sohbet yok", font: Theme.captionFont, color: Theme.textTertiary)
+            label.translatesAutoresizingMaskIntoConstraints = false
+            cell.addSubview(label)
+            NSLayoutConstraint.activate([
+                label.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: SidebarMetrics.contentLeading),
+                label.trailingAnchor.constraint(lessThanOrEqualTo: cell.trailingAnchor, constant: -SidebarMetrics.contentLeading),
+                label.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
+            ])
+            return cell
+
+        case .loadError(let message):
+            let cell = NSTableCellView()
+            let label = NSTextField.styledLabel(message, font: Theme.smallFont, color: Theme.textSecondary, wraps: true)
+            let retry = PillButton(title: "Yeniden dene", kind: .secondary, height: 22) { [weak app] in
+                guard let app else { return }
+                Task { await app.load() }
+            }
+            let stack = NSStackView(views: [label, retry])
+            stack.orientation = .vertical
+            stack.alignment = .leading
+            stack.spacing = 6
+            stack.translatesAutoresizingMaskIntoConstraints = false
+            cell.addSubview(stack)
+            NSLayoutConstraint.activate([
+                stack.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: SidebarMetrics.contentLeading),
+                stack.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -SidebarMetrics.contentLeading),
+                stack.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
+            ])
+            return cell
+        }
+    }
+}
+
+// MARK: - Metrics
+
+private enum SidebarMetrics {
+    /// Text and icons start here: the row's rounded fill inset plus its inner padding.
+    static let contentLeading: CGFloat = Theme.sidebarRowInset + 10
+    static let contentTrailing: CGFloat = Theme.sidebarRowInset + 6
+}
+
+// MARK: - Table, row view and cells
+
+private final class SidebarTableView: NSTableView {
+    var menuProvider: ((Int) -> NSMenu?)?
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        let point = convert(event.locationInWindow, from: nil)
+        return menuProvider?(row(at: point))
+    }
+}
+
+/// Rounded neutral selection and hover fill, inset from the sidebar edges (Claude Code style).
+final class SidebarRowView: NSTableRowView {
+    var isHoverable = true
+    private var hovering = false {
+        didSet { if hovering != oldValue { needsDisplay = true } }
+    }
+    private var trackingArea: NSTrackingArea?
+
+    /// Text stays in its normal colours on the grey selection (no "emphasized" white text).
+    override var interiorBackgroundStyle: NSView.BackgroundStyle { .normal }
+
+    private var fillRect: NSRect { bounds.insetBy(dx: Theme.sidebarRowInset, dy: 1) }
+
+    override func drawSelection(in dirtyRect: NSRect) {
+        guard selectionHighlightStyle != .none else { return }
+        Theme.sidebarSelection.setFill()
+        NSBezierPath(roundedRect: fillRect, xRadius: Theme.sidebarRowRadius, yRadius: Theme.sidebarRowRadius).fill()
+    }
+
+    override func drawBackground(in dirtyRect: NSRect) {
+        guard isHoverable, hovering, !isSelected else { return }
+        Theme.sidebarHover.setFill()
+        NSBezierPath(roundedRect: fillRect, xRadius: Theme.sidebarRowRadius, yRadius: Theme.sidebarRowRadius).fill()
+    }
+
+    override func drawSeparator(in dirtyRect: NSRect) {}
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let trackingArea { removeTrackingArea(trackingArea) }
+        let area = NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeInActiveApp, .inVisibleRect], owner: self, userInfo: nil)
+        addTrackingArea(area)
+        trackingArea = area
+    }
+
+    override func mouseEntered(with event: NSEvent) { hovering = true }
+    override func mouseExited(with event: NSEvent) { hovering = false }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        needsDisplay = true
+    }
+}
+
+private final class SidebarActionCellView: NSTableCellView {
+    init(action: SidebarAction) {
+        super.init(frame: .zero)
+        toolTip = action.help
+        setAccessibilityLabel(action.title)
+
+        let icon = NSImageView()
+        icon.image = NSImage(systemSymbolName: action.symbol, accessibilityDescription: nil)?
+            .withSymbolConfiguration(.init(pointSize: 13, weight: .regular))
+        icon.contentTintColor = Theme.textSecondary
+        icon.translatesAutoresizingMaskIntoConstraints = false
+        icon.widthAnchor.constraint(equalToConstant: 18).isActive = true
+
+        let label = NSTextField.styledLabel(action.title, font: Theme.rowFont, color: Theme.textPrimary)
+        label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        textField = label
+
+        let spacer = NSView()
+        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+
+        var views: [NSView] = [icon, label, spacer]
+        if let hint = action.shortcutHint {
+            let hintLabel = NSTextField.styledLabel(hint, font: Theme.smallFont, color: Theme.textTertiary)
+            hintLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
+            views.append(hintLabel)
+        }
+
+        let row = NSStackView(views: views)
+        row.orientation = .horizontal
+        row.alignment = .centerY
+        row.spacing = 8
+        row.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(row)
+
+        NSLayoutConstraint.activate([
+            row.leadingAnchor.constraint(equalTo: leadingAnchor, constant: SidebarMetrics.contentLeading - 2),
+            row.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -SidebarMetrics.contentTrailing - 4),
+            row.centerYAnchor.constraint(equalTo: centerYAnchor),
+        ])
+    }
+
+    required init?(coder: NSCoder) { fatalError("not used") }
+}
+
+/// Small grey brand header: click folds / unfolds; on hover a "+" starts a chat in that brand.
+private final class SidebarGroupHeaderCellView: NSTableCellView {
+    var onToggle: (() -> Void)?
+    var onNewChat: (() -> Void)? {
+        didSet { plusButton.isHidden = true }
+    }
+
+    private let plusButton = GlyphButton(symbol: "plus", size: 10, weight: .semibold, diameter: 20)
+    private var trackingArea: NSTrackingArea?
+
+    init(group: SidebarGroup) {
+        super.init(frame: .zero)
+        setAccessibilityElement(true)
+        setAccessibilityRole(.button)
+        setAccessibilityLabel("\(group.title)\(group.current ? ", seçili marka" : ""), \(group.expanded ? "daralt" : "genişlet")")
+        toolTip = group.brandId == nil
+            ? "Markasız sohbetler · tıkla: aç/kapat"
+            : "Tıkla: sohbetleri aç/kapat · sağ tık: marka menüsü"
+
+        let label = NSTextField.styledLabel(
+            group.title,
+            font: NSFont.systemFont(ofSize: 12, weight: group.current ? .semibold : .medium),
+            color: group.current ? Theme.textPrimary : Theme.textSecondary
+        )
+        label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        let chevron = NSImageView()
+        chevron.image = NSImage(systemSymbolName: group.expanded ? "chevron.down" : "chevron.right", accessibilityDescription: nil)?
+            .withSymbolConfiguration(.init(pointSize: 8, weight: .semibold))
+        chevron.contentTintColor = Theme.textTertiary
+
+        let spacer = NSView()
+        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+
+        plusButton.isHidden = true
+        plusButton.toolTip = "Bu markada yeni sohbet"
+        plusButton.onAction = { [weak self] in self?.onNewChat?() }
+
+        let row = NSStackView(views: [label, chevron, spacer, plusButton])
+        row.orientation = .horizontal
+        row.alignment = .centerY
+        row.spacing = 5
+        row.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(row)
+
+        NSLayoutConstraint.activate([
+            row.leadingAnchor.constraint(equalTo: leadingAnchor, constant: SidebarMetrics.contentLeading),
+            row.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -SidebarMetrics.contentTrailing),
+            row.centerYAnchor.constraint(equalTo: centerYAnchor),
+            row.heightAnchor.constraint(equalToConstant: 20),
+        ])
+    }
+
+    required init?(coder: NSCoder) { fatalError("not used") }
+
+    override func mouseDown(with event: NSEvent) { onToggle?() }
+
+    override func accessibilityPerformPress() -> Bool {
+        onToggle?()
+        return true
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let trackingArea { removeTrackingArea(trackingArea) }
+        let area = NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeInActiveApp, .inVisibleRect], owner: self, userInfo: nil)
+        addTrackingArea(area)
+        trackingArea = area
+    }
+
+    override func mouseEntered(with event: NSEvent) { plusButton.isHidden = onNewChat == nil }
+    override func mouseExited(with event: NSEvent) { plusButton.isHidden = true }
+}
+
+/// One conversation: a single truncated line, an orange dot while a reply runs, "…" on hover.
+private final class SidebarConversationCellView: NSTableCellView {
+    var makeMenu: (() -> NSMenu)?
+
+    private let moreButton = GlyphButton(symbol: "ellipsis", size: 11, weight: .semibold, diameter: 20)
+    private var trackingArea: NSTrackingArea?
+
+    init(conversation: Conversation) {
+        super.init(frame: .zero)
         let label = NSTextField.styledLabel(conversation.displayTitle, font: Theme.rowFont, color: Theme.textPrimary)
         label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        cell.textField = label
+        textField = label
+        toolTip = conversation.displayTitle
 
         let spacer = NSView()
         spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
@@ -443,38 +686,46 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
         if conversation.activeRunId != nil {
             let dot = StatusDotView(color: Theme.accent)
             dot.toolTip = "Yanıt bekleniyor"
+            dot.setAccessibilityLabel("Yanıt bekleniyor")
             views.append(dot)
         }
+        moreButton.isHidden = true
+        moreButton.toolTip = "Sohbet seçenekleri"
+        moreButton.onAction = { [weak self] in self?.showMenu() }
+        views.append(moreButton)
 
         let row = NSStackView(views: views)
         row.orientation = .horizontal
         row.alignment = .centerY
         row.spacing = 6
         row.translatesAutoresizingMaskIntoConstraints = false
-        cell.addSubview(row)
+        addSubview(row)
 
         NSLayoutConstraint.activate([
-            row.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 8),
-            row.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -8),
-            row.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
+            row.leadingAnchor.constraint(equalTo: leadingAnchor, constant: SidebarMetrics.contentLeading),
+            row.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -SidebarMetrics.contentTrailing),
+            row.centerYAnchor.constraint(equalTo: centerYAnchor),
+            row.heightAnchor.constraint(equalToConstant: 20),
         ])
-        return cell
-    }
-}
-
-private final class BrandHeaderCellView: NSTableCellView {
-    private let onClick: () -> Void
-
-    init(onClick: @escaping () -> Void) {
-        self.onClick = onClick
-        super.init(frame: .zero)
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
 
-    override func mouseDown(with event: NSEvent) {
-        onClick()
+    private func showMenu() {
+        guard let menu = makeMenu?() else { return }
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: -2), in: moreButton)
     }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let trackingArea { removeTrackingArea(trackingArea) }
+        let area = NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeInActiveApp, .inVisibleRect], owner: self, userInfo: nil)
+        addTrackingArea(area)
+        trackingArea = area
+    }
+
+    override func mouseEntered(with event: NSEvent) { moreButton.isHidden = false }
+    override func mouseExited(with event: NSEvent) { moreButton.isHidden = true }
 }
 
 /// Menu item that runs a closure.
@@ -492,46 +743,21 @@ final class ClosureMenuItem: NSMenuItem {
     @objc private func run() { handler() }
 }
 
-private final class SidebarTableView: NSTableView {
-    var rowConversationIds: [EntityID?] = []
-    var rowBrandIds: [EntityID?] = []
-    var onArchiveConversation: ((EntityID) -> Void)?
-    var brandMenu: ((EntityID) -> NSMenu?)?
+// MARK: - Footer (`(B) Burak · MTM Agro ⌄   ⚙`)
 
-    override func menu(for event: NSEvent) -> NSMenu? {
-        let point = convert(event.locationInWindow, from: nil)
-        let row = self.row(at: point)
-        if row >= 0, row < rowBrandIds.count, let brandId = rowBrandIds[row] {
-            return brandMenu?(brandId)
-        }
-        guard row >= 0, row < rowConversationIds.count, let convId = rowConversationIds[row] else { return nil }
-        let menu = NSMenu()
-        let item = NSMenuItem(title: "Sohbeti arşivle", action: #selector(archiveClicked(_:)), keyEquivalent: "")
-        item.target = self
-        item.representedObject = convId
-        menu.addItem(item)
-        return menu
-    }
-
-    @objc private func archiveClicked(_ sender: NSMenuItem) {
-        guard let convId = sender.representedObject as? EntityID else { return }
-        onArchiveConversation?(convId)
-    }
-}
-
-// MARK: - Bottom User Row (`● Burak  ⚙`)
-
-private final class SidebarUserRowView: NSView {
+private final class SidebarFooterView: NSView {
     private unowned let app: AppModel
     private unowned let settings: AppSettings
-    private let userButton = NSControl()
+    private let nameLabel = NSTextField(labelWithString: "")
     private let statusDot = StatusDotView(color: Theme.textTertiary, size: 6)
     private let statusLabel = NSTextField(labelWithString: "")
-    private var statusObservation: ObservationToken?
+    private let profileControl: SidebarMenuTrigger
+    private var observation: ObservationToken?
 
     init(app: AppModel, settings: AppSettings) {
         self.app = app
         self.settings = settings
+        self.profileControl = SidebarMenuTrigger()
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
 
@@ -539,17 +765,31 @@ private final class SidebarUserRowView: NSView {
         let avatar = ThemedView()
         avatar.translatesAutoresizingMaskIntoConstraints = false
         avatar.backgroundColor = Theme.ink
-        avatar.cornerRadius = 11
-        let initial = NSTextField.styledLabel("B", font: NSFont.systemFont(ofSize: 11, weight: .semibold), color: Theme.canvas)
+        avatar.cornerRadius = 12
+        let initial = NSTextField.styledLabel(SidebarFooter.initial, font: NSFont.systemFont(ofSize: 11, weight: .semibold), color: Theme.canvas)
         initial.translatesAutoresizingMaskIntoConstraints = false
         avatar.addSubview(initial)
         NSLayoutConstraint.activate([
-            avatar.widthAnchor.constraint(equalToConstant: 22),
-            avatar.heightAnchor.constraint(equalToConstant: 22),
+            avatar.widthAnchor.constraint(equalToConstant: 24),
+            avatar.heightAnchor.constraint(equalToConstant: 24),
             initial.centerXAnchor.constraint(equalTo: avatar.centerXAnchor),
             initial.centerYAnchor.constraint(equalTo: avatar.centerYAnchor),
         ])
-        let nameLabel = NSTextField.styledLabel("Burak", font: NSFont.systemFont(ofSize: 13, weight: .medium), color: Theme.textPrimary)
+
+        nameLabel.font = NSFont.systemFont(ofSize: 13, weight: .medium)
+        nameLabel.textColor = Theme.textPrimary
+        nameLabel.lineBreakMode = .byTruncatingTail
+        nameLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        let chevron = NSImageView()
+        chevron.image = NSImage(systemSymbolName: "chevron.up.chevron.down", accessibilityDescription: nil)?
+            .withSymbolConfiguration(.init(pointSize: 8, weight: .semibold))
+        chevron.contentTintColor = Theme.textTertiary
+        chevron.setContentCompressionResistancePriority(.required, for: .horizontal)
+        let nameRow = NSStackView(views: [nameLabel, chevron])
+        nameRow.orientation = .horizontal
+        nameRow.alignment = .centerY
+        nameRow.spacing = 4
+
         statusLabel.font = Theme.smallFont
         statusLabel.textColor = Theme.textSecondary
         statusLabel.lineBreakMode = .byTruncatingTail
@@ -558,21 +798,20 @@ private final class SidebarUserRowView: NSView {
         statusRow.orientation = .horizontal
         statusRow.alignment = .centerY
         statusRow.spacing = 5
-        let nameColumn = NSStackView(views: [nameLabel, statusRow])
+
+        let nameColumn = NSStackView(views: [nameRow, statusRow])
         nameColumn.orientation = .vertical
         nameColumn.alignment = .leading
         nameColumn.spacing = 1
+        nameColumn.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
-        let profileControl = SidebarUserMenuTrigger { [weak self] anchor in
-            self?.showUserMenu(from: anchor)
-        }
-        profileControl.toolTip = "Görünüm, Mac sunucusu ve ayarlar"
+        profileControl.onClick = { [weak self] anchor in self?.showMenu(from: anchor) }
+        profileControl.toolTip = "Marka, Mac sunucusu, görünüm ve ayarlar"
         profileControl.setAccessibilityRole(.popUpButton)
-        profileControl.setAccessibilityLabel("Burak: görünüm ve ayarlar")
         let profileStack = NSStackView(views: [avatar, nameColumn])
         profileStack.orientation = .horizontal
         profileStack.alignment = .centerY
-        profileStack.spacing = 10
+        profileStack.spacing = 9
         profileStack.translatesAutoresizingMaskIntoConstraints = false
         profileControl.addSubview(profileStack)
         NSLayoutConstraint.activate([
@@ -581,6 +820,7 @@ private final class SidebarUserRowView: NSView {
             profileStack.topAnchor.constraint(equalTo: profileControl.topAnchor),
             profileStack.bottomAnchor.constraint(equalTo: profileControl.bottomAnchor),
         ])
+        profileControl.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
         let spacer = NSView()
         spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
@@ -594,91 +834,97 @@ private final class SidebarUserRowView: NSView {
         let row = NSStackView(views: [profileControl, spacer, gear])
         row.orientation = .horizontal
         row.alignment = .centerY
-        row.spacing = 10
+        row.spacing = 8
         row.translatesAutoresizingMaskIntoConstraints = false
         addSubview(row)
 
         NSLayoutConstraint.activate([
-            row.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
-            row.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14),
+            row.leadingAnchor.constraint(equalTo: leadingAnchor, constant: SidebarMetrics.contentLeading - 4),
+            row.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -(SidebarMetrics.contentTrailing - 2)),
             row.topAnchor.constraint(equalTo: topAnchor, constant: 10),
-            row.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -10),
+            row.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -12),
         ])
 
-        statusObservation = observe { [weak self] in self?.syncStatus() }
+        observation = observe { [weak self] in self?.sync() }
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
 
-    /// Mac server status under the name: accent only when something waits on the owner.
-    private func syncStatus() {
+    /// Name + working brand, and the Mac server status (accent only when it waits on the owner).
+    private func sync() {
+        let title = SidebarFooter.title(brandName: app.brand(app.currentBrandId)?.name)
+        nameLabel.stringValue = title
         let status = app.serverStatus
         statusLabel.stringValue = status.text
         statusDot.color = status.needsOwner ? Theme.accent : (status.text.hasPrefix("Mac hazır") ? Theme.ink : Theme.textTertiary)
         statusLabel.toolTip = app.connectionIssue?.message ?? status.text
-        statusLabel.setAccessibilityLabel("Mac sunucusu: \(status.text)")
+        profileControl.setAccessibilityLabel("\(title), \(status.text): marka ve ayarlar menüsü")
     }
 
-    private func showUserMenu(from anchor: NSView) {
+    private func showMenu(from anchor: NSView) {
         let menu = NSMenu()
+        menu.addItem(.sectionHeader(title: "Marka"))
+        for brand in app.brandMenuOrder {
+            let item = ClosureMenuItem(title: brand.name) { [weak app] in _ = app?.switchToBrand(brand.id) }
+            item.state = app.currentBrandId == brand.id ? .on : .off
+            if !app.canSwitchBrand(to: brand.id) {
+                item.isEnabled = false
+                item.toolTip = "Eklenmiş görseller markaya bağlı; markayı değiştirmek için önce onları kaldır."
+            }
+            menu.addItem(item)
+        }
+        menu.autoenablesItems = false
+        menu.addItem(ClosureMenuItem(title: "Yeni marka…") { [weak app] in app?.newBrandPresented = true })
+        if let brandId = app.currentBrandId {
+            menu.addItem(ClosureMenuItem(title: "Marka ayarları…") { [weak app] in app?.openBrandSettings(brandId) })
+        }
+
+        menu.addItem(.separator())
         let statusItem = NSMenuItem(title: "Mac sunucusu: \(app.serverStatus.text)", action: nil, keyEquivalent: "")
         statusItem.isEnabled = false
         menu.addItem(statusItem)
         if let issue = app.connectionIssue {
             for action in issue.actions {
-                let entry = ClosureMenuItem(title: RootViewController.title(for: action)) { [weak app] in app?.perform(action) }
-                menu.addItem(entry)
+                menu.addItem(ClosureMenuItem(title: RootViewController.title(for: action)) { [weak app] in app?.perform(action) })
             }
         }
+
         menu.addItem(.separator())
         menu.addItem(.sectionHeader(title: "Görünüm"))
         for option in AppearancePreference.allCases {
-            let item = NSMenuItem(title: option.label, action: #selector(pickAppearance(_:)), keyEquivalent: "")
-            item.target = self
-            item.representedObject = option.rawValue
+            let item = ClosureMenuItem(title: option.label) { [weak settings] in settings?.appearance = option }
             item.image = NSImage(systemSymbolName: option.symbol, accessibilityDescription: nil)
             item.state = settings.appearance == option ? .on : .off
             menu.addItem(item)
         }
         menu.addItem(.separator())
-        let settingsItem = NSMenuItem(title: "Ayarlar…", action: #selector(openSettings), keyEquivalent: "")
-        settingsItem.target = self
-        menu.addItem(settingsItem)
+        menu.addItem(ClosureMenuItem(title: "Ayarlar…") { [weak app] in app?.openSettings() })
         menu.popUp(positioning: nil, at: NSPoint(x: 0, y: anchor.bounds.height + 4), in: anchor)
-    }
-
-    @objc private func pickAppearance(_ sender: NSMenuItem) {
-        guard let raw = sender.representedObject as? String, let pref = AppearancePreference(rawValue: raw) else { return }
-        settings.appearance = pref
-    }
-
-    @objc private func openSettings() {
-        app.openSettings()
     }
 }
 
-private final class SidebarUserMenuTrigger: NSControl {
-    private let onClick: (NSView) -> Void
+private final class SidebarMenuTrigger: NSControl {
+    var onClick: ((NSView) -> Void)?
 
-    init(onClick: @escaping (NSView) -> Void) {
-        self.onClick = onClick
+    init() {
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
+        setAccessibilityElement(true)
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
 
     override func mouseDown(with event: NSEvent) {
-        onClick(self)
+        onClick?(self)
     }
 
     override func accessibilityPerformPress() -> Bool {
-        onClick(self)
+        onClick?(self)
         return true
     }
 
     override func accessibilityPerformShowMenu() -> Bool {
-        onClick(self)
+        onClick?(self)
         return true
     }
 }

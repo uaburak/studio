@@ -35,6 +35,17 @@ enum Theme {
     /// Glass tint for floating controls (composer, approve bar, search).
     static let floatingGlassTint = NSColor(light: 0xFFFFFF, dark: 0x161617, alpha: 0.72)
 
+    // MARK: Window chrome (Claude Code layout)
+
+    /// Flush left sidebar: a calm step off the canvas (a touch greyer in light, darker in dark).
+    static let sidebarBackground = NSColor(light: 0xF7F7F8, dark: 0x101011)
+    /// Selected sidebar row: a rounded neutral fill, never the accent.
+    static let sidebarSelection = NSColor(light: 0xEAEAEC, dark: 0x262628)
+    /// Hovered sidebar row.
+    static let sidebarHover = NSColor(light: 0xF0F0F2, dark: 0x1B1B1D)
+    /// Thin meters in the right panel (usage windows).
+    static let meterTrack = NSColor(light: 0xEBEBED, dark: 0x2C2C2F)
+
     // MARK: Post placeholders (content, not chrome)
 
     static let postDark = NSColor(light: 0x0A0A0A, dark: 0x0A0A0A)
@@ -48,8 +59,11 @@ enum Theme {
 
     // MARK: Metrics
 
-    static let sidebarWidth: CGFloat = 228
-    static let inspectorWidth: CGFloat = 268
+    static let sidebarWidth: CGFloat = 260
+    static let inspectorWidth: CGFloat = 300
+    /// Rounded selection / hover fill of sidebar rows and its inset from the sidebar edges.
+    static let sidebarRowRadius: CGFloat = 8
+    static let sidebarRowInset: CGFloat = 8
     /// Chat column: at most this wide, at least `columnMinMargin` from each side.
     static let columnMaxWidth: CGFloat = 634
     static let columnMinMargin: CGFloat = 84
@@ -93,6 +107,18 @@ enum Theme {
         static var rowTitleFont: NSFont { NSFont.systemFont(ofSize: 13) }
         static var rowDetailFont: NSFont { NSFont.systemFont(ofSize: 12) }
         static var subheaderFont: NSFont { NSFont.systemFont(ofSize: 12, weight: .semibold) }
+    }
+
+    /// Right panel (Claude Code's Environment / Context / Connectors): tiny grey section
+    /// headers, compact label-left / value-right rows, hairlines between sections.
+    enum Panel {
+        static let horizontalPadding: CGFloat = 16
+        static let rowHeight: CGFloat = 24
+        static let sectionSpacing: CGFloat = 14
+        static var headerFont: NSFont { NSFont.systemFont(ofSize: 11, weight: .semibold) }
+        static var linkFont: NSFont { NSFont.systemFont(ofSize: 11) }
+        static var rowFont: NSFont { NSFont.systemFont(ofSize: 13) }
+        static var footnoteFont: NSFont { NSFont.systemFont(ofSize: 11) }
     }
 
     // MARK: Accessibility

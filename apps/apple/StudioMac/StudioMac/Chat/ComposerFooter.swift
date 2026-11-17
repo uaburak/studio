@@ -1,9 +1,9 @@
 import AppKit
 import StudioKit
 
-/// Pure AppKit footer row under the chat composer (and Start composer):
+/// Pure AppKit status line under the chat composer (and Start composer), Claude Code style:
 /// - Left: `MacStatusControlView` (`● Mac hazır · Gemini hazır` / Claude status)
-/// - Right: grouped Model menu (**Gemini** + **Claude**), Effort menu, and clickable Usage ring + popover!
+/// - Right: the usage ring (popover) and one "Opus Orta" control: model + effort in one menu.
 final class ComposerFooterControlView: NSView {
     private unowned let app: AppModel
     private let getChoice: @MainActor () -> AgentChoice
@@ -11,8 +11,7 @@ final class ComposerFooterControlView: NSView {
     private let getPresence: @MainActor () -> WorkerPresence?
 
     private let macStatus: MacStatusControlView
-    private let modelButton: FooterMenuButton
-    private let effortButton: FooterMenuButton
+    private let agentButton: FooterMenuButton
     private let usageControl: UsageIndicatorControlView
     private var observation: ObservationToken?
 
@@ -45,19 +44,18 @@ final class ComposerFooterControlView: NSView {
         self.setChoice = setChoice
         self.getPresence = getPresence
         self.macStatus = MacStatusControlView(app: app, selectedModel: { getChoice().model })
-        self.modelButton = FooterMenuButton(help: "Model")
-        self.effortButton = FooterMenuButton(help: "Düşünme düzeyi")
+        self.agentButton = FooterMenuButton(help: "Model ve düşünme düzeyi")
         self.usageControl = UsageIndicatorControlView(app: app, getPresence: getPresence)
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
 
-        modelButton.buildMenu = { [weak self] in self?.makeModelMenu() ?? NSMenu() }
-        effortButton.buildMenu = { [weak self] in self?.makeEffortMenu() ?? NSMenu() }
+        agentButton.buildMenu = { [weak self] in self?.makeAgentMenu() ?? NSMenu() }
+        macStatus.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
         let spacer = NSView()
         spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
 
-        let row = NSStackView(views: [macStatus, spacer, modelButton, effortButton, usageControl])
+        let row = NSStackView(views: [macStatus, spacer, usageControl, agentButton])
         row.orientation = .horizontal
         row.alignment = .centerY
         row.spacing = 12
@@ -82,48 +80,43 @@ final class ComposerFooterControlView: NSView {
     private func refresh() {
         let choice = getChoice()
         let presence = getPresence()
-        modelButton.title = choice.model.displayName
-        effortButton.title = choice.effort.displayName
+        agentButton.setTitle(model: choice.model.displayName, effort: choice.effort.displayName)
         macStatus.refresh(presenceOverride: presence)
         usageControl.refresh(presence: presence)
     }
 
-    private func makeModelMenu() -> NSMenu {
-        let menu = NSMenu(title: "Model")
-        let current = getChoice().model
+    /// One menu, Claude Code style: the models (Gemini, Claude), then the thinking effort.
+    private func makeAgentMenu() -> NSMenu {
+        let menu = NSMenu(title: "Model ve düşünme düzeyi")
+        let current = getChoice()
 
         menu.addItem(.sectionHeader(title: "Gemini (API / CLI)"))
         for candidate in AgentModel.geminiCases {
-            let item = NSMenuItem(title: candidate.displayName, action: #selector(pickModel(_:)), keyEquivalent: "")
-            item.target = self
-            item.representedObject = candidate.rawValue
-            item.state = candidate == current ? .on : .off
-            menu.addItem(item)
+            menu.addItem(modelItem(candidate, current: current.model))
         }
-
         menu.addItem(.separator())
         menu.addItem(.sectionHeader(title: "Claude"))
         for candidate in AgentModel.claudeCases {
-            let item = NSMenuItem(title: candidate.displayName, action: #selector(pickModel(_:)), keyEquivalent: "")
+            menu.addItem(modelItem(candidate, current: current.model))
+        }
+        menu.addItem(.separator())
+        menu.addItem(.sectionHeader(title: "Düşünme düzeyi"))
+        for candidate in AgentEffort.knownCases {
+            let item = NSMenuItem(title: candidate.displayName, action: #selector(pickEffort(_:)), keyEquivalent: "")
             item.target = self
             item.representedObject = candidate.rawValue
-            item.state = candidate == current ? .on : .off
+            item.state = candidate == current.effort ? .on : .off
             menu.addItem(item)
         }
         return menu
     }
 
-    private func makeEffortMenu() -> NSMenu {
-        let menu = NSMenu(title: "Düşünme düzeyi")
-        let current = getChoice().effort
-        for candidate in AgentEffort.knownCases {
-            let item = NSMenuItem(title: candidate.displayName, action: #selector(pickEffort(_:)), keyEquivalent: "")
-            item.target = self
-            item.representedObject = candidate.rawValue
-            item.state = candidate == current ? .on : .off
-            menu.addItem(item)
-        }
-        return menu
+    private func modelItem(_ candidate: AgentModel, current: AgentModel) -> NSMenuItem {
+        let item = NSMenuItem(title: candidate.displayName, action: #selector(pickModel(_:)), keyEquivalent: "")
+        item.target = self
+        item.representedObject = candidate.rawValue
+        item.state = candidate == current ? .on : .off
+        return item
     }
 
     @objc private func pickModel(_ sender: NSMenuItem) {
@@ -141,16 +134,17 @@ final class ComposerFooterControlView: NSView {
     }
 }
 
+/// "Opus Orta": the composer's model + effort line (Claude Code's "Opus 5.5 Medium").
+enum ComposerStatusText {
+    static func title(_ choice: AgentChoice) -> String {
+        "\(choice.model.displayName) \(choice.effort.displayName)"
+    }
+}
+
 // MARK: - FooterMenuButton
 
+/// Grey "Opus Orta ⌄" text control that pops its menu above itself.
 private final class FooterMenuButton: NSControl {
-    var title: String = "" {
-        didSet {
-            label.stringValue = title
-            setAccessibilityLabel("\(helpText): \(title)")
-            invalidateIntrinsicContentSize()
-        }
-    }
     var buildMenu: (() -> NSMenu)?
 
     private let helpText: String
@@ -162,6 +156,7 @@ private final class FooterMenuButton: NSControl {
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
         toolTip = help
+        setAccessibilityElement(true)
         setAccessibilityRole(.popUpButton)
 
         label.font = Theme.smallFont
@@ -170,12 +165,12 @@ private final class FooterMenuButton: NSControl {
 
         chevron.image = NSImage(systemSymbolName: "chevron.down", accessibilityDescription: nil)?
             .withSymbolConfiguration(.init(pointSize: 7, weight: .semibold))
-        chevron.contentTintColor = Theme.textSecondary
+        chevron.contentTintColor = Theme.textTertiary
 
         let row = NSStackView(views: [label, chevron])
         row.orientation = .horizontal
         row.alignment = .centerY
-        row.spacing = 3
+        row.spacing = 4
         row.translatesAutoresizingMaskIntoConstraints = false
         addSubview(row)
 
@@ -189,7 +184,36 @@ private final class FooterMenuButton: NSControl {
 
     required init?(coder: NSCoder) { fatalError("not used") }
 
+    /// Model in the secondary grey, effort a step lighter.
+    func setTitle(model: String, effort: String) {
+        let text = NSMutableAttributedString(string: model, attributes: [
+            .font: NSFont.systemFont(ofSize: 11, weight: .medium),
+            .foregroundColor: Theme.textSecondary,
+        ])
+        text.append(NSAttributedString(string: "  " + effort, attributes: [
+            .font: Theme.smallFont,
+            .foregroundColor: Theme.textTertiary,
+        ]))
+        label.attributedStringValue = text
+        setAccessibilityLabel("\(helpText): \(model) \(effort)")
+        invalidateIntrinsicContentSize()
+    }
+
+    /// Plain text of the control (tests).
+    var titleText: String { label.stringValue }
+
     override func mouseDown(with event: NSEvent) {
+        showMenu()
+    }
+
+    override func accessibilityPerformPress() -> Bool {
+        showMenu()
+        return true
+    }
+
+    override func accessibilityPerformShowMenu() -> Bool { accessibilityPerformPress() }
+
+    private func showMenu() {
         guard let menu = buildMenu?() else { return }
         menu.popUp(positioning: nil, at: NSPoint(x: 0, y: bounds.height + 4), in: self)
     }

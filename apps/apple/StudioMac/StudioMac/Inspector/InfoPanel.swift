@@ -1,10 +1,15 @@
 import AppKit
 import StudioKit
 
-/// Pure AppKit right inspector panel (`NSSplitViewItem(inspectorWithViewController:)`):
-/// - Marka + Instagram / Facebook / LinkedIn account rows ("Bağla" popover)
-/// - Bu sohbetin postları (thumbnails clicking into `PostDetailModel`, "Tümünü göster")
-/// - Arka plan işleri (live elapsed timer, right-click "İşi iptal et", collapsible "N iş bitti").
+/// Right panel in the Claude Code layout (Environment / Context / Connectors), pure AppKit
+/// (`NSSplitViewItem(inspectorWithViewController:)`). Small grey section headers, compact
+/// label-left / value-right rows and hairlines between sections:
+/// - Ortam: this Mac's server (API, worker, LAN address, Cloudflare remote access) and the brand
+/// - Kullanım: Claude subscription windows as thin meters with reset times, Claude + Gemini status
+/// - Bağlam (conversation only): messages, image aliases, plans, posts, model and the run
+/// - Hesaplar: the brand's Instagram / Facebook / LinkedIn connections ("Bağla" opens the sheet)
+/// - İşler: background jobs (live elapsed time, right-click cancel, collapsible finished list).
+/// Texts come from `InspectorContent`; nothing is shown that the server does not report.
 final class InfoPanelViewController: NSViewController {
     private unowned let app: AppModel
     private let scrollView = NSScrollView()
@@ -15,7 +20,11 @@ final class InfoPanelViewController: NSViewController {
     private var now = Date()
     private var tickTask: Task<Void, Never>?
     private var observation: ObservationToken?
-    private var activePopover: NSPopover?
+    /// The conversation whose posts were last requested (the posts board loads once per visit).
+    private var postsRequestedFor: EntityID?
+
+    /// Section titles shown now, in order (tests).
+    private(set) var sectionTitles: [String] = []
 
     init(app: AppModel) {
         self.app = app
@@ -58,10 +67,10 @@ final class InfoPanelViewController: NSViewController {
             documentView.trailingAnchor.constraint(equalTo: clip.trailingAnchor),
             documentView.topAnchor.constraint(equalTo: clip.topAnchor),
 
-            stack.leadingAnchor.constraint(equalTo: documentView.leadingAnchor, constant: 16),
-            stack.trailingAnchor.constraint(equalTo: documentView.trailingAnchor, constant: -16),
-            stack.topAnchor.constraint(equalTo: documentView.topAnchor, constant: 14),
-            stack.bottomAnchor.constraint(equalTo: documentView.bottomAnchor, constant: -14),
+            stack.leadingAnchor.constraint(equalTo: documentView.leadingAnchor, constant: Theme.Panel.horizontalPadding),
+            stack.trailingAnchor.constraint(equalTo: documentView.trailingAnchor, constant: -Theme.Panel.horizontalPadding),
+            stack.topAnchor.constraint(equalTo: documentView.topAnchor, constant: 12),
+            stack.bottomAnchor.constraint(equalTo: documentView.bottomAnchor, constant: -16),
         ])
 
         self.view = root
@@ -72,6 +81,7 @@ final class InfoPanelViewController: NSViewController {
         observation = observe { [weak self] in
             self?.rebuild()
         }
+        // Elapsed job times and "sıfırlanma: 2 saat sonra" stay current.
         tickTask = Task { @MainActor [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(30))
@@ -91,237 +101,217 @@ final class InfoPanelViewController: NSViewController {
             stack.removeArrangedSubview($0)
             $0.removeFromSuperview()
         }
+        sectionTitles = []
 
         let brandId = app.routeBrandId
-        let brandSection = buildBrandSection(brandId: brandId)
-        addFullWidth(brandSection)
-
-        if case .conversation(let convId) = app.route {
-            addDivider()
-            let convModel = app.conversationModel(convId)
-            if app.posts.board.cards.isEmpty {
-                Task { await app.posts.load() }
-            }
-            addFullWidth(buildConversationPostsSection(model: convModel))
+        addSection(buildEnvironmentSection(brandId: brandId))
+        addSection(buildUsageSection())
+        if case .conversation(let id) = app.route {
+            addSection(buildContextSection(conversationId: id))
         }
-
-        addDivider()
-        addFullWidth(buildJobsSection(brandId: brandId))
+        addSection(buildAccountsSection(brandId: brandId))
+        addSection(buildJobsSection(brandId: brandId))
     }
 
-    private func addFullWidth(_ view: NSView) {
-        stack.addArrangedSubview(view)
-        view.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+    private func addSection(_ section: PanelSectionView) {
+        if !stack.arrangedSubviews.isEmpty {
+            let divider = SectionDividerView()
+            stack.addArrangedSubview(divider)
+            divider.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        }
+        stack.addArrangedSubview(section)
+        section.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        sectionTitles.append(section.title)
     }
 
-    private func addDivider() {
-        let wrapper = NSView()
-        wrapper.translatesAutoresizingMaskIntoConstraints = false
-        let line = HairlineView()
-        wrapper.addSubview(line)
-        NSLayoutConstraint.activate([
-            wrapper.heightAnchor.constraint(equalToConstant: 25),
-            line.leadingAnchor.constraint(equalTo: wrapper.leadingAnchor),
-            line.trailingAnchor.constraint(equalTo: wrapper.trailingAnchor),
-            line.centerYAnchor.constraint(equalTo: wrapper.centerYAnchor),
-        ])
-        addFullWidth(wrapper)
-    }
+    // MARK: Ortam
 
-    // MARK: Brand Section
-
-    private func buildBrandSection(brandId: EntityID?) -> NSView {
-        let section = NSStackView()
-        section.orientation = .vertical
-        section.alignment = .leading
-        section.spacing = 0
-        section.translatesAutoresizingMaskIntoConstraints = false
-
-        let header = NSTextField.sectionTitle("Marka")
-        section.addArrangedSubview(header)
-        section.setCustomSpacing(8, after: header)
-
+    private func buildEnvironmentSection(brandId: EntityID?) -> PanelSectionView {
+        let settings = app.settings
+        let section = PanelSectionView(title: "Ortam", linkTitle: "Ayarlar") { [weak app] in app?.openSettings(.macServer) }
+        let rows = InspectorContent.environment(
+            isSample: app.isSample,
+            host: app.host.map(HostSnapshot.init),
+            hostEnabled: settings.hostEnabled,
+            serverURL: settings.serverURL,
+            lanEnabled: settings.lanEnabled,
+            remoteEnabled: settings.remoteControlEnabled,
+            remoteHostname: settings.remoteHostname,
+            issue: app.connectionIssue,
+            presence: app.presence
+        )
+        for row in rows {
+            section.addRow(row) { [weak app] _ in app?.openSettings(.macServer) }
+        }
         if let brand = app.brand(brandId) {
-            // Neutral: orange is for actions that wait on the owner (Bağla).
-            let profileBtn = AccentTextButton(title: "Marka Profili…", color: Theme.textSecondary) { [weak app] _ in
-                app?.brandProfileTarget = BrandProfileTarget(brandId: brand.id)
+            section.addRow(PanelRow(label: "Marka", value: brand.name, help: "Marka ayarları, kit, profil ve AI analizi")) { [weak self] anchor in
+                self?.showBrandMenu(brand.id, from: anchor)
             }
-            let brandRow = InfoRowView(symbol: "circle.fill", symbolColor: Theme.textSecondary, title: brand.name, trailing: profileBtn)
-            section.addArrangedSubview(brandRow)
-            brandRow.widthAnchor.constraint(equalTo: section.widthAnchor).isActive = true
+        } else {
+            section.addRow(PanelRow(label: "Marka", value: "Yok", tone: .muted, help: "Bu sohbetin markası yok."))
+        }
+        return section
+    }
 
-            let analyzeAction = PlainTextActionView(title: "AI ile Analiz Et", font: Theme.smallFont, color: Theme.textSecondary) { [weak app] in
-                app?.brandProfileTarget = BrandProfileTarget(brandId: brand.id, startAnalysis: true)
-            }
-            section.addArrangedSubview(analyzeAction)
-            section.setCustomSpacing(8, after: analyzeAction)
+    private func showBrandMenu(_ brandId: EntityID, from anchor: NSView) {
+        let menu = NSMenu()
+        menu.addItem(ClosureMenuItem(title: "Marka ayarları…") { [weak app] in app?.openBrandSettings(brandId) })
+        menu.addItem(ClosureMenuItem(title: "Marka profili…") { [weak app] in app?.brandProfileTarget = BrandProfileTarget(brandId: brandId) })
+        menu.addItem(ClosureMenuItem(title: "Marka kiti…") { [weak app] in app?.openBrandSettings(brandId, tab: .kit) })
+        menu.addItem(ClosureMenuItem(title: "AI ile analiz et") { [weak app] in
+            app?.brandProfileTarget = BrandProfileTarget(brandId: brandId, startAnalysis: true)
+        })
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: -2), in: anchor)
+    }
 
-            let accounts = app.accounts(of: brand.id)
-            for platform in Platform.knownCases {
-                let account = accounts.first { $0.platform == platform }
-                let trailing: NSView
-                if let account, account.status == .connected {
-                    let health = account.tokenHealth
-                    let badgeText = (health == .expiringSoon || health == .invalid || health == .missingScopes)
-                        ? (health?.label ?? "Kontrol et")
-                        : "Bağlı"
-                    let btn = PlainTextActionView(
-                        title: badgeText,
-                        font: Theme.smallFont,
-                        color: (health == .expiringSoon || health == .invalid) ? Theme.accent : Theme.textSecondary
-                    ) { [weak app] in
-                        app?.accountConnectTarget = AccountConnectTarget(brandId: brand.id, platform: platform)
-                    }
-                    btn.toolTip = "\(account.handle) · Bağlantı detayları ve anahtar denetimi"
-                    trailing = btn
+    // MARK: Kullanım
+
+    private func buildUsageSection() -> PanelSectionView {
+        let presence = app.presence
+        let section = PanelSectionView(title: "Kullanım", linkTitle: "Ayarlar") { [weak app] in app?.openSettings(.usage) }
+
+        let meters = InspectorContent.usageMeters(presence?.usage, now: now)
+        for meter in meters {
+            section.add(UsageMeterView(meter: meter), spacingAfter: 10)
+        }
+        if let note = InspectorContent.usageNote(presence) {
+            section.addNote(note)
+        }
+
+        for row in InspectorContent.providers(presence) {
+            section.addRow(row) { [weak app] _ in
+                guard let app else { return }
+                if row.tone == .action, row.label == "Claude" {
+                    app.perform(.signInClaude)
                 } else {
-                    let title = account?.status == .needsReauth ? "Yeniden bağla" : "Bağla"
-                    let btn = AccentTextButton(title: title) { [weak app] _ in
-                        app?.accountConnectTarget = AccountConnectTarget(brandId: brand.id, platform: platform)
-                    }
-                    trailing = btn
+                    app.openSettings(.ai)
                 }
-                let row = InfoRowView(symbol: "circle.dotted.circle", symbolColor: Theme.textTertiary, title: platform.displayName, trailing: trailing)
-                section.addArrangedSubview(row)
-                row.widthAnchor.constraint(equalTo: section.widthAnchor).isActive = true
             }
-        } else {
-            section.addArrangedSubview(NSTextField.styledLabel("Bu sohbetin markası yok.", font: Theme.captionFont, color: Theme.textSecondary))
+        }
+        if let updated = InspectorContent.usageUpdated(presence?.usage, now: now) {
+            section.addFootnote(updated)
         }
         return section
     }
 
-    // MARK: Conversation Posts Section
+    // MARK: Bağlam
 
-    private func buildConversationPostsSection(model: ConversationModel) -> NSView {
-        let cards = model.contentIds.compactMap { app.posts.card($0) }
-        let section = NSStackView()
-        section.orientation = .vertical
-        section.alignment = .leading
-        section.spacing = 0
-        section.translatesAutoresizingMaskIntoConstraints = false
+    private func buildContextSection(conversationId: EntityID) -> PanelSectionView {
+        let model = app.conversationModel(conversationId)
+        let section = PanelSectionView(title: "Bağlam")
+        guard let state = model.state else {
+            section.addNote("Yükleniyor…")
+            return section
+        }
+        for row in InspectorContent.context(state: state, choice: model.agentChoice) {
+            section.addRow(row)
+        }
+        if let aliases = InspectorContent.aliasLine(state) {
+            section.addFootnote(aliases)
+        }
 
-        let header = NSTextField.sectionTitle("Bu sohbetin postları")
-        section.addArrangedSubview(header)
-        section.setCustomSpacing(8, after: header)
-
+        let contentIds = model.contentIds
+        guard !contentIds.isEmpty else { return section }
+        if app.posts.board.cards.isEmpty, postsRequestedFor != conversationId {
+            postsRequestedFor = conversationId
+            Task { await app.posts.load() }
+        }
+        let cards = contentIds.compactMap { app.posts.card($0) }
         if cards.isEmpty {
-            let emptyText = model.contentIds.isEmpty ? "Plan onaylanınca postlar burada görünür." : "Postlar yükleniyor…"
-            let lbl = NSTextField.styledLabel(emptyText, font: Theme.captionFont, color: Theme.textSecondary, wraps: true)
-            section.addArrangedSubview(lbl)
-            lbl.widthAnchor.constraint(equalTo: section.widthAnchor).isActive = true
-        } else {
-            for card in cards.prefix(3) {
-                let row = PostMiniRowView(imageStore: app.images, card: card) { [weak app] in
-                    guard let app else { return }
-                    app.detail = PostDetailModel(app: app, card: card, sourceFrame: .zero)
-                }
-                section.addArrangedSubview(row)
-                row.widthAnchor.constraint(equalTo: section.widthAnchor).isActive = true
+            // Only while the board is still loading; posts of another month stay in Postlar.
+            if app.posts.isLoading || app.posts.board.cards.isEmpty { section.addNote("Postlar yükleniyor…") }
+            return section
+        }
+        section.addSpacing(6)
+        for card in cards.prefix(3) {
+            let row = PostMiniRowView(imageStore: app.images, card: card) { [weak app] in
+                guard let app else { return }
+                app.detail = PostDetailModel(app: app, card: card, sourceFrame: .zero)
             }
-            let showAll = PlainTextActionView(title: "Tümünü göster", font: Theme.smallFont, color: Theme.textSecondary) { [weak app] in
-                app?.navigate(to: .posts)
+            section.add(row)
+        }
+        let showAll = PanelLinkView(title: cards.count > 3 ? "Tümünü göster (\(cards.count))" : "Postlarda aç") { [weak app] in
+            app?.navigate(to: .posts)
+        }
+        section.add(showAll, fullWidth: false)
+        return section
+    }
+
+    // MARK: Hesaplar
+
+    private func buildAccountsSection(brandId: EntityID?) -> PanelSectionView {
+        let section = PanelSectionView(title: "Hesaplar", linkTitle: "Ayarlar") { [weak app] in app?.openSettings(.accounts) }
+        guard let brandId, app.brand(brandId) != nil else {
+            section.addNote("Bu sohbetin markası yok.")
+            return section
+        }
+        let accounts = app.accounts(of: brandId)
+        for platform in Platform.knownCases {
+            let row = InspectorContent.account(platform: platform, account: accounts.first { $0.platform == platform })
+            section.addRow(row) { [weak app] _ in
+                app?.accountConnectTarget = AccountConnectTarget(brandId: brandId, platform: platform)
             }
-            section.addArrangedSubview(showAll)
         }
         return section
     }
 
-    // MARK: Jobs Section
+    // MARK: İşler
 
-    private func buildJobsSection(brandId: EntityID?) -> NSView {
+    private func buildJobsSection(brandId: EntityID?) -> PanelSectionView {
         let jobs = app.jobBoard.jobs.filter { brandId == nil || $0.brandId == brandId || $0.brandId == nil }
         let active = jobs.filter { $0.status.isActive }
         let finished = jobs.filter { $0.status.isTerminal && ($0.finishedAt ?? $0.updatedAt) > now.addingTimeInterval(-86_400) }
 
-        let section = NSStackView()
-        section.orientation = .vertical
-        section.alignment = .leading
-        section.spacing = 0
-        section.translatesAutoresizingMaskIntoConstraints = false
-
-        let headerRow = NSStackView()
-        headerRow.orientation = .horizontal
-        headerRow.alignment = .centerY
-        headerRow.addArrangedSubview(NSTextField.sectionTitle("Arka plan işleri"))
-        let spacer = NSView()
-        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        headerRow.addArrangedSubview(spacer)
+        var stateText: String?
         if !app.jobBoard.state.isLive {
-            let st = NSTextField.styledLabel(app.jobBoard.state == .polling ? "yenileniyor" : "bağlanıyor", font: Theme.smallFont, color: Theme.textTertiary)
-            st.toolTip = "Canlı akış kopuk; iş listesi aralıklarla yenileniyor."
-            headerRow.addArrangedSubview(st)
+            stateText = app.jobBoard.state == .polling ? "yenileniyor" : "bağlanıyor"
         }
-        section.addArrangedSubview(headerRow)
-        headerRow.widthAnchor.constraint(equalTo: section.widthAnchor).isActive = true
-        section.setCustomSpacing(8, after: headerRow)
+        let section = PanelSectionView(title: "İşler", trailingNote: stateText)
+        section.trailingNoteHelp = "Canlı akış kopuk; iş listesi aralıklarla yenileniyor."
 
         if active.isEmpty && finished.isEmpty {
-            section.addArrangedSubview(NSTextField.styledLabel("Şu an iş yok.", font: Theme.captionFont, color: Theme.textSecondary))
+            section.addNote("Şu an iş yok.")
         }
 
         for job in active {
-            let elapsedText = job.status == .running
+            let value = job.status == .running
                 ? TurkishFormat.elapsed(from: job.startedAt ?? job.updatedAt, to: now)
                 : "sırada"
-            let trailing = NSStackView(views: [
-                NSTextField.styledLabel(elapsedText, font: Theme.smallFont, color: Theme.textSecondary),
-                StatusDotView(color: Theme.accent),
-            ])
-            trailing.orientation = .horizontal
-            trailing.alignment = .centerY
-            trailing.spacing = 8
-
-            let row = ActiveJobRowView(
-                job: job,
-                trailing: trailing,
-                helpText: job.progressMessage ?? (job.status == .queued ? (app.isOnline ? "Sırada" : "Mac çevrimdışı; Mac açılınca çalışır.") : "Çalışıyor")
-            ) { [weak app] in
+            let help = job.progressMessage ?? (job.status == .queued ? (app.isOnline ? "Sırada" : "Mac çevrimdışı; Mac açılınca çalışır.") : "Çalışıyor")
+            let row = PanelRowView(row: PanelRow(label: job.displayTitle, value: value, help: help), leadingDot: Theme.accent, onClick: nil)
+            row.labelColor = Theme.textPrimary
+            let menu = NSMenu()
+            menu.addItem(ClosureMenuItem(title: "İşi iptal et") { [weak app] in
                 guard let app else { return }
                 Task { _ = try? await app.dataService.cancelJob(job.id) }
-            }
-            section.addArrangedSubview(row)
-            row.widthAnchor.constraint(equalTo: section.widthAnchor).isActive = true
+            })
+            row.menu = menu
+            section.add(row)
         }
 
         if !finished.isEmpty {
-            let chevron = NSImageView()
-            chevron.image = NSImage(systemSymbolName: showFinishedJobs ? "chevron.down" : "chevron.right", accessibilityDescription: nil)?
-                .withSymbolConfiguration(.init(pointSize: 8, weight: .semibold))
-            chevron.contentTintColor = Theme.textTertiary
-
-            let toggle = ClickableContainerView { [weak self] in
-                guard let self else { return }
-                self.showFinishedJobs.toggle()
-                self.rebuild()
-            }
+            let toggle = PanelRowView(
+                row: PanelRow(label: "\(finished.count) iş bitti", value: showFinishedJobs ? "Gizle" : "Göster", tone: .muted),
+                onClick: { [weak self] _ in
+                    guard let self else { return }
+                    self.showFinishedJobs.toggle()
+                    self.rebuild()
+                }
+            )
             toggle.setAccessibilityLabel("\(finished.count) iş bitti, \(showFinishedJobs ? "gizle" : "göster")")
-            let toggleRow = InfoRowView(symbol: "diamond", symbolColor: Theme.textSecondary, title: "\(finished.count) iş bitti", trailing: chevron)
-            toggle.setChild(toggleRow)
-            section.addArrangedSubview(toggle)
-            toggle.widthAnchor.constraint(equalTo: section.widthAnchor).isActive = true
+            section.add(toggle)
 
             if showFinishedJobs {
                 for job in finished {
-                    let statusLabel: String = switch job.status {
+                    let status: String = switch job.status {
                     case .succeeded: "bitti"
                     case .failed: "hata"
                     case .cancelled: "iptal"
                     default: ""
                     }
-                    let line = NSStackView()
-                    line.orientation = .horizontal
-                    line.alignment = .centerY
-                    let title = NSTextField.styledLabel(job.displayTitle, font: Theme.captionFont, color: Theme.textSecondary)
-                    title.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-                    let sp = NSView()
-                    sp.setContentHuggingPriority(.defaultLow, for: .horizontal)
-                    line.addArrangedSubview(title)
-                    line.addArrangedSubview(sp)
-                    line.addArrangedSubview(NSTextField.styledLabel(statusLabel, font: Theme.smallFont, color: Theme.textTertiary))
-                    line.edgeInsets = NSEdgeInsets(top: 4, left: 26, bottom: 4, right: 0)
-                    section.addArrangedSubview(line)
-                    line.widthAnchor.constraint(equalTo: section.widthAnchor).isActive = true
+                    let row = PanelRowView(row: PanelRow(label: job.displayTitle, value: status, tone: job.status == .failed ? .attention : .muted), onClick: nil)
+                    row.labelColor = Theme.textSecondary
+                    section.add(row)
                 }
             }
         }
@@ -329,160 +319,288 @@ final class InfoPanelViewController: NSViewController {
     }
 }
 
-// MARK: - Inspector Helper Views
+// MARK: - Panel building blocks
 
-private final class InfoRowView: NSView {
-    init(symbol: String, symbolColor: NSColor, title: String, trailing: NSView? = nil) {
+/// A section: tiny grey header (optional link or note on the right), then its rows.
+private final class PanelSectionView: NSStackView {
+    let title: String
+    var trailingNoteHelp: String? {
+        didSet { trailingNoteLabel?.toolTip = trailingNoteHelp }
+    }
+    private var trailingNoteLabel: NSTextField?
+
+    init(title: String, linkTitle: String? = nil, trailingNote: String? = nil, onLink: (() -> Void)? = nil) {
+        self.title = title
         super.init(frame: .zero)
+        orientation = .vertical
+        alignment = .leading
+        spacing = 0
         translatesAutoresizingMaskIntoConstraints = false
 
-        let icon = NSImageView()
-        icon.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)?
-            .withSymbolConfiguration(.init(pointSize: symbol == "circle.fill" ? 9 : 11, weight: .regular))
-        icon.contentTintColor = symbolColor
-        icon.translatesAutoresizingMaskIntoConstraints = false
-        icon.widthAnchor.constraint(equalToConstant: 16).isActive = true
-
-        let titleLabel = NSTextField.styledLabel(title, font: Theme.rowFont, color: Theme.textPrimary)
-        titleLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-
+        let header = NSTextField.styledLabel(title, font: Theme.Panel.headerFont, color: Theme.textSecondary)
+        header.setAccessibilityRole(.staticText)
         let spacer = NSView()
         spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
-
-        var views: [NSView] = [icon, titleLabel, spacer]
-        if let trailing { views.append(trailing) }
-
-        let row = NSStackView(views: views)
-        row.orientation = .horizontal
-        row.alignment = .centerY
-        row.spacing = 10
-        row.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(row)
-
-        NSLayoutConstraint.activate([
-            heightAnchor.constraint(equalToConstant: 31),
-            row.leadingAnchor.constraint(equalTo: leadingAnchor),
-            row.trailingAnchor.constraint(equalTo: trailingAnchor),
-            row.centerYAnchor.constraint(equalTo: centerYAnchor),
-        ])
+        var views: [NSView] = [header, spacer]
+        if let trailingNote {
+            let note = NSTextField.styledLabel(trailingNote, font: Theme.Panel.linkFont, color: Theme.textTertiary)
+            trailingNoteLabel = note
+            views.append(note)
+        }
+        if let linkTitle, let onLink {
+            let link = PanelLinkView(title: linkTitle, action: onLink)
+            link.toolTip = "\(title) ayarları"
+            views.append(link)
+        }
+        let headerRow = NSStackView(views: views)
+        headerRow.orientation = .horizontal
+        headerRow.alignment = .centerY
+        headerRow.spacing = 8
+        headerRow.translatesAutoresizingMaskIntoConstraints = false
+        headerRow.heightAnchor.constraint(equalToConstant: 20).isActive = true
+        add(headerRow, spacingAfter: 6)
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
+
+    func add(_ view: NSView, spacingAfter: CGFloat? = nil, fullWidth: Bool = true) {
+        addArrangedSubview(view)
+        if fullWidth { view.widthAnchor.constraint(equalTo: widthAnchor).isActive = true }
+        if let spacingAfter { setCustomSpacing(spacingAfter, after: view) }
+    }
+
+    func addRow(_ row: PanelRow, onClick: ((NSView) -> Void)? = nil) {
+        add(PanelRowView(row: row, onClick: onClick))
+    }
+
+    func addNote(_ text: String) {
+        let label = NSTextField.styledLabel(text, font: Theme.captionFont, color: Theme.textSecondary, wraps: true)
+        label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        add(label, spacingAfter: 8)
+    }
+
+    func addFootnote(_ text: String) {
+        if let last = arrangedSubviews.last { setCustomSpacing(4, after: last) }
+        let label = NSTextField.styledLabel(text, font: Theme.Panel.footnoteFont, color: Theme.textTertiary)
+        label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        add(label)
+    }
+
+    func addSpacing(_ value: CGFloat) {
+        if let last = arrangedSubviews.last { setCustomSpacing(value, after: last) }
+    }
 }
 
-private final class ActiveJobRowView: NSView {
-    private let onCancel: () -> Void
-
-    init(job: Job, trailing: NSView, helpText: String, onCancel: @escaping () -> Void) {
-        self.onCancel = onCancel
+/// Hairline with breathing room between sections.
+private final class SectionDividerView: NSView {
+    init() {
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
-        toolTip = helpText
-
-        let inner = InfoRowView(symbol: "diamond", symbolColor: Theme.textSecondary, title: job.displayTitle, trailing: trailing)
-        addSubview(inner)
+        let line = HairlineView()
+        addSubview(line)
         NSLayoutConstraint.activate([
-            inner.leadingAnchor.constraint(equalTo: leadingAnchor),
-            inner.trailingAnchor.constraint(equalTo: trailingAnchor),
-            inner.topAnchor.constraint(equalTo: topAnchor),
-            inner.bottomAnchor.constraint(equalTo: bottomAnchor),
+            heightAnchor.constraint(equalToConstant: Theme.Panel.sectionSpacing * 2 + 1),
+            line.leadingAnchor.constraint(equalTo: leadingAnchor),
+            line.trailingAnchor.constraint(equalTo: trailingAnchor),
+            line.centerYAnchor.constraint(equalTo: centerYAnchor),
         ])
+    }
 
-        let menu = NSMenu()
-        let cancelItem = NSMenuItem(title: "İşi iptal et", action: #selector(cancelJob), keyEquivalent: "")
-        cancelItem.target = self
-        menu.addItem(cancelItem)
-        self.menu = menu
+    required init?(coder: NSCoder) { fatalError("not used") }
+}
+
+/// Label left (grey), value right (by tone); clickable rows act like links.
+final class PanelRowView: TapControl {
+    private let onClick: ((NSView) -> Void)?
+    private let labelField: NSTextField
+    private let valueField: NSTextField
+
+    var labelColor: NSColor {
+        get { labelField.textColor ?? Theme.textSecondary }
+        set { labelField.textColor = newValue }
+    }
+
+    /// Plain texts (tests).
+    var labelText: String { labelField.stringValue }
+    var valueText: String { valueField.stringValue }
+
+    init(row: PanelRow, leadingDot: NSColor? = nil, onClick: ((NSView) -> Void)?) {
+        self.onClick = onClick
+        labelField = NSTextField.styledLabel(row.label, font: Theme.Panel.rowFont, color: Theme.textSecondary)
+        valueField = NSTextField.styledLabel(row.value, font: Self.valueFont(row.tone), color: Self.valueColor(row.tone))
+        super.init(frame: .zero)
+        translatesAutoresizingMaskIntoConstraints = false
+        toolTip = row.help
+        setAccessibilityLabel("\(row.label): \(row.value)")
+        if onClick == nil { setAccessibilityRole(.group) }
+
+        labelField.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(740), for: .horizontal)
+        labelField.setContentHuggingPriority(.defaultHigh, for: .horizontal)
+        valueField.alignment = .right
+        valueField.lineBreakMode = .byTruncatingMiddle
+        valueField.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
+        let spacer = NSView()
+        spacer.setContentHuggingPriority(.init(1), for: .horizontal)
+
+        var views: [NSView] = [labelField, spacer]
+        if let leadingDot { views.append(StatusDotView(color: leadingDot)) }
+        views.append(valueField)
+
+        let stack = NSStackView(views: views)
+        stack.orientation = .horizontal
+        stack.alignment = .centerY
+        stack.spacing = 8
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(stack)
+
+        NSLayoutConstraint.activate([
+            heightAnchor.constraint(equalToConstant: Theme.Panel.rowHeight),
+            stack.leadingAnchor.constraint(equalTo: leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: trailingAnchor),
+            stack.centerYAnchor.constraint(equalTo: centerYAnchor),
+        ])
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
 
-    @objc private func cancelJob() {
-        onCancel()
+    static func valueColor(_ tone: PanelRow.Tone) -> NSColor {
+        switch tone {
+        case .normal: Theme.textPrimary
+        case .muted: Theme.textTertiary
+        case .attention, .action: Theme.accent
+        }
     }
+
+    private static func valueFont(_ tone: PanelRow.Tone) -> NSFont {
+        tone == .action ? NSFont.systemFont(ofSize: 12, weight: .semibold) : Theme.Panel.rowFont
+    }
+
+    /// Only clickable rows join the key-view loop (Full Keyboard Access).
+    override var acceptsFirstResponder: Bool { onClick != nil && super.acceptsFirstResponder }
+
+    override func resetCursorRects() {
+        if onClick != nil { addCursorRect(bounds, cursor: .pointingHand) }
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        if let onClick { onClick(self) } else { super.mouseDown(with: event) }
+    }
+
+    override func performTap() { onClick?(self) }
 }
 
-private final class AccentTextButton: TapControl {
-    private let onClick: (NSView) -> Void
+/// Small grey text link ("Ayarlar", "Tümünü göster").
+private final class PanelLinkView: TapControl {
+    private let onTap: () -> Void
+    private let label: NSTextField
 
-    init(title: String, color: NSColor = Theme.accent, onClick: @escaping (NSView) -> Void) {
-        self.onClick = onClick
+    init(title: String, action: @escaping () -> Void) {
+        self.onTap = action
+        label = NSTextField.styledLabel(title, font: Theme.Panel.linkFont, color: Theme.textTertiary)
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
         setAccessibilityLabel(title)
-        let lbl = NSTextField.styledLabel(title, font: NSFont.systemFont(ofSize: 11, weight: .semibold), color: color)
-        lbl.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(lbl)
+        label.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(label)
         NSLayoutConstraint.activate([
-            lbl.leadingAnchor.constraint(equalTo: leadingAnchor),
-            lbl.trailingAnchor.constraint(equalTo: trailingAnchor),
-            lbl.topAnchor.constraint(equalTo: topAnchor),
-            lbl.bottomAnchor.constraint(equalTo: bottomAnchor),
+            label.leadingAnchor.constraint(equalTo: leadingAnchor),
+            label.trailingAnchor.constraint(equalTo: trailingAnchor),
+            label.topAnchor.constraint(equalTo: topAnchor, constant: 3),
+            label.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -3),
         ])
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
 
-    override func mouseDown(with event: NSEvent) {
-        onClick(self)
-    }
-
-    override func performTap() { onClick(self) }
+    override func resetCursorRects() { addCursorRect(bounds, cursor: .pointingHand) }
+    override func mouseDown(with event: NSEvent) { onTap() }
+    override func performTap() { onTap() }
 }
 
-private final class PlainTextActionView: TapControl {
-    private let onClick: () -> Void
+/// "5 saatlik ……… %42 kullanıldı", a thin bar, "Sıfırlanma: 3 saat sonra".
+final class UsageMeterView: NSView {
+    let meter: UsageMeter
 
-    init(title: String, font: NSFont, color: NSColor, onClick: @escaping () -> Void) {
-        self.onClick = onClick
+    init(meter: UsageMeter) {
+        self.meter = meter
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
-        setAccessibilityLabel(title)
-        let lbl = NSTextField.styledLabel(title, font: font, color: color)
-        lbl.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(lbl)
+        setAccessibilityElement(true)
+        setAccessibilityRole(.progressIndicator)
+        setAccessibilityLabel("\(meter.title): \(meter.usedText)\(meter.resetText.map { ", \($0)" } ?? "")")
+
+        let title = NSTextField.styledLabel(meter.title, font: Theme.Panel.rowFont, color: Theme.textPrimary)
+        title.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(740), for: .horizontal)
+        let used = NSTextField.styledLabel(
+            meter.usedText,
+            font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .regular),
+            color: meter.warning ? Theme.accent : Theme.textSecondary
+        )
+        used.alignment = .right
+        used.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        let spacer = NSView()
+        spacer.setContentHuggingPriority(.init(1), for: .horizontal)
+        let top = NSStackView(views: [title, spacer, used])
+        top.orientation = .horizontal
+        top.alignment = .firstBaseline
+        top.spacing = 8
+
+        let bar = UsageBarView(fraction: meter.fraction, warning: meter.warning)
+
+        var views: [NSView] = [top, bar]
+        if let reset = meter.resetText {
+            views.append(NSTextField.styledLabel(reset, font: Theme.Panel.footnoteFont, color: Theme.textTertiary))
+        }
+        let column = NSStackView(views: views)
+        column.orientation = .vertical
+        column.alignment = .leading
+        column.spacing = 5
+        column.setCustomSpacing(6, after: top)
+        column.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(column)
+
         NSLayoutConstraint.activate([
-            lbl.leadingAnchor.constraint(equalTo: leadingAnchor),
-            lbl.trailingAnchor.constraint(equalTo: trailingAnchor),
-            lbl.topAnchor.constraint(equalTo: topAnchor, constant: 6),
-            lbl.bottomAnchor.constraint(equalTo: bottomAnchor),
+            column.leadingAnchor.constraint(equalTo: leadingAnchor),
+            column.trailingAnchor.constraint(equalTo: trailingAnchor),
+            column.topAnchor.constraint(equalTo: topAnchor, constant: 2),
+            column.bottomAnchor.constraint(equalTo: bottomAnchor),
+            top.widthAnchor.constraint(equalTo: column.widthAnchor),
+            bar.widthAnchor.constraint(equalTo: column.widthAnchor),
         ])
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
-
-    override func mouseDown(with event: NSEvent) {
-        onClick()
-    }
-
-    override func performTap() { onClick() }
 }
 
-private final class ClickableContainerView: TapControl {
-    private let onClick: () -> Void
+/// 4pt rounded track with the used part filled (ink, or the accent near the limit).
+final class UsageBarView: ThemedView {
+    let fraction: Double
+    private let fill = ThemedView()
 
-    init(onClick: @escaping () -> Void) {
-        self.onClick = onClick
+    init(fraction: Double, warning: Bool) {
+        self.fraction = min(max(fraction, 0), 1)
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
+        backgroundColor = Theme.meterTrack
+        cornerRadius = 2
+        fill.backgroundColor = warning ? Theme.accent : Theme.ink
+        fill.cornerRadius = 2
+        addSubview(fill)
+        heightAnchor.constraint(equalToConstant: 4).isActive = true
     }
-
-    override func performTap() { onClick() }
 
     required init?(coder: NSCoder) { fatalError("not used") }
 
-    func setChild(_ child: NSView) {
-        addSubview(child)
-        NSLayoutConstraint.activate([
-            child.leadingAnchor.constraint(equalTo: leadingAnchor),
-            child.trailingAnchor.constraint(equalTo: trailingAnchor),
-            child.topAnchor.constraint(equalTo: topAnchor),
-            child.bottomAnchor.constraint(equalTo: bottomAnchor),
-        ])
+    /// Width of the filled part for a track `width` wide (a used window never draws as empty).
+    static func fillWidth(fraction: Double, width: CGFloat) -> CGFloat {
+        guard fraction > 0, width > 0 else { return 0 }
+        return max(4, (width * CGFloat(min(fraction, 1))).rounded())
     }
 
-    override func mouseDown(with event: NSEvent) {
-        onClick()
+    override func layout() {
+        super.layout()
+        fill.frame = NSRect(x: 0, y: 0, width: Self.fillWidth(fraction: fraction, width: bounds.width), height: bounds.height)
     }
 }
 
@@ -493,20 +611,23 @@ private final class PostMiniRowView: NSControl {
         self.onClick = onClick
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
+        setAccessibilityElement(true)
+        setAccessibilityRole(.button)
+        setAccessibilityLabel(card.title)
 
         let swatch = ThemedView()
         swatch.borderColor = Theme.border
         swatch.borderWidth = 1
-        swatch.cornerRadius = 7
+        swatch.cornerRadius = 6
         swatch.layer?.masksToBounds = true
         swatch.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([
-            swatch.widthAnchor.constraint(equalToConstant: 30),
-            swatch.heightAnchor.constraint(equalToConstant: 38),
+            swatch.widthAnchor.constraint(equalToConstant: 26),
+            swatch.heightAnchor.constraint(equalToConstant: 32),
         ])
 
         if let rendered = card.renderedAssetIds.first, !card.needsImage {
-            let img = AssetImageView(store: imageStore, assetId: rendered, contentMode: .fill, cornerRadius: 7)
+            let img = AssetImageView(store: imageStore, assetId: rendered, contentMode: .fill, cornerRadius: 6)
             img.translatesAutoresizingMaskIntoConstraints = false
             swatch.addSubview(img)
             NSLayoutConstraint.activate([
@@ -534,7 +655,7 @@ private final class PostMiniRowView: NSControl {
             }
         }
 
-        let title = NSTextField.styledLabel(card.title, font: Theme.rowFont, color: Theme.textPrimary)
+        let title = NSTextField.styledLabel(card.title, font: Theme.Panel.rowFont, color: Theme.textPrimary)
         title.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         let spacer = NSView()
         spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
@@ -542,21 +663,28 @@ private final class PostMiniRowView: NSControl {
         let row = NSStackView(views: [swatch, title, spacer])
         row.orientation = .horizontal
         row.alignment = .centerY
-        row.spacing = 12
+        row.spacing = 10
         row.translatesAutoresizingMaskIntoConstraints = false
         addSubview(row)
 
         NSLayoutConstraint.activate([
             row.leadingAnchor.constraint(equalTo: leadingAnchor),
             row.trailingAnchor.constraint(equalTo: trailingAnchor),
-            row.topAnchor.constraint(equalTo: topAnchor, constant: 7),
-            row.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -7),
+            row.topAnchor.constraint(equalTo: topAnchor, constant: 4),
+            row.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -4),
         ])
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
 
+    override func resetCursorRects() { addCursorRect(bounds, cursor: .pointingHand) }
+
     override func mouseDown(with event: NSEvent) {
         onClick()
+    }
+
+    override func accessibilityPerformPress() -> Bool {
+        onClick()
+        return true
     }
 }

@@ -141,7 +141,7 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate {
             let control = ToolbarTitleMenuControl(title: app.title) { [weak self] in
                 self?.makeTitleMenu() ?? NSMenu()
             }
-            control.toolTip = "Marka ve ekran seçenekleri"
+            control.toolTip = "Sohbet, marka ve ekran seçenekleri"
             item.label = "Başlık"
             item.view = control
             if #available(macOS 26.0, *) {
@@ -203,6 +203,11 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate {
         case .calendar, .media:
             appendBrandItems(to: menu, disabled: false)
         case .conversation(let id):
+            // Claude Code: the title chevron holds the conversation's own actions.
+            for item in ConversationActions.items(app: app, conversationId: id, window: { [weak self] in self?.window }) {
+                menu.addItem(item)
+            }
+            menu.addItem(.separator())
             let brand = app.brand(app.conversations.first { $0.id == id }?.brandId)
             let info = NSMenuItem(title: brand.map { "Marka: \($0.name)" } ?? "Markasız sohbet", action: nil, keyEquivalent: "")
             info.isEnabled = false
@@ -272,17 +277,8 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate {
     private func makeMoreMenu() -> NSMenu {
         let menu = NSMenu()
         switch app.route {
-        case .conversation(let id):
-            let rename = NSMenuItem(title: "Yeniden adlandır…", action: #selector(promptRenameConversation(_:)), keyEquivalent: "")
-            rename.target = self
-            rename.representedObject = id
-            menu.addItem(rename)
-
-            let archive = NSMenuItem(title: "Sohbeti arşivle", action: #selector(archiveConversation(_:)), keyEquivalent: "")
-            archive.target = self
-            archive.representedObject = id
-            menu.addItem(archive)
-            menu.addItem(.separator())
+        case .conversation:
+            break
 
         case .posts:
             let refreshPosts = NSMenuItem(title: "Yenile", action: #selector(reloadPosts), keyEquivalent: "")
@@ -314,31 +310,6 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate {
         settingsItem.target = self
         menu.addItem(settingsItem)
         return menu
-    }
-
-    @objc private func promptRenameConversation(_ sender: NSMenuItem) {
-        guard let id = sender.representedObject as? EntityID else { return }
-        let model = app.conversationModel(id)
-        let alert = NSAlert()
-        alert.messageText = "Sohbeti yeniden adlandır"
-        alert.addButton(withTitle: "Kaydet")
-        alert.addButton(withTitle: "Vazgeç")
-        let field = NSTextField(string: model.state?.conversation.title ?? "")
-        field.frame = NSRect(x: 0, y: 0, width: 260, height: 24)
-        alert.accessoryView = field
-        alert.window.initialFirstResponder = field
-        if alert.runModal() == .alertFirstButtonReturn {
-            let title = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !title.isEmpty {
-                Task { await model.rename(to: title) }
-            }
-        }
-    }
-
-    @objc private func archiveConversation(_ sender: NSMenuItem) {
-        guard let id = sender.representedObject as? EntityID else { return }
-        let model = app.conversationModel(id)
-        Task { await model.archive() }
     }
 
     @objc private func reloadPosts() {
@@ -724,14 +695,18 @@ extension RootViewController {
     }
 }
 
+/// Three columns, Claude Code style: a flush sidebar (its own background, full height under the
+/// title bar), the content, and the toggleable right panel. Collapsed states follow (and are
+/// saved through) `AppModel.sidebarPresented` / `inspectorPresented`.
 final class MainSplitViewController: NSSplitViewController {
     private unowned let app: AppModel
-    private let sidebarItem: NSSplitViewItem
-    private let contentItem: NSSplitViewItem
-    private let inspectorItem: NSSplitViewItem
+    let sidebarItem: NSSplitViewItem
+    let contentItem: NSSplitViewItem
+    let inspectorItem: NSSplitViewItem
 
     private var observation: ObservationToken?
     private var kvoTokens: [NSKeyValueObservation] = []
+    private var appliedInitialWidths = false
 
     init(app: AppModel, settings: AppSettings) {
         self.app = app
@@ -739,10 +714,15 @@ final class MainSplitViewController: NSSplitViewController {
         let detailVC = DetailContainerViewController(app: app)
         let inspectorVC = InfoPanelViewController(app: app)
 
-        sidebarItem = NSSplitViewItem(sidebarWithViewController: sidebarVC)
-        sidebarItem.minimumThickness = 200
-        sidebarItem.maximumThickness = 320
+        // A plain item, not `sidebarWithViewController`: the sidebar sits flush against the
+        // window edge with its own calm background instead of a floating glass panel.
+        sidebarItem = NSSplitViewItem(viewController: sidebarVC)
+        sidebarItem.minimumThickness = 220
+        sidebarItem.maximumThickness = 340
         sidebarItem.canCollapse = true
+        sidebarItem.holdingPriority = NSLayoutConstraint.Priority(260)
+        sidebarItem.allowsFullHeightLayout = true
+        sidebarItem.titlebarSeparatorStyle = .none
         sidebarItem.isCollapsed = !app.sidebarPresented
 
         contentItem = NSSplitViewItem(viewController: detailVC)
@@ -752,8 +732,8 @@ final class MainSplitViewController: NSSplitViewController {
         }
 
         inspectorItem = NSSplitViewItem(inspectorWithViewController: inspectorVC)
-        inspectorItem.minimumThickness = 240
-        inspectorItem.maximumThickness = 360
+        inspectorItem.minimumThickness = 260
+        inspectorItem.maximumThickness = 380
         inspectorItem.canCollapse = true
         inspectorItem.isCollapsed = !app.inspectorPresented
 
@@ -764,6 +744,7 @@ final class MainSplitViewController: NSSplitViewController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
+        splitView.dividerStyle = .thin
         addSplitViewItem(sidebarItem)
         addSplitViewItem(contentItem)
         addSplitViewItem(inspectorItem)
@@ -806,8 +787,36 @@ final class MainSplitViewController: NSSplitViewController {
         ]
     }
 
+    override func viewDidAppear() {
+        super.viewDidAppear()
+        applyInitialWidths()
+    }
+
+    /// First appearance: the sidebar at `Theme.sidebarWidth`, the right panel at `Theme.inspectorWidth`.
+    private func applyInitialWidths() {
+        guard !appliedInitialWidths, splitView.bounds.width > 0 else { return }
+        appliedInitialWidths = true
+        if !sidebarItem.isCollapsed {
+            splitView.setPosition(Theme.sidebarWidth, ofDividerAt: 0)
+        }
+        if !inspectorItem.isCollapsed {
+            splitView.setPosition(splitView.bounds.width - Theme.inspectorWidth - splitView.dividerThickness, ofDividerAt: 1)
+        }
+    }
+
     override func toggleSidebar(_ sender: Any?) {
         app.toggleSidebar()
+    }
+
+    override func toggleInspector(_ sender: Any?) {
+        app.toggleInspector()
+    }
+
+    /// The sidebar is a plain item, so the split view controller would not enable
+    /// "toggle sidebar" by itself; Studio handles it through the app model.
+    override func validateUserInterfaceItem(_ item: any NSValidatedUserInterfaceItem) -> Bool {
+        if item.action == #selector(toggleSidebar(_:)) || item.action == #selector(toggleInspector(_:)) { return true }
+        return super.validateUserInterfaceItem(item)
     }
 }
 
