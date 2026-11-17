@@ -11,7 +11,10 @@ final class StudioRootViewController: UIViewController, UINavigationControllerDe
     let drawer: DrawerViewController
     private let mainContainer = UIView()
     private let scrim = UIControl()
-    private lazy var edgePan = UIScreenEdgePanGestureRecognizer(target: self, action: #selector(edgePanned(_:)))
+    /// A rightward swipe anywhere on the chat opens the drawer (not only from the edge).
+    private lazy var openPan = UIPanGestureRecognizer(target: self, action: #selector(openPanned(_:)))
+    /// Vertical scrolls that started with the same touch; cancelled once the drawer takes it.
+    private var simultaneousScrolls: [UIGestureRecognizer] = []
     private lazy var closePan = UIPanGestureRecognizer(target: self, action: #selector(closePanned(_:)))
     private var routeObservation: IOSObservationToken?
     private var staleObservation: IOSObservationToken?
@@ -69,9 +72,8 @@ final class StudioRootViewController: UIViewController, UINavigationControllerDe
         scrim.addGestureRecognizer(closePan)
         closePan.delegate = self
 
-        edgePan.edges = .left
-        edgePan.delegate = self
-        mainContainer.addGestureRecognizer(edgePan)
+        openPan.delegate = self
+        mainContainer.addGestureRecognizer(openPan)
 
         registerForTraitChanges([UITraitUserInterfaceStyle.self]) { (self: Self, _) in
             self.mainContainer.layer.borderColor = IOSTheme.border.cgColor
@@ -127,8 +129,11 @@ final class StudioRootViewController: UIViewController, UINavigationControllerDe
         mainContainer.layer.borderWidth = visible ? 1 : 0
         scrim.alpha = progress
         scrim.isHidden = !visible
-        drawer.view.transform = CGAffineTransform(translationX: -(1 - progress) * width * 0.3, y: 0)
-        drawer.view.alpha = 0.3 + 0.7 * progress
+        // Like the Claude app the drawer stays in place under the chat and only grows a
+        // touch as the chat slides away; it never fades or slides itself.
+        let scale = 0.95 + 0.05 * progress
+        drawer.view.transform = CGAffineTransform(scaleX: scale, y: scale)
+        drawer.view.alpha = 1
         drawer.view.isHidden = !visible
     }
 
@@ -146,7 +151,7 @@ final class StudioRootViewController: UIViewController, UINavigationControllerDe
         let target: CGFloat = open ? 1 : 0
         if animated && isOnScreen {
             applyDrawer(progress: drawerProgress, settled: false)
-            UIView.animate(springDuration: 0.42, bounce: 0, initialSpringVelocity: 0, delay: 0, options: [.allowUserInteraction, .beginFromCurrentState]) {
+            UIView.animate(springDuration: 0.3, bounce: 0, initialSpringVelocity: 0, delay: 0, options: [.allowUserInteraction, .beginFromCurrentState]) {
                 self.applyDrawer(progress: target, settled: false)
             } completion: { _ in
                 self.applyDrawer(progress: self.isDrawerOpen ? 1 : 0)
@@ -178,7 +183,15 @@ final class StudioRootViewController: UIViewController, UINavigationControllerDe
         return true
     }
 
-    @objc private func edgePanned(_ gesture: UIScreenEdgePanGestureRecognizer) {
+    @objc private func openPanned(_ gesture: UIPanGestureRecognizer) {
+        if gesture.state == .began {
+            // The drawer owns this touch now: stop the chat from scrolling along with it.
+            for other in simultaneousScrolls where other.isEnabled {
+                other.isEnabled = false
+                other.isEnabled = true
+            }
+            simultaneousScrolls.removeAll()
+        }
         handlePan(translation: gesture.translation(in: view).x, velocity: gesture.velocity(in: view).x, state: gesture.state)
     }
 
@@ -205,13 +218,37 @@ final class StudioRootViewController: UIViewController, UINavigationControllerDe
         }
     }
 
-    /// Scrolling near the left edge waits for the edge swipe to fail (it fails at once elsewhere).
-    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldBeRequiredToFailBy otherGestureRecognizer: UIGestureRecognizer) -> Bool {
-        gestureRecognizer === edgePan && otherGestureRecognizer.view is UIScrollView
+    /// The open swipe runs alongside vertical scrolling until it decides it is horizontal.
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
+        guard gestureRecognizer === openPan, let scroll = otherGestureRecognizer.view as? UIScrollView,
+              otherGestureRecognizer === scroll.panGestureRecognizer, !Self.scrollsHorizontally(scroll) else { return false }
+        if !simultaneousScrolls.contains(where: { $0 === otherGestureRecognizer }) { simultaneousScrolls.append(otherGestureRecognizer) }
+        return true
+    }
+
+    /// Touches in a strip that scrolls sideways (starters, attachments, slides) belong to it.
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+        guard gestureRecognizer === openPan else { return true }
+        simultaneousScrolls.removeAll()
+        var view = touch.view
+        while let current = view, current !== mainContainer {
+            if let scroll = current as? UIScrollView, Self.scrollsHorizontally(scroll) { return false }
+            if current is UISlider || current is UISwitch { return false }
+            view = current.superview
+        }
+        return true
+    }
+
+    private static func scrollsHorizontally(_ scroll: UIScrollView) -> Bool {
+        scroll.isScrollEnabled && scroll.contentSize.width > scroll.bounds.width + 1
     }
 
     func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
-        if gestureRecognizer === edgePan { return canOpenDrawer && !isDrawerOpen }
+        if gestureRecognizer === openPan {
+            guard canOpenDrawer, !isDrawerOpen else { return false }
+            let velocity = openPan.velocity(in: view)
+            return velocity.x > 0 && velocity.x > abs(velocity.y) * 1.2
+        }
         if gestureRecognizer === closePan {
             guard isDrawerOpen else { return false }
             let velocity = closePan.velocity(in: view)
@@ -223,7 +260,7 @@ final class StudioRootViewController: UIViewController, UINavigationControllerDe
     // MARK: Navigation
 
     func navigationController(_ navigationController: UINavigationController, didShow viewController: UIViewController, animated: Bool) {
-        edgePan.isEnabled = navigationController.viewControllers.count == 1
+        openPan.isEnabled = navigationController.viewControllers.count == 1
     }
 
     /// Go where a route points (drawer rows, notifications, links in chat).
