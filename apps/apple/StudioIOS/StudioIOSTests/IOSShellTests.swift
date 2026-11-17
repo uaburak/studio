@@ -229,21 +229,20 @@ struct IOSShellTests {
         #expect(drawer.tableView.numberOfRows(inSection: 0) == 1 + IOSDestination.drawerRows.count)
         #expect(drawer.tableView.numberOfRows(inSection: 1) == max(1, app.visibleConversations.count))
 
-        // Tapping the brand row opens the brand list in place; picking one closes it.
+        // Tapping the brand row unfolds the brands inside its card (no extra table rows);
+        // picking one folds it and switches the brand.
         drawer.select(.brandPicker)
         await settle(root.view)
         #expect(drawer.brandsExpanded)
-        let extra = app.brands.count + (app.currentBrandId != nil ? 1 : 0)
-        #expect(drawer.tableView.numberOfRows(inSection: 0) == 1 + extra + IOSDestination.drawerRows.count)
         if let other = app.brands.first(where: { $0.id != app.currentBrandId }) {
-            drawer.select(.brandOption(other.id))
-            await settle(root.view)
+            drawer.pickBrand(other.id)
+            await waitUntil { app.currentBrandId == other.id }
             #expect(app.currentBrandId == other.id)
-            #expect(!drawer.brandsExpanded)
         } else {
             drawer.select(.brandPicker)
-            await settle(root.view)
         }
+        await settle(root.view)
+        #expect(!drawer.brandsExpanded)
         #expect(drawer.tableView.numberOfRows(inSection: 0) == 1 + IOSDestination.drawerRows.count)
 
         let title = try #require(app.visibleConversations.first?.displayTitle)
