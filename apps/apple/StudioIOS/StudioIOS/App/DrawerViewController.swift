@@ -268,7 +268,14 @@ final class DrawerViewController: UIViewController, UITableViewDelegate, UITextF
     }
 
     /// Called by the root right before the drawer slides in.
+    /// A conversation just tapped, shown as active before the chat has switched to it.
+    private var pickedConversationId: EntityID?
+
+    /// The row drawn as active: the tapped one while switching, else the chat on screen.
+    private var activeConversationId: EntityID? { pickedConversationId ?? currentConversationId?() }
+
     func willOpen() {
+        pickedConversationId = nil
         reload()
         if let id = currentConversationId?(), let indexPath = dataSource.indexPath(for: .conversation(id)) {
             tableView.scrollToRow(at: indexPath, at: .none, animated: false)
@@ -342,7 +349,7 @@ final class DrawerViewController: UIViewController, UITableViewDelegate, UITextF
         snapshot.appendItems(history, toSection: 1)
 
         // Reconfigure rows whose look changed (title, waiting, running, current, badge).
-        let current = currentConversationId?()
+        let current = activeConversationId
         var newSignatures: [Item: Int] = [:]
         for item in snapshot.itemIdentifiers {
             var hasher = Hasher()
@@ -433,7 +440,7 @@ final class DrawerViewController: UIViewController, UITableViewDelegate, UITextF
             }
         case .conversation(let id):
             guard let conversation = rows[id] else { break }
-            isCurrent = id == currentConversationId?()
+            isCurrent = id == activeConversationId
             content.text = conversation.displayTitle
             if isSearching, let brandId = conversation.brandId, brandId != app.currentBrandId, let name = app.brand(brandId)?.name {
                 content.secondaryText = name
@@ -538,6 +545,10 @@ final class DrawerViewController: UIViewController, UITableViewDelegate, UITextF
         case .conversation(let id):
             Haptics.selection()
             if isSearching { setSearching(false) }
+            // The tapped row turns active at once (the old one goes back to default) while
+            // the drawer closes, not only after the chat has switched.
+            pickedConversationId = id
+            reload()
             onConversation?(id)
         case .placeholder:
             if app.connection == .notPaired { onDestination?(.settings) }
