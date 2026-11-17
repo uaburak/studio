@@ -11,12 +11,16 @@ import StudioKit
 ///   - Hesaplar: the brand's Instagram / Facebook / LinkedIn connections ("Bağla" opens the sheet)
 /// - Arka plan işleri (Claude Code's Background tasks): "Çalışıyor 1" with rounded job cards
 ///   (elapsed time, stop), "Sırada", and a collapsible "› Bitti 12" list.
+/// - Takvim, Medya, Marka, iPhone: panes that keep their own views (`PanelPaneViews.swift`).
 /// Texts come from `InspectorContent`; nothing is shown that the server does not report.
 final class InfoPanelViewController: NSViewController {
     private unowned let app: AppModel
     private let scrollView = NSScrollView()
     private let documentView = FlippedDocumentView()
     private let stack = NSStackView()
+    /// The Takvim / Medya / Marka / iPhone pane on screen (nil for Ayrıntılar and the jobs).
+    private(set) var paneView: PanelPaneView?
+    private var paneViewKind: RightPanelPane?
 
     private var showFinishedJobs = false
     /// "Gelişmiş" under Ortam: technical rows, folded by default.
@@ -115,6 +119,7 @@ final class InfoPanelViewController: NSViewController {
         shownPane = pane
         switch pane {
         case .details:
+            showPaneView(nil)
             let brandId = app.routeBrandId
             addSection(buildEnvironmentSection(brandId: brandId))
             addSection(buildUsageSection())
@@ -123,8 +128,37 @@ final class InfoPanelViewController: NSViewController {
             }
             addSection(buildAccountsSection(brandId: brandId))
         case .jobs:
+            showPaneView(nil)
             buildJobsPane()
+        case .calendar, .media, .brand, .phone:
+            // Only the pane is read here: the pane view observes its own data.
+            showPaneView(pane)
         }
+    }
+
+    /// Swaps the persistent pane in (or out, for Ayrıntılar and the jobs list).
+    private func showPaneView(_ pane: RightPanelPane?) {
+        guard pane != paneViewKind else { return }
+        paneView?.removeFromSuperview()
+        paneView = nil
+        paneViewKind = pane
+        scrollView.isHidden = pane != nil
+        guard let pane else { return }
+        let next: PanelPaneView = switch pane {
+        case .calendar: CalendarPaneView(app: app)
+        case .media: MediaPaneView(app: app)
+        case .brand: BrandPaneView(app: app)
+        case .phone: PhonePaneView(app: app)
+        case .details, .jobs: preconditionFailure("not a pane view")
+        }
+        view.addSubview(next)
+        NSLayoutConstraint.activate([
+            next.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            next.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            next.topAnchor.constraint(equalTo: view.topAnchor),
+            next.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+        ])
+        paneView = next
     }
 
     private func addSection(_ section: PanelSectionView) {
@@ -861,10 +895,24 @@ final class JobCardView: TapControl {
 
     required init?(coder: NSCoder) { fatalError("not used") }
 
+    private var trackingArea: NSTrackingArea?
+
     override var acceptsFirstResponder: Bool { onOpen != nil && super.acceptsFirstResponder }
-    override func resetCursorRects() { if onOpen != nil { addCursorRect(bounds, cursor: .pointingHand) } }
     override func mouseDown(with event: NSEvent) { onOpen?() }
     override func performTap() { onOpen?() }
+
+    // A subtle hover fill instead of the pointing hand (the hand is for links only).
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let trackingArea { removeTrackingArea(trackingArea) }
+        guard onOpen != nil else { return }
+        let area = NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeInActiveApp, .inVisibleRect], owner: self, userInfo: nil)
+        addTrackingArea(area)
+        trackingArea = area
+    }
+
+    override func mouseEntered(with event: NSEvent) { card.backgroundColor = Theme.fillStrong }
+    override func mouseExited(with event: NSEvent) { card.backgroundColor = Theme.panelCard }
 }
 
 /// The small rounded square "■" that stops a job.

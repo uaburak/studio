@@ -9,16 +9,11 @@ import StudioKit
 // One continuous bar, hairline below the content and the panel, the sidebar column running up
 // into it. The panel's own title and actions live in the bar above the panel.
 
-/// What a top bar icon does.
+/// What a top bar icon does. Claude Code: every icon swaps the right panel; none of them
+/// replaces the centre (the conversation stays).
 enum TopBarAction: Equatable {
     /// Open this pane of the right panel, or close the panel when it already shows it.
     case togglePanel(RightPanelPane)
-    /// Go to a screen.
-    case navigate(Route)
-    /// The working brand's settings (a new brand when there is none).
-    case brandSettings
-    /// Settings → Cihazlar: the QR code that pairs an iPhone.
-    case pairPhone
     /// The "…" menu.
     case moreMenu
 }
@@ -43,13 +38,8 @@ enum TopBarTool: CaseIterable, Equatable {
     /// VoiceOver name.
     var title: String {
         switch self {
-        case .details: "Ayrıntılar"
-        case .jobs: "Arka plan işleri"
-        case .calendar: "Takvim"
-        case .media: "Medya"
-        case .brand: "Marka ayarları"
-        case .phone: "iPhone'u bağla"
         case .more: "Diğer seçenekler"
+        default: pane?.title ?? ""
         }
     }
 
@@ -57,33 +47,35 @@ enum TopBarTool: CaseIterable, Equatable {
         switch self {
         case .details: "Ayrıntılar: ortam, kullanım, bağlam ve hesaplar (⌥⌘I)"
         case .jobs: "Arka plan işleri"
-        case .calendar: "Yayın takvimi (⇧⌘K)"
-        case .media: "Medya kütüphanesi (⇧⌘M)"
-        case .brand: "Marka ayarları: kit, profil, hesaplar (⇧⌘B)"
-        case .phone: "iPhone'u bağla: QR kod (Ayarlar → Cihazlar)"
+        case .calendar: "Takvim: ay görünümü ve günün yayınları"
+        case .media: "Medya: markanın görselleri; sohbete sürükleyip ekle"
+        case .brand: "Marka: logo, renkler, yazı tipleri, ses tonu ve platformlar"
+        case .phone: "iPhone: QR kodla bağla, bağlı iPhone'lar"
         case .more: "Diğer seçenekler"
         }
     }
 
-    var action: TopBarAction {
+    /// The right panel's pane this icon opens (nil: the "…" menu).
+    var pane: RightPanelPane? {
         switch self {
-        case .details: .togglePanel(.details)
-        case .jobs: .togglePanel(.jobs)
-        case .calendar: .navigate(.calendar)
-        case .media: .navigate(.media)
-        case .brand: .brandSettings
-        case .phone: .pairPhone
-        case .more: .moreMenu
+        case .details: .details
+        case .jobs: .jobs
+        case .calendar: .calendar
+        case .media: .media
+        case .brand: .brand
+        case .phone: .phone
+        case .more: nil
         }
     }
 
-    /// Drawn with the "open" fill: its pane is showing, or its screen is the current one.
-    func isActive(route: Route, panelPresented: Bool, pane: RightPanelPane) -> Bool {
-        switch action {
-        case .togglePanel(let target): panelPresented && pane == target
-        case .navigate(let target): route == target
-        case .brandSettings, .pairPhone, .moreMenu: false
-        }
+    var action: TopBarAction {
+        pane.map { .togglePanel($0) } ?? .moreMenu
+    }
+
+    /// Drawn with the rounded "open" fill: its pane is showing.
+    func isActive(panelPresented: Bool, pane shown: RightPanelPane) -> Bool {
+        guard let pane else { return false }
+        return panelPresented && shown == pane
     }
 }
 
@@ -92,6 +84,12 @@ struct PanelHeader: Equatable {
     enum Action: Equatable {
         /// "Bitenleri temizle" (jobs pane).
         case clearFinished
+        /// Reload the pane's data (Takvim).
+        case refresh
+        /// Upload files to the brand's media (Medya).
+        case upload
+        /// The brand's settings sheet (Marka).
+        case brandSettings
         case expand
         case collapse
         case close
@@ -99,6 +97,9 @@ struct PanelHeader: Equatable {
         var symbol: String {
             switch self {
             case .clearFinished: "trash"
+            case .refresh: "arrow.clockwise"
+            case .upload: "plus"
+            case .brandSettings: "gearshape"
             case .expand: "arrow.up.left.and.arrow.down.right"
             case .collapse: "arrow.down.right.and.arrow.up.left"
             case .close: "xmark"
@@ -108,6 +109,9 @@ struct PanelHeader: Equatable {
         var help: String {
             switch self {
             case .clearFinished: "Biten işleri listeden temizle"
+            case .refresh: "Yenile"
+            case .upload: "Medya yükle"
+            case .brandSettings: "Marka ayarları (⇧⌘B)"
             case .expand: "Paneli genişlet"
             case .collapse: "Paneli daralt"
             case .close: "Paneli kapat (⌥⌘I)"
@@ -123,10 +127,16 @@ struct PanelHeader: Equatable {
     static func make(pane: RightPanelPane, expanded: Bool, finishedCount: Int) -> PanelHeader {
         let size: Action = expanded ? .collapse : .expand
         switch pane {
-        case .details:
+        case .details, .phone:
             return PanelHeader(title: pane.title, actions: [size, .close], clearEnabled: false)
         case .jobs:
             return PanelHeader(title: pane.title, actions: [.clearFinished, size, .close], clearEnabled: finishedCount > 0)
+        case .calendar:
+            return PanelHeader(title: pane.title, actions: [.refresh, size, .close], clearEnabled: false)
+        case .media:
+            return PanelHeader(title: pane.title, actions: [.upload, size, .close], clearEnabled: false)
+        case .brand:
+            return PanelHeader(title: pane.title, actions: [.brandSettings, size, .close], clearEnabled: false)
         }
     }
 }

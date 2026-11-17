@@ -68,7 +68,7 @@ final class MacServerSectionView: SettingsPaneView, NSTextFieldDelegate {
     private func buildHostRows(_ host: LocalHost) {
         hostToggle = SettingsControls.toggle(target: self, action: #selector(toggleHostEnabled))
         hostToggle.setAccessibilityLabel(SettingsCatalog.hostEnabled.title)
-        addRow(SettingsCatalog.hostEnabled, accessory: hostToggle)
+        addRow(SettingsCatalog.hostEnabled, accessory: hostToggle).tagText = "Bu Mac"
 
         restartButton = PillButton(title: "Yeniden başlat", kind: .secondary, height: 26) { [weak self] in
             guard let self else { return }

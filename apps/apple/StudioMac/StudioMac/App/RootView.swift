@@ -92,9 +92,11 @@ final class RootViewController: NSViewController {
     private var renderedIssue: ConnectionIssue?
     private let searchOverlay: SearchPaletteOverlayView
     private var postDetailOverlay: PostDetailOverlayView?
-    private weak var activeSettingsSheet: SettingsSheetViewController?
-    /// Dims the window under the settings panel.
-    private let settingsBackdrop = ThemedView()
+    /// Settings: Claude's panel over the dimmed window (in the window, not a sheet window).
+    private(set) var settingsPanel: SettingsSheetViewController?
+    private var settingsContainer: NSView?
+    /// Dims the window under the settings panel; a click on it closes Settings.
+    private let settingsBackdrop = SettingsBackdropView()
     private weak var activeNewBrandSheet: NewBrandSheetController?
     private weak var activeBrandSettingsSheet: BrandSettingsSheetController?
     private weak var activeOnboardingSheet: OnboardingSheetController?
@@ -142,6 +144,7 @@ final class RootViewController: NSViewController {
         settingsBackdrop.backgroundColor = Theme.Settings.backdrop
         settingsBackdrop.isHidden = true
         settingsBackdrop.translatesAutoresizingMaskIntoConstraints = false
+        settingsBackdrop.onClick = { [weak self] in self?.settingsPanel?.closeSheet() }
         root.addSubview(settingsBackdrop)
 
         NSLayoutConstraint.activate([
@@ -187,6 +190,12 @@ final class RootViewController: NSViewController {
         syncOverlays()
     }
 
+    override func viewDidLayout() {
+        super.viewDidLayout()
+        // The settings panel follows the window size.
+        settingsPanel?.fit(parentSize: view.bounds.size)
+    }
+
     private func syncOverlays() {
         // Banner
         if let banner = app.banner {
@@ -226,19 +235,11 @@ final class RootViewController: NSViewController {
             postDetailOverlay = nil
         }
 
-        // Settings sheet
-        settingsBackdrop.isHidden = !app.settingsPresented
+        // Settings panel (in the window, over a dimmed backdrop)
         if app.settingsPresented {
-            if activeSettingsSheet == nil, view.window != nil {
-                let sheet = SettingsSheetViewController(app: app, settings: settings, host: host, parentSize: view.bounds.size) { [weak self] in
-                    self?.app.settingsPresented = false
-                }
-                activeSettingsSheet = sheet
-                presentAsSheet(sheet)
-            }
-        } else if let sheet = activeSettingsSheet {
-            dismiss(sheet)
-            activeSettingsSheet = nil
+            if settingsPanel == nil { presentSettingsPanel() }
+        } else if settingsPanel != nil {
+            dismissSettingsPanel()
         }
 
         // New Brand sheet
@@ -316,6 +317,61 @@ final class RootViewController: NSViewController {
 }
 
 extension RootViewController {
+    // MARK: Settings panel
+
+    fileprivate func presentSettingsPanel() {
+        let panel = SettingsSheetViewController(app: app, settings: settings, host: host, parentSize: view.bounds.size) { [weak self] in
+            self?.app.settingsPresented = false
+        }
+        addChild(panel)
+        let container = SettingsPanelContainerView(content: panel.view)
+        view.addSubview(container, positioned: .above, relativeTo: settingsBackdrop)
+        NSLayoutConstraint.activate([
+            container.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            container.centerYAnchor.constraint(equalTo: view.centerYAnchor),
+        ])
+        settingsPanel = panel
+        settingsContainer = container
+
+        settingsBackdrop.isHidden = false
+        settingsBackdrop.alphaValue = 0
+        container.alphaValue = 0
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.2
+            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            settingsBackdrop.animator().alphaValue = 1
+            container.animator().alphaValue = 1
+        }
+        DispatchQueue.main.async { [weak panel] in panel?.focusInitial() }
+    }
+
+    fileprivate func dismissSettingsPanel() {
+        guard let panel = settingsPanel else { return }
+        panel.closePanes()
+        panel.removeFromParent()
+        settingsPanel = nil
+        let container = settingsContainer
+        settingsContainer = nil
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.15
+            context.timingFunction = CAMediaTimingFunction(name: .easeIn)
+            settingsBackdrop.animator().alphaValue = 0
+            container?.animator().alphaValue = 0
+        } completionHandler: { [weak self] in
+            MainActor.assumeIsolated {
+                // The controller stays alive until its view has faded out.
+                withExtendedLifetime(panel) { container?.removeFromSuperview() }
+                guard let self, self.settingsPanel == nil else { return }
+                self.settingsBackdrop.isHidden = true
+                self.settingsBackdrop.alphaValue = 1
+            }
+        }
+        // The keyboard goes back to the window's content (the composer or the list behind).
+        if let window = view.window, let responder = window.firstResponder as? NSView, responder.isDescendant(of: container ?? NSView()) {
+            window.makeFirstResponder(nil)
+        }
+    }
+
     fileprivate func syncConnectionBanner(_ issue: ConnectionIssue?) {
         guard issue != renderedIssue else { return }
         renderedIssue = issue
@@ -339,6 +395,49 @@ extension RootViewController {
         case .signInClaude: "Giriş yap"
         }
     }
+}
+
+/// Dims the window behind Settings and takes every click (nothing behind reacts); a click
+/// closes Settings like Claude's.
+final class SettingsBackdropView: ThemedView {
+    var onClick: (() -> Void)?
+
+    override var mouseDownCanMoveWindow: Bool { false }
+    override func mouseDown(with event: NSEvent) {}
+    override func mouseUp(with event: NSEvent) {
+        if bounds.contains(convert(event.locationInWindow, from: nil)) { onClick?() }
+    }
+    override func rightMouseDown(with event: NSEvent) {}
+    override func scrollWheel(with event: NSEvent) {}
+    override func resetCursorRects() { addCursorRect(bounds, cursor: .arrow) }
+}
+
+/// Holds the settings panel: a soft shadow around the rounded panel (the panel clips itself).
+final class SettingsPanelContainerView: NSView {
+    init(content: NSView) {
+        super.init(frame: .zero)
+        translatesAutoresizingMaskIntoConstraints = false
+        wantsLayer = true
+        shadow = {
+            let shadow = NSShadow()
+            shadow.shadowColor = NSColor.black.withAlphaComponent(0.35)
+            shadow.shadowBlurRadius = 30
+            shadow.shadowOffset = NSSize(width: 0, height: -8)
+            return shadow
+        }()
+        content.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(content)
+        NSLayoutConstraint.activate([
+            content.leadingAnchor.constraint(equalTo: leadingAnchor),
+            content.trailingAnchor.constraint(equalTo: trailingAnchor),
+            content.topAnchor.constraint(equalTo: topAnchor),
+            content.bottomAnchor.constraint(equalTo: bottomAnchor),
+        ])
+    }
+
+    required init?(coder: NSCoder) { fatalError("not used") }
+
+    override var mouseDownCanMoveWindow: Bool { false }
 }
 
 /// Hairline dividers in Studio's own colour (the top bar continues them up).

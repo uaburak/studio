@@ -1,10 +1,41 @@
 import AppKit
 import StudioKit
 
-// MARK: - ToolStepRowView (Wecra-style compact tool step row)
+// MARK: - Chat card
+
+/// Claude Code's chat card: 1 pt hairline border, radius 12, no fill.
+final class ChatCardView: ThemedView {
+    let contentStack = NSStackView()
+
+    init(padding: NSEdgeInsets = NSEdgeInsets(top: 14, left: 16, bottom: 14, right: 16), spacing: CGFloat = 10) {
+        super.init(frame: .zero)
+        translatesAutoresizingMaskIntoConstraints = false
+        borderColor = Theme.border
+        borderWidth = 1
+        cornerRadius = ChatStyle.cardRadius
+        contentStack.orientation = .vertical
+        contentStack.alignment = .leading
+        contentStack.spacing = spacing
+        contentStack.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(contentStack)
+        NSLayoutConstraint.activate([
+            contentStack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: padding.left),
+            contentStack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -padding.right),
+            contentStack.topAnchor.constraint(equalTo: topAnchor, constant: padding.top),
+            contentStack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -padding.bottom),
+        ])
+    }
+
+    required init?(coder: NSCoder) { fatalError("not used") }
+}
+
+// MARK: - ToolStepRowView (one step of an expanded step group)
 
 final class ToolStepRowView: NSView {
+    let step: ToolStepPart
+
     init(step: ToolStepPart) {
+        self.step = step
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
 
@@ -14,81 +45,60 @@ final class ToolStepRowView: NSView {
             iconContainer.widthAnchor.constraint(equalToConstant: 14),
             iconContainer.heightAnchor.constraint(equalToConstant: 14),
         ])
-
+        let icon: NSView
         switch step.state {
         case .running:
-            let spinner = NSProgressIndicator()
-            spinner.style = .spinning
-            spinner.controlSize = .mini
-            spinner.startAnimation(nil)
-            spinner.translatesAutoresizingMaskIntoConstraints = false
-            iconContainer.addSubview(spinner)
-            NSLayoutConstraint.activate([
-                spinner.centerXAnchor.constraint(equalTo: iconContainer.centerXAnchor),
-                spinner.centerYAnchor.constraint(equalTo: iconContainer.centerYAnchor),
-            ])
+            icon = WorkingDotsView(style: .grid, size: 12)
         case .done:
-            let img = NSImageView()
-            img.image = NSImage(systemSymbolName: "checkmark", accessibilityDescription: nil)?
-                .withSymbolConfiguration(.init(pointSize: 10, weight: .semibold))
-            img.contentTintColor = Theme.textSecondary
-            img.translatesAutoresizingMaskIntoConstraints = false
-            iconContainer.addSubview(img)
-            NSLayoutConstraint.activate([
-                img.centerXAnchor.constraint(equalTo: iconContainer.centerXAnchor),
-                img.centerYAnchor.constraint(equalTo: iconContainer.centerYAnchor),
-            ])
+            icon = Self.symbol("checkmark", tint: Theme.textTertiary)
         case .error:
-            let img = NSImageView()
-            img.image = NSImage(systemSymbolName: "exclamationmark.triangle", accessibilityDescription: nil)?
-                .withSymbolConfiguration(.init(pointSize: 10, weight: .semibold))
-            img.contentTintColor = Theme.accent
-            img.translatesAutoresizingMaskIntoConstraints = false
-            iconContainer.addSubview(img)
-            NSLayoutConstraint.activate([
-                img.centerXAnchor.constraint(equalTo: iconContainer.centerXAnchor),
-                img.centerYAnchor.constraint(equalTo: iconContainer.centerYAnchor),
-            ])
+            icon = Self.symbol("exclamationmark.triangle", tint: Theme.accent)
         case .unknown:
-            let img = NSImageView()
-            img.image = NSImage(systemSymbolName: "diamond", accessibilityDescription: nil)?
-                .withSymbolConfiguration(.init(pointSize: 9, weight: .regular))
-            img.contentTintColor = Theme.textTertiary
-            img.translatesAutoresizingMaskIntoConstraints = false
-            iconContainer.addSubview(img)
-            NSLayoutConstraint.activate([
-                img.centerXAnchor.constraint(equalTo: iconContainer.centerXAnchor),
-                img.centerYAnchor.constraint(equalTo: iconContainer.centerYAnchor),
-            ])
+            icon = Self.symbol("diamond", tint: Theme.textTertiary)
         }
+        icon.translatesAutoresizingMaskIntoConstraints = false
+        iconContainer.addSubview(icon)
+        NSLayoutConstraint.activate([
+            icon.centerXAnchor.constraint(equalTo: iconContainer.centerXAnchor),
+            icon.centerYAnchor.constraint(equalTo: iconContainer.centerYAnchor),
+        ])
 
         let labelColor = (step.state == .running || step.state == .error) ? Theme.textPrimary : Theme.textSecondary
-        let labelField = NSTextField.styledLabel(step.label, font: Theme.captionFont, color: labelColor)
-        labelField.setContentCompressionResistancePriority(.required, for: .horizontal)
+        let labelField = NSTextField.styledLabel(step.label, font: ChatStyle.eventFont, color: labelColor)
+        labelField.setContentCompressionResistancePriority(.defaultHigh, for: .horizontal)
 
         var views: [NSView] = [iconContainer, labelField]
         if let summary = step.summary, !summary.isEmpty {
-            let summaryField = NSTextField.styledLabel("· \(summary)", font: Theme.captionFont, color: Theme.textTertiary)
+            let summaryField = NSTextField.styledLabel(summary, font: ChatStyle.eventFont, color: Theme.textTertiary)
             summaryField.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+            summaryField.toolTip = summary
             views.append(summaryField)
         }
 
         let row = NSStackView(views: views)
         row.orientation = .horizontal
         row.alignment = .centerY
-        row.spacing = 6
+        row.spacing = 8
         row.translatesAutoresizingMaskIntoConstraints = false
         addSubview(row)
 
         NSLayoutConstraint.activate([
             row.leadingAnchor.constraint(equalTo: leadingAnchor),
             row.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor),
-            row.topAnchor.constraint(equalTo: topAnchor, constant: 1),
-            row.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -1),
+            row.topAnchor.constraint(equalTo: topAnchor, constant: 2),
+            row.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -2),
         ])
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
+
+    private static func symbol(_ name: String, tint: NSColor) -> NSImageView {
+        let img = NSImageView()
+        img.image = NSImage(systemSymbolName: name, accessibilityDescription: nil)?
+            .withSymbolConfiguration(.init(pointSize: 10, weight: .semibold))
+        img.contentTintColor = tint
+        return img
+    }
 }
 
 // MARK: - ConsentCardView (Wecra-style Allow Once / Deny card)
@@ -99,7 +109,7 @@ final class ConsentCardView: NSView {
         translatesAutoresizingMaskIntoConstraints = false
 
         let busy = model.busyConsents.contains(message.id + consent.consentId)
-        let card = CardContainerView(padding: 18, spacing: 10)
+        let card = ChatCardView()
         addSubview(card)
 
         let titleField = NSTextField.styledLabel(
@@ -177,6 +187,8 @@ final class ConsentCardView: NSView {
 
 // MARK: - PlanBlockView
 
+/// The plan as Claude Code's task card: hairline card, "Plan · title" header, one row per post
+/// with a circle status (✓ done, ⋯ in progress, dashed pending), then the decision or outcome.
 final class PlanBlockView: NSView {
     static let collapsedCount = 4
 
@@ -188,26 +200,19 @@ final class PlanBlockView: NSView {
         let items = plan.items.sorted { $0.position < $1.position }
         let shown = expanded ? items : Array(items.prefix(Self.collapsedCount))
 
-        let outer = NSStackView()
-        outer.orientation = .vertical
-        outer.alignment = .leading
-        outer.spacing = 20
-        outer.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(outer)
+        let card = ChatCardView(padding: NSEdgeInsets(top: 12, left: 16, bottom: 10, right: 16), spacing: 0)
+        addSubview(card)
+        let stack = card.contentStack
 
-        let listStack = NSStackView()
-        listStack.orientation = .vertical
-        listStack.alignment = .leading
-        listStack.spacing = 0
-        listStack.translatesAutoresizingMaskIntoConstraints = false
+        let title = plan.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let header = NSTextField.styledLabel(title.isEmpty ? "Plan" : "Plan · \(title)", font: Theme.captionFont, color: Theme.textSecondary)
+        stack.addArrangedSubview(header)
+        stack.setCustomSpacing(6, after: header)
 
         for item in shown {
             let row = PlanItemRowView(item: item)
-            let hairline = HairlineView()
-            listStack.addArrangedSubview(row)
-            listStack.addArrangedSubview(hairline)
-            row.widthAnchor.constraint(equalTo: listStack.widthAnchor).isActive = true
-            hairline.widthAnchor.constraint(equalTo: listStack.widthAnchor).isActive = true
+            stack.addArrangedSubview(row)
+            row.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         }
 
         if items.count > Self.collapsedCount {
@@ -221,18 +226,14 @@ final class PlanBlockView: NSView {
                     model.expandedPlans.insert(plan.id)
                 }
             }
-            listStack.addArrangedSubview(toggleRow)
-            toggleRow.widthAnchor.constraint(equalTo: listStack.widthAnchor).isActive = true
+            stack.addArrangedSubview(toggleRow)
+            toggleRow.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         }
 
-        outer.addArrangedSubview(listStack)
-        listStack.widthAnchor.constraint(equalTo: outer.widthAnchor).isActive = true
-
+        var footer: NSView?
         switch plan.status {
         case .proposed, .draft:
-            let decision = PlanDecisionCardView(model: model, plan: plan)
-            outer.addArrangedSubview(decision)
-            decision.widthAnchor.constraint(equalTo: outer.widthAnchor).isActive = true
+            footer = PlanDecisionCardView(model: model, plan: plan)
         case .accepted:
             let acceptedCount = plan.items.filter { $0.status == .accepted }.count
             let detail = Self.generationSummary(items: items, isOnline: model.app.isOnline)
@@ -245,32 +246,120 @@ final class PlanBlockView: NSView {
                     Task { await model.generate(plan) }
                 }
                 : nil
-            outer.addArrangedSubview(PlanOutcomeRowView(text: "Plan onaylandı · \(acceptedCount) post", detail: detail, action: retry))
+            footer = PlanOutcomeRowView(text: "Plan onaylandı · \(acceptedCount) post", detail: detail, action: retry)
         case .rejected:
-            outer.addArrangedSubview(PlanOutcomeRowView(text: "Plan reddedildi", detail: plan.rejectionReason))
+            footer = PlanOutcomeRowView(text: "Plan reddedildi", detail: plan.rejectionReason)
         case .superseded:
-            outer.addArrangedSubview(PlanOutcomeRowView(text: "Bu planın yerine yenisi önerildi", detail: nil))
+            footer = PlanOutcomeRowView(text: "Bu planın yerine yenisi önerildi", detail: nil)
         case .unknown:
-            break
+            footer = nil
+        }
+        if let footer {
+            if let last = stack.arrangedSubviews.last { stack.setCustomSpacing(10, after: last) }
+            let line = HairlineView()
+            stack.addArrangedSubview(line)
+            line.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+            stack.setCustomSpacing(12, after: line)
+            stack.addArrangedSubview(footer)
+            footer.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         }
 
         NSLayoutConstraint.activate([
-            outer.leadingAnchor.constraint(equalTo: leadingAnchor),
-            outer.trailingAnchor.constraint(equalTo: trailingAnchor),
-            outer.topAnchor.constraint(equalTo: topAnchor),
-            outer.bottomAnchor.constraint(equalTo: bottomAnchor),
+            card.leadingAnchor.constraint(equalTo: leadingAnchor),
+            card.trailingAnchor.constraint(equalTo: trailingAnchor),
+            card.topAnchor.constraint(equalTo: topAnchor),
+            card.bottomAnchor.constraint(equalTo: bottomAnchor),
         ])
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
 
-    private static func generationSummary(items: [PlanItem], isOnline: Bool) -> String? {
+    static func generationSummary(items: [PlanItem], isOnline: Bool) -> String? {
         let generations = items.compactMap(\.generation)
         guard !generations.isEmpty else { return "Üretim henüz başlatılmadı." }
         let active = generations.filter { $0.status.isActive }.count
         let done = generations.filter { $0.status == .succeeded }.count
         if active > 0 { return isOnline ? "\(active) post üretiliyor" : "\(active) post Mac'i bekliyor" }
         return "\(done) post üretildi"
+    }
+
+    /// The circle a plan item shows.
+    static func statusKind(_ item: PlanItem) -> PlanStatusIconView.Kind {
+        if item.status == .skipped { return .skipped }
+        guard let generation = item.generation else { return .pending }
+        switch generation.status {
+        case .succeeded: return .done
+        case .queued, .running: return .running
+        case .failed, .cancelled: return .failed
+        case .unknown: return .pending
+        }
+    }
+}
+
+/// Claude Code's task circles: filled ✓ (done), ⋯ ring (in progress), dashed ring (pending).
+final class PlanStatusIconView: NSView {
+    enum Kind: Equatable { case done, running, pending, failed, skipped }
+
+    var kind: Kind { didSet { needsDisplay = true } }
+
+    init(kind: Kind) {
+        self.kind = kind
+        super.init(frame: .zero)
+        translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            widthAnchor.constraint(equalToConstant: 15),
+            heightAnchor.constraint(equalToConstant: 15),
+        ])
+        setAccessibilityElement(false)
+    }
+
+    required init?(coder: NSCoder) { fatalError("not used") }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        needsDisplay = true
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let rect = bounds.insetBy(dx: 1.5, dy: 1.5)
+        let ring = NSBezierPath(ovalIn: rect)
+        ring.lineWidth = 1.3
+        switch kind {
+        case .done:
+            Theme.textSecondary.setFill()
+            NSBezierPath(ovalIn: bounds.insetBy(dx: 1, dy: 1)).fill()
+            let check = NSBezierPath()
+            check.move(to: NSPoint(x: rect.minX + rect.width * 0.27, y: rect.midY))
+            check.line(to: NSPoint(x: rect.minX + rect.width * 0.44, y: rect.minY + rect.height * 0.31))
+            check.line(to: NSPoint(x: rect.minX + rect.width * 0.75, y: rect.minY + rect.height * 0.68))
+            check.lineWidth = 1.6
+            check.lineCapStyle = .round
+            check.lineJoinStyle = .round
+            Theme.canvas.setStroke()
+            check.stroke()
+        case .running:
+            Theme.textPrimary.setStroke()
+            ring.stroke()
+            Theme.textPrimary.setFill()
+            for dx in [-3.0, 0.0, 3.0] {
+                NSBezierPath(ovalIn: NSRect(x: rect.midX + dx - 0.9, y: rect.midY - 0.9, width: 1.8, height: 1.8)).fill()
+            }
+        case .pending, .skipped:
+            ring.setLineDash([1.8, 1.8], count: 2, phase: 0)
+            Theme.textTertiary.setStroke()
+            ring.stroke()
+        case .failed:
+            Theme.accent.setStroke()
+            ring.stroke()
+            let bar = NSBezierPath()
+            bar.move(to: NSPoint(x: rect.midX, y: rect.midY + 3))
+            bar.line(to: NSPoint(x: rect.midX, y: rect.midY - 0.5))
+            bar.lineWidth = 1.4
+            bar.lineCapStyle = .round
+            bar.stroke()
+            Theme.accent.setFill()
+            NSBezierPath(ovalIn: NSRect(x: rect.midX - 0.8, y: rect.midY - 3.2, width: 1.6, height: 1.6)).fill()
+        }
     }
 }
 
@@ -279,19 +368,17 @@ private final class PlanItemRowView: NSView {
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
 
-        let dateLabel = NSTextField.styledLabel(item.date.map(TurkishFormat.shortDay) ?? "—", font: Theme.smallFont, color: Theme.textSecondary)
-        dateLabel.translatesAutoresizingMaskIntoConstraints = false
-        dateLabel.widthAnchor.constraint(equalToConstant: 54).isActive = true
-
-        let titleLabel = NSTextField.styledLabel(item.title, font: Theme.rowFont, color: Theme.textPrimary)
+        let kind = PlanBlockView.statusKind(item)
+        let icon = PlanStatusIconView(kind: kind)
+        let titleColor = (kind == .done || kind == .skipped) ? Theme.textSecondary : Theme.textPrimary
+        let titleLabel = NSTextField.styledLabel(item.title, font: Theme.rowFont, color: titleColor)
         titleLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
         let spacer = NSView()
         spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
 
-        var views: [NSView] = [dateLabel, titleLabel, spacer]
+        var views: [NSView] = [icon, titleLabel, spacer]
         if let generation = item.generation {
-            let dot = StatusDotView(color: generation.status.isActive ? Theme.accent : Theme.textTertiary, size: 5)
             let statusText: String = switch generation.status {
             case .queued: "sırada"
             case .running: "üretiliyor"
@@ -300,12 +387,7 @@ private final class PlanItemRowView: NSView {
             case .cancelled: "iptal"
             case .unknown: ""
             }
-            let lbl = NSTextField.styledLabel(statusText, font: Theme.smallFont, color: Theme.textSecondary)
-            let badge = NSStackView(views: [dot, lbl])
-            badge.orientation = .horizontal
-            badge.alignment = .centerY
-            badge.spacing = 5
-            views.append(badge)
+            views.append(NSTextField.styledLabel(statusText, font: Theme.smallFont, color: Theme.textSecondary))
         } else if item.imageSlot == .userUpload {
             let dot = StatusDotView(color: Theme.accent, size: 5)
             let lbl = NSTextField.styledLabel("görsel", font: Theme.smallFont, color: Theme.textSecondary)
@@ -318,16 +400,25 @@ private final class PlanItemRowView: NSView {
         } else if item.status == .skipped {
             views.append(NSTextField.styledLabel("atlandı", font: Theme.smallFont, color: Theme.textTertiary))
         }
+        let dateLabel = NSTextField.styledLabel(item.date.map(TurkishFormat.shortDay) ?? "", font: Theme.smallFont, color: Theme.textTertiary)
+        dateLabel.alignment = .right
+        dateLabel.widthAnchor.constraint(greaterThanOrEqualToConstant: 44).isActive = true
+        views.append(dateLabel)
 
         let row = NSStackView(views: views)
         row.orientation = .horizontal
         row.alignment = .centerY
-        row.spacing = 0
+        row.spacing = 8
+        row.setCustomSpacing(9, after: icon)
         row.translatesAutoresizingMaskIntoConstraints = false
         addSubview(row)
 
+        setAccessibilityElement(true)
+        setAccessibilityRole(.row)
+        setAccessibilityLabel([item.title, item.date.map(TurkishFormat.shortDay)].compactMap { $0 }.joined(separator: ", "))
+
         NSLayoutConstraint.activate([
-            heightAnchor.constraint(equalToConstant: 33),
+            heightAnchor.constraint(equalToConstant: 28),
             row.leadingAnchor.constraint(equalTo: leadingAnchor),
             row.trailingAnchor.constraint(equalTo: trailingAnchor),
             row.centerYAnchor.constraint(equalTo: centerYAnchor),
@@ -349,8 +440,8 @@ private final class PlanExpandButtonView: TapControl {
         label.translatesAutoresizingMaskIntoConstraints = false
         addSubview(label)
         NSLayoutConstraint.activate([
-            heightAnchor.constraint(equalToConstant: 32),
-            label.leadingAnchor.constraint(equalTo: leadingAnchor),
+            heightAnchor.constraint(equalToConstant: 26),
+            label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 24),
             label.centerYAnchor.constraint(equalTo: centerYAnchor),
         ])
     }
@@ -375,8 +466,12 @@ private final class PlanDecisionCardView: NSView {
         translatesAutoresizingMaskIntoConstraints = false
 
         let busy = model.busyPlans.contains(plan.id)
-        let card = CardContainerView(padding: 18, spacing: 10)
-        addSubview(card)
+        let stack = NSStackView()
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 10
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(stack)
 
         let summaryText = plan.summary.isEmpty
             ? "\(plan.items.count) postluk plan hazır. Onaylarsan üretime başlarım."
@@ -403,16 +498,16 @@ private final class PlanDecisionCardView: NSView {
         actions.alignment = .centerY
         actions.spacing = 8
 
-        card.contentStack.addArrangedSubview(summaryLabel)
-        card.contentStack.addArrangedSubview(promptLabel)
-        card.contentStack.addArrangedSubview(actions)
-        summaryLabel.widthAnchor.constraint(equalTo: card.contentStack.widthAnchor).isActive = true
+        stack.addArrangedSubview(summaryLabel)
+        stack.addArrangedSubview(promptLabel)
+        stack.addArrangedSubview(actions)
+        summaryLabel.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
 
         NSLayoutConstraint.activate([
-            card.leadingAnchor.constraint(equalTo: leadingAnchor),
-            card.trailingAnchor.constraint(equalTo: trailingAnchor),
-            card.topAnchor.constraint(equalTo: topAnchor),
-            card.bottomAnchor.constraint(equalTo: bottomAnchor),
+            stack.leadingAnchor.constraint(equalTo: leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: trailingAnchor),
+            stack.topAnchor.constraint(equalTo: topAnchor),
+            stack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -4),
         ])
 
         let contextMenu = NSMenu()
@@ -440,17 +535,11 @@ private final class PlanOutcomeRowView: NSView {
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
 
-        let icon = NSImageView()
-        icon.image = NSImage(systemSymbolName: "checkmark", accessibilityDescription: nil)?
-            .withSymbolConfiguration(.init(pointSize: 10, weight: .semibold))
-        icon.contentTintColor = Theme.textSecondary
-
         var views: [NSView] = [
-            icon,
             NSTextField.styledLabel(text, font: Theme.captionFont, color: Theme.textPrimary),
         ]
         if let detail, !detail.isEmpty {
-            views.append(NSTextField.styledLabel(detail, font: Theme.captionFont, color: Theme.textSecondary))
+            views.append(NSTextField.styledLabel("· " + detail, font: Theme.captionFont, color: Theme.textSecondary))
         }
         if let action {
             let button = PillButton(title: action.title, kind: .secondary, height: 24, action: action.handler)
@@ -460,7 +549,7 @@ private final class PlanOutcomeRowView: NSView {
         let row = NSStackView(views: views)
         row.orientation = .horizontal
         row.alignment = .centerY
-        row.spacing = 8
+        row.spacing = 6
         row.translatesAutoresizingMaskIntoConstraints = false
         addSubview(row)
 
@@ -468,7 +557,7 @@ private final class PlanOutcomeRowView: NSView {
             row.leadingAnchor.constraint(equalTo: leadingAnchor),
             row.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor),
             row.topAnchor.constraint(equalTo: topAnchor),
-            row.bottomAnchor.constraint(equalTo: bottomAnchor),
+            row.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -2),
         ])
     }
 
@@ -477,10 +566,13 @@ private final class PlanOutcomeRowView: NSView {
 
 // MARK: - QuestionCardView
 
+/// A question from the agent. Kept alive across transcript updates (typed text and picked
+/// options survive streaming); `setBusy` only toggles the controls.
 final class QuestionCardView: NSView, NSTextFieldDelegate {
     private let model: ConversationModel
     private let message: Message
-    private let question: QuestionPart
+    let question: QuestionPart
+    private(set) var isBusy = false
 
     private var selected: Set<String> = []
     private var optionButtons: [String: PillButton] = [:]
@@ -495,7 +587,8 @@ final class QuestionCardView: NSView, NSTextFieldDelegate {
         translatesAutoresizingMaskIntoConstraints = false
 
         let busy = model.busyQuestions.contains(message.id + question.questionId)
-        let card = CardContainerView(padding: 18, spacing: 12)
+        isBusy = busy
+        let card = ChatCardView(spacing: 12)
         addSubview(card)
 
         let promptLabel = NSTextField.styledLabel(
@@ -584,6 +677,17 @@ final class QuestionCardView: NSView, NSTextFieldDelegate {
 
     required init?(coder: NSCoder) { fatalError("not used") }
 
+    /// The free-text field (its text survives transcript updates).
+    var answerField: NSTextField { textField }
+
+    func setBusy(_ busy: Bool) {
+        guard busy != isBusy else { return }
+        isBusy = busy
+        for button in optionButtons.values { button.isEnabled = !busy }
+        submitButton?.showsSpinner = busy
+        refreshQuestionControls(busy: busy)
+    }
+
     private func tapOption(_ option: QuestionOption) {
         if question.mode == .single {
             Task { await model.answer(message: message, question: question, optionIds: [option.id], text: nil) }
@@ -597,11 +701,11 @@ final class QuestionCardView: NSView, NSTextFieldDelegate {
         for (id, btn) in optionButtons {
             btn.kind = selected.contains(id) ? .primary : .secondary
         }
-        refreshQuestionControls(busy: false)
+        refreshQuestionControls(busy: isBusy)
     }
 
     func controlTextDidChange(_ obj: Notification) {
-        refreshQuestionControls(busy: false)
+        refreshQuestionControls(busy: isBusy)
     }
 
     func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {

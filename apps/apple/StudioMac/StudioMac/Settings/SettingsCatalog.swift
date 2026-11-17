@@ -1,13 +1,14 @@
 import Foundation
 
 /// Settings sections in sidebar order (Claude-desktop style: icon + label, thin
-/// separators between groups). Pure model: no views, testable without a window.
+/// separators between groups: account and usage | the app | brands and publishing | devices
+/// and advanced). Pure model: no views, testable without a window.
 enum SettingsSection: String, CaseIterable, Sendable {
-    case brands
+    case ai
     case usage
     case appearance
-    case ai
     case notifications
+    case brands
     case accounts
     case publishing
     case devices
@@ -51,9 +52,9 @@ enum SettingsSection: String, CaseIterable, Sendable {
     /// Sidebar group; a separator sits between groups.
     var group: Int {
         switch self {
-        case .brands, .usage: 0
-        case .appearance, .ai, .notifications: 1
-        case .accounts, .publishing: 2
+        case .ai, .usage: 0
+        case .appearance, .notifications: 1
+        case .brands, .accounts, .publishing: 2
         case .devices, .macServer, .about: 3
         }
     }
@@ -245,9 +246,10 @@ struct SettingsNavigation {
     }
 }
 
-/// Panel size: as large as the reference layout, never larger than the window.
+/// Panel size: as large as the reference layout (Claude's Settings, ~1020×800), never larger
+/// than the window.
 enum SettingsLayout {
-    static let preferredSize = NSSize(width: 860, height: 640)
+    static let preferredSize = NSSize(width: 1020, height: 800)
     static let minimumSize = NSSize(width: 680, height: 480)
 
     static func panelSize(fitting parent: NSSize?) -> NSSize {

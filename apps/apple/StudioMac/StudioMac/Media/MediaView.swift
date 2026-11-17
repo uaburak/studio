@@ -58,6 +58,8 @@ final class MediaModel {
     private var loadedBrandId: EntityID?
 
     var brandId: EntityID? { app?.currentBrandId }
+    /// The brand whose media is loaded (the right panel reloads when it differs).
+    var loadedBrand: EntityID? { loadedBrandId }
 
     var visibleAssets: [Asset] {
         assets.filter { filter.matches($0.kind) }

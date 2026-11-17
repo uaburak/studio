@@ -20,18 +20,30 @@ enum SidebarItem: Hashable {
     case conversation(EntityID)
 }
 
-/// What the right panel shows. Claude Code style: each top bar icon opens its own pane, and the
-/// pane's title and actions sit in the top bar above the panel.
+/// What the right panel shows. Claude Code style: each top bar icon opens its own pane (never a
+/// screen in the centre), and the pane's title and actions sit in the top bar above the panel.
 enum RightPanelPane: String, CaseIterable, Codable, Sendable {
     /// Ortam, Kullanım, Bağlam, Hesaplar.
     case details
     /// Background jobs (Claude Code's "Background tasks").
     case jobs
+    /// Mini month grid with dots and the selected day's agenda.
+    case calendar
+    /// The brand's media as a 3-column grid (search, drag into the composer).
+    case media
+    /// The working brand's card: logo, colours, fonts, voice, platforms.
+    case brand
+    /// iPhone pairing QR and the paired iPhones.
+    case phone
 
     var title: String {
         switch self {
         case .details: "Ayrıntılar"
         case .jobs: "Arka plan işleri"
+        case .calendar: "Takvim"
+        case .media: "Medya"
+        case .brand: "Marka"
+        case .phone: "iPhone"
         }
     }
 }

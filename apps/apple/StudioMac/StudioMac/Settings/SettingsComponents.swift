@@ -14,6 +14,10 @@ class SettingsBlock: NSView {
     /// Words search matches; nil = shown while searching only when the whole section matches.
     var searchText: String?
 
+    /// Belongs to a tab of the pane that is not selected (Hesaplar | Uygulamalar): hidden, but
+    /// still found by a settings search for its own words.
+    var tabHidden = false
+
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         translatesAutoresizingMaskIntoConstraints = false
@@ -73,6 +77,18 @@ final class SettingsRowView: SettingsBlock {
         didSet { separator.isHidden = !showsSeparator }
     }
 
+    /// A small pill after the title ("Bu Mac", like Claude's "Local only").
+    var tagText: String? {
+        didSet {
+            guard tagText != oldValue else { return }
+            tagView?.removeFromSuperview()
+            tagView = tagText.map(SettingsTagView.init)
+            if let tagView { titleRow.addArrangedSubview(tagView) }
+        }
+    }
+    private var tagView: SettingsTagView?
+    private let titleRow = NSStackView()
+
     var accessory: NSView? {
         get { accessoryView }
         set {
@@ -118,10 +134,16 @@ final class SettingsRowView: SettingsBlock {
         detailLabel.isSelectable = false
         detailLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
+        titleRow.orientation = .horizontal
+        titleRow.alignment = .centerY
+        titleRow.spacing = 8
+        titleRow.addArrangedSubview(titleLabel)
+        titleRow.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
         textColumn.orientation = .vertical
         textColumn.alignment = .leading
         textColumn.spacing = 3
-        textColumn.addArrangedSubview(titleLabel)
+        textColumn.addArrangedSubview(titleRow)
         textColumn.addArrangedSubview(detailLabel)
         textColumn.setContentHuggingPriority(.defaultLow, for: .horizontal)
         textColumn.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
@@ -393,8 +415,12 @@ class SettingsPaneView: NSView {
                     continue
                 }
                 let visible: Bool
-                if !block.isAvailable {
+                if !block.isAvailable || (block.tabHidden && (!searching || sectionMatches)) {
                     visible = false
+                } else if let table = block as? SettingsTableBlock {
+                    // Rows filter themselves; the table stays while any row matches.
+                    let hits = table.filter(paneQuery: searching && !sectionMatches ? query : "")
+                    visible = !searching || sectionMatches || hits > 0
                 } else if !searching || sectionMatches {
                     visible = true
                 } else if let text = block.searchText {
@@ -451,7 +477,7 @@ enum SettingsControls {
 
     static func toggle(target: AnyObject, action: Selector) -> NSSwitch {
         let control = NSSwitch()
-        control.controlSize = .small
+        control.controlSize = .regular
         control.target = target
         control.action = action
         return control

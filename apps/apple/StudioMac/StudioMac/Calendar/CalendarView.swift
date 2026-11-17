@@ -62,6 +62,8 @@ final class CalendarModel {
         var state: ScheduleDisplayState? = nil
         var scheduledAt: Date? = nil
         var accountId: EntityID? = nil
+        /// The schedule's platform (nil: a dated post for several platforms).
+        var platform: Platform? = nil
 
         var canMove: Bool { state?.canMove ?? false }
         var canRetry: Bool { state?.canRetry ?? false }
@@ -77,6 +79,8 @@ final class CalendarModel {
     }
 
     var brandId: EntityID? { app?.currentBrandId }
+    /// The brand whose schedules are loaded (the right panel reloads when it differs).
+    var loadedBrand: EntityID? { loadedBrandId }
     private var api: (any PublishingAPI)? { app?.publishing.api }
     @ObservationIgnored private var loadGeneration = 0
 
@@ -219,7 +223,8 @@ final class CalendarModel {
                 contentId: sch.contentId,
                 state: state,
                 scheduledAt: sch.scheduledAt,
-                accountId: sch.socialAccountId
+                accountId: sch.socialAccountId,
+                platform: sch.platform
             ))
         }
 

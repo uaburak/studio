@@ -1,62 +1,127 @@
 import AppKit
 import StudioKit
 
-/// Settings → "Markalar": every brand (active and archived) as a row with its
-/// settings and restore, plus "Yeni marka".
+/// Settings → "Markalar" in Claude's tabs + table layout: "Etkin | Arşiv" tabs, a search field
+/// and "+ Yeni marka" on top; a table of brands (language, connected platforms, "Ayarlar" /
+/// "Geri yükle").
 final class BrandsSectionView: SettingsPaneView {
+    enum Tab: Int, CaseIterable {
+        case active, archived
+
+        var title: String {
+            switch self {
+            case .active: "Etkin"
+            case .archived: "Arşiv"
+            }
+        }
+    }
+
     private unowned let app: AppModel
-    private let list = SettingsGroupBlock()
+    let toolbar: SettingsTableToolbar
+    let table = SettingsTableBlock(columns: [
+        .init(title: "Marka", width: nil),
+        .init(title: "Dil", width: 100),
+        .init(title: "Hesaplar", width: 110),
+        .init(title: "", width: 104),
+    ])
+    private(set) var tab: Tab = .active
     private var signature = ""
     private var observation: ObservationToken?
 
     init(app: AppModel) {
         self.app = app
-        super.init(section: .brands)
-        add(list)
-        let create = PillButton(title: "Oluştur", kind: .secondary, height: 26) { [weak app] in
+        let tabs = SettingsTabsView(titles: Tab.allCases.map(\.title))
+        let create = PillButton(title: "+ Yeni marka", kind: .ink, height: 26) { [weak app] in
             app?.settingsPresented = false
             app?.newBrandPresented = true
         }
-        addRow(SettingsCatalog.newBrand, accessory: create)
+        create.toolTip = SettingsCatalog.newBrand.detail
+        toolbar = SettingsTableToolbar(tabs: tabs, searchPlaceholder: "Markalarda ara", trailing: [create])
+        super.init(section: .brands)
+        // The toolbar answers "yeni marka" in the settings search (its button creates one).
+        add(SettingsCustomBlock(toolbar, searchText: SettingsCatalog.newBrand.searchText, verticalPadding: 8))
+        add(table)
+        tabs.onSelect = { [weak self] index in self?.show(Tab(rawValue: index) ?? .active) }
+        toolbar.searchField.target = self
+        toolbar.searchField.action = #selector(localSearchChanged)
         observation = observe { [weak self] in self?.render() }
         Task { await app.refreshArchivedBrands() }
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
 
+    func show(_ next: Tab) {
+        tab = next
+        if toolbar.tabs.selectedIndex != next.rawValue { toolbar.tabs.selectedIndex = next.rawValue }
+        signature = ""
+        render()
+    }
+
+    @objc private func localSearchChanged() {
+        table.localQuery = toolbar.searchField.stringValue
+        refresh()
+    }
+
+    /// Types into the toolbar's search field (keyboard shortcuts, tests).
+    func searchLocally(_ text: String) {
+        toolbar.searchField.stringValue = text
+        localSearchChanged()
+    }
+
     private func render() {
         let active = app.brands.sorted { $0.name.localizedCompare($1.name) == .orderedAscending }
         let archived = app.archivedBrands
-        let next = (active + archived).map { "\($0.id):\($0.name):\($0.status.rawValue):\($0.id == app.currentBrandId)" }.joined(separator: "|")
-        guard next != signature else { return }
-        signature = next
-        var blocks: [SettingsBlock] = active.map(row)
-        if active.isEmpty && archived.isEmpty {
-            blocks.append(SettingsNoteView("Henüz marka yok."))
+        let shown = tab == .active ? active : archived
+        let accounts = app.accounts
+        let next = ["\(tab)", app.currentBrandId ?? "-"] + shown.map { brand in
+            "\(brand.id):\(brand.name):\(brand.status.rawValue):\(brand.defaultLanguage):" + accounts.filter { $0.brandId == brand.id && $0.status == .connected }.map(\.platform.rawValue).sorted().joined()
         }
-        if !archived.isEmpty {
-            blocks.append(SettingsSubheaderView("Arşiv"))
-            blocks += archived.map(row)
-        }
-        list.setBlocks(blocks)
+        let joined = next.joined(separator: "|")
+        guard joined != signature else { return }
+        signature = joined
+        table.emptyText = tab == .active ? "Henüz marka yok." : "Arşivde marka yok."
+        table.setRows(shown.map(row))
+        refresh()
     }
 
-    private func row(_ brand: Brand) -> SettingsRowView {
+    private func row(_ brand: Brand) -> SettingsTableBlock.Row {
         let archived = brand.status == .archived
-        var detail = "\(brand.slug) · \(BrandLanguage.label(brand.defaultLanguage))"
-        if brand.id == app.currentBrandId { detail += " · seçili" }
-        let open = PillButton(title: "Ayarlar", kind: .secondary, height: 26) { [weak app] in
-            app?.settingsPresented = false
-            app?.openBrandSettings(brand.id)
+        let current = brand.id == app.currentBrandId
+        let connected = Platform.knownCases.filter { platform in
+            app.accounts.contains { $0.brandId == brand.id && $0.platform == platform && $0.status == .connected }
         }
-        var buttons: [NSView] = []
+        let action: NSView
         if archived {
-            buttons.append(PillButton(title: "Geri yükle", kind: .secondary, height: 26) { [weak self] in self?.restore(brand) })
+            action = PillButton(title: "Geri yükle", kind: .secondary, height: 26) { [weak self] in self?.restore(brand) }
+        } else {
+            action = PillButton(title: "Ayarlar", kind: .secondary, height: 26) { [weak app] in
+                app?.settingsPresented = false
+                app?.openBrandSettings(brand.id)
+            }
         }
-        buttons.append(open)
-        let row = SettingsRowView(title: brand.name, detail: detail, accessory: SettingsControls.buttons(buttons), keywords: archived ? "arşiv marka" : "marka")
-        if archived { row.titleColor = Theme.textSecondary }
-        return row
+        action.setAccessibilityLabel("\(brand.name): \(archived ? "geri yükle" : "ayarlar")")
+        let menu = NSMenu()
+        if !archived {
+            menu.addItem(ClosureMenuItem(title: "Bu markaya geç") { [weak app] in _ = app?.switchToBrand(brand.id) })
+            menu.addItem(ClosureMenuItem(title: "Marka ayarları…") { [weak app] in
+                app?.settingsPresented = false
+                app?.openBrandSettings(brand.id)
+            })
+        } else {
+            menu.addItem(ClosureMenuItem(title: "Geri yükle") { [weak self] in self?.restore(brand) })
+        }
+        return SettingsTableBlock.Row(
+            id: brand.id,
+            searchText: "\(brand.name) \(brand.slug) \(BrandLanguage.label(brand.defaultLanguage)) marka \(archived ? "arşiv" : "")",
+            cells: [
+                SettingsTableCells.title(brand.name, subtitle: brand.slug, tag: current ? "Seçili" : (archived ? "Arşiv" : nil), initials: BrandCardContent.initials(brand.name)),
+                SettingsTableCells.text(BrandLanguage.label(brand.defaultLanguage)),
+                SettingsTableCells.symbols(connected.map(\.panelSymbol), help: connected.map(\.displayName).joined(separator: ", ")),
+                action,
+            ],
+            dimmed: archived,
+            menu: menu
+        )
     }
 
     private func restore(_ brand: Brand) {

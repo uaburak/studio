@@ -93,7 +93,8 @@ enum ShortcutGuide {
         ("Gezinme", [
             ("⌘[  ·  ⌘]", "Geri  ·  İleri"),
             ("⇧⌘P  ·  ⇧⌘K  ·  ⇧⌘M", "Postlar  ·  Takvim  ·  Medya"),
-            ("⌃⌘S  ·  ⌥⌘I", "Kenar çubuğu  ·  Sağ panel"),
+            ("⌘\\  ·  ⌃⌘S", "Kenar çubuğu"),
+            ("⌥⌘I", "Sağ panel: Ayrıntılar, işler, takvim, medya, marka, iPhone"),
             ("⇧⌘L", "Görünüm: Sistem → Açık → Koyu"),
             ("⌃⌘F", "Tam ekran"),
         ]),

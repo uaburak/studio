@@ -36,7 +36,8 @@ final class ImageStore {
             defer { loading.remove(assetId) }
             do {
                 let data = try await service.imageData(assetId: assetId)
-                if let image = NSImage(data: data) {
+                // Decoded on a background thread: drawing it later never decodes on the main thread.
+                if let image = await ImageDecoding.decode(data) {
                     images[assetId] = image
                     failed.remove(assetId)
                     failedAt[assetId] = nil

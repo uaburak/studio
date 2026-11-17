@@ -7,6 +7,8 @@ import StudioKit
 final class PhonePairingCardView: NSView {
     private let model: PhonePairingModel
     private let qrSize: CGFloat
+    /// QR on top and the text under it (the narrow right panel); side by side otherwise.
+    private let vertical: Bool
 
     private let qrBox = ThemedView()
     private let qrView = NSImageView()
@@ -32,9 +34,10 @@ final class PhonePairingCardView: NSView {
     var displayedCode: String { codeLabel.isHidden ? "" : codeLabel.stringValue }
     var displaysQR: Bool { !qrBox.isHidden && qrView.image != nil }
 
-    init(model: PhonePairingModel, qrSize: CGFloat = 168) {
+    init(model: PhonePairingModel, qrSize: CGFloat = 168, vertical: Bool = false) {
         self.model = model
         self.qrSize = qrSize
+        self.vertical = vertical
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
         build()
@@ -96,9 +99,9 @@ final class PhonePairingCardView: NSView {
         textColumn.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
         let row = NSStackView(views: [qrBox, textColumn])
-        row.orientation = .horizontal
-        row.alignment = .centerY
-        row.spacing = 20
+        row.orientation = vertical ? .vertical : .horizontal
+        row.alignment = vertical ? .leading : .centerY
+        row.spacing = vertical ? 14 : 20
         row.translatesAutoresizingMaskIntoConstraints = false
         addSubview(row)
         NSLayoutConstraint.activate([
@@ -107,6 +110,19 @@ final class PhonePairingCardView: NSView {
             row.topAnchor.constraint(equalTo: topAnchor),
             row.bottomAnchor.constraint(equalTo: bottomAnchor),
         ])
+        if vertical {
+            textColumn.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
+        }
+    }
+
+    override func layout() {
+        super.layout()
+        // In the narrow panel the steps wrap at the width the card got.
+        guard vertical, bounds.width > 0 else { return }
+        for label in [stepsLabel, codeLabel] where abs(label.preferredMaxLayoutWidth - bounds.width) > 0.5 {
+            label.preferredMaxLayoutWidth = bounds.width
+            needsLayout = true
+        }
     }
 
     // MARK: Visibility drives the offer

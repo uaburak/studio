@@ -1,8 +1,9 @@
 import AppKit
 import StudioKit
 
-/// Settings sheet in the Claude-desktop layout (`⌘,`): "Ayarlar" + close (×) on top,
-/// a sidebar (search + sections in groups) on the left, the section's rows on the
+/// Settings in the Claude-desktop layout (`⌘,`): a rounded panel over the dimmed main window
+/// (`RootViewController` hosts it in the window, not as a separate window): "Ayarlar" + close
+/// (×) on top, a sidebar (search + sections in groups) on the left, the section's rows on the
 /// right. Remembers the last section; deep links (`AppModel.openSettings(_:)`) pick one.
 /// Search filters rows across every section. Esc closes (first clears the search).
 final class SettingsSheetViewController: NSViewController, NSSearchFieldDelegate {
@@ -10,8 +11,10 @@ final class SettingsSheetViewController: NSViewController, NSSearchFieldDelegate
     private unowned let settings: AppSettings
     private let host: LocalHost?
     private let onDone: () -> Void
-    private let panelSize: NSSize
+    private(set) var panelSize: NSSize
     private let navigation: SettingsNavigation
+    private var widthConstraint: NSLayoutConstraint?
+    private var heightConstraint: NSLayoutConstraint?
 
     private let sidebar = SettingsSidebarView()
     private let contentStack = NSStackView()
@@ -41,12 +44,19 @@ final class SettingsSheetViewController: NSViewController, NSSearchFieldDelegate
 
     override func loadView() {
         let root = SettingsRootView()
-        root.backgroundColor = Theme.canvas
+        root.backgroundColor = Theme.Settings.panelBackground
+        root.borderColor = Theme.Settings.panelBorder
+        root.borderWidth = 1
+        root.cornerRadius = Theme.Settings.panelRadius
+        root.layer?.masksToBounds = true
         root.translatesAutoresizingMaskIntoConstraints = false
         root.onFind = { [weak self] in self?.focusSearch() }
+        root.onEscape = { [weak self] in self?.handleEscape() }
+        root.setAccessibilityRole(.group)
+        root.setAccessibilityLabel("Ayarlar")
 
         // Header: title left, close right, hairline under it.
-        let titleLabel = NSTextField.styledLabel("Ayarlar", font: Theme.Settings.titleFont, color: Theme.textPrimary)
+        let titleLabel = NSTextField.styledLabel("Ayarlar", font: Theme.Settings.headerTitleFont, color: Theme.textPrimary)
         titleLabel.translatesAutoresizingMaskIntoConstraints = false
         let closeButton = GlyphButton(symbol: "xmark", size: 12, weight: .medium) { [weak self] in self?.closeSheet() }
         closeButton.toolTip = "Kapat (Esc)"
@@ -88,11 +98,15 @@ final class SettingsSheetViewController: NSViewController, NSSearchFieldDelegate
         }
 
         let inset = Theme.Settings.contentInset
+        let width = root.widthAnchor.constraint(equalToConstant: panelSize.width)
+        let height = root.heightAnchor.constraint(equalToConstant: panelSize.height)
+        widthConstraint = width
+        heightConstraint = height
         NSLayoutConstraint.activate([
-            root.widthAnchor.constraint(equalToConstant: panelSize.width),
-            root.heightAnchor.constraint(equalToConstant: panelSize.height),
+            width,
+            height,
 
-            titleLabel.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 20),
+            titleLabel.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 18),
             titleLabel.centerYAnchor.constraint(equalTo: root.topAnchor, constant: Theme.Settings.headerHeight / 2),
             closeButton.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -14),
             closeButton.centerYAnchor.constraint(equalTo: titleLabel.centerYAnchor),
@@ -128,6 +142,8 @@ final class SettingsSheetViewController: NSViewController, NSSearchFieldDelegate
 
         view = root
         show(section: selectedSection)
+        // A deep link's section is the one ⌘, reopens next time too.
+        navigation.lastSection = selectedSection
     }
 
     override func viewDidLoad() {
@@ -147,7 +163,31 @@ final class SettingsSheetViewController: NSViewController, NSSearchFieldDelegate
     }
 
     override func cancelOperation(_ sender: Any?) {
-        closeSheet()
+        handleEscape()
+    }
+
+    /// Esc: a search is cleared first, then the panel closes.
+    func handleEscape() {
+        if !sidebar.searchField.stringValue.isEmpty || !searchQuery.isEmpty {
+            sidebar.searchField.stringValue = ""
+            search("")
+        } else {
+            closeSheet()
+        }
+    }
+
+    /// The window was resized: the panel follows (as large as the reference, never larger than the window).
+    func fit(parentSize: NSSize) {
+        let size = SettingsLayout.panelSize(fitting: parentSize)
+        guard size != panelSize else { return }
+        panelSize = size
+        widthConstraint?.constant = size.width
+        heightConstraint?.constant = size.height
+    }
+
+    /// The search field takes the keyboard when the panel opens.
+    func focusInitial() {
+        view.window?.makeFirstResponder(sidebar.searchField)
     }
 
     // MARK: Navigation
@@ -238,16 +278,11 @@ final class SettingsSheetViewController: NSViewController, NSSearchFieldDelegate
 
     func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
         guard control === sidebar.searchField, commandSelector == #selector(NSResponder.cancelOperation(_:)) else { return false }
-        if sidebar.searchField.stringValue.isEmpty {
-            closeSheet()
-        } else {
-            sidebar.searchField.stringValue = ""
-            search("")
-        }
+        handleEscape()
         return true
     }
 
-    private func closeSheet() {
+    func closeSheet() {
         closePanes()
         onDone()
         if presentingViewController != nil { dismiss(nil) }
@@ -256,7 +291,7 @@ final class SettingsSheetViewController: NSViewController, NSSearchFieldDelegate
     /// Panes stop their work (an account login waiting on port 8793, polling) however the sheet
     /// goes away: "Bitti", esc, or a button that closes Settings to open something else.
     private var panesClosed = false
-    private func closePanes() {
+    func closePanes() {
         guard !panesClosed else { return }
         panesClosed = true
         panes.values.forEach { $0.willClose() }
@@ -268,17 +303,27 @@ final class SettingsSheetViewController: NSViewController, NSSearchFieldDelegate
     }
 }
 
-/// Sheet root: ⌘F focuses the settings search (the global search is off under a sheet).
+/// Panel root: ⌘F focuses the settings search (the global search is off while Settings is
+/// open), Esc clears the search or closes.
 private final class SettingsRootView: ThemedView {
     var onFind: (() -> Void)?
+    var onEscape: (() -> Void)?
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
-        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask).subtracting([.numericPad, .function])
         if flags == .command, event.charactersIgnoringModifiers == "f" {
             onFind?()
             return true
         }
+        if flags.isEmpty, event.keyCode == 53, window?.attachedSheet == nil {
+            onEscape?()
+            return true
+        }
         return super.performKeyEquivalent(with: event)
+    }
+
+    override func cancelOperation(_ sender: Any?) {
+        onEscape?()
     }
 }
 
@@ -615,7 +660,7 @@ final class NotificationsPaneView: SettingsPaneView {
         super.init(section: .notifications)
         toggle = SettingsControls.toggle(target: self, action: #selector(toggled))
         toggle.setAccessibilityLabel(SettingsCatalog.notifications.title)
-        addRow(SettingsCatalog.notifications, accessory: toggle)
+        addRow(SettingsCatalog.notifications, accessory: toggle).tagText = "Bu Mac"
         let open = PillButton(title: "Aç", kind: .secondary, height: 26) {
             if let url = URL(string: "x-apple.systempreferences:com.apple.Notifications-Settings.extension") {
                 NSWorkspace.shared.open(url)

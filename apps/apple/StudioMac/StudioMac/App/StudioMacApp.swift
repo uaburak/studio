@@ -215,6 +215,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         // 4. Görüntü
         let viewMenu = NSMenu(title: "Görüntü")
         viewMenu.addItem(item("Kenar Çubuğunu Gizle", #selector(toggleSidebarMenu), "s", [.command, .control], target: self))
+        // ⌘\ toggles the sidebar too (Claude Code); hidden but active.
+        let altSidebar = item("Kenar Çubuğu", #selector(toggleSidebarMenu), "\\", target: self)
+        altSidebar.isHidden = true
+        altSidebar.allowsKeyEquivalentWhenHidden = true
+        viewMenu.addItem(altSidebar)
         let inspectorToggle = item("Sağ Paneli Gizle", #selector(toggleInspectorMenu), "i", [.command, .option], target: self)
         viewMenu.addItem(inspectorToggle)
         inspectorMenuItem = inspectorToggle
@@ -332,7 +337,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             brandIds: ordered,
             currentBrandId: model.currentBrandId,
             switchableBrandIds: Set(ordered.filter { model.canSwitchBrand(to: $0) }),
-            sheetOpen: window?.attachedSheet != nil,
+            // The settings panel lives in the window (no attached sheet) but covers it the same way.
+            sheetOpen: window?.attachedSheet != nil || model.settingsPresented,
             hasWindow: window != nil || assumeWindowForTesting,
             isSample: model.isSample,
             isLoading: model.isLoading,

@@ -163,11 +163,10 @@ final class TopBarView: NSView {
         titleControl.titleText = app.title
         window?.title = app.title
 
-        let route = app.route
         let presented = app.inspectorPresented
         let pane = app.inspectorPane
         for (tool, button) in toolButtons {
-            button.isActive = tool.isActive(route: route, panelPresented: presented, pane: pane)
+            button.isActive = tool.isActive(panelPresented: presented, pane: pane)
         }
 
         let header = PanelHeader.make(pane: pane, expanded: app.inspectorExpanded, finishedCount: app.panelJobs().finished.count)
@@ -196,12 +195,6 @@ final class TopBarView: NSView {
         switch tool.action {
         case .togglePanel(let pane):
             app.togglePanel(pane)
-        case .navigate(let route):
-            app.navigate(to: route)
-        case .brandSettings:
-            if let brandId = app.currentBrandId { app.openBrandSettings(brandId) } else { app.newBrandPresented = true }
-        case .pairPhone:
-            app.openSettings(.devices)
         case .moreMenu:
             guard let anchor else { return }
             TopBarMenus.moreMenu(app: app).popUp(positioning: nil, at: NSPoint(x: 0, y: -4), in: anchor)
@@ -211,6 +204,12 @@ final class TopBarView: NSView {
     func perform(_ action: PanelHeader.Action) {
         switch action {
         case .clearFinished: app.clearFinishedJobs()
+        case .refresh:
+            Task { [app] in await app.calendar.load() }
+        case .upload:
+            app.media.pickAndUploadFiles()
+        case .brandSettings:
+            if let brandId = app.currentBrandId { app.openBrandSettings(brandId) } else { app.newBrandPresented = true }
         case .expand, .collapse: app.toggleInspectorExpanded()
         case .close: app.closePanel()
         }

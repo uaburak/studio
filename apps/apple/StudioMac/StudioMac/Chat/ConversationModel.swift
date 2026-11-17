@@ -24,6 +24,15 @@ final class ConversationModel {
     var busyConsents: Set<String> = []
     /// Alias id whose image is being previewed (mention click).
     var previewAliasId: EntityID?
+    /// Tool-step groups whose step list is open in the chat (`TranscriptBuilder` group keys).
+    var expandedStepGroups: Set<String> = []
+    /// Messages written while a reply runs: sent one by one when the run ends (Claude Code's
+    /// queue). Local to this Mac; a failed send stays here with a retry.
+    private(set) var queue: [QueuedMessage] = []
+    @ObservationIgnored private var isFlushingQueue = false
+    /// The run a send just started, until the stream shows it (it may lag behind the send's
+    /// answer): until then the conversation counts as busy, so nothing is sent into a 409.
+    @ObservationIgnored private var awaitingRunId: EntityID?
     /// Model and effort for the next turn and for plan generation; remembered per conversation.
     var agentChoice: AgentChoice {
         didSet { if agentChoice != oldValue { app.saveAgentChoice(agentChoice, for: id) } }
@@ -67,12 +76,7 @@ final class ConversationModel {
                 case .state(let live):
                     self.live = live
                 case .conversation(let state):
-                    let titleChanged = self.state?.conversation != state.conversation
-                    self.state = state
-                    self.composer.updateConversationAliases(state.aliases)
-                    // The API refuses attachments in a conversation without a brand (400).
-                    self.composer.attachDisabledReason = state.conversation.brandId == nil ? "Markasız sohbete görsel eklenemez." : nil
-                    if titleChanged { self.app.conversationChanged(state.conversation) }
+                    self.apply(state)
                 }
             }
         }
@@ -81,6 +85,32 @@ final class ConversationModel {
     func stop() {
         task?.cancel()
         task = nil
+    }
+
+    private func apply(_ state: ConversationState) {
+        let titleChanged = self.state?.conversation != state.conversation
+        self.state = state
+        composer.updateConversationAliases(state.aliases)
+        // The API refuses attachments in a conversation without a brand (400).
+        composer.attachDisabledReason = state.conversation.brandId == nil ? "Markasız sohbete görsel eklenemez." : nil
+        if titleChanged { app.conversationChanged(state.conversation) }
+        if let awaiting = awaitingRunId {
+            let seenActive = state.activeRun != nil
+            let finished = state.messages.contains { $0.runId == awaiting && $0.role != .user && $0.status != .streaming }
+            if seenActive || finished { awaitingRunId = nil }
+        }
+        // The reply ended: the next queued message goes out.
+        if state.activeRun == nil, awaitingRunId == nil, queue.contains(where: { $0.state == .waiting }) {
+            Task { await self.flushQueue() }
+        }
+    }
+
+    /// A reply runs, or a send just started one the stream has not shown yet.
+    var isReplyActive: Bool { activeRun != nil || awaitingRunId != nil }
+
+    /// Replace the state as a stream frame would (tests, previews).
+    func replaceState(_ state: ConversationState) {
+        apply(state)
     }
 
     // MARK: Derived
@@ -99,17 +129,23 @@ final class ConversationModel {
 
     func send() async {
         guard composer.canSend, !isSending else { return }
-        if activeRun != nil {
-            error = "Önceki yanıt bitmeden yeni mesaj gönderilemez."
+        var message = composer.makeMessage()
+        message.model = agentChoice.model
+        message.effort = agentChoice.effort
+        // A reply is running (or others wait): queue it; it goes out when the reply ends.
+        if isReplyActive || !queue.isEmpty {
+            queue.append(QueuedMessage(message: message))
+            app.saveAgentChoice(agentChoice, for: id)
+            composer.didSend(message)
+            error = nil
+            if !isReplyActive { await flushQueue() }
             return
         }
         isSending = true
         defer { isSending = false }
-        var message = composer.makeMessage()
-        message.model = agentChoice.model
-        message.effort = agentChoice.effort
         do {
-            _ = try await app.conversationService.send(message, to: id)
+            let result = try await app.conversationService.send(message, to: id)
+            noteStarted(result.run)
             app.saveAgentChoice(agentChoice, for: id)
             composer.didSend(message)
             error = nil
@@ -198,6 +234,83 @@ final class ConversationModel {
             _ = try await app.conversationService.cancelRun(run.id)
         } catch {
             self.error = AppModel.describe(error)
+        }
+    }
+
+    // MARK: Queue
+
+    /// A message written while the agent was busy.
+    struct QueuedMessage: Identifiable, Equatable {
+        enum State: Equatable {
+            case waiting
+            case sending
+            case failed(String)
+        }
+
+        var message: OutgoingMessage
+        var state: State = .waiting
+        /// "Şimdi gönder": goes before the others once the running reply stops.
+        var sendNow = false
+        var id: String { message.clientMessageId }
+    }
+
+    /// A send started `run`: busy until the stream shows it.
+    private func noteStarted(_ run: AgentRun) {
+        if run.status.isActive, state?.activeRun?.id != run.id { awaitingRunId = run.id }
+    }
+
+    /// Sends the next waiting message when no reply runs (sendNow first, then in order).
+    func flushQueue() async {
+        guard !isReplyActive, !isFlushingQueue, !isSending else { return }
+        guard let index = queue.firstIndex(where: { $0.sendNow && $0.state == .waiting }) ?? queue.firstIndex(where: { $0.state == .waiting }) else { return }
+        isFlushingQueue = true
+        defer { isFlushingQueue = false }
+        let message = queue[index].message
+        queue[index].state = .sending
+        do {
+            let result = try await app.conversationService.send(message, to: id)
+            queue.removeAll { $0.id == message.clientMessageId }
+            noteStarted(result.run)
+            error = nil
+        } catch {
+            if let i = queue.firstIndex(where: { $0.id == message.clientMessageId }) {
+                queue[i].state = .failed(AppModel.describe(error))
+            }
+        }
+    }
+
+    func retryQueued(_ queuedId: String) {
+        guard let index = queue.firstIndex(where: { $0.id == queuedId }) else { return }
+        queue[index].state = .waiting
+        Task { await flushQueue() }
+    }
+
+    func removeQueued(_ queuedId: String) {
+        queue.removeAll { $0.id == queuedId && $0.state != .sending }
+    }
+
+    /// Back into the composer (text only: queued pictures cannot be edited, see `canEdit`).
+    func editQueued(_ queuedId: String) {
+        guard let queued = queue.first(where: { $0.id == queuedId }), queued.state != .sending, queued.message.attachments.isEmpty else { return }
+        queue.removeAll { $0.id == queuedId }
+        let current = composer.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        composer.text = current.isEmpty ? queued.message.text : current + "\n" + queued.message.text
+        composer.bridge?.setText(composer.text)
+        composer.bridge?.focus()
+    }
+
+    /// "Şimdi gönder": stop the running reply; this message goes out first when it ends.
+    func sendQueuedNow(_ queuedId: String) async {
+        guard let index = queue.firstIndex(where: { $0.id == queuedId }) else { return }
+        for i in queue.indices { queue[i].sendNow = false }
+        queue[index].sendNow = true
+        if case .failed = queue[index].state { queue[index].state = .waiting }
+        if activeRun != nil {
+            await cancelRun()
+        } else {
+            // Nothing runs on screen: do not wait for a run the stream never showed.
+            awaitingRunId = nil
+            await flushQueue()
         }
     }
 

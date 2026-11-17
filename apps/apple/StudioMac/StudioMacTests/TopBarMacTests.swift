@@ -63,24 +63,25 @@ private func makeChrome(_ app: AppModel, width: CGFloat = 1440) -> (NSView, Main
 @Suite("Top bar: tools, panel header and geometry")
 @MainActor
 struct TopBarContentTests {
-    @Test func toolsMapToRealStudioActions() {
+    @Test func everyToolSwitchesTheRightPanelOnly() {
         #expect(TopBarTool.allCases.map(\.symbol) == ["list.bullet", "clock.arrow.circlepath", "calendar", "photo.on.rectangle", "tag", "iphone", "ellipsis"])
         #expect(TopBarTool.allCases.map(\.action) == [
-            .togglePanel(.details), .togglePanel(.jobs), .navigate(.calendar), .navigate(.media), .brandSettings, .pairPhone, .moreMenu,
-        ])
+            .togglePanel(.details), .togglePanel(.jobs), .togglePanel(.calendar), .togglePanel(.media), .togglePanel(.brand), .togglePanel(.phone), .moreMenu,
+        ], "no icon navigates the centre")
+        #expect(TopBarTool.allCases.compactMap(\.pane) == RightPanelPane.allCases, "one icon per pane, in order")
+        #expect(TopBarTool.allCases.map(\.title) == ["Ayrıntılar", "Arka plan işleri", "Takvim", "Medya", "Marka", "iPhone", "Diğer seçenekler"])
         #expect(TopBarTool.allCases.allSatisfy { !$0.help.isEmpty && !$0.title.isEmpty })
-        for symbol in TopBarTool.allCases.map(\.symbol) + AppMode.allCases.map(\.symbol) {
+        for symbol in TopBarTool.allCases.map(\.symbol) + AppMode.allCases.map(\.symbol) + Platform.allCases.map(\.panelSymbol) {
             #expect(NSImage(systemSymbolName: symbol, accessibilityDescription: nil) != nil, "SF Symbol \(symbol)")
         }
 
-        // The open pane / current screen is highlighted; the others never are.
-        #expect(TopBarTool.details.isActive(route: .newChat, panelPresented: true, pane: .details))
-        #expect(!TopBarTool.details.isActive(route: .newChat, panelPresented: false, pane: .details))
-        #expect(!TopBarTool.details.isActive(route: .newChat, panelPresented: true, pane: .jobs))
-        #expect(TopBarTool.jobs.isActive(route: .posts, panelPresented: true, pane: .jobs))
-        #expect(TopBarTool.calendar.isActive(route: .calendar, panelPresented: false, pane: .details))
-        #expect(!TopBarTool.media.isActive(route: .calendar, panelPresented: true, pane: .details))
-        #expect(!TopBarTool.phone.isActive(route: .newChat, panelPresented: true, pane: .details))
+        // Only the open pane's icon gets the rounded fill.
+        for tool in TopBarTool.allCases {
+            for pane in RightPanelPane.allCases {
+                #expect(tool.isActive(panelPresented: true, pane: pane) == (tool.pane == pane), "\(tool) on \(pane)")
+                #expect(!tool.isActive(panelPresented: false, pane: pane), "closed panel: nothing highlighted")
+            }
+        }
     }
 
     @Test func panelHeaderTitlesAndActions() {
@@ -92,9 +93,19 @@ struct TopBarContentTests {
         #expect(jobs.actions == [.clearFinished, .collapse, .close])
         #expect(!jobs.clearEnabled, "nothing to clear")
         #expect(PanelHeader.make(pane: .jobs, expanded: false, finishedCount: 2).clearEnabled)
-        #expect([PanelHeader.Action.clearFinished, .expand, .collapse, .close].map(\.symbol) == [
-            "trash", "arrow.up.left.and.arrow.down.right", "arrow.down.right.and.arrow.up.left", "xmark",
+        #expect(PanelHeader.make(pane: .calendar, expanded: false, finishedCount: 0) == PanelHeader(title: "Takvim", actions: [.refresh, .expand, .close], clearEnabled: false))
+        #expect(PanelHeader.make(pane: .media, expanded: false, finishedCount: 0).actions == [.upload, .expand, .close])
+        #expect(PanelHeader.make(pane: .brand, expanded: true, finishedCount: 0) == PanelHeader(title: "Marka", actions: [.brandSettings, .collapse, .close], clearEnabled: false))
+        #expect(PanelHeader.make(pane: .phone, expanded: false, finishedCount: 0) == PanelHeader(title: "iPhone", actions: [.expand, .close], clearEnabled: false))
+        #expect(RightPanelPane.allCases.allSatisfy { PanelHeader.make(pane: $0, expanded: false, finishedCount: 0).actions.last == .close }, "every pane closes from its header")
+        let actions: [PanelHeader.Action] = [.clearFinished, .refresh, .upload, .brandSettings, .expand, .collapse, .close]
+        #expect(actions.map(\.symbol) == [
+            "trash", "arrow.clockwise", "plus", "gearshape", "arrow.up.left.and.arrow.down.right", "arrow.down.right.and.arrow.up.left", "xmark",
         ])
+        for action in actions {
+            #expect(NSImage(systemSymbolName: action.symbol, accessibilityDescription: nil) != nil)
+            #expect(!action.help.isEmpty)
+        }
     }
 
     @Test func segmentsFollowTheDividers() {
@@ -308,23 +319,35 @@ struct TopBarViewTests {
         bar.perform(.close)
         #expect(!app.inspectorPresented)
 
-        button(.calendar)?.fire()
-        #expect(app.route == .calendar)
+        // Takvim, Medya, Marka, iPhone: the panel switches, the centre stays where it was.
+        app.navigate(to: .conversation(SampleData.kasimConversation))
+        for tool in [TopBarTool.calendar, .media, .brand, .phone] {
+            button(tool)?.fire()
+            #expect(app.inspectorPresented && app.inspectorPane == tool.pane, "\(tool) opens its pane")
+            #expect(app.route == .conversation(SampleData.kasimConversation), "\(tool) leaves the conversation in the centre")
+            await settle()
+            #expect(button(tool)?.isActive == true)
+            #expect(bar.toolButtons.filter { $0.button.isActive }.count == 1, "one highlighted icon")
+            #expect(bar.panelHeader?.title == tool.pane?.title)
+        }
+        #expect(!app.settingsPresented, "the iPhone icon no longer opens Settings")
+        #expect(app.brandSettingsTarget == nil, "the Marka icon no longer opens the brand sheet")
+        button(.phone)?.fire()
+        #expect(!app.inspectorPresented, "the selected icon closes the panel")
         await settle()
-        #expect(button(.calendar)?.isActive == true)
-        #expect(bar.modePill.segments.allSatisfy { !$0.isSelected }, "Takvim is neither Sohbet nor Postlar")
+        #expect(bar.toolButtons.allSatisfy { !$0.button.isActive })
+
+        // Header actions of the new panes.
+        button(.brand)?.fire()
+        bar.perform(.brandSettings)
+        #expect(app.brandSettingsTarget?.brandId == app.currentBrandId)
+        app.brandSettingsTarget = nil
+
         bar.backButton.fire()
         #expect(app.route == .newChat)
         await settle()
         #expect(!bar.backButton.isEnabled)
         #expect(bar.forwardButton.isEnabled)
-
-        button(.phone)?.fire()
-        #expect(app.settingsPresented)
-        #expect(app.settingsRequestedSection == .devices)
-        app.settingsPresented = false
-        button(.brand)?.fire()
-        #expect(app.brandSettingsTarget?.brandId == app.currentBrandId)
 
         _ = bar.modePill.segments.last?.accessibilityPerformPress()
         #expect(app.route == .posts)

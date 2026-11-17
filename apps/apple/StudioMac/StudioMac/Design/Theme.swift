@@ -111,25 +111,34 @@ enum Theme {
     /// Settings sheet (Claude-desktop layout): sidebar of sections, rows of
     /// title + grey description on the left and the control on the right.
     enum Settings {
-        static let sidebarWidth: CGFloat = 216
-        static let headerHeight: CGFloat = 52
+        static let sidebarWidth: CGFloat = 212
+        static let headerHeight: CGFloat = 46
         /// Content column inset from the sidebar hairline and the panel edge.
-        static let contentInset: CGFloat = 28
-        /// Above and below every row's text.
-        static let rowVerticalPadding: CGFloat = 14
-        static let sidebarRowHeight: CGFloat = 30
+        static let contentInset: CGFloat = 20
+        /// Above and below every row's text (rows come out ~68 pt like Claude's).
+        static let rowVerticalPadding: CGFloat = 16
+        static let sidebarRowHeight: CGFloat = 32
         static let sidebarRowRadius: CGFloat = 8
         /// Text fields and pop-ups on the right of a row.
-        static let controlWidth: CGFloat = 240
+        static let controlWidth: CGFloat = 220
         /// Selected sidebar row (subtle grey, never the accent).
         static let selectionFill = Theme.fillStrong
         static let hoverFill = Theme.fill
         /// Dims the window behind the settings panel.
-        static let backdrop = NSColor(light: 0x000000, dark: 0x000000, alpha: 0.18)
+        static let backdrop = NSColor(light: 0x000000, dark: 0x000000, alpha: 0.32)
+        /// The panel itself: a raised surface over the dimmed window, rounded 14.
+        static let panelBackground = NSColor(light: 0xFFFFFF, dark: 0x252527)
+        static let panelBorder = NSColor(light: 0xDCDCE0, dark: 0x3C3C3F)
+        static let panelRadius: CGFloat = 14
+        /// "Bu Mac" style tag pills next to a row title.
+        static let tagFill = NSColor(light: 0xEFEFF1, dark: 0x343437)
         static var titleFont: NSFont { NSFont.systemFont(ofSize: 15, weight: .semibold) }
-        static var rowTitleFont: NSFont { NSFont.systemFont(ofSize: 13) }
-        static var rowDetailFont: NSFont { NSFont.systemFont(ofSize: 12) }
+        static var headerTitleFont: NSFont { NSFont.systemFont(ofSize: 15, weight: .medium) }
+        static var rowTitleFont: NSFont { NSFont.systemFont(ofSize: 14) }
+        static var rowDetailFont: NSFont { NSFont.systemFont(ofSize: 13) }
         static var subheaderFont: NSFont { NSFont.systemFont(ofSize: 12, weight: .semibold) }
+        static var tagFont: NSFont { NSFont.systemFont(ofSize: 10, weight: .medium) }
+        static var tableHeaderFont: NSFont { NSFont.systemFont(ofSize: 12) }
     }
 
     /// Right panel (Claude Code's Environment / Context / Connectors): tiny grey section

@@ -25,16 +25,17 @@ private func makeSheet(_ app: AppModel, _ settings: AppSettings, section: Settin
 @Suite("Settings sections and catalog")
 struct SettingsSectionTests {
     @Test func sectionsInSidebarOrder() {
+        // Claude's grouping: account and usage | the app | brands and publishing | devices, advanced.
         #expect(SettingsSection.allCases.map(\.title) == [
-            "Markalar", "Kullanım",
-            "Görünüm", "Yapay zekâ", "Bildirimler",
-            "Hesaplar", "Yayın",
+            "Yapay zekâ", "Kullanım",
+            "Görünüm", "Bildirimler",
+            "Markalar", "Hesaplar", "Yayın",
             "Cihazlar", "Gelişmiş", "Hakkında",
         ])
         #expect(SettingsSection.groups == [
-            [.brands, .usage],
-            [.appearance, .ai, .notifications],
-            [.accounts, .publishing],
+            [.ai, .usage],
+            [.appearance, .notifications],
+            [.brands, .accounts, .publishing],
             [.devices, .macServer, .about],
         ])
         #expect(SettingsSection.default == .brands)
@@ -54,6 +55,7 @@ struct SettingsSectionTests {
     }
 
     @Test func panelFitsTheWindow() {
+        #expect(SettingsLayout.preferredSize == NSSize(width: 1020, height: 800), "Claude's Settings panel")
         #expect(SettingsLayout.panelSize(fitting: nil) == SettingsLayout.preferredSize)
         #expect(SettingsLayout.panelSize(fitting: NSSize(width: 1600, height: 1000)) == SettingsLayout.preferredSize)
         let small = SettingsLayout.panelSize(fitting: NSSize(width: 860, height: 560))
