@@ -401,6 +401,8 @@ final class IOSChatViewController: UIViewController, UITableViewDelegate {
             if let reason = model.composer.sendBlockedReason { Toast.show(reason, in: view) }
             return
         }
+        // The keyboard steps aside so the reply has the whole screen.
+        view.endEditing(true)
         Task { await model.send() }
     }
 

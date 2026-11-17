@@ -293,16 +293,14 @@ struct IOSShellTests {
     }
 
     @Test func composerSendAndAttachStates() async throws {
-        #expect(ComposerPrimaryAction.resolve(hasContent: false, canSend: false, isSending: false, isRunning: false, isListening: false) == .talk)
-        #expect(ComposerPrimaryAction.resolve(hasContent: false, canSend: false, isSending: false, isRunning: false, isListening: true) == .listening)
-        #expect(ComposerPrimaryAction.resolve(hasContent: true, canSend: true, isSending: false, isRunning: false, isListening: false) == .send(enabled: true))
-        #expect(ComposerPrimaryAction.resolve(hasContent: true, canSend: false, isSending: false, isRunning: false, isListening: false) == .send(enabled: false))
-        #expect(ComposerPrimaryAction.resolve(hasContent: true, canSend: true, isSending: true, isRunning: false, isListening: false) == .sending)
-        #expect(ComposerPrimaryAction.resolve(hasContent: true, canSend: true, isSending: false, isRunning: true, isListening: false) == .stop)
+        #expect(ComposerPrimaryAction.resolve(hasContent: false, canSend: false, isSending: false, isRunning: false) == .idle)
+        #expect(ComposerPrimaryAction.resolve(hasContent: true, canSend: true, isSending: false, isRunning: false) == .send(enabled: true))
+        #expect(ComposerPrimaryAction.resolve(hasContent: true, canSend: false, isSending: false, isRunning: false) == .send(enabled: false))
+        #expect(ComposerPrimaryAction.resolve(hasContent: true, canSend: true, isSending: true, isRunning: false) == .sending)
+        #expect(ComposerPrimaryAction.resolve(hasContent: true, canSend: true, isSending: false, isRunning: true) == .stop)
         #expect(!ComposerPrimaryAction.send(enabled: false).isEnabled)
-        #expect(ComposerPrimaryAction.talk.isEnabled && ComposerPrimaryAction.stop.isEnabled)
+        #expect(!ComposerPrimaryAction.idle.isVisible && ComposerPrimaryAction.stop.isEnabled)
         #expect(ComposerPrimaryAction.send(enabled: true).symbol == "arrow.up")
-        #expect(ComposerPrimaryAction.talk.symbol == "waveform")
 
         let app = await makeApp(uploadDelay: .milliseconds(400))
         let root = await makeRoot(app)
@@ -310,10 +308,11 @@ struct IOSShellTests {
         let composer = chat.composer
         let model = chat.model
         await settle(root.view, passes: 2)
-        #expect(composer.primaryAction == .talk)
-        #expect(composer.primaryButton.accessibilityLabel == "Konuş")
-        #expect(!composer.primaryButton.isHidden && composer.primaryButton.isEnabled)
+        // At rest: one row with + and the mic only; no second voice button.
+        #expect(composer.primaryAction == .idle)
+        #expect(composer.primaryButton.isHidden)
         #expect(!composer.micButton.isHidden && !composer.attachButton.isHidden)
+        #expect(!composer.isExpanded && composer.modelButton.isHidden)
 
         // Attaching: photos, files, paste (camera only on a device).
         let attach = titles(composer.attachMenu().children)
@@ -325,6 +324,10 @@ struct IOSShellTests {
         await settle(root.view, passes: 2)
         #expect(composer.primaryAction == .send(enabled: true))
         #expect(composer.primaryButton.accessibilityLabel == "Gönder")
+        #expect(!composer.primaryButton.isHidden)
+        // Text opens the two-row layout with the model pill.
+        #expect(composer.isExpanded && !composer.modelButton.isHidden)
+        #expect(composer.modelButton.accessibilityValue?.contains(model.selection.model.displayName) == true)
 
         // An image still uploading blocks sending.
         let image = UIGraphicsImageRenderer(size: CGSize(width: 40, height: 50)).image { context in
@@ -345,7 +348,8 @@ struct IOSShellTests {
         await waitUntil { model.id != nil && model.composer.isEmpty }
         #expect(model.id != nil)
         await settle(root.view, passes: 3)
-        #expect(composer.primaryAction == (model.activeRun != nil ? .stop : .talk))
+        #expect(composer.primaryAction == (model.activeRun != nil ? .stop : .idle))
+        #expect(!composer.textView.isFirstResponder)
         #expect(chat.navigationItem.rightBarButtonItems?.count == 2)
 
         // Without a brand, + explains why and offers the brands page.

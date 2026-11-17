@@ -46,40 +46,33 @@ enum ComposerPrimaryAction: Equatable {
     case stop
     /// The message is on its way.
     case sending
-    /// Nothing typed: hold to talk (dictate, then send on release); a tap starts dictation.
-    case talk
-    /// Dictation is listening and nothing is recognized yet: tap to stop.
-    case listening
+    /// Nothing to send and nothing running: the button is hidden (the mic dictates).
+    case idle
 
-    static func resolve(hasContent: Bool, canSend: Bool, isSending: Bool, isRunning: Bool, isListening: Bool) -> Self {
+    static func resolve(hasContent: Bool, canSend: Bool, isSending: Bool, isRunning: Bool) -> Self {
         if isRunning { return .stop }
         if isSending { return .sending }
         if hasContent { return .send(enabled: canSend) }
-        if isListening { return .listening }
-        return .talk
+        return .idle
     }
 
     var symbol: String {
         switch self {
-        case .send, .sending: "arrow.up"
+        case .send, .sending, .idle: "arrow.up"
         case .stop: "stop.fill"
-        case .talk, .listening: "waveform"
         }
     }
 
     var accessibilityLabel: String {
         switch self {
-        case .send: "Gönder"
+        case .send, .idle: "Gönder"
         case .stop: "Yanıtı durdur"
         case .sending: "Gönderiliyor"
-        case .talk: "Konuş"
-        case .listening: "Dikteyi bitir"
         }
     }
 
     var accessibilityHint: String? {
         switch self {
-        case .talk: "Basılı tutup konuş; bırakınca gönderilir. Dokunursan dikte başlar."
         case .send(enabled: false): "Görseller yüklenince gönderilebilir"
         default: nil
         }
@@ -88,15 +81,19 @@ enum ComposerPrimaryAction: Equatable {
     var isEnabled: Bool {
         switch self {
         case .send(let enabled): enabled
-        case .sending: false
-        default: true
+        case .sending, .idle: false
+        case .stop: true
         }
     }
+
+    var isVisible: Bool { self != .idle }
 }
 
-/// The floating chat composer: one glass pill with + (attach), the growing text, the mic
-/// (dictation) and the round primary button (send / stop / talk). Above it: `@` mention
-/// suggestions, starter prompts on an empty chat, and errors. Attachments sit inside the pill.
+/// The floating chat composer: one glass pill. At rest it is one row: + (attach), the text,
+/// the mic (dictation) and, while there is something to send or a reply runs, the round
+/// send / stop button. While typing it opens into two rows: the text on top, then +, the
+/// model pill (model and effort sheet), the mic and send. Above it: `@` mention suggestions,
+/// starter prompts on an empty chat, and errors. Attachments sit inside the pill.
 final class ChatComposerView: UIView, UITextViewDelegate {
     private unowned let model: IOSConversationModel
     weak var host: UIViewController?
@@ -110,8 +107,14 @@ final class ChatComposerView: UIView, UITextViewDelegate {
     let attachButton = UIButton(type: .system)
     let micButton = UIButton(type: .system)
     let primaryButton = UIButton(type: .system)
+    let modelButton = UIButton(type: .system)
     let dictation = IOSDictation()
-    private(set) var primaryAction: ComposerPrimaryAction = .talk
+    private(set) var primaryAction: ComposerPrimaryAction = .idle
+    /// Two rows (text, then controls) while typing; one row at rest.
+    private(set) var isExpanded = false
+    private let textRow = UIStackView()
+    private let controlsRow = UIStackView()
+    private let controlsSpacer = UIView()
     private let suggestionsScroll = UIScrollView()
     private let suggestionsStack = UIStackView()
     private let startersScroll = UIScrollView()
@@ -197,14 +200,31 @@ final class ChatComposerView: UIView, UITextViewDelegate {
         micButton.accessibilityHint = "Söylediklerini mesaja yazar"
         micButton.addAction(UIAction { [weak self] _ in self?.toggleDictation() }, for: .touchUpInside)
 
-        Self.styleRound(primaryButton, symbol: "waveform", filled: true)
+        Self.styleRound(primaryButton, symbol: "arrow.up", filled: true)
         primaryButton.addAction(UIAction { [weak self] _ in self?.primaryTapped() }, for: .touchUpInside)
-        let hold = UILongPressGestureRecognizer(target: self, action: #selector(primaryHeld(_:)))
-        hold.minimumPressDuration = 0.3
-        primaryButton.addGestureRecognizer(hold)
+        primaryButton.isHidden = true
 
-        let inputRow = UIStackView.h([attachButton, textView, micButton, primaryButton], spacing: 6, alignment: .bottom)
-        let pillStack = UIStackView.v([draftsScroll, inputRow], spacing: 6)
+        modelButton.translatesAutoresizingMaskIntoConstraints = false
+        modelButton.heightAnchor.constraint(equalToConstant: Self.control).isActive = true
+        modelButton.accessibilityLabel = "Model ve çaba"
+        modelButton.addAction(UIAction { [weak self] _ in self?.showModelSheet() }, for: .touchUpInside)
+        modelButton.isHidden = true
+        controlsSpacer.setContentHuggingPriority(.init(1), for: .horizontal)
+        controlsSpacer.setContentCompressionResistancePriority(.init(1), for: .horizontal)
+
+        for row in [textRow, controlsRow] {
+            row.axis = .horizontal
+            row.spacing = 6
+            row.alignment = .bottom
+        }
+        controlsRow.alignment = .center
+        controlsRow.isHidden = true
+        // The text view never moves between rows (that would end editing); the buttons do.
+        textRow.addArrangedSubview(attachButton)
+        textRow.addArrangedSubview(textView)
+        textRow.addArrangedSubview(micButton)
+        textRow.addArrangedSubview(primaryButton)
+        let pillStack = UIStackView.v([draftsScroll, textRow, controlsRow], spacing: 6)
         pill.translatesAutoresizingMaskIntoConstraints = false
         pill.cornerConfiguration = .corners(radius: .fixed(26))
         pill.contentView.addSubview(pillStack)
@@ -275,6 +295,8 @@ final class ChatComposerView: UIView, UITextViewDelegate {
         micButton.accessibilityValue = listening ? "Dinliyor" : nil
 
         renderPrimary()
+        renderModelButton()
+        updateExpansion()
         renderDrafts()
         renderSuggestions()
         renderStarters()
@@ -283,7 +305,7 @@ final class ChatComposerView: UIView, UITextViewDelegate {
     private func renderPrimary() {
         let action = ComposerPrimaryAction.resolve(
             hasContent: !model.composer.isEmpty, canSend: model.canSend, isSending: model.isSending,
-            isRunning: model.activeRun != nil, isListening: dictation.state != .idle)
+            isRunning: model.activeRun != nil)
         primaryAction = action
         var config = Self.roundConfig(symbol: action.symbol, filled: true, active: false)
         config.showsActivityIndicator = action == .sending
@@ -293,15 +315,74 @@ final class ChatComposerView: UIView, UITextViewDelegate {
         primaryButton.alpha = action.isEnabled || action == .sending ? 1 : 0.35
         primaryButton.accessibilityLabel = action.accessibilityLabel
         primaryButton.accessibilityHint = action.accessibilityHint
-        let pulse = action == .listening
+        if primaryButton.isHidden == action.isVisible { primaryButton.isHidden = !action.isVisible }
+        // The mic pulses while it listens.
+        let pulse = dictation.state == .listening
         if pulse != isPulsing {
             isPulsing = pulse
             if pulse {
-                primaryButton.imageView?.addSymbolEffect(.variableColor.iterative, options: .repeating)
+                micButton.imageView?.addSymbolEffect(.variableColor.iterative, options: .repeating)
             } else {
-                primaryButton.imageView?.removeAllSymbolEffects()
+                micButton.imageView?.removeAllSymbolEffects()
             }
         }
+    }
+
+    /// "Opus  Orta": the model in ink, the effort in grey, like a pill.
+    private func renderModelButton() {
+        let selection = model.selection
+        var config = UIButton.Configuration.filled()
+        config.cornerStyle = .capsule
+        config.baseBackgroundColor = IOSTheme.fill.withAlphaComponent(0.8)
+        config.contentInsets = NSDirectionalEdgeInsets(top: 0, leading: 14, bottom: 0, trailing: 14)
+        var title = AttributedString(selection.model.displayName)
+        title.font = IOSTheme.font(15, .medium, style: .subheadline)
+        title.foregroundColor = IOSTheme.textPrimary
+        var effort = AttributedString("  " + selection.effort.displayName)
+        effort.font = IOSTheme.font(15, style: .subheadline)
+        effort.foregroundColor = IOSTheme.textSecondary
+        config.attributedTitle = title + effort
+        modelButton.configuration = config
+        modelButton.accessibilityValue = "\(selection.model.displayName), çaba \(selection.effort.displayName)"
+    }
+
+    /// Opens into two rows while the text is being edited (or holds text / images).
+    private func updateExpansion() {
+        let composer = model.composer
+        let expand = textView.isFirstResponder || !composer.text.isEmpty || !composer.drafts.isEmpty
+        guard expand != isExpanded else { return }
+        isExpanded = expand
+        if expand {
+            for view in [attachButton, modelButton, controlsSpacer, micButton, primaryButton] {
+                controlsRow.addArrangedSubview(view)
+            }
+            modelButton.isHidden = false
+            controlsRow.isHidden = false
+        } else {
+            controlsRow.isHidden = true
+            modelButton.isHidden = true
+            textRow.insertArrangedSubview(attachButton, at: 0)
+            textRow.addArrangedSubview(micButton)
+            textRow.addArrangedSubview(primaryButton)
+        }
+        textView.textContainerInset.left = expand ? 10 : 4
+        if window != nil {
+            UIView.animate(withDuration: 0.25, delay: 0, usingSpringWithDamping: 0.9, initialSpringVelocity: 0) {
+                self.superview?.layoutIfNeeded()
+            }
+        }
+    }
+
+    private func showModelSheet() {
+        guard let host else { return }
+        Haptics.selection()
+        let sheet = ModelPickerViewController(model: model)
+        let nav = UINavigationController(rootViewController: sheet)
+        if let presentation = nav.sheetPresentationController {
+            presentation.detents = [.medium(), .large()]
+            presentation.prefersGrabberVisible = true
+        }
+        host.present(nav, animated: true)
     }
 
     private func renderDrafts() {
@@ -499,31 +580,7 @@ final class ChatComposerView: UIView, UITextViewDelegate {
         case .send:
             if dictation.state != .idle { Task { await dictation.stop() } }
             onSendTapped?()
-        case .talk, .listening:
-            toggleDictation()
-        case .sending:
-            break
-        }
-    }
-
-    /// Hold the primary button on an empty composer: listen while held, send on release.
-    @objc private func primaryHeld(_ gesture: UILongPressGestureRecognizer) {
-        switch gesture.state {
-        case .began:
-            guard primaryAction == .talk else { return }
-            Haptics.tap()
-            startDictation()
-        case .ended:
-            guard dictation.state != .idle else { return }
-            Task {
-                await dictation.stop()
-                if model.canSend {
-                    onSendTapped?()
-                }
-            }
-        case .cancelled, .failed:
-            Task { await dictation.stop() }
-        default:
+        case .sending, .idle:
             break
         }
     }
@@ -572,9 +629,13 @@ final class ChatComposerView: UIView, UITextViewDelegate {
     func textViewDidBeginEditing(_ textView: UITextView) {
         if dictation.state != .idle { Task { await dictation.stop() } }
         renderSuggestions()
+        updateExpansion()
     }
 
-    func textViewDidEndEditing(_ textView: UITextView) { renderSuggestions() }
+    func textViewDidEndEditing(_ textView: UITextView) {
+        renderSuggestions()
+        updateExpansion()
+    }
 
     func textView(_ textView: UITextView, shouldChangeTextIn range: NSRange, replacementText text: String) -> Bool {
         // Return chooses the first suggestion while `@` suggestions are open.
@@ -596,5 +657,104 @@ final class ChatComposerView: UIView, UITextViewDelegate {
     override func layoutSubviews() {
         super.layoutSubviews()
         updateTextHeight()
+    }
+}
+
+/// "Model seçin": the models with a line on what each is for, then the effort. Picking
+/// applies at once; the composer's pill follows.
+final class ModelPickerViewController: UITableViewController {
+    private unowned let model: IOSConversationModel
+    private let efforts = AgentEffort.allCases.filter { $0 != .unknown }
+    private var sections: [(title: String?, models: [AgentModel])] {
+        [(nil, AgentModel.claudeCases), ("Gemini", AgentModel.geminiCases)]
+    }
+
+    init(model: IOSConversationModel) {
+        self.model = model
+        super.init(style: .insetGrouped)
+    }
+
+    required init?(coder: NSCoder) { fatalError("not used") }
+
+    static func detail(_ candidate: AgentModel) -> String {
+        switch candidate {
+        case .opus: "Karmaşık işler ve günlük görevler için"
+        case .sonnet: "Daha basit görevler için en verimli"
+        case .haiku: "Hızlı yanıtlar için en hızlı"
+        case .geminiPro: "Gemini'nin en güçlüsü"
+        case .geminiFlash: "Hızlı ve dengeli"
+        case .geminiFlashLite: "En hafif ve en hızlı"
+        case .unknown: ""
+        }
+    }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        title = "Model seçin"
+        navigationItem.leftBarButtonItem = UIBarButtonItem(systemItem: .close, primaryAction: UIAction { [weak self] _ in
+            self?.dismiss(animated: true)
+        })
+        tableView.register(UITableViewCell.self, forCellReuseIdentifier: "cell")
+    }
+
+    override func numberOfSections(in tableView: UITableView) -> Int { sections.count + 1 }
+
+    override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
+        section < sections.count ? sections[section].models.count : efforts.count
+    }
+
+    override func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? {
+        section < sections.count ? sections[section].title : "Çaba"
+    }
+
+    override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
+        let cell = tableView.dequeueReusableCell(withIdentifier: "cell", for: indexPath)
+        var content = UIListContentConfiguration.subtitleCell()
+        content.textProperties.font = IOSTheme.font(17, style: .body)
+        content.secondaryTextProperties.font = IOSTheme.font(14, style: .subheadline)
+        content.secondaryTextProperties.color = IOSTheme.textSecondary
+        content.textToSecondaryTextVerticalPadding = 3
+        content.directionalLayoutMargins = NSDirectionalEdgeInsets(top: 12, leading: 0, bottom: 12, trailing: 0)
+        let selection = model.selection
+        let checked: Bool
+        var enabled = true
+        if indexPath.section < sections.count {
+            let candidate = sections[indexPath.section].models[indexPath.row]
+            content.text = candidate.displayName
+            let available = AssistantStatus.isAvailable(candidate, presence: model.presence)
+            if available {
+                content.secondaryText = Self.detail(candidate)
+            } else {
+                content.secondaryText = model.presence?.online == true
+                    ? (candidate.isGemini ? "Gemini Mac'te hazır değil" : "Claude girişi gerekli")
+                    : "Mac çevrimdışı"
+                enabled = model.presence == nil
+            }
+            checked = candidate == selection.model
+        } else {
+            let effort = efforts[indexPath.row]
+            content.text = effort.displayName
+            content.secondaryText = effort == .medium ? "Önerilen" : nil
+            checked = effort == selection.effort
+        }
+        content.textProperties.color = enabled ? IOSTheme.textPrimary : IOSTheme.textSecondary
+        cell.contentConfiguration = content
+        cell.accessoryType = checked ? .checkmark : .none
+        cell.tintColor = IOSTheme.accent
+        cell.accessibilityTraits = checked ? [.button, .selected] : .button
+        return cell
+    }
+
+    override func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
+        tableView.deselectRow(at: indexPath, animated: true)
+        Haptics.selection()
+        if indexPath.section < sections.count {
+            model.selection.model = sections[indexPath.section].models[indexPath.row]
+            tableView.reloadData()
+            dismiss(animated: true)
+        } else {
+            model.selection.effort = efforts[indexPath.row]
+            tableView.reloadData()
+        }
     }
 }
