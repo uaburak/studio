@@ -58,7 +58,7 @@ final class DrawerViewController: UIViewController, UITableViewDelegate, UITextF
     private unowned let app: IOSAppModel
     let tableView = UITableView(frame: .zero, style: .plain)
     private let titleLabel = UILabel()
-    private(set) lazy var searchButton = UIButton.glassCircle("magnifyingglass", label: "Sohbet ara", side: 48) { [weak self] in self?.setSearching(true) }
+    private(set) lazy var searchButton = UIButton.glassCircle("magnifyingglass", label: "Sohbet ara", side: 44, pointSize: 17) { [weak self] in self?.setSearching(true) }
     let searchField = UISearchTextField()
     private lazy var cancelSearch = UIButton(configuration: .plain(), primaryAction: UIAction(title: "Vazgeç") { [weak self] _ in self?.setSearching(false) })
     private let brandButton = UIButton(type: .system)
@@ -136,7 +136,15 @@ final class DrawerViewController: UIViewController, UITableViewDelegate, UITextF
             }))
         }])
 
-        let header = UIStackView.v([titleRow, searchRow, brandButton], spacing: 2, alignment: .fill)
+        let header = UIStackView.v([titleRow, searchRow], spacing: 2, alignment: .fill)
+        // The brand picker is the first row of the list and scrolls with it.
+        brandHeader.addSubview(brandButton)
+        NSLayoutConstraint.activate([
+            brandButton.leadingAnchor.constraint(equalTo: brandHeader.leadingAnchor, constant: 20),
+            brandButton.trailingAnchor.constraint(equalTo: brandHeader.trailingAnchor, constant: -16),
+            brandButton.topAnchor.constraint(equalTo: brandHeader.topAnchor),
+            brandButton.bottomAnchor.constraint(equalTo: brandHeader.bottomAnchor),
+        ])
         header.setCustomSpacing(0, after: searchRow)
         // Content scrolls under the header and the bottom bar with a soft edge.
         let topEdge = UIScrollEdgeElementContainerInteraction()
@@ -176,8 +184,8 @@ final class DrawerViewController: UIViewController, UITableViewDelegate, UITextF
             restingBar,
             header.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 20),
             header.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
-            header.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 6),
-            titleRow.heightAnchor.constraint(greaterThanOrEqualToConstant: 52),
+            header.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 0),
+            titleRow.heightAnchor.constraint(equalToConstant: 44),
 
             tableView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             tableView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
@@ -186,8 +194,8 @@ final class DrawerViewController: UIViewController, UITableViewDelegate, UITextF
             tableView.topAnchor.constraint(equalTo: view.topAnchor),
             tableView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
 
-            bottomBar.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 18),
-            bottomBar.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -18),
+            bottomBar.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 14),
+            bottomBar.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -14),
             bottomBar.bottomAnchor.constraint(equalTo: view.keyboardLayoutGuide.topAnchor, constant: -8),
         ])
 
@@ -203,11 +211,17 @@ final class DrawerViewController: UIViewController, UITableViewDelegate, UITextF
     }
 
     private weak var headerView: UIView?
+    /// Holds the brand picker as the list's first (scrolling) row.
+    private let brandHeader = UIView(frame: CGRect(x: 0, y: 0, width: 320, height: 52))
 
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
         // Rows start below the header; scrolled ones slide under it.
         let top = max(0, (headerView?.frame.maxY ?? 0) + 4 - view.safeAreaInsets.top)
+        if !isSearching, abs(brandHeader.frame.width - tableView.bounds.width) > 0.5 {
+            brandHeader.frame = CGRect(x: 0, y: 0, width: tableView.bounds.width, height: 52)
+            tableView.tableHeaderView = brandHeader
+        }
         if headerView != nil, abs(tableView.contentInset.top - top) > 0.5 {
             let atTop = tableView.contentOffset.y <= -tableView.adjustedContentInset.top + 1
             tableView.contentInset.top = top
@@ -293,7 +307,7 @@ final class DrawerViewController: UIViewController, UITableViewDelegate, UITextF
         isSearching = on
         titleRow.isHidden = on
         searchRow.isHidden = !on
-        brandButton.isHidden = on
+        tableView.tableHeaderView = on ? nil : brandHeader
         if on {
             searchField.text = query
             searchField.becomeFirstResponder()
