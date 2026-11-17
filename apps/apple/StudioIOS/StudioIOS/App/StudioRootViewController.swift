@@ -105,8 +105,14 @@ final class StudioRootViewController: UIViewController, UINavigationControllerDe
         mainContainer.center = CGPoint(x: bounds.midX, y: bounds.midY)
         mainNav.view.frame = mainContainer.bounds
         scrim.frame = mainContainer.bounds
-        applyDrawer(progress: drawerProgress)
+        // A layout pass mid-slide (the status bar style changes as the drawer closes) must
+        // not snap to the settled state: that hid the drawer and squared the card at once.
+        if !isSliding { applyDrawer(progress: drawerProgress) }
     }
+
+    /// True while the open/close animation or a drag is running.
+    private var isSliding = false
+    private var slideGeneration = 0
 
     override var childForStatusBarStyle: UIViewController? { isDrawerOpen ? drawer : mainNav }
 
@@ -131,7 +137,7 @@ final class StudioRootViewController: UIViewController, UINavigationControllerDe
         scrim.isHidden = !visible
         // Like the Claude app the drawer stays in place under the chat and only grows a
         // touch as the chat slides away; it never fades or slides itself.
-        let scale = 0.95 + 0.05 * progress
+        let scale = 0.97 + 0.03 * progress
         drawer.view.transform = CGAffineTransform(scaleX: scale, y: scale)
         drawer.view.alpha = 1
         drawer.view.isHidden = !visible
@@ -150,17 +156,24 @@ final class StudioRootViewController: UIViewController, UINavigationControllerDe
         isDrawerOpen = open
         let target: CGFloat = open ? 1 : 0
         if animated && isOnScreen {
+            isSliding = true
+            slideGeneration += 1
+            let generation = slideGeneration
             applyDrawer(progress: drawerProgress, settled: false)
             UIView.animate(springDuration: 0.3, bounce: 0, initialSpringVelocity: 0, delay: 0, options: [.allowUserInteraction, .beginFromCurrentState]) {
                 self.applyDrawer(progress: target, settled: false)
             } completion: { _ in
+                // A newer slide (reopened mid-close, a new drag) owns the state now.
+                guard generation == self.slideGeneration else { return }
+                self.isSliding = false
                 self.applyDrawer(progress: self.isDrawerOpen ? 1 : 0)
             }
         } else {
+            isSliding = false
             applyDrawer(progress: target)
         }
         if changed {
-            if open { Haptics.tap() }
+            Haptics.tap()
             setNeedsStatusBarAppearanceUpdate()
         }
         updateAccessibility()
@@ -202,6 +215,8 @@ final class StudioRootViewController: UIViewController, UINavigationControllerDe
     private func handlePan(translation: CGFloat, velocity: CGFloat, state: UIGestureRecognizer.State) {
         switch state {
         case .began:
+            isSliding = true
+            slideGeneration += 1
             panStart = drawerProgress
             if !isDrawerOpen {
                 mainNav.view.endEditing(true)
