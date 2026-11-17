@@ -283,8 +283,11 @@ final class DrawerViewController: UIViewController, UITableViewDelegate, UITextF
     /// and floats over the list (nothing below moves or reloads).
     func setBrandsExpanded(_ expanded: Bool, completion: (() -> Void)? = nil) {
         if !expanded {
-            brandDropdown?.dismiss(animated: view.window != nil, completion: completion)
-            if brandDropdown == nil { completion?() }
+            if let brandDropdown {
+                brandDropdown.dismiss(animated: view.window != nil, completion: completion)
+            } else {
+                completion?()
+            }
             return
         }
         guard brandDropdown == nil, let indexPath = dataSource.indexPath(for: .brandPicker) else { completion?(); return }
@@ -304,13 +307,14 @@ final class DrawerViewController: UIViewController, UITableViewDelegate, UITextF
             if self?.brandDropdown === dropdown { self?.brandDropdown = nil }
         }
         brandDropdown = dropdown
-        dropdown.present(in: view, from: anchor, animated: view.window != nil)
+        dropdown.present(in: view, from: anchor, source: tableView.cellForRow(at: indexPath), animated: view.window != nil)
         completion?()
     }
 
     /// Pick a brand from the dropdown: it folds back into the row, then the brand changes.
     func pickBrand(_ id: EntityID) {
         Haptics.selection()
+        if let name = app.brand(id)?.name { brandDropdown?.showPicked(name) }
         setBrandsExpanded(false) { [weak self] in
             guard let self, id != self.app.currentBrandId else { return }
             self.app.selectBrand(id)
@@ -689,6 +693,31 @@ final class BrandDropdown {
     private let chevron = UIImageView(image: UIImage(systemName: "chevron.up.chevron.down", withConfiguration: UIImage.SymbolConfiguration(pointSize: 12, weight: .medium)))
     private var anchor: CGRect = .zero
     private var isDismissing = false
+    private weak var headerLabel: UILabel?
+
+    /// Shows the picked brand in the card's top row before it folds back into the row.
+    func showPicked(_ name: String) {
+        guard let headerLabel else { return }
+        UIView.transition(with: headerLabel, duration: 0.15, options: .transitionCrossDissolve) {
+            headerLabel.text = name
+        }
+    }
+    private var columnLeading: NSLayoutConstraint!
+    private var columnTrailing: NSLayoutConstraint!
+    private var columnTop: NSLayoutConstraint!
+    /// The row the panel grows out of: hidden while the panel stands in for it.
+    private weak var source: UIView?
+    /// How far the card reaches past the row, and the padding the row slides into.
+    private static let outset: CGFloat = 6
+    private static let padding: CGFloat = 8
+
+    private func setInset(_ open: Bool) {
+        let pad = open ? Self.padding : 0
+        columnLeading.constant = pad
+        columnTrailing.constant = -pad
+        columnTop.constant = pad
+        panel.contentView.layoutIfNeeded()
+    }
 
     private static let rowHeight: CGFloat = 44
 
@@ -704,6 +733,7 @@ final class BrandDropdown {
         let header = Self.makeRow(title: title, icon: "tag", trailing: chevron, font: IOSTheme.font(17), color: IOSTheme.textPrimary, iconColor: IOSTheme.textPrimary)
         header.addAction(UIAction { [weak self] _ in self?.dismiss(animated: true) }, for: .touchUpInside)
         header.accessibilityHint = "Marka seçimini kapatır"
+        headerLabel = header.subviews.first?.subviews.compactMap { $0 as? UILabel }.first
         chevron.tintColor = IOSTheme.textTertiary
 
         list.axis = .vertical
@@ -737,10 +767,13 @@ final class BrandDropdown {
         column.axis = .vertical
         column.translatesAutoresizingMaskIntoConstraints = false
         panel.contentView.addSubview(column)
+        columnLeading = column.leadingAnchor.constraint(equalTo: panel.contentView.leadingAnchor)
+        columnTrailing = column.trailingAnchor.constraint(equalTo: panel.contentView.trailingAnchor)
+        columnTop = column.topAnchor.constraint(equalTo: panel.contentView.topAnchor)
         NSLayoutConstraint.activate([
-            column.leadingAnchor.constraint(equalTo: panel.contentView.leadingAnchor),
-            column.trailingAnchor.constraint(equalTo: panel.contentView.trailingAnchor),
-            column.topAnchor.constraint(equalTo: panel.contentView.topAnchor),
+            columnLeading,
+            columnTrailing,
+            columnTop,
             header.heightAnchor.constraint(equalToConstant: 46),
         ])
         // Gives the panel its fitting height; gives way while it is shorter (growing).
@@ -803,31 +836,40 @@ final class BrandDropdown {
         return control
     }
 
-    func present(in container: UIView, from anchor: CGRect, animated: Bool) {
+    func present(in container: UIView, from anchor: CGRect, source: UIView?, animated: Bool) {
         self.anchor = anchor
+        self.source = source
         catcher.frame = container.bounds
         catcher.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         container.addSubview(catcher)
         container.addSubview(panel)
 
-        // Final size: the row's width, as tall as the content (kept on screen).
+        // Final size: a card a little wider than the row, as tall as its content (on
+        // screen). The row's icon, name and chevron slide from the row into the card.
+        let width = anchor.width + 2 * Self.outset
+        setInset(true)
         let fitting = panel.contentView.systemLayoutSizeFitting(
-            CGSize(width: anchor.width, height: UIView.layoutFittingCompressedSize.height),
+            CGSize(width: width, height: UIView.layoutFittingCompressedSize.height),
             withHorizontalFittingPriority: .required, verticalFittingPriority: .fittingSizeLevel)
-        let maxHeight = container.bounds.height - anchor.minY - container.safeAreaInsets.bottom - 90
-        let target = CGRect(x: anchor.minX, y: anchor.minY, width: anchor.width, height: min(fitting.height, max(anchor.height, maxHeight)))
+        let top = anchor.minY - Self.outset
+        let maxHeight = container.bounds.height - top - container.safeAreaInsets.bottom - 90
+        let target = CGRect(x: anchor.minX - Self.outset, y: top, width: width, height: min(fitting.height + Self.padding, max(anchor.height, maxHeight)))
 
         panel.frame = anchor
+        setInset(false)
+        source?.alpha = 0
         list.alpha = 0
         UIAccessibility.post(notification: .screenChanged, argument: panel)
         guard animated else {
             panel.frame = target
+            setInset(true)
             panel.effect = UIGlassEffect(style: .regular)
             list.alpha = 1
             return
         }
         UIView.animate(springDuration: 0.42, bounce: 0.18, initialSpringVelocity: 0, delay: 0, options: [.allowUserInteraction]) {
             self.panel.frame = target
+            self.setInset(true)
             self.panel.effect = UIGlassEffect(style: .regular)
             self.chevron.transform = CGAffineTransform(scaleX: 1, y: 0.85)
         }
@@ -840,10 +882,12 @@ final class BrandDropdown {
         guard !isDismissing else { return }
         isDismissing = true
         let finish = {
+            // The brand changes first, so the row reappears already showing the pick.
+            completion?()
+            self.source?.alpha = 1
             self.panel.removeFromSuperview()
             self.catcher.removeFromSuperview()
             self.onDismissed?()
-            completion?()
         }
         guard animated, panel.window != nil else { finish(); return }
         UIView.animate(withDuration: 0.12, delay: 0, options: [.curveEaseIn]) {
@@ -851,6 +895,7 @@ final class BrandDropdown {
         }
         UIView.animate(springDuration: 0.34, bounce: 0, initialSpringVelocity: 0, delay: 0, options: []) {
             self.panel.frame = self.anchor
+            self.setInset(false)
             self.panel.effect = nil
             self.chevron.transform = .identity
         } completion: { _ in
