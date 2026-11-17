@@ -137,6 +137,55 @@ struct PhonePairingMacTests {
         model.hideQR()
     }
 
+    @Test func aCardOpenedAgainAfterPairingOrRemovalOffersANewCode() async throws {
+        let (model, host) = makePairing()
+        model.showQR()
+        await model.step()
+        PairingStub.update(host) { $0.devices = ["Burak'ın iPhone'u"] }
+        await model.loadDevices()
+        #expect(model.phase == .paired("Burak'ın iPhone'u"))
+        model.hideQR()
+
+        // Settings → Cihazlar opened again later: a fresh code, not the old "bağlandı".
+        model.showQR()
+        #expect(model.phase == .ready)
+        await model.step()
+        #expect(model.invite != nil)
+        #expect(PairingStub.state(host).offers == 2)
+
+        // Paired again, then the phone is removed: "bağlandı" no longer holds.
+        PairingStub.update(host) { $0.devices = ["Burak'ın iPhone'u", "İkinci iPhone"] }
+        await model.loadDevices()
+        if case .paired = model.phase {} else { Issue.record("expected paired, got \(model.phase)") }
+        await model.remove(try #require(model.activeDevices.first))
+        #expect(model.phase == .ready)
+        model.hideQR()
+    }
+
+    @Test func theCardOffersCodesOnlyWhileItsWindowIsOnScreen() {
+        func shown(_ inWindow: Bool = true, visible: Bool = true, hidden: Bool = false, occlusion: NSWindow.OcclusionState = .visible, closing: Bool = false) -> Bool {
+            PhonePairingCardView.isOnScreen(inWindow: inWindow, windowVisible: visible, hidden: hidden, occlusion: occlusion, closing: closing)
+        }
+        #expect(shown())
+        #expect(shown(occlusion: []), "a window that has not reported yet")
+        #expect(!shown(false))
+        #expect(!shown(visible: false), "the main window closed (Studio keeps running) or the sheet went away")
+        #expect(!shown(occlusion: [.init(rawValue: 1 << 20)]), "fully covered or minimized")
+        #expect(!shown(hidden: true))
+        #expect(!shown(closing: true))
+    }
+
+    @Test func aCancelledRoundIsNotShownAsAnError() async {
+        let (model, _) = makePairing()
+        model.showQR()
+        let round = Task { await model.step() }
+        round.cancel()
+        await round.value
+        #expect(model.message == nil, "a cancelled request is not 'İptal edildi.'")
+        if case .failed(let reason) = model.phase { Issue.record("cancelled round shown as \(reason)") }
+        model.hideQR()
+    }
+
     @Test func renewsAnOfferBeforeItsQRRunsOut() async {
         let (model, host) = makePairing()
         model.showQR()

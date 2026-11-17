@@ -87,6 +87,8 @@ final class PhonePairingModel {
 
     /// A QR card appeared: make an offer if needed and watch for the phone.
     func showQR() {
+        // A card that opens again after a pairing offers a new code ("bağlandı" was for the last one).
+        if viewers == 0, case .paired = phase { phase = .ready }
         viewers += 1
         restartLoop()
     }
@@ -159,6 +161,8 @@ final class PhonePairingModel {
         do {
             let created = try await api.createPairingCode()
             let routes = await currentRoutes(api)
+            // The card closed or opened again meanwhile: the next round makes the offer.
+            if Task.isCancelled { return }
             guard let routes, let invite = PairingInvite(offer: created, routes: routes) else {
                 phase = .failed("Bağlantı kodu hazırlanamadı. Studio'yu yeniden başlatıp tekrar dene.")
                 return
@@ -169,6 +173,8 @@ final class PhonePairingModel {
             qrImage = QRCode.image(for: invite.url.absoluteString)
             phase = .ready
         } catch {
+            // Cancelled by a card appearing or closing: not a failure to show (it was "İptal edildi.").
+            if AppModel.isCancellation(error) { return }
             phase = .failed(error.errorDescription ?? "Bağlantı kodu hazırlanamadı.")
         }
     }
@@ -209,6 +215,7 @@ final class PhonePairingModel {
                 messageIsError = false
             }
         } catch {
+            if AppModel.isCancellation(error) { return }
             message = error.errorDescription
             messageIsError = true
         }
@@ -220,6 +227,8 @@ final class PhonePairingModel {
             try await api.revokeDevice(device.id)
             message = "\(device.name) kaldırıldı. Yeniden bağlamak için QR kodu okutması yeter."
             messageIsError = false
+            // "bağlandı" no longer holds: show a code again.
+            if case .paired = phase { phase = .ready }
             await loadDevices(api)
         } catch {
             message = error.errorDescription

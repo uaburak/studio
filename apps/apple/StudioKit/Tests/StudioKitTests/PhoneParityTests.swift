@@ -162,8 +162,10 @@ struct PhoneParityTests {
         let target = Date().addingTimeInterval(5 * 86_400)
         let moved = try await backend.moveSchedule(scheduled.schedule!, to: target)
         #expect(moved.scheduledAt == target && moved.status == .pending)
+        // Moved in place (like the API's PATCH), not cancelled and created again.
+        #expect(moved.id == "sch-1")
         let after = try await backend.schedules(brandId: SampleData.mtm)
-        #expect(after.first { $0.id == "sch-1" }?.status == .cancelled)
+        #expect(after.filter { $0.contentId == "post-12a" }.map(\.id) == ["sch-1"])
         #expect(try await backend.content("post-12a").status == .scheduled)
         await #expect(throws: (any Error).self) { try await backend.moveSchedule(moved, to: Date().addingTimeInterval(-60)) }
     }

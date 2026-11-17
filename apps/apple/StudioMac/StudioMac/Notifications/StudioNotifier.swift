@@ -11,6 +11,45 @@ protocol NoticePoster: AnyObject {
     func post(_ notice: StudioNotice) async
 }
 
+/// What a clicked notification opens: the post it is about (approval waiting, published,
+/// failed), the accounts settings (token notices), or just the app.
+enum NoticeDestination: Equatable {
+    case post(contentId: EntityID, brandId: EntityID?)
+    case accounts
+    /// A permalink without a post to open in the app.
+    case link(URL)
+    case app
+
+    private enum Key {
+        static let kind = "kind"
+        static let contentId = "contentId"
+        static let brandId = "brandId"
+        static let url = "url"
+    }
+
+    /// What the notification carries (plain strings: `userInfo` must be property-list values).
+    static func userInfo(for notice: StudioNotice) -> [String: String] {
+        var info = [Key.kind: notice.kind.rawValue]
+        if let url = notice.url { info[Key.url] = url }
+        if let contentId = notice.contentId { info[Key.contentId] = contentId }
+        if let brandId = notice.brandId { info[Key.brandId] = brandId }
+        return info
+    }
+
+    static func from(userInfo: [AnyHashable: Any]) -> NoticeDestination {
+        func string(_ key: String) -> String? {
+            (userInfo[key] as? String).flatMap { $0.isEmpty ? nil : $0 }
+        }
+        if let contentId = string(Key.contentId) { return .post(contentId: contentId, brandId: string(Key.brandId)) }
+        switch string(Key.kind).flatMap(NoticeKind.init(rawValue:)) {
+        case .tokenExpiring?, .tokenInvalid?: return .accounts
+        default: break
+        }
+        if let raw = string(Key.url), let url = URL(string: raw), url.scheme == "https" || url.scheme == "http" { return .link(url) }
+        return .app
+    }
+}
+
 /// macOS notifications for publishing, long jobs and account health (P3).
 ///
 /// - Off/on in Ayarlar → Bildirimler, default on.
@@ -30,10 +69,18 @@ final class StudioNotifier {
     /// Notices posted in this session (newest last); the Settings screen and tests read it.
     private(set) var posted: [StudioNotice] = []
     private(set) var authorized: Bool?
+    /// Called when the owner clicks a notification (the app brings its window forward and opens it).
+    @ObservationIgnored var onOpen: ((NoticeDestination) -> Void)?
 
     init(defaults: UserDefaults = .standard, poster: NoticePoster? = nil) {
         self.defaults = defaults
         self.poster = poster ?? UserNotificationPoster()
+        (self.poster as? UserNotificationPoster)?.onResponse = { [weak self] destination in self?.open(destination) }
+    }
+
+    /// A notification was clicked.
+    func open(_ destination: NoticeDestination) {
+        onOpen?(destination)
     }
 
     var enabled: Bool {
@@ -81,9 +128,11 @@ final class StudioNotifier {
     }
 }
 
-/// `UNUserNotificationCenter`; clicking a notice with a permalink opens it in the browser.
+/// `UNUserNotificationCenter`; a click is handed to `onResponse` (the post opens in the app).
 @MainActor
 final class UserNotificationPoster: NSObject, NoticePoster, UNUserNotificationCenterDelegate {
+    var onResponse: ((NoticeDestination) -> Void)?
+
     private var center: UNUserNotificationCenter? {
         // Unit tests run without a real app bundle identifier; never touch the center there.
         Bundle.main.bundleIdentifier == nil ? nil : UNUserNotificationCenter.current()
@@ -115,7 +164,7 @@ final class UserNotificationPoster: NSObject, NoticePoster, UNUserNotificationCe
         content.title = notice.title
         content.body = notice.body
         content.threadIdentifier = notice.kind.rawValue
-        if let url = notice.url { content.userInfo = ["url": url] }
+        content.userInfo = NoticeDestination.userInfo(for: notice)
         if notice.kind == .publishFailed || notice.kind == .tokenInvalid { content.sound = .default }
         try? await center.add(UNNotificationRequest(identifier: notice.id, content: content, trigger: nil))
     }
@@ -127,9 +176,12 @@ final class UserNotificationPoster: NSObject, NoticePoster, UNUserNotificationCe
     }
 
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse) async {
-        let raw = response.notification.request.content.userInfo["url"] as? String
+        guard response.actionIdentifier == UNNotificationDefaultActionIdentifier else { return }
+        let destination = NoticeDestination.from(userInfo: response.notification.request.content.userInfo)
         await MainActor.run {
-            if let raw, let url = URL(string: raw) {
+            if let onResponse = self.onResponse {
+                onResponse(destination)
+            } else if case .link(let url) = destination {
                 NSWorkspace.shared.open(url)
             } else {
                 NSApp.activate()

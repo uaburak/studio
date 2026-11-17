@@ -72,6 +72,17 @@ final class PostsModel {
         hasLoaded = true
     }
 
+    /// Loads and waits for the newest load to finish: a brand switch or the posts screen may
+    /// start one that supersedes this one (whose result is then dropped).
+    func loadLatest(timeout: Duration = .seconds(20)) async {
+        await load()
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: timeout)
+        while isLoading, clock.now < deadline, !Task.isCancelled {
+            try? await Task.sleep(for: .milliseconds(30))
+        }
+    }
+
     /// Fetch the current version of each content (cached by version id; versions are immutable
     /// except for renders, which a reload after a render job refreshes through `refreshVersion`).
     private func loadVersions(for contents: [Content]) async {
@@ -100,7 +111,14 @@ final class PostsModel {
     /// Replace one content after an action (approve, caption edit) without a full reload.
     func update(_ content: Content) {
         var contents = board.cards.map(\.content)
-        if let index = contents.firstIndex(where: { $0.id == content.id }) { contents[index] = content } else { contents.append(content) }
+        if let index = contents.firstIndex(where: { $0.id == content.id }) {
+            contents[index] = content
+        } else if content.brandId == loadedBrandId {
+            contents.append(content)
+        } else {
+            // Another brand's post (approved or edited across a brand switch) stays off this board.
+            return
+        }
         rebuild(contents: contents)
     }
 
@@ -124,8 +142,13 @@ final class PostsModel {
         if selectedId == id { selectedId = nil }
     }
 
+    /// A new schedule, or a failed one scheduled again (a retry keeps its id): replaced, not doubled.
     func scheduleCreated(_ schedule: Schedule) {
-        schedules.append(schedule)
+        if let index = schedules.firstIndex(where: { $0.id == schedule.id }) {
+            schedules[index] = schedule
+        } else {
+            schedules.append(schedule)
+        }
         rebuild(contents: board.cards.map(\.content))
     }
 

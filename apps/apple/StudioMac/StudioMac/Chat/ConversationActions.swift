@@ -23,14 +23,15 @@ enum ConversationActions {
             },
             ClosureMenuItem(title: archiveTitle) { [weak app] in
                 guard let app else { return }
-                Task { await app.conversationModel(conversationId).archive() }
+                // Through the app: no stream is opened just to archive, errors reach the banner.
+                Task { await app.archiveConversation(conversationId) }
             },
         ]
     }
 
     static func promptRename(app: AppModel, conversationId: EntityID, window: NSWindow?) {
-        let model = app.conversationModel(conversationId)
-        let current = model.state?.conversation.title ?? app.conversations.first { $0.id == conversationId }?.title ?? ""
+        let current = app.conversationModels[conversationId]?.state?.conversation.title
+            ?? app.conversations.first { $0.id == conversationId }?.title ?? ""
         let alert = NSAlert()
         alert.messageText = "Sohbeti yeniden adlandır"
         alert.addButton(withTitle: "Kaydet")
@@ -43,7 +44,7 @@ enum ConversationActions {
             guard response == .alertFirstButtonReturn else { return }
             let title = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !title.isEmpty, title != current else { return }
-            Task { await model.rename(to: title) }
+            Task { await app.renameConversation(conversationId, to: title) }
         }
         if let window {
             alert.beginSheetModal(for: window, completionHandler: finish)

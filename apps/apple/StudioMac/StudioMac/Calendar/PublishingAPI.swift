@@ -9,7 +9,8 @@ protocol PublishingAPI: AnyObject {
     func setCloudPublisher(url: String, token: String) async throws -> PublishingStatus
     func clearCloudPublisher() async throws -> PublishingStatus
     func requestPublishingSync() async throws -> PublishingStatus
-    func preflight(contentId: EntityID, accountIds: [EntityID]?) async throws -> SchedulePreflight
+    /// Platform rules for a publish at `scheduledAt` (nil = now; per-day limits count around it).
+    func preflight(contentId: EntityID, accountIds: [EntityID]?, scheduledAt: Date?) async throws -> SchedulePreflight
     func createSchedule(_ input: ScheduleCreate) async throws -> Schedule
     func publishNow(contentId: EntityID, accountIds: [EntityID]) async throws -> PublishNowResult
     func reschedule(_ scheduleId: EntityID, to date: Date) async throws -> Schedule
@@ -38,8 +39,8 @@ final class DataServicePublishingAPI: PublishingAPI {
     func setCloudPublisher(url: String, token: String) async throws -> PublishingStatus { try await service().setCloudPublisher(url: url, token: token) }
     func clearCloudPublisher() async throws -> PublishingStatus { try await service().clearCloudPublisher() }
     func requestPublishingSync() async throws -> PublishingStatus { try await service().requestPublishingSync() }
-    func preflight(contentId: EntityID, accountIds: [EntityID]?) async throws -> SchedulePreflight {
-        try await service().preflight(contentId: contentId, accountIds: accountIds)
+    func preflight(contentId: EntityID, accountIds: [EntityID]?, scheduledAt: Date?) async throws -> SchedulePreflight {
+        try await service().preflight(contentId: contentId, accountIds: accountIds, scheduledAt: scheduledAt)
     }
     func createSchedule(_ input: ScheduleCreate) async throws -> Schedule { try await service().createSchedule(input) }
     func publishNow(contentId: EntityID, accountIds: [EntityID]) async throws -> PublishNowResult {

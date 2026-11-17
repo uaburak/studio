@@ -15,10 +15,16 @@ import {
   type SchedulePreflightTarget,
   selectPublishKind,
 } from "@studio/contract";
-import { validateRequest } from "@studio/publishers";
-import { inArray } from "drizzle-orm";
+import { FACEBOOK_LIMITS, validateRequest } from "@studio/publishers";
+import { and, eq, gt, inArray, lt } from "drizzle-orm";
 import type { Db } from "../db/client.ts";
-import { assets, type socialAccounts, type socialAccountTokens } from "../db/schema.ts";
+import {
+  assets,
+  contents,
+  schedules,
+  type socialAccounts,
+  type socialAccountTokens,
+} from "../db/schema.ts";
 
 type AccountRow = typeof socialAccounts.$inferSelect;
 type TokenRow = typeof socialAccountTokens.$inferSelect;
@@ -169,6 +175,44 @@ function buildRequest(
 /** Warnings that only exist because the API does not have the final file. */
 const NOISE = new Set(["METADATA_MISSING", "IMAGE_WILL_BE_RESCALED"]);
 
+const DAY_MS = 24 * 3600_000;
+
+/**
+ * The most items any 24-hour window containing `at` would hold with one more item at `at`,
+ * given the other items' times. Facebook counts Reels per Page in a rolling 24 hours.
+ */
+export function busiestDayWith(times: readonly number[], at: number): number {
+  const near = times.filter((t) => t > at - DAY_MS && t < at + DAY_MS).sort((a, b) => a - b);
+  // A window [w, w + 24h) holds `at` when w is in (at - 24h, at]; the fullest one starts at an item.
+  const starts = [...near.filter((t) => t <= at), at];
+  let best = 0;
+  for (const w of starts) {
+    const count = near.filter((t) => t >= w && t < w + DAY_MS).length;
+    best = Math.max(best, count + 1);
+  }
+  return best;
+}
+
+/** Times of the Page's Facebook Reels around `at` that are planned, publishing or published. */
+async function facebookReelTimes(db: Db, socialAccountId: string, at: number): Promise<number[]> {
+  const rows = await db
+    .select({ scheduledAt: schedules.scheduledAt })
+    .from(schedules)
+    .innerJoin(contents, eq(schedules.contentId, contents.id))
+    .where(
+      and(
+        eq(schedules.socialAccountId, socialAccountId),
+        eq(schedules.platform, "facebook"),
+        eq(contents.type, "reel"),
+        inArray(schedules.status, ["pending", "publishing", "published"]),
+        gt(schedules.scheduledAt, new Date(at - DAY_MS)),
+        lt(schedules.scheduledAt, new Date(at + DAY_MS)),
+      ),
+    );
+  // A failed schedule does not count: a retry reuses it.
+  return rows.map((r) => r.scheduledAt.getTime());
+}
+
 export async function preflightTargets(args: {
   db: Db;
   content: PreflightContent;
@@ -176,8 +220,11 @@ export async function preflightTargets(args: {
   mode: PublishingMode;
   allowPrivateMedia: boolean;
   now?: number;
+  /** Planned publish time (per-day limits); default `now`. */
+  scheduledAt?: number;
 }): Promise<SchedulePreflightTarget[]> {
   const now = args.now ?? Date.now();
+  const at = args.scheduledAt ?? now;
   const ids: string[] = [];
   for (const s of args.content.slides) {
     if (s.renderedAssetId) ids.push(s.renderedAssetId);
@@ -185,6 +232,16 @@ export async function preflightTargets(args: {
   const videoId = attr(args.content.slides[0]?.html ?? "", "data-video-asset-id");
   if (videoId) ids.push(videoId);
   const meta = await loadAssetMeta(args.db, ids);
+
+  const reelTimes = new Map<string, number[]>();
+  for (const { account } of args.accounts) {
+    if (
+      selectPublishKind(account.platform, args.content.type, args.content.slides.length) !==
+      "facebook.reel"
+    )
+      continue;
+    reelTimes.set(account.id, await facebookReelTimes(args.db, account.id, at));
+  }
 
   return args.accounts.map(({ account, token }) => {
     const kind = selectPublishKind(account.platform, args.content.type, args.content.slides.length);
@@ -216,6 +273,17 @@ export async function preflightTargets(args: {
         message:
           `${account.platform === "instagram" ? "Instagram" : "Facebook"} görseli herkese açık bir adresten indirir; ` +
           "bu Mac'in adresine dışarıdan ulaşılamaz. Bu yayın için Ayarlar → Yayın'da bulut yayıncıyı kurun.",
+      });
+    }
+
+    const reels = reelTimes.get(account.id);
+    if (reels && busiestDayWith(reels, at) > FACEBOOK_LIMITS.reel.maxPerDay) {
+      errors.push({
+        code: "FB_REELS_DAILY_LIMIT",
+        path: "",
+        message:
+          `Facebook bir sayfada 24 saat içinde en fazla ${FACEBOOK_LIMITS.reel.maxPerDay} Reels yayınlatır; ` +
+          "bu sayfada o saatlere yakın zaten bu kadar Reels var. Başka bir gün ya da saat seçin.",
       });
     }
 

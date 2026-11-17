@@ -36,14 +36,17 @@ struct HostSnapshot: Equatable {
     var status: LocalHost.Status
     var apiURL: URL?
     var apiPhase: ServiceSupervisor.Phase?
+    var workerPhase: ServiceSupervisor.Phase?
     var tunnelPhase: ServiceSupervisor.Phase?
     var lanURLs: [String]
     var tunnelNote: String?
 
-    init(status: LocalHost.Status, apiURL: URL? = nil, apiPhase: ServiceSupervisor.Phase? = nil, tunnelPhase: ServiceSupervisor.Phase? = nil, lanURLs: [String] = [], tunnelNote: String? = nil) {
+    init(status: LocalHost.Status, apiURL: URL? = nil, apiPhase: ServiceSupervisor.Phase? = nil, workerPhase: ServiceSupervisor.Phase? = nil,
+         tunnelPhase: ServiceSupervisor.Phase? = nil, lanURLs: [String] = [], tunnelNote: String? = nil) {
         self.status = status
         self.apiURL = apiURL
         self.apiPhase = apiPhase
+        self.workerPhase = workerPhase
         self.tunnelPhase = tunnelPhase
         self.lanURLs = lanURLs
         self.tunnelNote = tunnelNote
@@ -55,10 +58,99 @@ struct HostSnapshot: Equatable {
             status: host.status,
             apiURL: host.apiURL,
             apiPhase: host.phases[.api],
+            workerPhase: host.phases[.worker],
             tunnelPhase: host.phases[.tunnel],
             lanURLs: host.lanURLs,
             tunnelNote: host.tunnelNote
         )
+    }
+}
+
+/// Studio's background in plain words for the panel's Ortam section: one state
+/// ("Hazır", "Hazırlanıyor", "Sorun var") and, when something is wrong, one sentence and
+/// one action. The technical rows (API, worker, addresses) live under "Gelişmiş".
+struct EnvironmentSummary: Equatable {
+    enum State: Equatable {
+        case sample
+        case ready
+        case preparing
+        case problem
+    }
+
+    var state: State
+    /// One plain sentence (shown under the row for a problem, as the tooltip otherwise).
+    var detail: String?
+    var action: ConnectionIssue.Action?
+
+    static let label = "Arka plan"
+
+    var value: String {
+        switch state {
+        case .sample: "Örnek veri"
+        case .ready: "Hazır"
+        case .preparing: "Hazırlanıyor"
+        case .problem: "Sorun var"
+        }
+    }
+
+    var row: PanelRow {
+        let tone: PanelRow.Tone = switch state {
+        case .ready: .normal
+        case .sample, .preparing: .muted
+        case .problem: .attention
+        }
+        return PanelRow(label: Self.label, value: value, tone: tone, help: detail)
+    }
+
+    /// The button title of `action`.
+    var actionTitle: String? {
+        switch action {
+        case .restartHost?: "Yeniden başlat"
+        case .retry?: "Yeniden dene"
+        case .openSettings?: "Ayarları aç"
+        case .signInClaude?: "Giriş yap"
+        case nil: nil
+        }
+    }
+
+    /// `host` is this Mac's own server (nil: an external server or none).
+    static func make(isSample: Bool, host: HostSnapshot?, issue: ConnectionIssue?, presence: WorkerPresence?) -> EnvironmentSummary {
+        if isSample {
+            return EnvironmentSummary(state: .sample, detail: "Örnek verilerle açıldı; arka plan bu oturumda kullanılmıyor.")
+        }
+        switch issue {
+        case .hostStarting?:
+            return EnvironmentSummary(state: .preparing, detail: "Studio hazırlanıyor; birkaç saniye sürer.")
+        case .hostFailed?:
+            return EnvironmentSummary(state: .problem, detail: "Studio'nun arka planı başlatılamadı.", action: .restartHost)
+        case .apiUnreachable?:
+            return EnvironmentSummary(state: .problem, detail: "Studio'nun arka planına ulaşılamıyor.", action: host == nil ? .retry : .restartHost)
+        case .unauthorized?:
+            return EnvironmentSummary(state: .problem, detail: "Sunucu erişimi reddetti; bağlantı anahtarını denetle.", action: .openSettings)
+        case .apiError?:
+            return EnvironmentSummary(state: .problem, detail: "Arka plandan beklenmeyen bir yanıt geldi.", action: .retry)
+        case .workerOffline?:
+            return EnvironmentSummary(state: .problem, detail: "Arka plan çalışmıyor; yeni işler sırada bekliyor.", action: host == nil ? .openSettings : .restartHost)
+        case .claudeSignedOut?, .claudeSigningIn?, .claudeNotInstalled?, nil:
+            break
+        }
+        if let host {
+            if case .stopped = host.status {
+                return EnvironmentSummary(state: .problem, detail: "Studio'nun arka planı durdu.", action: .restartHost)
+            }
+            for phase in [host.apiPhase, host.workerPhase] {
+                switch phase {
+                case .failed?:
+                    return EnvironmentSummary(state: .problem, detail: "Arka planın bir parçası durdu.", action: .restartHost)
+                case .restarting?:
+                    return EnvironmentSummary(state: .preparing, detail: "Arka plan yeniden başlıyor.")
+                default:
+                    break
+                }
+            }
+        }
+        guard presence != nil else { return EnvironmentSummary(state: .preparing, detail: "Arka plana bağlanılıyor…") }
+        return EnvironmentSummary(state: .ready, detail: "Arka plan çalışıyor; işler hemen başlar.")
     }
 }
 
@@ -70,7 +162,13 @@ struct HostSnapshot: Equatable {
 enum InspectorContent {
     // MARK: Ortam
 
-    static func environment(
+    /// The plain state on top of Ortam (see `EnvironmentSummary`).
+    static func environmentSummary(isSample: Bool, host: HostSnapshot?, hostEnabled: Bool, issue: ConnectionIssue?, presence: WorkerPresence?) -> EnvironmentSummary {
+        EnvironmentSummary.make(isSample: isSample, host: hostEnabled ? host : nil, issue: issue, presence: presence)
+    }
+
+    /// The technical rows under "Gelişmiş": the server, API, worker, LAN address and tunnel.
+    static func advancedEnvironment(
         isSample: Bool,
         host: HostSnapshot?,
         hostEnabled: Bool,
@@ -83,7 +181,7 @@ enum InspectorContent {
     ) -> [PanelRow] {
         if isSample {
             return [
-                PanelRow(label: "Arka plan", value: "Örnek veri", tone: .muted, help: "Örnek verilerle açıldı; arka plan bu oturumda kullanılmıyor."),
+                PanelRow(label: "Sunucu", value: "Örnek veri", tone: .muted, help: "Örnek verilerle açıldı; arka plan bu oturumda kullanılmıyor."),
                 worker(presence),
             ]
         }
@@ -99,7 +197,7 @@ enum InspectorContent {
     }
 
     private static func server(host: HostSnapshot?, serverURL: URL?) -> PanelRow {
-        let label = "Arka plan"
+        let label = "Sunucu"
         guard let host else {
             let address = serverURL?.host ?? "—"
             return PanelRow(label: label, value: "Harici · \(address)", tone: .normal, help: serverURL?.absoluteString)
@@ -210,7 +308,7 @@ enum InspectorContent {
     static func usageNote(_ presence: WorkerPresence?) -> String? {
         if let windows = presence?.usage?.windows, !windows.isEmpty { return nil }
         guard let presence else { return "Mac'e bağlanılıyor…" }
-        return presence.online ? "Henüz bildirilmedi; Claude Code bir işi bitirince gelir." : "Mac worker bağlı değil."
+        return presence.online ? "Henüz bildirilmedi; Claude Code bir işi bitirince gelir." : "Arka plan çalışmıyor."
     }
 
     static func usageUpdated(_ usage: WorkerUsage?, now: Date = Date()) -> String? {
@@ -248,13 +346,8 @@ enum InspectorContent {
         }
         switch gemini.status {
         case .ready:
-            let mode = switch gemini.mode {
-            case .api: "Hazır · API"
-            case .cli: "Hazır · CLI"
-            case .both: "Hazır · API + CLI"
-            case .none, .unknown: "Hazır"
-            }
-            return PanelRow(label: label, value: mode, help: gemini.defaultModel.map { "\(full) · \($0)" } ?? full)
+            // How Gemini is reached (API key / CLI) is technical: tooltip only.
+            return PanelRow(label: label, value: "Hazır", help: gemini.defaultModel.map { "\(full) · \($0)" } ?? full)
         case .notConfigured: return PanelRow(label: label, value: "Yapılandırılmadı", tone: .attention, help: full)
         case .error, .unknown: return PanelRow(label: label, value: "Hata", tone: .attention, help: full)
         }

@@ -110,10 +110,13 @@ public struct SchedulePreflight: Codable, Sendable, Equatable {
 public struct SchedulePreflightInput: Encodable, Sendable, Equatable {
     public var contentId: EntityID
     public var socialAccountIds: [EntityID]?
+    /// Planned publish time, for per-day limits (30 Facebook Reels per Page); nil = now.
+    public var scheduledAt: Date?
 
-    public init(contentId: EntityID, socialAccountIds: [EntityID]? = nil) {
+    public init(contentId: EntityID, socialAccountIds: [EntityID]? = nil, scheduledAt: Date? = nil) {
         self.contentId = contentId
         self.socialAccountIds = socialAccountIds
+        self.scheduledAt = scheduledAt
     }
 }
 

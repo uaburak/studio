@@ -17,7 +17,7 @@ import {
   ScheduleUpdate,
   statusIn,
 } from "@studio/contract";
-import { and, asc, eq, gt, gte, inArray, lt, ne, notExists, or, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, gt, gte, inArray, lt, ne, notExists, or, type SQL } from "drizzle-orm";
 import type { BatchItem } from "drizzle-orm/batch";
 import { createDb, type Db } from "../db/client.ts";
 import { toPublishLog, toSchedule } from "../db/mappers.ts";
@@ -55,6 +55,7 @@ export async function runPreflight(
   env: Env,
   loaded: LoadedContent,
   accountIds?: string[],
+  scheduledAt?: Date,
 ): Promise<{
   mode: "cloud" | "local";
   targets: SchedulePreflightTarget[];
@@ -108,6 +109,7 @@ export async function runPreflight(
     accounts,
     mode,
     allowPrivateMedia: env.STUDIO_ALLOW_PRIVATE_MEDIA_URLS === "1",
+    ...(scheduledAt ? { scheduledAt: scheduledAt.getTime() } : {}),
   });
   return { mode, targets, contentErrors };
 }
@@ -154,7 +156,7 @@ async function insertSchedule(
   }
 
   // Platform rules (Turkish messages) before anything is written.
-  const preflight = await runPreflight(db, env, loaded, [account.id]);
+  const preflight = await runPreflight(db, env, loaded, [account.id], input.scheduledAt);
   const target = preflight.targets[0];
   if (target && !target.ok) {
     throw badRequest(
@@ -164,6 +166,45 @@ async function insertSchedule(
   }
 
   const now = new Date();
+  const markScheduled = db
+    .update(contents)
+    .set({ status: "scheduled", updatedAt: now })
+    .where(and(eq(contents.id, content.id), eq(contents.status, content.status)));
+
+  // Retry: a failed schedule of this post on this account is reused (same id, so the same
+  // cloud order is replaced) instead of leaving it next to a new one. Its publish logs stay.
+  const failed = await db.query.schedules.findFirst({
+    where: and(
+      eq(schedules.contentId, content.id),
+      eq(schedules.socialAccountId, account.id),
+      eq(schedules.status, "failed"),
+    ),
+    orderBy: [desc(schedules.updatedAt), desc(schedules.id)],
+  });
+  if (failed) {
+    await db.batch([
+      db
+        .update(schedules)
+        .set({
+          versionId: loaded.current.id,
+          contentHash: loaded.current.contentHash,
+          scheduledAt: input.scheduledAt,
+          status: "pending",
+          permalink: null,
+          delivery: null,
+          cloudSyncedAt: null,
+          lastError: null,
+          cancelledAt: null,
+          updatedAt: now,
+        })
+        .where(and(eq(schedules.id, failed.id), eq(schedules.status, "failed"))),
+      markScheduled,
+    ]);
+    const reused = await requireSchedule(db, failed.id);
+    if (reused.status !== "pending") throw conflict("the failed schedule changed meanwhile");
+    return reused;
+  }
+
   const id = newId();
   await db.batch([
     db.insert(schedules).values({
@@ -179,10 +220,7 @@ async function insertSchedule(
       createdAt: now,
       updatedAt: now,
     }),
-    db
-      .update(contents)
-      .set({ status: "scheduled", updatedAt: now })
-      .where(and(eq(contents.id, content.id), eq(contents.status, content.status))),
+    markScheduled,
   ]);
   return requireSchedule(db, id);
 }
@@ -238,7 +276,10 @@ export const scheduleRoutes = createRouter()
         "The content must be approved (or already scheduled / failed) and its approval must " +
         "still match the current version; the schedule freezes that version and hash. The " +
         "account must belong to the content's brand, not be disabled, and its platform must " +
-        "be one of the content's target platforms. Moves the content to `scheduled`.",
+        "be one of the content's target platforms. Moves the content to `scheduled`. A " +
+        "`failed` schedule of the same content and account is reused (retry): it goes back " +
+        "to `pending` with the new time and keeps its id, so its cloud order is replaced " +
+        "instead of duplicated.",
       request: { body: jsonBody(ScheduleCreate) },
       responses: {
         201: json(Schedule, "Created."),
@@ -267,7 +308,8 @@ export const scheduleRoutes = createRouter()
       summary: "Check platform rules for a content item on accounts before scheduling",
       description:
         "Runs the publishers' validators (JPEG for Instagram, aspect ratios, caption and " +
-        "hashtag limits, carousel size, Reels duration …) on what the worker would publish. " +
+        "hashtag limits, carousel size, Reels duration, 30 Facebook Reels per Page in 24 hours " +
+        "around `scheduledAt` …) on what the worker would publish. " +
         "Messages are Turkish. In local mode (no cloud publisher) Instagram/Facebook image " +
         "posts are refused: Meta downloads images from a public URL.",
       request: { body: jsonBody(SchedulePreflightInput) },
@@ -286,6 +328,7 @@ export const scheduleRoutes = createRouter()
         c.env,
         loaded,
         input.socialAccountIds,
+        input.scheduledAt ? new Date(input.scheduledAt) : undefined,
       );
       return c.json(
         {

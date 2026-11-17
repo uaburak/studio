@@ -214,7 +214,8 @@ public enum SlideLayerScanner {
 
     /// Compute minimal patches (`set_text`, `set_visible`) between `original` layers and edited `updated` layers.
     public static func diff(from original: [SlideLayer], to updated: [SlideLayer]) -> [SlideLayerPatch] {
-        let byId = Dictionary(uniqueKeysWithValues: original.map { ($0.id, $0) })
+        // A slide may repeat a layer id (generated HTML that failed lint): the first one wins.
+        let byId = Dictionary(original.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         var patches: [SlideLayerPatch] = []
         for item in updated {
             guard let prev = byId[item.id] else { continue }

@@ -868,6 +868,19 @@ public actor SampleBackend: ConversationService, StudioDataService {
         return schedule
     }
 
+    /// Move a pending schedule (calendar drag, "Zamanlamayı değiştir"), like the API.
+    public func reschedule(_ scheduleId: EntityID, to date: Date) async throws -> Schedule {
+        guard let index = data.schedules.firstIndex(where: { $0.id == scheduleId }) else {
+            throw StudioAPIError.server(status: 404, code: .notFound, message: "schedule not found", issues: [])
+        }
+        guard data.schedules[index].status == .pending else {
+            throw StudioAPIError.server(status: 409, code: .invalidTransition, message: "only pending schedules can be moved", issues: [])
+        }
+        data.schedules[index].scheduledAt = date
+        data.schedules[index].updatedAt = now
+        return data.schedules[index]
+    }
+
     public func requestEdit(of content: Content, instructions: String) async throws -> Job {
         let job = Job(
             id: nextId("job"), type: .contentGenerate, status: .queued,

@@ -110,14 +110,14 @@ final class OnboardingModel {
 
     /// "Şimdilik geç": close without finishing; it will not open by itself again.
     func skip() {
-        loginTask?.cancel()
+        cancelClaudeLogin()
         isSkipped = true
         app?.onboardingPresented = false
     }
 
     /// "Bitir": done for good.
     func finish() {
-        loginTask?.cancel()
+        cancelClaudeLogin()
         isCompleted = true
         step = .done
         app?.onboardingPresented = false
@@ -234,7 +234,7 @@ final class OnboardingModel {
 
     static func describeLoginError(_ error: any Error) -> String {
         if let api = error as? StudioAPIError, api.code == .conflict {
-            return "Mac worker bağlı değil. Studio hazır olunca tekrar dene."
+            return "Studio'nun arka planı henüz hazır değil. Hazır olunca tekrar dene."
         }
         if let api = error as? StudioAPIError, api.code == .forbidden {
             return "Giriş yalnızca bu Mac'ten başlatılabilir."

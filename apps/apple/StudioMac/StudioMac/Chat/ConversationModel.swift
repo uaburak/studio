@@ -111,7 +111,7 @@ final class ConversationModel {
         do {
             _ = try await app.conversationService.send(message, to: id)
             app.saveAgentChoice(agentChoice, for: id)
-            composer.reset()
+            composer.didSend(message)
             error = nil
         } catch {
             self.error = AppModel.describe(error)
@@ -144,6 +144,7 @@ final class ConversationModel {
         }
         do {
             _ = try await app.conversationService.answer(conversationId: id, messageId: message.id, QuestionAnswerCreate(questionId: question.questionId, optionIds: optionIds, text: text))
+            error = nil
         } catch {
             self.error = AppModel.describe(error)
         }
@@ -154,6 +155,21 @@ final class ConversationModel {
         defer { busyPlans.remove(plan.id) }
         do {
             _ = try await app.conversationService.acceptAndGenerate(plan, model: agentChoice.model, effort: agentChoice.effort)
+            error = nil
+            await app.posts.load()
+        } catch {
+            self.error = AppModel.describe(error)
+        }
+    }
+
+    /// An accepted plan whose generation never started (the generate call failed after accept).
+    func generate(_ plan: Plan) async {
+        guard !busyPlans.contains(plan.id) else { return }
+        busyPlans.insert(plan.id)
+        defer { busyPlans.remove(plan.id) }
+        do {
+            _ = try await app.conversationService.generatePlan(plan.id, model: agentChoice.model, effort: agentChoice.effort)
+            error = nil
             await app.posts.load()
         } catch {
             self.error = AppModel.describe(error)
@@ -198,22 +214,11 @@ final class ConversationModel {
     }
 
     func rename(to title: String) async {
-        do {
-            let conversation = try await app.conversationService.renameConversation(id, title: title)
-            app.conversationChanged(conversation)
-        } catch {
-            self.error = AppModel.describe(error)
-        }
+        await app.renameConversation(id, to: title)
     }
 
     func archive() async {
-        do {
-            _ = try await app.conversationService.archiveConversation(id)
-            app.conversations.removeAll { $0.id == id }
-            app.startNewChat()
-        } catch {
-            self.error = AppModel.describe(error)
-        }
+        await app.archiveConversation(id)
     }
 
     /// Posts created from this conversation's plans (newest plan first).
@@ -265,15 +270,29 @@ final class NewChatModel {
         message.effort = choice.effort
         let title = String(message.text.trimmingCharacters(in: .whitespacesAndNewlines).prefix(60))
         do {
-            let conversation = try await app.conversationService.createConversation(brandId: app.currentBrandId, title: title.isEmpty ? nil : title)
-            app.saveAgentChoice(choice, for: conversation.id)
-            app.conversationChanged(conversation)
-            _ = try await app.conversationService.send(message, to: conversation.id)
-            composer.reset()
+            // A retry after the first message failed sends into the conversation already made
+            // (it is in the sidebar), instead of creating a second one.
+            let conversationId: EntityID
+            if let created = createdConversation, created.brandId == app.currentBrandId,
+               app.conversations.contains(where: { $0.id == created.id }) {
+                conversationId = created.id
+            } else {
+                let conversation = try await app.conversationService.createConversation(brandId: app.currentBrandId, title: title.isEmpty ? nil : title)
+                app.saveAgentChoice(choice, for: conversation.id)
+                app.conversationChanged(conversation)
+                createdConversation = (conversation.id, app.currentBrandId)
+                conversationId = conversation.id
+            }
+            _ = try await app.conversationService.send(message, to: conversationId)
+            createdConversation = nil
+            composer.didSend(message)
             error = nil
-            app.navigate(to: .conversation(conversation.id))
+            app.navigate(to: .conversation(conversationId))
         } catch {
             self.error = AppModel.describe(error)
         }
     }
+
+    /// The conversation a failed first send already created (reused by the retry).
+    @ObservationIgnored private(set) var createdConversation: (id: EntityID, brandId: EntityID?)?
 }

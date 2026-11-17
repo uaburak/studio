@@ -236,7 +236,16 @@ final class PlanBlockView: NSView {
         case .accepted:
             let acceptedCount = plan.items.filter { $0.status == .accepted }.count
             let detail = Self.generationSummary(items: items, isOnline: model.app.isOnline)
-            outer.addArrangedSubview(PlanOutcomeRowView(text: "Plan onaylandı · \(acceptedCount) post", detail: detail))
+            // Accepted but generation never started (the generate call failed): offer it again.
+            let notStarted = items.allSatisfy { $0.generation == nil }
+            let busy = model.busyPlans.contains(plan.id)
+            let retry: PlanOutcomeRowView.Action? = notStarted
+                ? PlanOutcomeRowView.Action(title: busy ? "Başlatılıyor…" : "Üretimi başlat", enabled: !busy) { [weak model] in
+                    guard let model else { return }
+                    Task { await model.generate(plan) }
+                }
+                : nil
+            outer.addArrangedSubview(PlanOutcomeRowView(text: "Plan onaylandı · \(acceptedCount) post", detail: detail, action: retry))
         case .rejected:
             outer.addArrangedSubview(PlanOutcomeRowView(text: "Plan reddedildi", detail: plan.rejectionReason))
         case .superseded:
@@ -421,7 +430,13 @@ private final class PlanDecisionCardView: NSView {
 }
 
 private final class PlanOutcomeRowView: NSView {
-    init(text: String, detail: String?) {
+    struct Action {
+        var title: String
+        var enabled: Bool
+        var handler: () -> Void
+    }
+
+    init(text: String, detail: String?, action: Action? = nil) {
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
 
@@ -436,6 +451,11 @@ private final class PlanOutcomeRowView: NSView {
         ]
         if let detail, !detail.isEmpty {
             views.append(NSTextField.styledLabel(detail, font: Theme.captionFont, color: Theme.textSecondary))
+        }
+        if let action {
+            let button = PillButton(title: action.title, kind: .secondary, height: 24, action: action.handler)
+            button.isEnabled = action.enabled
+            views.append(button)
         }
         let row = NSStackView(views: views)
         row.orientation = .horizontal

@@ -116,8 +116,17 @@ struct ReelsMacTests {
         await waitUntil { model.videoError != nil }
         #expect(model.videoError?.hasPrefix("Video indirilemedi") == true)
         let play = try #require(all(GlyphButton.self, in: overlay).first { $0.symbolName == "play.fill" })
-        #expect(!play.isEnabled)
+        for _ in 0..<6 { try? await Task.sleep(for: .milliseconds(15)) }
+        // Nothing to play: the same button downloads again (it stayed disabled for good before).
+        #expect(play.isEnabled)
         #expect(play.toolTip?.hasPrefix("Video indirilemedi") == true)
+        #expect(play.toolTip?.contains("Yeniden denemek") == true)
+        #expect(!model.showReelVideo)
+        model.retryReelVideo()
+        #expect(model.videoError == nil)
+        await waitUntil { model.videoError != nil }
+        #expect(model.videoError?.hasPrefix("Video indirilemedi") == true)
+        #expect(!model.showReelVideo)
     }
 
     @Test func facebookLimitBlocksSchedulingALongReel() async throws {

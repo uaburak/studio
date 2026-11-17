@@ -248,9 +248,23 @@ final class SettingsSheetViewController: NSViewController, NSSearchFieldDelegate
     }
 
     private func closeSheet() {
-        panes.values.forEach { $0.willClose() }
+        closePanes()
         onDone()
         if presentingViewController != nil { dismiss(nil) }
+    }
+
+    /// Panes stop their work (an account login waiting on port 8793, polling) however the sheet
+    /// goes away: "Bitti", esc, or a button that closes Settings to open something else.
+    private var panesClosed = false
+    private func closePanes() {
+        guard !panesClosed else { return }
+        panesClosed = true
+        panes.values.forEach { $0.willClose() }
+    }
+
+    override func viewWillDisappear() {
+        super.viewWillDisappear()
+        closePanes()
     }
 }
 
@@ -354,7 +368,7 @@ final class UsagePaneView: SettingsPaneView {
             updatedValue.stringValue = ""
             let text = presence?.online == true
                 ? "Henüz bildirilmedi; Claude Code bir işi bitirince gelir."
-                : "Mac worker bağlı değil."
+                : "Arka plan çalışmıyor; Studio hazır olunca gelir."
             windows.setBlocks([SettingsNoteView(text)])
             return
         }
@@ -546,7 +560,7 @@ final class AIPaneView: SettingsPaneView {
             if !notes.isEmpty { claudeLines.append(notes.joined(separator: " · ")) }
             claudeOpenURLButton.isHidden = (claude.loginUrl ?? "").isEmpty
         } else {
-            claudeLines.append(online ? "Durum okunuyor…" : "Mac worker bağlı değil.")
+            claudeLines.append(online ? "Durum okunuyor…" : "Arka plan çalışmıyor; Studio hazır olunca okunur.")
             claudeLines.append(SettingsCatalog.claude.detail)
             claudeOpenURLButton.isHidden = true
         }
@@ -579,7 +593,7 @@ final class AIPaneView: SettingsPaneView {
             if let detail = gemini.detail, !detail.isEmpty { notes.append(detail) }
             if !notes.isEmpty { geminiLines.append(notes.joined(separator: " · ")) }
         } else {
-            geminiLines.append(online ? "Durum okunuyor…" : "Mac worker bağlı değil.")
+            geminiLines.append(online ? "Durum okunuyor…" : "Arka plan çalışmıyor; Studio hazır olunca okunur.")
             geminiLines.append(SettingsCatalog.gemini.detail)
         }
         geminiRow.detail = geminiLines.joined(separator: "\n")
@@ -790,7 +804,12 @@ final class ExternalServerRows: NSObject, NSTextFieldDelegate {
     }
 
     private func deleteToken() {
-        try? settings.credentials.delete()
+        do {
+            try settings.credentials.delete()
+        } catch {
+            show(accessMessage, "Anahtar silinemedi: \(error.localizedDescription)", error: true)
+            return
+        }
         clientIdField.stringValue = ""
         clientSecretField.stringValue = ""
         saveTokenButton.isEnabled = false

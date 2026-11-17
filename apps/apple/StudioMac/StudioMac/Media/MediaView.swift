@@ -53,6 +53,7 @@ final class MediaModel {
     private(set) var isLoading = false
     private(set) var uploadProgress: Double?
     private(set) var activeAIJob: Job?
+    @ObservationIgnored private var loadGeneration = 0
     var error: String?
     private var loadedBrandId: EntityID?
 
@@ -76,13 +77,19 @@ final class MediaModel {
 
     func load() async {
         guard let app, let brandId else { return }
+        loadGeneration += 1
+        let generation = loadGeneration
         isLoading = true
-        defer { isLoading = false }
+        defer { if generation == loadGeneration { isLoading = false } }
         do {
-            assets = try await app.dataService.assets(brandId: brandId, kind: nil)
+            let loaded = try await app.dataService.assets(brandId: brandId, kind: nil)
+            // A slower load of the previous brand must not replace the current brand's media.
+            guard generation == loadGeneration, brandId == self.brandId else { return }
+            assets = loaded
             loadedBrandId = brandId
             error = nil
         } catch {
+            guard generation == loadGeneration else { return }
             self.error = AppModel.describe(error)
         }
     }
@@ -140,6 +147,11 @@ final class MediaModel {
                 kind = .image
                 thumb = imported.thumbnail
             } else if let rule = AssetMimeRules.mediaTypes[ext] {
+                // Checked before reading: a multi-GB video must not be loaded just to be refused.
+                if let size = ImageImport.fileSize(url), size > rule.maxBytes {
+                    error = "\(url.lastPathComponent) boyut sınırını aşıyor."
+                    return
+                }
                 let data = try Data(contentsOf: url)
                 guard data.count <= rule.maxBytes else {
                     error = "\(url.lastPathComponent) boyut sınırını aşıyor."
@@ -158,7 +170,8 @@ final class MediaModel {
             }
             uploadProgress = nil
             if let thumb { app.images.seed(thumb, for: uploaded.id) }
-            assets.insert(uploaded, at: 0)
+            // The owner may have switched brand during the upload: the list shows the new brand.
+            if brandId == self.brandId { assets.insert(uploaded, at: 0) }
             error = nil
         } catch {
             uploadProgress = nil
@@ -816,8 +829,13 @@ final class AIImageGeneratorSheetController: NSViewController, NSTextViewDelegat
     }
 
     func textDidChange(_ notification: Notification) {
+        updateGenerateButton()
+    }
+
+    /// "Üret" waits for the prompt, a running request and a reference still uploading.
+    private func updateGenerateButton() {
         let hasPrompt = !promptTextView.string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        generateBtn.isEnabled = hasPrompt && !isSubmitting
+        generateBtn.isEnabled = hasPrompt && !isSubmitting && !isUploadingReference
     }
 
     private func loadBrandImages() async {
@@ -848,9 +866,17 @@ final class AIImageGeneratorSheetController: NSViewController, NSTextViewDelegat
         }
     }
 
+    private var isUploadingReference = false
+
     private func pickReferenceFromDisk() {
         guard let url = ImageImport.pick(multiple: false).first else { return }
+        isUploadingReference = true
+        updateGenerateButton()
         Task {
+            defer {
+                isUploadingReference = false
+                updateGenerateButton()
+            }
             do {
                 let imported = try ImageImport.from(url: url)
                 let uploaded = try await app.dataService.uploadImage(imported.file, brandId: target.brandId) { _ in }
@@ -867,14 +893,14 @@ final class AIImageGeneratorSheetController: NSViewController, NSTextViewDelegat
 
     private func submitGeneration() async {
         let prompt = promptTextView.string.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !prompt.isEmpty, !isSubmitting else { return }
+        guard !prompt.isEmpty, !isSubmitting, !isUploadingReference else { return }
         isSubmitting = true
         generateBtn.showsSpinner = true
         generateBtn.isEnabled = false
         defer {
             isSubmitting = false
             generateBtn.showsSpinner = false
-            generateBtn.isEnabled = true
+            updateGenerateButton()
         }
 
         let ratio = Self.ratios[max(0, ratioControl.selectedSegment)].0
@@ -903,7 +929,7 @@ final class AIImageGeneratorSheetController: NSViewController, NSTextViewDelegat
             if job.status == .succeeded {
                 closeSheet()
             } else {
-                statusLabel.stringValue = "İş kuyruğa alındı (\(job.id)). Mac worker üretimi tamamlayınca kütüphanede belirecek."
+                statusLabel.stringValue = "Görsel hazırlanıyor; bitince kütüphanede görünecek."
                 statusLabel.isHidden = false
                 try? await Task.sleep(for: .milliseconds(900))
                 closeSheet()
@@ -914,8 +940,13 @@ final class AIImageGeneratorSheetController: NSViewController, NSTextViewDelegat
         }
     }
 
+    /// Once: a late finish of this sheet's request must not close a newer generator sheet
+    /// (`onDone` clears the app's generator target, whichever sheet it shows now).
+    private var closed = false
     private func closeSheet() {
+        guard !closed else { return }
+        closed = true
         onDone()
-        dismiss(nil)
+        if presentingViewController != nil { dismiss(nil) }
     }
 }

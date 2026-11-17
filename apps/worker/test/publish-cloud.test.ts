@@ -349,6 +349,161 @@ describe("cloud publisher configured in the app (API), not in the worker env", (
   });
 });
 
+describe("retrying a failed schedule (same id, same cloud order)", () => {
+  /** A cloud publisher with one order whose target state the test sets. */
+  function statefulCloud(opts: { replacesFailed: boolean }) {
+    const calls: string[] = [];
+    let target: { status: string; attempts: number } | null = null;
+    let updatedAt = "2026-11-20T10:00:00.000Z";
+    const bump = () => {
+      updatedAt = new Date(Date.parse(updatedAt) + 60_000).toISOString();
+    };
+    const orderJson = (id: string) => ({
+      id,
+      contentId: `cnt_${id}`,
+      versionId: `ver_${id}`,
+      contentHash: "d".repeat(64),
+      scheduledAt: "2026-11-21T12:00:00.000Z",
+      status: target?.status === "failed" ? "failed" : "scheduled",
+      caption: null,
+      title: null,
+      isAiGenerated: false,
+      media: [],
+      targets: target
+        ? [
+            {
+              id,
+              platform: "instagram",
+              kind: "instagram.image",
+              accountExternalId: "17841400001",
+              status: target.status,
+              attempts: target.attempts,
+              nextRunAt: null,
+              externalId: null,
+              postId: null,
+              permalink: null,
+              publishedAt: null,
+              error:
+                target.status === "failed"
+                  ? { code: "MEDIA_MISSING", message: "Medya eksikti.", action: "fix_content" }
+                  : null,
+            },
+          ]
+        : [],
+      cancelledAt: null,
+      createdAt: "2026-11-20T10:00:00.000Z",
+      updatedAt,
+    });
+    let orderId = "";
+    const fetchImpl: typeof fetch = async (input, init) => {
+      const url = new URL(String(input));
+      const method = init?.method ?? "GET";
+      calls.push(`${method} ${url.pathname}`);
+      const order = /^\/v1\/orders\/([^/]+)$/.exec(url.pathname);
+      if (method === "PUT" && order) {
+        orderId = order[1] as string;
+        if (target?.status === "failed" && !opts.replacesFailed) {
+          return Response.json(
+            { error: { code: "conflict", message: "order already started publishing" } },
+            { status: 409 },
+          );
+        }
+        target = { status: "pending", attempts: target?.attempts ?? 0 };
+        bump();
+        return Response.json(orderJson(orderId));
+      }
+      if (method === "PUT") return Response.json({ uploaded: true });
+      if (method === "GET" && order) return Response.json(orderJson(order[1] as string));
+      if (method === "GET" && url.pathname === "/v1/orders") {
+        return Response.json({ items: orderId ? [orderJson(orderId)] : [], nextCursor: null });
+      }
+      return new Response("unexpected", { status: 500 });
+    };
+    return {
+      calls,
+      fetchImpl,
+      fail(attempts: number) {
+        target = { status: "failed", attempts };
+        bump();
+      },
+    };
+  }
+
+  it("re-pushes the retried schedule and writes its next failure back even with the same state", async () => {
+    const cloud = statefulCloud({ replacesFailed: true });
+    const { api, state } = fakeApiWithPublishing({
+      url: "https://pub.test",
+      token: "cloud-token-xyz",
+    });
+    const s = seed(state, {
+      bytes: await image("jpeg"),
+      mime: "image/jpeg",
+      scheduledAt: "2026-11-21T12:00:00.000Z",
+    });
+    const poller = new SchedulePoller(deps(api, {}, cloud.fetchImpl));
+    await poller.tick();
+    expect(cloud.calls.filter((c) => c === `PUT /v1/orders/${s.id}`)).toHaveLength(1);
+
+    // It fails at the cloud before starting (attempt count stays 0) and is written back.
+    cloud.fail(0);
+    await poller.tick();
+    expect(state.scheduleOutcomes.map((o) => o.outcome.status)).toEqual(["failed"]);
+    expect(state.schedules[0]?.status).toBe("failed");
+
+    // Retry on the Mac: the API puts the same schedule back to pending with a new time.
+    state.schedules[0] = {
+      ...(state.schedules[0] as Schedule),
+      status: "pending",
+      scheduledAt: "2026-11-22T09:00:00.000Z",
+      cloudSyncedAt: null,
+      lastError: null,
+    };
+    cloud.calls.length = 0;
+    await poller.tick();
+    expect(cloud.calls).toContain(`PUT /v1/orders/${s.id}`);
+    expect(
+      cloud.calls.filter((c) => c.startsWith("PUT /v1/orders/") && !c.includes("/media/")),
+    ).toEqual([`PUT /v1/orders/${s.id}`]);
+
+    // Same failure again ("failed", 0 attempts): still reported, not swallowed as seen.
+    cloud.fail(0);
+    await poller.tick();
+    expect(state.scheduleOutcomes.map((o) => o.outcome.status)).toEqual(["failed", "failed"]);
+    expect(state.schedules[0]?.status).toBe("failed");
+  });
+
+  it("says the cloud publisher needs an update when it refuses to replace a failed order", async () => {
+    const cloud = statefulCloud({ replacesFailed: false });
+    const { api, state, extras } = fakeApiWithPublishing({
+      url: "https://pub.test",
+      token: "cloud-token-xyz",
+    });
+    const s = seed(state, {
+      bytes: await image("jpeg"),
+      mime: "image/jpeg",
+      scheduledAt: "2026-11-21T12:00:00.000Z",
+    });
+    const poller = new SchedulePoller(deps(api, {}, cloud.fetchImpl));
+    await poller.tick();
+    cloud.fail(1);
+    await poller.tick();
+    state.schedules[0] = {
+      ...(state.schedules[0] as Schedule),
+      status: "pending",
+      scheduledAt: "2026-11-22T09:00:00.000Z",
+      cloudSyncedAt: null,
+    };
+    await poller.tick();
+    const err = extras.deliveries.filter((x) => x.id === s.id && x.input.error).at(-1)?.input.error;
+    expect(err).toContain("güncellenmesi gerekiyor");
+    expect(extras.reports.at(-1)?.ok).toBe(false);
+    // Not marked as pushed: the next round tries again.
+    cloud.calls.length = 0;
+    await poller.tick();
+    expect(cloud.calls).toContain(`PUT /v1/orders/${s.id}`);
+  });
+});
+
 describe("local mode", () => {
   it("records local delivery before publishing a due schedule", async () => {
     const { api, state, extras } = fakeApiWithPublishing(null);

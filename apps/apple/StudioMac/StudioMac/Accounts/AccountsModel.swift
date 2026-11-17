@@ -154,12 +154,12 @@ final class AccountsModel {
             exchange = result
             pickingBrandId = brandId
             let alreadyConnected = Set(app?.accounts.compactMap(\.externalId) ?? [])
-            selections = Dictionary(uniqueKeysWithValues: result.pages.filter(\.canPublish).map { page in
+            selections = Dictionary(result.pages.filter(\.canPublish).map { page in
                 (page.pageId, MetaPageSelection(
                     pageId: page.pageId,
                     facebook: alreadyConnected.contains(page.pageId) || result.pages.count == 1,
                     instagram: page.instagram != nil && (alreadyConnected.contains(page.instagram?.igUserId ?? "") || result.pages.count == 1)))
-            })
+            }, uniquingKeysWith: { first, _ in first })
             if result.pages.isEmpty {
                 phase = .failed("Bu Facebook hesabının yönettiği bir Sayfa bulunamadı. Instagram hesabı bir Sayfaya bağlı olmalı ve girişte Sayfalara izin verilmeli.")
                 exchange = nil
@@ -258,10 +258,17 @@ final class AccountsModel {
         do {
             let checked = try await api.checkAccount(id: account.id, input)
             await app?.refreshAccounts()
-            phase = .finished("\(checked.handle): \(TokenHealthText.label(for: checked)).")
+            report(.finished("\(checked.handle): \(TokenHealthText.label(for: checked))."))
         } catch {
-            phase = .failed(AppModel.describe(error))
+            report(.failed(AppModel.describe(error)))
         }
+    }
+
+    /// A check or disconnect result; it never replaces the page picker of a running Meta connect
+    /// (the owner would have to log in through the browser again).
+    private func report(_ result: Phase) {
+        if case .picking = phase { return }
+        phase = result
     }
 
     func disconnect(_ account: SocialAccount) async {
@@ -270,9 +277,9 @@ final class AccountsModel {
         do {
             _ = try await api.disconnectAccount(id: account.id)
             await app?.refreshAccounts()
-            phase = .finished("\(account.handle) bağlantısı kesildi; erişim anahtarı silindi.")
+            report(.finished("\(account.handle) bağlantısı kesildi; erişim anahtarı silindi."))
         } catch {
-            phase = .failed(AppModel.describe(error))
+            report(.failed(AppModel.describe(error)))
         }
     }
 }

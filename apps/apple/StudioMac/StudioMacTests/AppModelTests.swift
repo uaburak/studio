@@ -36,6 +36,60 @@ struct AppModelTests {
         #expect(app.expandedBrands == [SampleData.mtm])
     }
 
+    @Test func theOpenChatIsRebuiltWithALiveModelAfterAReconnect() async throws {
+        let (app, _) = await makeApp()
+        let container = DetailContainerViewController(app: app)
+        container.view.frame = CGRect(x: 0, y: 0, width: 900, height: 700)
+        app.navigate(to: .conversation(SampleData.hasatConversation))
+        await waitUntil { (container.activeChild as? ChatViewController)?.model.id == SampleData.hasatConversation }
+        let before = try #require(container.activeChild as? ChatViewController)
+        // Reconnect stops every stream; the chat on screen must not stay bound to a stopped model.
+        app.resetConversations()
+        await waitUntil { (container.activeChild as? ChatViewController) !== before }
+        let after = try #require(container.activeChild as? ChatViewController)
+        #expect(after !== before)
+        #expect(after.model !== before.model)
+        #expect(app.conversationModels[SampleData.hasatConversation] === after.model)
+    }
+
+    @Test func archivingFromTheSidebarKeepsTheScreenAndOpensNoStream() async throws {
+        let (app, _) = await makeApp()
+        app.navigate(to: .posts)
+        #expect(await app.archiveConversation(SampleData.kasimConversation))
+        #expect(app.route == .posts, "archiving another chat does not pull the owner off Postlar")
+        #expect(!app.conversations.contains { $0.id == SampleData.kasimConversation })
+        #expect(app.conversationModels[SampleData.kasimConversation] == nil)
+
+        // The chat on screen: archived, its stream stops, a new chat opens.
+        app.navigate(to: .conversation(SampleData.hasatConversation))
+        _ = app.conversationModel(SampleData.hasatConversation)
+        #expect(await app.archiveConversation(SampleData.hasatConversation))
+        #expect(app.route == .newChat)
+        #expect(app.conversationModels[SampleData.hasatConversation] == nil)
+
+        #expect(await app.renameConversation(SampleData.lansmanConversation, to: "Lansman (yeni)"))
+        #expect(app.conversations.first { $0.id == SampleData.lansmanConversation }?.title == "Lansman (yeni)")
+        #expect(app.conversationModels[SampleData.lansmanConversation] == nil)
+    }
+
+    @Test func aFailedImageIsTriedAgainAfterAWhile() async throws {
+        let (app, _) = await makeApp()
+        let store = app.images
+        var clock = Date()
+        store.now = { clock }
+        store.load("missing-asset")
+        await waitUntil { !store.isLoading("missing-asset") }
+        #expect(store.failed.contains("missing-asset"))
+        // Right away: not hammered again.
+        store.load("missing-asset")
+        #expect(!store.isLoading("missing-asset"))
+        // Later (a just-generated asset may be readable now): tried again.
+        clock = clock.addingTimeInterval(ImageStore.retryAfter + 1)
+        store.load("missing-asset")
+        #expect(store.isLoading("missing-asset"))
+        await waitUntil { !store.isLoading("missing-asset") }
+    }
+
     @Test func navigationHistory() async throws {
         let (app, _) = await makeApp()
         app.navigate(to: .conversation(SampleData.kasimConversation))

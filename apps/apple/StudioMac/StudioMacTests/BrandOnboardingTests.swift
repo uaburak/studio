@@ -310,7 +310,21 @@ struct OnboardingTests {
         #expect(model.claude?.status == .signedIn)
         #expect(model.isClaudeReady)
         #expect(model.claudeError == nil)
-        #expect(OnboardingModel.describeLoginError(StudioAPIError.server(status: 409, code: .conflict, message: "x", issues: [])).contains("Mac worker"))
+        #expect(OnboardingModel.describeLoginError(StudioAPIError.server(status: 409, code: .conflict, message: "x", issues: [])).contains("arka planı henüz hazır değil"))
+    }
+
+    @Test func skippingDuringTheLoginWaitDoesNotLeaveTheButtonStuck() async throws {
+        let (app, _, _) = await makeApp()
+        let model = app.onboarding
+        model.pollInterval = .seconds(30)
+        await model.startClaudeLogin()
+        #expect(model.isSigningIn)
+        model.skip()
+        #expect(!model.isSigningIn, "reopening must offer the login again")
+        await model.startClaudeLogin()
+        #expect(model.isSigningIn)
+        model.cancelClaudeLogin()
+        #expect(!model.isSigningIn)
     }
 
     @Test func firstBrandStepCreatesBrandAndInstagramAccount() async throws {

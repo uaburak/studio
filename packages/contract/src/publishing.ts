@@ -82,6 +82,8 @@ export const SchedulePreflightInput = z
     contentId: EntityId,
     /** Accounts to check; omitted = every connected account of the brand on a target platform. */
     socialAccountIds: z.array(EntityId).max(10).optional(),
+    /** Planned publish time, for per-day limits (Facebook Reels); omitted = now. */
+    scheduledAt: Timestamp.optional(),
   })
   .meta({ id: "SchedulePreflightInput" });
 export type SchedulePreflightInput = z.input<typeof SchedulePreflightInput>;

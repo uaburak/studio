@@ -61,6 +61,11 @@ final class PostDetailOverlayView: NSView, NSUserInterfaceValidations {
         self.model = model
         self.canvas = SlideCanvasView(model: model)
         super.init(frame: .zero)
+        // VoiceOver: the opened post is one group named after it (keys: esc closes, ← → slides).
+        setAccessibilityElement(true)
+        setAccessibilityRole(.group)
+        setAccessibilityLabel("Açık post: \(model.content.title)")
+        setAccessibilityHelp("esc kapatır, sol ve sağ ok slaytlar arasında gezer, ⌘↩ onaylar.")
         translatesAutoresizingMaskIntoConstraints = false
         build()
         observation = observe { [weak self] in self?.sync() }
@@ -158,7 +163,9 @@ final class PostDetailOverlayView: NSView, NSUserInterfaceValidations {
         playBadge.cornerRadius = 32
         playBadge.translatesAutoresizingMaskIntoConstraints = false
         playButton = GlyphButton(symbol: "play.fill", size: 22, weight: .bold, diameter: 64) { [weak self] in
-            self?.model.showReelVideo = true
+            guard let self else { return }
+            // A failed download is tried again from the same button.
+            if self.model.videoPreviewURL == nil { self.model.retryReelVideo() } else { self.model.showReelVideo = true }
         }
         playButton.appearance = NSAppearance(named: .darkAqua)
         playButton.toolTip = "Videoyu oynat"
@@ -379,9 +386,11 @@ final class PostDetailOverlayView: NSView, NSUserInterfaceValidations {
         videoToggle.toolTip = "Videoyu durdur, kapağı göster"
         let canPlay = reel?.hasVideo == true && !busy.changesVersion
         playBadge.isHidden = !model.isReel || showsVideo || !canPlay
-        playButton.isEnabled = model.videoPreviewURL != nil
+        playButton.isEnabled = model.videoPreviewURL != nil || (model.videoError != nil && !model.isLoadingVideo)
         playButton.showsSpinner = model.isLoadingVideo
-        playButton.toolTip = model.videoError ?? (model.videoPreviewURL == nil ? "Video indiriliyor…" : "Videoyu oynat")
+        playButton.toolTip = model.videoError.map { "\($0) Yeniden denemek için tıkla." }
+            ?? (model.videoPreviewURL == nil ? "Video indiriliyor…" : "Videoyu oynat")
+        playButton.setAccessibilityLabel(model.videoError == nil ? "Videoyu oynat" : "Videoyu yeniden indir")
         if let reel, let ms = reel.durationMs, !showsVideo {
             reelChip.isHidden = false
             reelChipLabel.stringValue = [TurkishFormat.clock(ms: ms), reel.recipe?.label].compactMap { $0 }.joined(separator: " · ")
@@ -394,15 +403,30 @@ final class PostDetailOverlayView: NSView, NSUserInterfaceValidations {
 
     private var showsVideo: Bool { model.showReelVideo && model.hasVideoCapability && model.videoPreviewURL != nil }
 
-    private func syncVideo() {
-        let key = showsVideo ? model.videoPreviewURL?.absoluteString : nil
-        guard key != videoKey else { return }
-        videoKey = key
+    /// Stop and drop the reel player (and its loop observer).
+    private func stopVideo() {
         playerView?.player?.pause()
         playerView?.removeFromSuperview()
         playerView = nil
         if let loopObserver { NotificationCenter.default.removeObserver(loopObserver) }
         loopObserver = nil
+    }
+
+    /// Removed without the close animation (duplicate, delete, navigation, a notification opening
+    /// another post): a playing reel must not keep looping, with sound, behind the app.
+    override func viewWillMove(toWindow newWindow: NSWindow?) {
+        super.viewWillMove(toWindow: newWindow)
+        if newWindow == nil, window != nil {
+            stopVideo()
+            videoKey = nil
+        }
+    }
+
+    private func syncVideo() {
+        let key = showsVideo ? model.videoPreviewURL?.absoluteString : nil
+        guard key != videoKey else { return }
+        videoKey = key
+        stopVideo()
         canvas.isHidden = key != nil
         guard key != nil, let url = model.videoPreviewURL else { return }
         let pv = AVPlayerView()
@@ -685,7 +709,9 @@ private final class ActivityPillView: ThemedView {
             row.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -6),
             row.centerYAnchor.constraint(equalTo: centerYAnchor),
         ])
-        setAccessibilityRole(.progressIndicator)
+        // A group, so the "İptal" button inside stays reachable; the label reads the activity.
+        setAccessibilityElement(true)
+        setAccessibilityRole(.group)
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }

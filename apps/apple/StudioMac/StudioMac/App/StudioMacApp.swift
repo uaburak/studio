@@ -28,6 +28,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         self.settings = s
         self.model = AppModel(settings: s)
         self.host = LocalHost(configuration: { s.hostConfiguration })
+        // A clicked notification brings the window forward and opens its post (or the accounts).
+        model.publishing.notifier.onOpen = { [weak self] destination in self?.openNotice(destination) }
 
         // One window, no tabs: keeps "Sekme Çubuğunu Göster" out of the Görüntü menu.
         NSWindow.allowsAutomaticWindowTabbing = false
@@ -84,6 +86,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             await self.model.load()
             self.model.restoreSession()
             self.model.applyLaunchRoute()
+            // Studio was opened by clicking a notification: show its post now.
+            self.model.openPendingNotice()
         }
     }
 
@@ -101,6 +105,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     /// iPhone and for scheduled posts. Quit (⌘Q) stops it; the Dock icon reopens the window.
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         false
+    }
+
+    private func openNotice(_ destination: NoticeDestination) {
+        if case .link(let url) = destination {
+            NSWorkspace.shared.open(url)
+            return
+        }
+        NSApp.activate()
+        if let window = mainWindow {
+            if window.isMiniaturized { window.deminiaturize(nil) }
+            window.makeKeyAndOrderFront(nil)
+        }
+        model.openNotice(destination)
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {

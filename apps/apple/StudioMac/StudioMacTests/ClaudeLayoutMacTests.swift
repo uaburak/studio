@@ -163,7 +163,7 @@ struct InspectorContentTests {
 
     @Test func usageNoteExplainsMissingData() {
         #expect(InspectorContent.usageNote(nil) == "Mac'e bağlanılıyor…")
-        #expect(InspectorContent.usageNote(WorkerPresence(online: false)) == "Mac worker bağlı değil.")
+        #expect(InspectorContent.usageNote(WorkerPresence(online: false)) == "Arka plan çalışmıyor.")
         #expect(InspectorContent.usageNote(WorkerPresence(online: true))?.hasPrefix("Henüz bildirilmedi") == true)
         let reported = WorkerPresence(online: true, usage: WorkerUsage(windows: [UsageWindow(kind: .weekly, usedPercent: 10)], source: "claude", observedAt: clock))
         #expect(InspectorContent.usageNote(reported) == nil)
@@ -183,7 +183,7 @@ struct InspectorContentTests {
                                       gemini: GeminiAccount(status: .ready, mode: .api, apiKeyConfigured: true, checkedAt: clock))
         #expect(InspectorContent.providers(signedIn) == [
             PanelRow(label: "Claude", value: "Claude Max", help: AssistantStatus.claudeLine(signedIn)),
-            PanelRow(label: "Gemini", value: "Hazır · API", help: AssistantStatus.geminiLine(signedIn)),
+            PanelRow(label: "Gemini", value: "Hazır", help: AssistantStatus.geminiLine(signedIn)),
         ])
         let signedOut = WorkerPresence(online: true, claude: ClaudeAccount(status: .signedOut, checkedAt: clock),
                                        gemini: GeminiAccount(status: .notConfigured, mode: .none, apiKeyConfigured: false, checkedAt: clock))
@@ -196,27 +196,71 @@ struct InspectorContentTests {
         #expect(InspectorContent.claude(WorkerPresence(online: true, claude: ClaudeAccount(status: .signedIn, checkedAt: clock))).value == "Giriş yapıldı")
     }
 
+    @Test func environmentSummaryIsPlainWithOneAction() {
+        let running = HostSnapshot(status: .running, apiPhase: .running(pid: 1), workerPhase: .running(pid: 2))
+        func summary(_ host: HostSnapshot?, issue: ConnectionIssue? = nil, presence: WorkerPresence? = WorkerPresence(online: true), sample: Bool = false, enabled: Bool = true) -> EnvironmentSummary {
+            InspectorContent.environmentSummary(isSample: sample, host: host, hostEnabled: enabled, issue: issue, presence: presence)
+        }
+        let ready = summary(running)
+        #expect(ready.state == .ready)
+        #expect(ready.row == PanelRow(label: "Arka plan", value: "Hazır", tone: .normal, help: ready.detail))
+        #expect(ready.action == nil)
+
+        let starting = summary(HostSnapshot(status: .starting("API başlatılıyor")), issue: .hostStarting("API başlatılıyor"), presence: nil)
+        #expect(starting.value == "Hazırlanıyor")
+        #expect(starting.row.tone == .muted)
+        #expect(summary(running, presence: nil).value == "Hazırlanıyor", "no worker report yet: still preparing")
+        #expect(summary(HostSnapshot(status: .running, apiPhase: .restarting(exitStatus: 1, delay: .seconds(2)))).value == "Hazırlanıyor")
+
+        let failed = summary(HostSnapshot(status: .error("node bulunamadı")), issue: .hostFailed("node bulunamadı"))
+        #expect(failed.value == "Sorun var")
+        #expect(failed.row.tone == .attention)
+        #expect(failed.action == .restartHost)
+        #expect(failed.actionTitle == "Yeniden başlat")
+        #expect(failed.detail?.contains("node") == false, "the technical reason stays under Gelişmiş")
+
+        #expect(summary(HostSnapshot(status: .stopped)).action == .restartHost)
+        #expect(summary(HostSnapshot(status: .running, workerPhase: .failed("exit 1"))).state == .problem)
+        #expect(summary(running, issue: .workerOffline, presence: WorkerPresence(online: false)).action == .restartHost)
+        // Another server (own host off): retry, or settings for a worker that is not there.
+        #expect(summary(nil, issue: .apiUnreachable, enabled: false).action == .retry)
+        #expect(summary(running, issue: .apiUnreachable, enabled: false).action == .retry)
+        #expect(summary(nil, issue: .workerOffline, enabled: false).action == .openSettings)
+        #expect(summary(nil, issue: .unauthorized).action == .openSettings)
+        // Claude problems belong to the Claude row, not to the background.
+        #expect(summary(running, issue: .claudeSignedOut).state == .ready)
+        #expect(summary(nil, sample: true).value == "Örnek veri")
+
+        // No technical words in the plain texts.
+        for s in [ready, starting, failed, summary(nil, issue: .apiUnreachable), summary(nil, issue: .workerOffline), summary(nil, issue: .apiError("HTTP 500"))] {
+            let text = [s.value, s.detail ?? "", s.actionTitle ?? ""].joined(separator: " ")
+            for word in ["API", "Worker", "worker", "port", "127.0.0.1", "HTTP"] {
+                #expect(!text.contains(word), "\(word) in \(text)")
+            }
+        }
+    }
+
     @Test func environmentOfTheOwnHost() {
         let host = HostSnapshot(
             status: .running, apiURL: URL(string: "http://127.0.0.1:8790"), apiPhase: .running(pid: 10), tunnelPhase: .running(pid: 11),
             lanURLs: ["http://192.168.1.20:8791", "http://10.0.0.5:8791"], tunnelNote: "Aktif hedef"
         )
-        let rows = InspectorContent.environment(
+        let rows = InspectorContent.advancedEnvironment(
             isSample: false, host: host, hostEnabled: true, serverURL: nil, lanEnabled: true, remoteEnabled: true,
             remoteHostname: "https://social.burakkoc.net/", issue: nil, presence: WorkerPresence(online: true, queueLength: 2)
         )
-        #expect(rows.map(\.label) == ["Arka plan", "API", "Worker", "Yerel ağ", "Uzaktan erişim"])
+        #expect(rows.map(\.label) == ["Sunucu", "API", "Worker", "Yerel ağ", "Uzaktan erişim"])
         #expect(rows.map(\.value) == ["Çalışıyor", "Çalışıyor", "Hazır · 2 sırada", "192.168.1.20:8791", "Açık · social.burakkoc.net"])
         #expect(rows[3].help == "http://192.168.1.20:8791, http://10.0.0.5:8791")
 
         // Off switches read as muted "Kapalı"; a tunnel that is on but not running needs setup.
-        let off = InspectorContent.environment(
+        let off = InspectorContent.advancedEnvironment(
             isSample: false, host: HostSnapshot(status: .running, apiPhase: .running(pid: 1)), hostEnabled: true, serverURL: nil,
             lanEnabled: false, remoteEnabled: false, remoteHostname: "social.burakkoc.net", issue: nil, presence: nil
         )
         #expect(off.map(\.value) == ["Çalışıyor", "Çalışıyor", "Bekleniyor", "Kapalı", "Kapalı"])
         #expect(off.map(\.tone) == [.normal, .normal, .muted, .muted, .muted])
-        let setup = InspectorContent.environment(
+        let setup = InspectorContent.advancedEnvironment(
             isSample: false, host: HostSnapshot(status: .running), hostEnabled: true, serverURL: nil,
             lanEnabled: true, remoteEnabled: true, remoteHostname: "social.burakkoc.net", issue: nil, presence: WorkerPresence(online: false)
         )
@@ -225,22 +269,22 @@ struct InspectorContentTests {
     }
 
     @Test func environmentProblemsAndOtherServers() {
-        let failed = InspectorContent.environment(
+        let failed = InspectorContent.advancedEnvironment(
             isSample: false, host: HostSnapshot(status: .error("node bulunamadı")), hostEnabled: true, serverURL: nil,
             lanEnabled: true, remoteEnabled: false, remoteHostname: "x", issue: .hostFailed("node bulunamadı"), presence: nil
         )
-        #expect(failed[0] == PanelRow(label: "Arka plan", value: "Hata", tone: .attention, help: "node bulunamadı"))
+        #expect(failed[0] == PanelRow(label: "Sunucu", value: "Hata", tone: .attention, help: "node bulunamadı"))
 
-        let external = InspectorContent.environment(
+        let external = InspectorContent.advancedEnvironment(
             isSample: false, host: HostSnapshot(status: .running), hostEnabled: false, serverURL: URL(string: "https://studio.example.com"),
             lanEnabled: true, remoteEnabled: true, remoteHostname: "x", issue: .apiUnreachable, presence: nil
         )
-        #expect(external.map(\.label) == ["Arka plan", "API", "Worker"], "LAN and tunnel belong to the own host only")
+        #expect(external.map(\.label) == ["Sunucu", "API", "Worker"], "LAN and tunnel belong to the own host only")
         #expect(external[0].value == "Harici · studio.example.com")
         #expect(external[1].value == "Ulaşılamıyor")
         #expect(external[1].tone == .attention)
 
-        let sample = InspectorContent.environment(
+        let sample = InspectorContent.advancedEnvironment(
             isSample: true, host: nil, hostEnabled: true, serverURL: nil, lanEnabled: true, remoteEnabled: true,
             remoteHostname: "x", issue: nil, presence: WorkerPresence(online: true)
         )
@@ -296,6 +340,20 @@ struct InspectorContentTests {
         #expect(rows.contains { $0.labelText == "Instagram" && $0.valueText == "mtmagro" })
         #expect(rows.contains { $0.labelText == "Claude" })
         #expect(rows.contains { $0.labelText == "Gemini" })
+        #expect(controller.shownEnvironment?.state == .sample)
+
+        // Technical rows wait under a folded "Gelişmiş".
+        #expect(!rows.contains { ["API", "Worker", "Sunucu"].contains($0.labelText) })
+        let advanced = try #require(all(JobsDisclosureRowView.self, in: view).first { $0.title == "Gelişmiş" })
+        #expect(!advanced.expanded)
+        #expect(advanced.accessibilityValue() as? String == "Kapalı")
+        advanced.performTap()
+        await settle()
+        #expect(controller.showAdvancedEnvironment)
+        #expect(all(PanelRowView.self, in: view).contains { $0.labelText == "Worker" })
+        try #require(all(JobsDisclosureRowView.self, in: view).first { $0.title == "Gelişmiş" }).performTap()
+        await settle()
+        #expect(!all(PanelRowView.self, in: view).contains { $0.labelText == "Worker" })
 
         app.navigate(to: .conversation(SampleData.hasatConversation))
         let conversation = app.conversationModel(SampleData.hasatConversation)

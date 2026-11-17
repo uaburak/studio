@@ -352,7 +352,7 @@ struct ConnectionStatusTests {
     @Test func statusSummary() {
         #expect(ServerStatusSummary.make(isSample: true, issue: nil, presence: nil).text == "Örnek veri")
         #expect(ServerStatusSummary.make(isSample: false, issue: nil, presence: nil).text == "Bağlanıyor…")
-        #expect(ServerStatusSummary.make(isSample: false, issue: .workerOffline, presence: nil) == ServerStatusSummary(text: "İşçi bağlı değil", needsOwner: true))
+        #expect(ServerStatusSummary.make(isSample: false, issue: .workerOffline, presence: nil) == ServerStatusSummary(text: "Arka plan çalışmıyor", needsOwner: true))
         #expect(ServerStatusSummary.make(isSample: false, issue: nil, presence: WorkerPresence(online: true, queueLength: 2)).text == "Mac hazır · 2 iş sırada")
     }
 

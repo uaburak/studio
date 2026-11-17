@@ -251,7 +251,10 @@ final class PostsViewController: NSViewController {
             } else {
                 gridView.setCards(cards, slotUploads: posts.slotUploads, openedCardId: app.detail?.card.id, selectedId: posts.selectedId, busy: busy)
             }
-            if selectionMoved, let selected = key.selectedId { gridView.scrollToCard(selected) }
+            if selectionMoved, let selected = key.selectedId {
+                gridView.scrollToCard(selected)
+                gridView.announceSelection(selected)
+            }
         }
 
         let approvableCount = posts.approvable.count
@@ -588,6 +591,9 @@ private final class PostGridContainerView: NSView {
         self.controller = controller
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
+        setAccessibilityElement(true)
+        setAccessibilityRole(.group)
+        setAccessibilityLabel("Postlar")
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
@@ -612,10 +618,20 @@ private final class PostGridContainerView: NSView {
         }
         needsLayout = true
         invalidateIntrinsicContentSize()
+        setAccessibilityValue(cards.count == 1 ? "1 post" : "\(cards.count) post")
     }
 
     func updateSelection(_ selectedId: EntityID?) {
         for item in itemViews { item.isSelected = item.cardId == selectedId }
+    }
+
+    /// VoiceOver reads the post the arrow keys moved to (the grid keeps the keyboard focus).
+    func announceSelection(_ selectedId: EntityID) {
+        guard let item = itemViews.first(where: { $0.cardId == selectedId }), let label = item.accessibilityLabel() else { return }
+        NSAccessibility.post(element: item, notification: .announcementRequested, userInfo: [
+            .announcement: label,
+            .priority: NSAccessibilityPriorityLevel.high.rawValue,
+        ])
     }
 
     func itemView(_ id: EntityID) -> NSView? { itemViews.first { $0.cardId == id } }
@@ -683,7 +699,10 @@ private final class PostCardItemView: NSView {
 
     var cardId: EntityID { card.id }
     var isSelected = false {
-        didSet { updateRing() }
+        didSet {
+            updateRing()
+            setAccessibilitySelected(isSelected)
+        }
     }
 
     override var isFlipped: Bool { true }
@@ -770,11 +789,30 @@ private final class PostCardItemView: NSView {
             stack.centerYAnchor.constraint(equalTo: footerRow.centerYAnchor),
         ])
 
+        // VoiceOver: one button per post ("Hasat, Carousel 5 slayt, Hazır, 4 Kas") that opens it;
+        // the context menu's actions are offered as custom actions.
+        setAccessibilityElement(true)
         setAccessibilityRole(.button)
-        setAccessibilityLabel("\(card.title), \(card.state.label)")
+        setAccessibilityLabel(PostAccessibility.cardLabel(card, busy: busy ? (job: app.posts.activeJob(for: card.id), hasVersion: card.content.currentVersion != nil) : nil))
+        setAccessibilityHelp("Açmak için bas. Oklarla postlar arasında gezilir, boşluk hızlı bakış açar.")
+        var actions = [
+            NSAccessibilityCustomAction(name: "Hızlı bakış") { [weak self] in self?.quickLookItem(); return true },
+            NSAccessibilityCustomAction(name: "Açıklamayı kopyala") { [weak self] in self?.copyCaptionItem(); return true },
+            NSAccessibilityCustomAction(name: "Çoğalt") { [weak self] in self?.duplicateItem(); return true },
+        ]
+        if PostsModel.deletionBlocker(card) == nil {
+            actions.append(NSAccessibilityCustomAction(name: "Sil") { [weak self] in self?.deleteItem(); return true })
+        }
+        if card.renderedAssetIds.isEmpty { actions.removeFirst() }
+        setAccessibilityCustomActions(actions)
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
+
+    override func accessibilityPerformPress() -> Bool {
+        openItem()
+        return true
+    }
 
     func layoutItem(visualHeight: CGFloat) {
         placeholder.frame = NSRect(x: 0, y: 0, width: bounds.width, height: visualHeight)
@@ -1115,6 +1153,7 @@ private final class SmallSlotDropView: NSView {
                 plus.centerYAnchor.constraint(equalTo: ringHolder.centerYAnchor),
             ])
             toolTip = "Görsel ekle: tıkla ya da görseli buraya sürükle"
+            setAccessibilityElement(true)
             setAccessibilityLabel("Görsel ekle")
             setAccessibilityRole(.button)
             stack.addArrangedSubview(ringHolder)
@@ -1144,6 +1183,12 @@ private final class SmallSlotDropView: NSView {
 
     override func mouseDown(with event: NSEvent) {
         onPickImage?()
+    }
+
+    override func accessibilityPerformPress() -> Bool {
+        guard showsDashedPlus, let onPickImage else { return false }
+        onPickImage()
+        return true
     }
 
     override func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation {
@@ -1205,6 +1250,7 @@ private final class ApproveBarView: NSView {
         label.stringValue = "\(count) post onaya hazır"
         approveButton.showsSpinner = isApproving
         approveButton.isEnabled = !isApproving
+        approveButton.setAccessibilityLabel("\(count) postu onayla")
     }
 }
 
@@ -1218,6 +1264,7 @@ private final class FilterPillsControlView: ThemedView {
         translatesAutoresizingMaskIntoConstraints = false
         backgroundColor = Theme.fill
         cornerRadius = 15
+        setAccessibilityElement(true)
         setAccessibilityLabel("Durum filtresi")
         setAccessibilityRole(.radioGroup)
 
@@ -1254,16 +1301,19 @@ private final class FilterPillsControlView: ThemedView {
     }
 
     private final class SegmentPillView: ThemedView {
+        private let title: String
         private let titleLabel: NSTextField
         private let countLabel = NSTextField(labelWithString: "0")
         private let onClick: () -> Void
 
         init(title: String, onClick: @escaping () -> Void) {
+            self.title = title
             self.titleLabel = NSTextField(labelWithString: title)
             self.onClick = onClick
             super.init(frame: .zero)
             translatesAutoresizingMaskIntoConstraints = false
             cornerRadius = 13
+            setAccessibilityElement(true)
             setAccessibilityRole(.radioButton)
             setAccessibilityLabel(title)
 
@@ -1294,6 +1344,7 @@ private final class FilterPillsControlView: ThemedView {
             countLabel.font = NSFont.systemFont(ofSize: 12, weight: selected ? .semibold : .regular)
             countLabel.stringValue = "\(count)"
             setAccessibilityValue(selected)
+            setAccessibilityLabel("\(title), \(count)")
             if selected {
                 layer?.shadowColor = NSColor.black.cgColor
                 layer?.shadowOpacity = 0.08
@@ -1307,5 +1358,41 @@ private final class FilterPillsControlView: ThemedView {
         override func mouseDown(with event: NSEvent) {
             onClick()
         }
+
+        // Full Keyboard Access: Tab reaches the filters, space or return picks one.
+        override var acceptsFirstResponder: Bool { KeyboardFocus.accepts(isEnabled: true) }
+        override var focusRingMaskBounds: NSRect { bounds }
+        override func drawFocusRingMask() { NSBezierPath(roundedRect: bounds, xRadius: 13, yRadius: 13).fill() }
+        override func keyDown(with event: NSEvent) {
+            if KeyboardFocus.isActivation(event) { onClick() } else { super.keyDown(with: event) }
+        }
+
+        override func accessibilityPerformPress() -> Bool {
+            onClick()
+            return true
+        }
+    }
+}
+
+/// VoiceOver texts of the posts grid.
+enum PostAccessibility {
+    static func typeName(_ content: Content, slideCount: Int?) -> String {
+        switch content.type {
+        case .post: "Tek görsel"
+        case .carousel: slideCount.map { "Carousel, \($0) slayt" } ?? "Carousel"
+        case .story: "Story"
+        case .reel: "Reels"
+        case .unknown: "Post"
+        }
+    }
+
+    /// "Hasat duyurusu, Carousel, 5 slayt, Hazır, 4 Kas" (+ ", AI düzenliyor" while a job runs).
+    static func cardLabel(_ card: PostCard, busy: (job: Job?, hasVersion: Bool)? = nil) -> String {
+        var parts = [card.title, typeName(card.content, slideCount: card.version?.slides.count), card.state.label]
+        parts.append(card.day.map(TurkishFormat.shortDay) ?? "Tarih yok")
+        if let busy {
+            parts.append(busy.job?.type == .contentGenerate ? (busy.hasVersion ? "AI düzenliyor" : "Üretiliyor") : "Render ediliyor")
+        }
+        return parts.joined(separator: ", ")
     }
 }

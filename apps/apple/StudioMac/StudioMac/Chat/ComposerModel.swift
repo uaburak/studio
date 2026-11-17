@@ -187,8 +187,8 @@ final class ComposerModel {
             return "“\(name)” bu sohbette kullanılmış."
         }
         drafts[index].alias = name
-        // Mentions of the old draft name in the text follow the rename.
-        text = text.replacingOccurrences(of: "@\(old)", with: "@\(name)")
+        // Mentions of the old draft name follow the rename (whole tokens only: `@urun-2` stays).
+        text = MentionText.renaming(old, to: name, in: text)
         bridge?.setText(text)
         updateSuggestions()
         return nil
@@ -210,14 +210,46 @@ final class ComposerModel {
         return nil
     }
 
+    /// The idempotency key of the message being sent, kept while the same text and pictures are
+    /// sent again after a failure: a send the server did receive (a timeout) is not posted twice.
+    @ObservationIgnored private var pendingSend: (key: String, text: String, attachments: [OutgoingAttachment])?
+
     func makeMessage() -> OutgoingMessage {
-        OutgoingMessage(text: text, attachments: drafts.compactMap { draft in
+        let attachments = drafts.compactMap { draft in
             draft.asset.map { OutgoingAttachment(assetId: $0.id, alias: draft.alias) }
-        })
+        }
+        if let pending = pendingSend, pending.text == text, pending.attachments == attachments {
+            return OutgoingMessage(text: text, attachments: attachments, clientMessageId: pending.key)
+        }
+        let message = OutgoingMessage(text: text, attachments: attachments)
+        pendingSend = (message.clientMessageId, text, attachments)
+        return message
+    }
+
+    /// After `message` was sent: clear it, but keep what the owner typed or attached meanwhile.
+    func didSend(_ message: OutgoingMessage) {
+        let sentAliases = Set(message.attachments.compactMap(\.alias))
+        let unchanged = text == message.text && Set(drafts.map(\.alias)) == sentAliases
+        guard !unchanged else {
+            reset()
+            return
+        }
+        pendingSend = nil
+        for draft in drafts where sentAliases.contains(draft.alias) {
+            uploads[draft.id]?.cancel()
+            uploads[draft.id] = nil
+        }
+        drafts.removeAll { sentAliases.contains($0.alias) }
+        errors = []
+        if text.hasPrefix(message.text) {
+            text = String(text.dropFirst(message.text.count)).trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        bridge?.setText(text)
     }
 
     /// After a successful send: the drafts became conversation aliases.
     func reset() {
+        pendingSend = nil
         uploads.values.forEach { $0.cancel() }
         uploads = [:]
         drafts = []
@@ -282,4 +314,18 @@ final class ComposerModel {
 
 extension Array {
     subscript(safe index: Int) -> Element? { indices.contains(index) ? self[index] : nil }
+}
+
+extension MentionText {
+    /// `text` with every whole `@old` token renamed to `@new` (`@old-2` or `@older` stay).
+    static func renaming(_ old: String, to new: String, in text: String) -> String {
+        let tokens = scanTokens(text).filter { $0.alias == old }
+        guard !tokens.isEmpty else { return text }
+        var units = Array(text.utf16)
+        // Back to front, so earlier offsets stay valid.
+        for token in tokens.reversed() {
+            units.replaceSubrange((token.start + 1)..<token.end, with: Array(new.utf16))
+        }
+        return String(decoding: units, as: UTF16.self)
+    }
 }

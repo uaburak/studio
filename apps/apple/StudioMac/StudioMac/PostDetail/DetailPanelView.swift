@@ -325,7 +325,9 @@ final class TabPillsView: ThemedView {
         translatesAutoresizingMaskIntoConstraints = false
         backgroundColor = Theme.fill
         cornerRadius = 14
+        setAccessibilityElement(true)
         setAccessibilityRole(.tabGroup)
+        setAccessibilityLabel("Bölümler")
         let row = NSStackView()
         row.orientation = .horizontal
         row.spacing = 2
@@ -361,6 +363,7 @@ final class TabPillsView: ThemedView {
                 label.font = NSFont.systemFont(ofSize: 12, weight: isSelected ? .semibold : .regular)
                 label.textColor = isSelected ? Theme.textPrimary : Theme.textSecondary
                 setAccessibilityValue(isSelected)
+                setAccessibilitySelected(isSelected)
             }
         }
 
@@ -377,14 +380,28 @@ final class TabPillsView: ThemedView {
                 label.centerXAnchor.constraint(equalTo: centerXAnchor),
                 label.centerYAnchor.constraint(equalTo: centerYAnchor),
             ])
+            setAccessibilityElement(true)
             setAccessibilityRole(.radioButton)
             setAccessibilityLabel(title)
+            label.setAccessibilityElement(false)
             isSelected = false
         }
 
         required init?(coder: NSCoder) { fatalError("not used") }
 
         override func mouseDown(with event: NSEvent) { action() }
+
+        // Full Keyboard Access: Tab reaches the section pills; space or return switches.
+        override var acceptsFirstResponder: Bool { KeyboardFocus.accepts(isEnabled: true) }
+        override var focusRingMaskBounds: NSRect { bounds }
+        override func drawFocusRingMask() { NSBezierPath(roundedRect: bounds, xRadius: 12, yRadius: 12).fill() }
+        override func keyDown(with event: NSEvent) {
+            if KeyboardFocus.isActivation(event) { action() } else { super.keyDown(with: event) }
+        }
+        override func accessibilityPerformPress() -> Bool {
+            action()
+            return true
+        }
     }
 }
 
@@ -882,7 +899,8 @@ private final class EditTabView: NSView, NSTextViewDelegate, NSTextFieldDelegate
 
     private func rebuildList(_ layers: [SlideLayer]) {
         list.arrangedSubviews.forEach { $0.removeFromSuperview() }
-        let parents = Dictionary(uniqueKeysWithValues: (model.layerBoxes ?? []).map { ($0.id, $0.parent) })
+        // Server data: a slide may repeat a layer id (a version that failed lint); the first wins.
+        let parents = Dictionary((model.layerBoxes ?? []).map { ($0.id, $0.parent) }, uniquingKeysWith: { first, _ in first })
         func depth(_ id: String) -> Int {
             var d = 0
             var current = parents[id] ?? nil
@@ -1005,14 +1023,32 @@ private final class LayerRowView: ThemedView {
             row.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -8),
             row.centerYAnchor.constraint(equalTo: centerYAnchor),
         ])
-        setAccessibilityRole(.row)
-        setAccessibilityLabel("\(titleText), \(detailText)")
+        setAccessibilityElement(true)
+        setAccessibilityRole(.button)
+        setAccessibilityLabel("\(titleText), \(detailText)\(layer.isHidden ? ", gizli" : "")")
+        setAccessibilityValue(selected ? "Seçili" : nil)
         setAccessibilitySelected(selected)
+        setAccessibilityHelp("Katmanı seçmek için bas")
+        if editable {
+            setAccessibilityCustomActions([
+                NSAccessibilityCustomAction(name: layer.isHidden ? "Göster" : "Gizle") { onToggle(); return true },
+            ])
+        }
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
 
     override func mouseDown(with event: NSEvent) { onSelect() }
+    override func accessibilityPerformPress() -> Bool {
+        onSelect()
+        return true
+    }
+    override var acceptsFirstResponder: Bool { KeyboardFocus.accepts(isEnabled: true) }
+    override var focusRingMaskBounds: NSRect { bounds }
+    override func drawFocusRingMask() { NSBezierPath(roundedRect: bounds, xRadius: 8, yRadius: 8).fill() }
+    override func keyDown(with event: NSEvent) {
+        if KeyboardFocus.isActivation(event) { onSelect() } else { super.keyDown(with: event) }
+    }
     override func menu(for event: NSEvent) -> NSMenu? {
         onSelect()
         return menuProvider()
@@ -1164,13 +1200,26 @@ private final class VersionRowView: ThemedView {
             stack.topAnchor.constraint(equalTo: topAnchor, constant: 8),
             stack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -8),
         ])
+        setAccessibilityElement(true)
         setAccessibilityRole(.button)
-        setAccessibilityLabel("Sürüm \(summary.version), \(VersionsTabView.originLabel(summary.origin))\(isCurrent ? ", güncel" : "")")
+        setAccessibilityLabel("Sürüm \(summary.version), \(VersionsTabView.originLabel(summary.origin))\(isCurrent ? ", güncel" : ""), \(TurkishFormat.dayAndTime(summary.createdAt))")
+        setAccessibilityValue(isShown ? "Gösteriliyor" : nil)
+        setAccessibilitySelected(isShown)
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
 
     override func mouseDown(with event: NSEvent) { onSelect() }
+    override func accessibilityPerformPress() -> Bool {
+        onSelect()
+        return true
+    }
+    override var acceptsFirstResponder: Bool { KeyboardFocus.accepts(isEnabled: true) }
+    override var focusRingMaskBounds: NSRect { bounds }
+    override func drawFocusRingMask() { NSBezierPath(roundedRect: bounds, xRadius: 10, yRadius: 10).fill() }
+    override func keyDown(with event: NSEvent) {
+        if KeyboardFocus.isActivation(event) { onSelect() } else { super.keyDown(with: event) }
+    }
 }
 
 /// A clickable vertical stack (the read-only caption).
@@ -1193,10 +1242,22 @@ private final class ClickableStack: NSControl {
             stack.topAnchor.constraint(equalTo: topAnchor),
             stack.bottomAnchor.constraint(equalTo: bottomAnchor),
         ])
+        setAccessibilityElement(true)
         setAccessibilityRole(.button)
     }
 
     override func mouseDown(with event: NSEvent) { onClick?() }
+    override func accessibilityPerformPress() -> Bool {
+        guard let onClick else { return false }
+        onClick()
+        return true
+    }
+    override var acceptsFirstResponder: Bool { KeyboardFocus.accepts(isEnabled: true) }
+    override var focusRingMaskBounds: NSRect { bounds }
+    override func drawFocusRingMask() { NSBezierPath(roundedRect: bounds, xRadius: 6, yRadius: 6).fill() }
+    override func keyDown(with event: NSEvent) {
+        if KeyboardFocus.isActivation(event), let onClick { onClick() } else { super.keyDown(with: event) }
+    }
 }
 
 // MARK: - Schedule popover

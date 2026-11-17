@@ -243,7 +243,8 @@ final class OnboardingSheetController: NSViewController {
     private func makeClaude() -> NSView {
         claudeLoginButton = PillButton(title: "Claude'a giriş yap", kind: .primary, height: 30) { [weak self] in
             guard let self else { return }
-            Task { await self.model.startClaudeLogin() }
+            // While the browser step waits, the same button stops waiting (the owner closed it).
+            if self.model.isSigningIn { self.model.cancelClaudeLogin() } else { Task { await self.model.startClaudeLogin() } }
         }
         claudeRecheckButton = PillButton(title: "Durumu yenile", kind: .secondary, height: 30) { [weak self] in
             guard let self else { return }
@@ -269,7 +270,7 @@ final class OnboardingSheetController: NSViewController {
         let online = model.workerOnline
         let (text, color): (String, NSColor) = {
             guard let claude else {
-                return online ? ("Durum okunuyor…", Theme.textTertiary) : ("Mac worker bağlı değil", Theme.textTertiary)
+                return online ? ("Durum okunuyor…", Theme.textTertiary) : ("Arka plan hazır değil", Theme.textTertiary)
             }
             switch claude.status {
             case .signedIn:
@@ -294,10 +295,11 @@ final class OnboardingSheetController: NSViewController {
         claudeError.isHidden = model.claudeError == nil
 
         let signedIn = claude?.status == .signedIn
-        claudeLoginButton.title = signedIn ? "Hesabı değiştir" : (model.isSigningIn ? "Giriş bekleniyor…" : "Claude'a giriş yap")
-        claudeLoginButton.kind = signedIn ? .secondary : .primary
+        claudeLoginButton.title = signedIn ? "Hesabı değiştir" : (model.isSigningIn ? "Beklemeyi bırak" : "Claude'a giriş yap")
+        claudeLoginButton.kind = signedIn || model.isSigningIn ? .secondary : .primary
         claudeLoginButton.showsSpinner = model.isSigningIn
-        claudeLoginButton.isEnabled = online && !model.isSigningIn && claude?.status != .notInstalled
+        claudeLoginButton.toolTip = model.isSigningIn ? "Tarayıcıdaki giriş bekleniyor; vazgeçtiysen bekleme burada durur." : nil
+        claudeLoginButton.isEnabled = model.isSigningIn || (online && claude?.status != .notInstalled)
         claudeRecheckButton.isEnabled = online && !model.isRefreshingClaude
         claudeRecheckButton.showsSpinner = model.isRefreshingClaude
         claudeOpenLinkButton.isHidden = (claude?.loginUrl ?? "").isEmpty || signedIn
@@ -330,13 +332,19 @@ final class OnboardingSheetController: NSViewController {
             let (text, color): (String, NSColor) = switch host.status {
             case .running: ("Studio bu Mac'te çalışıyor", .systemGreen)
             case .attached: ("Studio bu Mac'te çalışıyor", .systemGreen)
-            case .starting(let what): ("Başlatılıyor: \(what)", Theme.accent)
-            case .stopped: ("Durdu", Theme.textTertiary)
-            case .error(let message): ("Hata: \(message)", .systemRed)
+            case .starting: ("Studio hazırlanıyor…", Theme.accent)
+            case .stopped: ("Studio durdu", Theme.textTertiary)
+            case .error: ("Studio başlatılamadı", .systemRed)
             }
             (serverStatus.arrangedSubviews.first as? StatusDotView)?.color = color
             (serverStatus.arrangedSubviews.last as? NSTextField)?.stringValue = text
-            serverDetail.stringValue = ""
+            // The technical step or error stays in the tooltip (and in Ayarlar → Gelişmiş).
+            serverStatus.toolTip = switch host.status {
+            case .starting(let what): what
+            case .error(let message): message
+            default: nil
+            }
+            serverDetail.stringValue = if case .error = host.status { "Yeniden başlatmayı dene; sürerse Ayarlar → Gelişmiş'teki hata kaydına bak." } else { "" }
             restartButton.isHidden = false
             let lan = host.lanURLs
             (lanStatus.arrangedSubviews.first as? StatusDotView)?.color = lan.isEmpty ? Theme.textTertiary : .systemGreen
@@ -353,7 +361,7 @@ final class OnboardingSheetController: NSViewController {
             lanDetail.stringValue = ""
         }
         (workerStatus.arrangedSubviews.first as? StatusDotView)?.color = online ? .systemGreen : Theme.textTertiary
-        (workerStatus.arrangedSubviews.last as? NSTextField)?.stringValue = online ? "Hazır: işler hemen çalışır" : "Arka plan işçisi bağlı değil: işler sırada bekler"
+        (workerStatus.arrangedSubviews.last as? NSTextField)?.stringValue = online ? "Hazır: işler hemen çalışır" : "Arka plan çalışmıyor: işler sırada bekler"
         lanDetail.isHidden = lanDetail.stringValue.isEmpty
         serverDetail.isHidden = serverDetail.stringValue.isEmpty
     }
@@ -418,7 +426,7 @@ final class OnboardingSheetController: NSViewController {
             (claudeOK, claudeOK ? "Claude hesabı bağlı" : "Claude girişi yapılmadı · Ayarlar → Yapay zekâ"),
             (serverOK, serverOK ? "Mac sunucusu çalışıyor" : "Mac sunucusu çalışmıyor · Ayarlar → Mac sunucusu"),
             (brand != nil, brand.map { "Marka: \($0.name)" } ?? "Marka eklenmedi · kenar çubuğunda Yeni marka"),
-        ]
+        ] + (model.brandError.map { [(false, "\($0) · Ayarlar → Hesaplar")] } ?? [])
         for (ok, text) in rows {
             let icon = NSImageView(image: NSImage(systemSymbolName: ok ? "checkmark.circle.fill" : "circle.dashed", accessibilityDescription: ok ? "Tamam" : "Eksik") ?? NSImage())
             icon.contentTintColor = ok ? Theme.ink : Theme.textTertiary

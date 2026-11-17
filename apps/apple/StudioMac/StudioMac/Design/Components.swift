@@ -643,6 +643,11 @@ final class PostStateLabelView: NSView {
     private func apply() {
         dot.color = state.tone.nsColor
         label.stringValue = state.label
+        // One element for VoiceOver ("Durum: Hazır"); the dot is decoration.
+        setAccessibilityElement(true)
+        setAccessibilityRole(.staticText)
+        setAccessibilityLabel("Durum: \(state.label)")
+        label.setAccessibilityElement(false)
     }
 }
 
@@ -952,8 +957,8 @@ final class MacStatusControlView: NSView {
         label.stringValue = parts.joined(separator: " · ")
         defer { onChange?() }
         toolTip = online
-            ? "Mac worker bağlı; işler hemen çalışır."
-            : "Mac worker bağlı değil; işler sırada bekler."
+            ? "Arka plan hazır; işler hemen başlar."
+            : "Arka plan çalışmıyor; işler sırada bekler."
     }
 }
 

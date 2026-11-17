@@ -280,14 +280,22 @@ export class Scheduler extends DurableObject<Env> {
 
     // Synchronous from here: no other event can interleave.
     const existing = this.orderRow(id);
+    const oldTargets = existing ? this.targetRows(id) : [];
+    // Retry: an order whose every target failed (nothing was published) is replaced in place,
+    // so a retried schedule never leaves a second order behind. Attempt numbers continue.
+    const retry = oldTargets.length > 0 && oldTargets.every((t) => t.status === "failed");
     if (existing) {
       if (existing.cancelled_at !== null) return fail("conflict", "order was cancelled");
-      if (this.targetRows(id).some((t) => t.status !== "pending")) {
+      if (!retry && oldTargets.some((t) => t.status !== "pending")) {
         return fail("conflict", "order already started publishing");
       }
     }
     const old: StoredMedia[] = existing ? JSON.parse(existing.media) : [];
-    const uploadedShas = new Set(old.filter((m) => m.uploaded).map((m) => m.sha256));
+    // Media of a finished order may already be purged from R2: upload it again.
+    const uploadedShas = new Set(
+      existing?.purged ? [] : old.filter((m) => m.uploaded).map((m) => m.sha256),
+    );
+    const previousAttempts = new Map(oldTargets.map((t) => [t.id, t.attempts]));
     const media: StoredMedia[] = input.media.map((m) => ({
       ...m,
       uploaded: uploadedShas.has(m.sha256),
@@ -317,11 +325,15 @@ export class Scheduler extends DurableObject<Env> {
         now,
         now,
       );
+      if (retry) {
+        // Finished orders get a purge time; a retried one is live again.
+        this.sql.exec("UPDATE orders SET purge_after = NULL, purged = 0 WHERE id = ?", id);
+      }
       this.sql.exec("DELETE FROM targets WHERE order_id = ?", id);
       input.targets.forEach((t, i) => {
         this.sql.exec(
           `INSERT INTO targets (order_id, id, position, kind, account_external_id, token, status,
-             next_run_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?)`,
+             next_run_at, attempts, updated_at) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)`,
           id,
           t.id,
           i,
@@ -329,12 +341,13 @@ export class Scheduler extends DurableObject<Env> {
           t.accountExternalId,
           sealed[i] ?? null,
           scheduledAt,
+          previousAttempts.get(t.id) ?? 0,
           now,
         );
       });
       this.touchOrder(id, now);
     });
-    log("order.saved", { orderId: id, created: !existing, targets: input.targets.length });
+    log("order.saved", { orderId: id, created: !existing, retry, targets: input.targets.length });
 
     await this.deleteMedia(id, stale);
     await this.armAlarm();

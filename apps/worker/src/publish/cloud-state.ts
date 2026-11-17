@@ -17,6 +17,12 @@ export interface CloudPublisherConfig {
 interface SharedState {
   /** schedule id -> `${versionId}:${scheduledAt}:${contentHash}` last pushed. */
   pushed: Map<string, string>;
+  /**
+   * schedule (target) id -> `${status}:${attempts}:${permalink}` last written back from the
+   * cloud. A (re)push clears it, so a retried order's next outcome is never mistaken for
+   * the one already reported.
+   */
+  reported: Map<string, string>;
   config: { value: CloudPublisherConfig | null; syncRequestedAt: string | null; at: number } | null;
 }
 
@@ -25,7 +31,7 @@ const shared = new WeakMap<object, SharedState>();
 export function cloudState(deps: object): SharedState {
   let s = shared.get(deps);
   if (!s) {
-    s = { pushed: new Map(), config: null };
+    s = { pushed: new Map(), reported: new Map(), config: null };
     shared.set(deps, s);
   }
   return s;

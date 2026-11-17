@@ -15,8 +15,8 @@ import {
 import { FakeGraph } from "@studio/publishers/testing";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createDb } from "../src/db/client.ts";
-import { socialAccountTokens } from "../src/db/schema.ts";
-import { preflightTargets } from "../src/lib/preflight.ts";
+import { schedules, socialAccountTokens } from "../src/db/schema.ts";
+import { busiestDayWith, preflightTargets } from "../src/lib/preflight.ts";
 import {
   addVersion,
   api,
@@ -366,6 +366,87 @@ describe("preflight (platform rules, Turkish)", () => {
     expect(cloud[0]?.ok).toBe(true);
   });
 
+  it("counts a Page's Facebook Reels in any 24 hours (30 at most)", async () => {
+    const hour = 3_600_000;
+    const t = Date.UTC(2031, 0, 10, 12);
+    // 29 others in the day before: the 30th fits; a 30th other makes it 31.
+    const before = Array.from({ length: 29 }, (_, i) => t - (i + 1) * 30 * 60_000);
+    expect(busiestDayWith(before, t)).toBe(30);
+    expect(busiestDayWith([...before, t + 2 * hour], t)).toBe(31);
+    // 23 h later is in a window with `t`, but not with the 29 before it.
+    expect(busiestDayWith([...before, t + 23 * hour], t)).toBe(30);
+    // Windows that do not hold `t` do not matter.
+    expect(busiestDayWith([...before, t + 25 * hour, t - 25 * hour], t)).toBe(30);
+    expect(busiestDayWith([], t)).toBe(1);
+
+    const brand = await createBrand();
+    const fb = await createAccount(brand.id, {
+      platform: "facebook",
+      handle: "MTM Agro",
+      externalId: "100200300",
+    });
+    const reel = { type: "reel" as const, targetPlatforms: ["facebook" as const] };
+    const reelSlide = {
+      html: '<html><body data-video-asset-id="none" data-duration-ms="20000"></body></html>',
+      width: 1080,
+      height: 1920,
+    };
+    const published = await createContent(brand.id, reel);
+    const v = await addVersion(published.id, { slides: [reelSlide] });
+    const db = createDb(env.DB);
+    const now = Date.now();
+    for (let i = 0; i < 30; i++) {
+      const at = new Date(now - (i + 1) * 20 * 60_000);
+      await db.insert(schedules).values({
+        id: `fbreel-${brand.id}-${i}`,
+        contentId: published.id,
+        brandId: brand.id,
+        platform: "facebook",
+        socialAccountId: fb.id,
+        versionId: v.id,
+        contentHash: v.contentHash,
+        scheduledAt: at,
+        status: i === 0 ? "failed" : "published",
+        createdAt: at,
+        updatedAt: at,
+      });
+    }
+    const next = await createContent(brand.id, reel);
+    await addVersion(next.id, { slides: [reelSlide] });
+    const check = async (scheduledAt?: string) => {
+      const res = await api("POST", "/api/schedules/preflight", {
+        contentId: next.id,
+        socialAccountIds: [fb.id],
+        ...(scheduledAt ? { scheduledAt } : {}),
+      });
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      return SchedulePreflight.parse(res.body).targets[0]?.errors ?? [];
+    };
+    // 29 published + 1 failed (does not count): one more still fits.
+    expect((await check()).map((e) => e.code)).not.toContain("FB_REELS_DAILY_LIMIT");
+
+    await db.insert(schedules).values({
+      id: `fbreel-${brand.id}-extra`,
+      contentId: published.id,
+      brandId: brand.id,
+      platform: "facebook",
+      socialAccountId: fb.id,
+      versionId: v.id,
+      contentHash: v.contentHash,
+      scheduledAt: new Date(now - 5 * 60_000),
+      status: "published",
+      createdAt: new Date(now),
+      updatedAt: new Date(now),
+    });
+    const full = await check(new Date(now + hour).toISOString());
+    const limit = full.find((e) => e.code === "FB_REELS_DAILY_LIMIT");
+    expect(limit?.message).toContain("en fazla 30 Reels");
+    // The next day is free again.
+    expect((await check(new Date(now + 26 * hour).toISOString())).map((e) => e.code)).not.toContain(
+      "FB_REELS_DAILY_LIMIT",
+    );
+  });
+
   it("refuses a schedule that breaks platform rules with the Turkish reason", async () => {
     const brand = await createBrand();
     const ig = await createAccount(brand.id);
@@ -487,6 +568,141 @@ describe("reschedule, publish now, logs feed", () => {
       status: "failed",
       lastError: "Görsel reddedildi.",
     });
+  });
+});
+
+describe("retrying a failed schedule", () => {
+  async function failedSchedule() {
+    const brand = await createBrand();
+    const account = await createAccount(brand.id);
+    const { content } = await approvedContent(brand.id);
+    const s = Schedule.parse(
+      (
+        await api("POST", "/api/schedules", {
+          contentId: content.id,
+          socialAccountId: account.id,
+          scheduledAt: inOneHour(),
+        })
+      ).body,
+    );
+    await worker("POST", `/api/worker/schedules/${s.id}/delivery`, {
+      delivery: "cloud",
+      cloudSyncedAt: new Date().toISOString(),
+    });
+    await worker("POST", `/api/worker/schedules/${s.id}/outcome`, {
+      status: "publishing",
+      attempt: 1,
+    });
+    await worker("POST", `/api/worker/schedules/${s.id}/outcome`, {
+      status: "failed",
+      attempt: 1,
+      error: "Görsel reddedildi.",
+    });
+    return { brand, account, content, s };
+  }
+
+  it("reuses the failed schedule (same id, so the same cloud order) instead of adding one", async () => {
+    const { brand, account, content, s } = await failedSchedule();
+    const later = new Date(Date.now() + 2 * 3_600_000).toISOString();
+    const res = await api("POST", "/api/schedules", {
+      contentId: content.id,
+      socialAccountId: account.id,
+      scheduledAt: later,
+    });
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    const retried = Schedule.parse(res.body);
+    expect(retried).toMatchObject({
+      id: s.id,
+      status: "pending",
+      scheduledAt: later,
+      lastError: null,
+      delivery: null,
+      cloudSyncedAt: null,
+    });
+    const all = (await api<{ items: Schedule[] }>("GET", `/api/schedules?contentId=${content.id}`))
+      .body.items;
+    expect(all.map((x) => x.id)).toEqual([s.id]);
+    expect((await api<{ status: string }>("GET", `/api/contents/${content.id}`)).body.status).toBe(
+      "scheduled",
+    );
+    // The worker sees it as pending again (and pushes it to the same order id).
+    const due = WorkerDueSchedules.parse((await worker("GET", "/api/worker/schedules/due")).body);
+    expect(due.items.map((i) => i.id)).toContain(s.id);
+
+    // A local worker counts from 1 again; the earlier failure stays as attempt 1.
+    await worker("POST", `/api/worker/schedules/${s.id}/outcome`, {
+      status: "publishing",
+      attempt: 1,
+    });
+    const done = await worker("POST", `/api/worker/schedules/${s.id}/outcome`, {
+      status: "published",
+      attempt: 1,
+      externalPostId: "17890002",
+      permalink: "https://www.instagram.com/p/RETRY/",
+    });
+    expect(Schedule.parse(done.body).status).toBe("published");
+    const logs = (
+      await api<{ items: { attempt: number; status: string; error: string | null }[] }>(
+        "GET",
+        `/api/schedules/${s.id}/logs`,
+      )
+    ).body.items;
+    expect(logs.map((l) => [l.attempt, l.status])).toEqual([
+      [1, "failed"],
+      [2, "succeeded"],
+    ]);
+    expect(logs[0]?.error).toBe("Görsel reddedildi.");
+
+    // A published schedule is history: scheduling the post again on the account makes a new one.
+    const { content: other } = await approvedContent(brand.id);
+    const fresh = Schedule.parse(
+      (
+        await api("POST", "/api/schedules", {
+          contentId: other.id,
+          socialAccountId: account.id,
+          scheduledAt: later,
+        })
+      ).body,
+    );
+    expect(fresh.id).not.toBe(s.id);
+  });
+
+  it("publish-now on a failed schedule reuses it too; cloud attempts keep their numbers", async () => {
+    const { account, content, s } = await failedSchedule();
+    const res = await api("POST", "/api/schedules/publish-now", {
+      contentId: content.id,
+      socialAccountIds: [account.id],
+    });
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    const out = PublishNowResult.parse(res.body);
+    expect(out.schedules.map((x) => x.id)).toEqual([s.id]);
+    expect(out.jobs[0]?.payload).toMatchObject({ scheduleId: s.id });
+
+    // The cloud publisher continues counting (attempt 2): no remapping needed.
+    await worker("POST", `/api/worker/schedules/${s.id}/outcome`, {
+      status: "failed",
+      attempt: 2,
+      error: "Yine olmadı.",
+    });
+    const logs = (
+      await api<{ items: { attempt: number; status: string }[] }>(
+        "GET",
+        `/api/schedules/${s.id}/logs`,
+      )
+    ).body.items;
+    expect(logs.map((l) => [l.attempt, l.status])).toEqual([
+      [1, "failed"],
+      [2, "failed"],
+    ]);
+    // A duplicate report of a finished outcome is not a new attempt.
+    await worker("POST", `/api/worker/schedules/${s.id}/outcome`, {
+      status: "failed",
+      attempt: 2,
+      error: "Yine olmadı.",
+    });
+    expect(
+      (await api<{ items: unknown[] }>("GET", `/api/schedules/${s.id}/logs`)).body.items,
+    ).toHaveLength(2);
   });
 });
 

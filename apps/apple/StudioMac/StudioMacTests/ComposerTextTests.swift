@@ -59,6 +59,49 @@ struct ComposerTextTests {
         #expect(!harness.model.isSuggesting)
     }
 
+    @Test func aSecondMentionFromThePopupLandsAfterAnEarlierToken() {
+        // The query offset is in the exported text (`@image-1` = 8 characters), the storage
+        // holds the earlier token as one character: picking used to raise NSRangeException.
+        let harness = Harness(aliases: ["image-1", "tarla"])
+        harness.type("@image-1 ve @ta")
+        #expect(harness.tokens == ["image-1"])
+        #expect(harness.model.isSuggesting)
+        harness.model.choose(MentionSuggestion(alias: "tarla", thumbnail: .asset("a1"), isDraft: false))
+        #expect(harness.tokens == ["image-1", "tarla"])
+        #expect(harness.model.text == "@image-1 ve @tarla ")
+        #expect(harness.editor.storageOffset(forExported: 0) == 0)
+        #expect(harness.editor.storageOffset(forExported: 8) == 1, "right after the first token")
+        #expect(harness.editor.storageOffset(forExported: 3) == 0, "inside a token: its start")
+        #expect(harness.editor.storageOffset(forExported: 999) == harness.textView.textStorage?.length)
+    }
+
+    @Test func aRetriedSendKeepsItsKeyAndTextTypedMeanwhileStays() {
+        let model = ComposerModel()
+        model.text = "Kasım postları"
+        let first = model.makeMessage()
+        #expect(model.makeMessage().clientMessageId == first.clientMessageId, "a retry of the same message keeps its idempotency key")
+        model.text = "Kasım postları ve hikâyeler"
+        let changed = model.makeMessage()
+        #expect(changed.clientMessageId != first.clientMessageId)
+
+        // Typed while the send was in flight: kept after it succeeds.
+        model.text = changed.text + " Bir de reels"
+        model.didSend(changed)
+        #expect(model.text == "Bir de reels")
+        // Sent as is: cleared, and the next message gets a new key.
+        let next = model.makeMessage()
+        model.didSend(next)
+        #expect(model.text.isEmpty)
+        model.text = "Bir de reels"
+        #expect(model.makeMessage().clientMessageId != next.clientMessageId)
+    }
+
+    @Test func renamingADraftRenamesWholeTokensOnly() {
+        #expect(MentionText.renaming("urun", to: "kapak", in: "@urun ve @urun-2, @urun.") == "@kapak ve @urun-2, @kapak.")
+        #expect(MentionText.renaming("image-1", to: "tarla", in: "@image-10 @image-1") == "@image-10 @tarla")
+        #expect(MentionText.renaming("x", to: "y", in: "e@x.com") == "e@x.com", "an e-mail is not a mention")
+    }
+
     @Test func returnSendsAndArrowsDriveTheSuggestions() {
         let harness = Harness(aliases: ["image", "image-1"])
         harness.type("@")

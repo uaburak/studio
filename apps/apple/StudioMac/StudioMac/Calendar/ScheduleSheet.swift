@@ -26,7 +26,8 @@ final class ScheduleSheetModel {
 
     private(set) var candidates: [Content] = []
     var contentId: EntityID? { didSet { if contentId != oldValue { selectedAccounts = defaultAccounts(); schedulePreflight() } } }
-    var date: Date { didSet { validate() } }
+    /// Per-day limits (30 Facebook Reels per Page) are counted around this time: re-checked on change.
+    var date: Date { didSet { validate(); if date != oldValue, preflight != nil || isChecking { schedulePreflight() } } }
     var selectedAccounts: Set<EntityID> = [] { didSet { if selectedAccounts != oldValue { schedulePreflight() } } }
 
     private(set) var preflight: SchedulePreflight?
@@ -36,6 +37,7 @@ final class ScheduleSheetModel {
     private(set) var dateError: String?
     private(set) var done: [Schedule] = []
     private var preflightTask: Task<Void, Never>?
+    @ObservationIgnored private var preflightGeneration = 0
 
     init(app: AppModel, request: ScheduleSheetRequest, api: (any PublishingAPI)? = nil) {
         self.app = app
@@ -88,13 +90,16 @@ final class ScheduleSheetModel {
             return
         }
         let ids = selectedAccounts.sorted()
+        preflightGeneration += 1
+        let generation = preflightGeneration
         preflightTask = Task { [weak self] in
             if !immediately { try? await Task.sleep(for: .milliseconds(250)) }
             guard let self, !Task.isCancelled else { return }
             self.isChecking = true
-            defer { self.isChecking = false }
+            // A replaced check must not end the newer one's "checking" state.
+            defer { if self.preflightGeneration == generation { self.isChecking = false } }
             do {
-                let result = try await self.api.preflight(contentId: contentId, accountIds: ids)
+                let result = try await self.api.preflight(contentId: contentId, accountIds: ids, scheduledAt: self.date)
                 if !Task.isCancelled { self.preflight = result; self.error = nil }
             } catch {
                 if !Task.isCancelled { self.error = AppModel.describe(error) }
@@ -130,23 +135,34 @@ final class ScheduleSheetModel {
         if let index = candidates.firstIndex(where: { $0.id == approved.id }) { candidates[index] = approved }
     }
 
-    /// One schedule per selected account at `date` (local time → UTC on the wire).
+    /// One schedule per selected account at `date` (local time → UTC on the wire). An account the
+    /// post is already waiting on moves to the new time ("Zamanlamayı değiştir") instead of getting a
+    /// second schedule; a failed one is reused by the server (retry).
     @discardableResult
     func schedule() async -> Bool {
         guard canSchedule, let contentId else { return false }
         isSubmitting = true
         defer { isSubmitting = false }
+        var created: [Schedule] = []
         do {
             try await approveIfNeeded()
-            var created: [Schedule] = []
+            let waiting = try await api.schedules(brandId: request.brandId)
+                .filter { $0.contentId == contentId && $0.status == .pending }
             for accountId in selectedAccounts.sorted() {
-                created.append(try await api.createSchedule(ScheduleCreate(contentId: contentId, socialAccountId: accountId, scheduledAt: date)))
+                if let pending = waiting.first(where: { $0.socialAccountId == accountId }) {
+                    created.append(try await api.reschedule(pending.id, to: date))
+                } else {
+                    created.append(try await api.createSchedule(ScheduleCreate(contentId: contentId, socialAccountId: accountId, scheduledAt: date)))
+                }
             }
             done = created
             await afterSubmit(created)
             return true
         } catch {
             self.error = AppModel.describe(error)
+            // The accounts that went through show on the board and the calendar; a second press
+            // moves them instead of failing on them.
+            if !created.isEmpty { await afterSubmit(created) }
             return false
         }
     }

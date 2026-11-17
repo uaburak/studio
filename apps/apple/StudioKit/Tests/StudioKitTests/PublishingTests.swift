@@ -45,6 +45,14 @@ struct PublishingTests {
         let json = try JSONSerialization.jsonObject(with: body) as? [String: Any]
         #expect(json?["contentId"] as? String == "c1")
         #expect(json?["socialAccountIds"] as? [String] == ["a1"])
+        #expect(json?["scheduledAt"] == nil, "no time: the server checks for now")
+
+        // A planned time goes along, so per-day limits (Facebook Reels) count around it.
+        let at = Date(timeIntervalSince1970: 1_900_000_000)
+        _ = try await api.preflight(SchedulePreflightInput(contentId: "c1", socialAccountIds: ["a1"], scheduledAt: at))
+        let timed = try #require(StubURLProtocol.recorded(host: host).last?.1)
+        let timedJSON = try JSONSerialization.jsonObject(with: timed) as? [String: Any]
+        #expect(timedJSON?["scheduledAt"] as? String == Timestamp.format(at))
     }
 
     @Test func publishLogFeedQuery() async throws {
@@ -60,7 +68,8 @@ struct PublishingTests {
         let query = URLComponents(url: try #require(StubURLProtocol.recorded(host: host).first?.0.url), resolvingAgainstBaseURL: false)?.queryItems ?? []
         #expect(query.contains(URLQueryItem(name: "finishedAfter", value: Timestamp.format(since))))
         let notices = NoticePlanner.notices(for: items)
-        #expect(notices == [StudioNotice(id: "publish:l1:ok", kind: .published, title: "Yayınlandı: Hasat", body: "Instagram · @mtm", url: "https://www.instagram.com/p/X/")])
+        #expect(notices == [StudioNotice(id: "publish:l1:ok", kind: .published, title: "Yayınlandı: Hasat", body: "Instagram · @mtm", url: "https://www.instagram.com/p/X/",
+                                         contentId: "c1", brandId: "b1")])
     }
 
     private func schedule(status: ScheduleStatus, delivery: ScheduleDelivery? = nil, synced: Bool = false, error: String? = nil) -> Schedule {
@@ -88,6 +97,14 @@ struct PublishingTests {
         let now = Date(timeIntervalSince1970: 1_795_000_000)
         var job = Job(id: "j1", type: .contentGenerate, status: .succeeded, payload: [:], createdAt: now, updatedAt: now)
         #expect(NoticePlanner.notice(for: job, previous: .running)?.kind == .jobFinished)
+        #expect(NoticePlanner.notice(for: job, previous: .running)?.contentId == nil)
+        // A generated post: the notice points at it (approval waits there).
+        job.contentId = "c9"
+        job.brandId = "b1"
+        let ready = NoticePlanner.notice(for: job, previous: .running)
+        #expect(ready?.contentId == "c9")
+        #expect(ready?.brandId == "b1")
+        #expect(ready?.body == "Post onayını bekliyor.")
         #expect(NoticePlanner.notice(for: job, previous: .succeeded) == nil)
         job.status = .failed
         job.error = "Claude yanıt vermedi"

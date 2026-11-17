@@ -94,6 +94,8 @@ final class AppModel {
     var accounts: [SocialAccount] = []
     var conversations: [Conversation] = []
     var jobBoard = JobBoard()
+    /// A notification clicked before the brands loaded (see `openNotice`).
+    @ObservationIgnored private(set) var pendingNotice: NoticeDestination?
     var loadError: String?
     /// The typed error behind `loadError` (drives the connection banner).
     private(set) var loadAPIError: StudioAPIError?
@@ -232,11 +234,16 @@ final class AppModel {
         let client = settings.makeClient()
         conversationService = RemoteConversationService(client: client)
         dataService = RemoteStudioDataService(client: client)
-        conversationModels.values.forEach { $0.stop() }
-        conversationModels = [:]
+        resetConversations()
         images.clear()
         search.invalidate()
         if reload { Task { await load() } }
+    }
+
+    /// Stop every open conversation stream (the services changed); views build fresh models.
+    func resetConversations() {
+        conversationModels.values.forEach { $0.stop() }
+        conversationModels = [:]
     }
 
     // MARK: Loading
@@ -263,6 +270,8 @@ final class AppModel {
         }
         startJobFeed()
         publishing.start()
+        // At launch the app delegate opens it after the session is restored.
+        if sessionTracking { openPendingNotice() }
         await refreshArchivedBrands()
         await onboarding.appDidLoad()
     }
@@ -378,6 +387,14 @@ final class AppModel {
 
     static func describe(_ error: any Error) -> String {
         (error as? StudioAPIError)?.errorDescription ?? error.localizedDescription
+    }
+
+    /// A request that ended because its task was cancelled (a newer one replaced it): not an
+    /// error to show ("İptal edildi.").
+    static func isCancellation(_ error: any Error) -> Bool {
+        if Task.isCancelled { return true }
+        if case .cancelled = StudioAPIError.from(error) { return true }
+        return false
     }
 
     // MARK: Derived
@@ -588,6 +605,35 @@ final class AppModel {
     }
 
     /// Called by a conversation when the server renamed it or touched it.
+    /// Rename from the sidebar, the top bar or the chat (no conversation stream is needed).
+    @discardableResult
+    func renameConversation(_ id: EntityID, to title: String) async -> Bool {
+        do {
+            conversationChanged(try await conversationService.renameConversation(id, title: title))
+            return true
+        } catch {
+            banner = "Sohbet yeniden adlandırılamadı: \(Self.describe(error))"
+            return false
+        }
+    }
+
+    /// Archive: the conversation leaves the sidebar and its stream stops. Only when it is the
+    /// one on screen does the app move to a new chat (archiving from the sidebar keeps the screen).
+    @discardableResult
+    func archiveConversation(_ id: EntityID) async -> Bool {
+        do {
+            _ = try await conversationService.archiveConversation(id)
+        } catch {
+            banner = "Sohbet arşivlenemedi: \(Self.describe(error))"
+            return false
+        }
+        conversations.removeAll { $0.id == id }
+        if lastConversationId == id { lastConversationId = nil }
+        if route == .conversation(id) { startNewChat() }
+        conversationModels.removeValue(forKey: id)?.stop()
+        return true
+    }
+
     func conversationChanged(_ conversation: Conversation) {
         if let index = conversations.firstIndex(where: { $0.id == conversation.id }) {
             conversations[index] = conversation
@@ -724,13 +770,40 @@ final class AppModel {
         if brandId != currentBrandId { selectBrand(brandId) }
         navigate(to: .posts)
         if posts.loadedBrandId != brandId || posts.card(contentId) == nil {
-            await posts.load()
+            // The brand switch (or the posts screen) may start a newer load: wait for that one.
+            await posts.loadLatest()
         }
         guard let card = posts.card(contentId) else {
             banner = "Post bulunamadı; silinmiş ya da başka bir markaya taşınmış olabilir."
             return
         }
         detail = PostDetailModel(app: self, card: card, sourceFrame: .zero)
+    }
+
+    /// A clicked notification (the window is already in front): open the post it is about.
+    /// One that arrives before the brands loaded (Studio launched by the click) waits for them.
+    func openNotice(_ destination: NoticeDestination) {
+        switch destination {
+        case .post(let contentId, let brandId):
+            guard !brands.isEmpty else {
+                pendingNotice = destination
+                return
+            }
+            let brand = brandId.flatMap { id in brands.contains { $0.id == id } ? id : nil } ?? currentBrandId
+            guard let brand else { return }
+            Task { await openPost(contentId: contentId, brandId: brand) }
+        case .accounts:
+            openSettings(.accounts)
+        case .link, .app:
+            break
+        }
+    }
+
+    /// Opens a notification that was clicked while the app was still loading.
+    func openPendingNotice() {
+        guard let pending = pendingNotice, !brands.isEmpty else { return }
+        pendingNotice = nil
+        openNotice(pending)
     }
 
     /// ⌘R: reload what the current screen shows (and the sidebar).

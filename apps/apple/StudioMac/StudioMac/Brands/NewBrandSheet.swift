@@ -37,8 +37,13 @@ final class NewBrandModel {
             let brand = try await app.createNewBrand(name: name.trimmingCharacters(in: .whitespacesAndNewlines), slug: slug, language: language)
             let handle = BrandSettingsModel.normalizedHandle(instagram, platform: .instagram)
             if !handle.isEmpty {
-                _ = try? await app.dataService.createSocialAccount(SocialAccountCreate(brandId: brand.id, platform: .instagram, handle: handle))
-                await app.refreshAccounts()
+                do {
+                    _ = try await app.dataService.createSocialAccount(SocialAccountCreate(brandId: brand.id, platform: .instagram, handle: handle))
+                    await app.refreshAccounts()
+                } catch {
+                    // The brand exists; the handle did not make it: say so instead of dropping it.
+                    app.banner = "\(brand.name) oluşturuldu ama Instagram hesabı eklenemedi: \(AppModel.describe(error)). Marka ayarları → Hesaplar'dan ekleyebilirsin."
+                }
             }
             error = nil
             return brand

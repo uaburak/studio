@@ -97,15 +97,21 @@ public struct StudioNotice: Equatable, Sendable, Identifiable {
     public var kind: NoticeKind
     public var title: String
     public var body: String
-    /// Opened when the notification is clicked (permalink), if any.
+    /// The post's permalink, if any.
     public var url: String?
+    /// The post the notice is about (clicking it opens the post in the app).
+    public var contentId: EntityID?
+    public var brandId: EntityID?
 
-    public init(id: String, kind: NoticeKind, title: String, body: String, url: String? = nil) {
+    public init(id: String, kind: NoticeKind, title: String, body: String, url: String? = nil,
+                contentId: EntityID? = nil, brandId: EntityID? = nil) {
         self.id = id
         self.kind = kind
         self.title = title
         self.body = body
         self.url = url
+        self.contentId = contentId
+        self.brandId = brandId
     }
 }
 
@@ -121,13 +127,17 @@ public enum NoticePlanner {
                     kind: .published,
                     title: "Yayınlandı: \(item.contentTitle)",
                     body: "\(platform) · \(item.accountHandle)",
-                    url: item.log.permalink ?? item.schedule.permalink)
+                    url: item.log.permalink ?? item.schedule.permalink,
+                    contentId: item.schedule.contentId,
+                    brandId: item.schedule.brandId)
             case .failed:
                 return StudioNotice(
                     id: "publish:\(item.log.id):failed",
                     kind: .publishFailed,
                     title: "Yayınlanamadı: \(item.contentTitle)",
-                    body: "\(platform) · \(item.accountHandle) — \(item.log.error ?? "Bilinmeyen hata")")
+                    body: "\(platform) · \(item.accountHandle) — \(item.log.error ?? "Bilinmeyen hata")",
+                    contentId: item.schedule.contentId,
+                    brandId: item.schedule.brandId)
             case .started, .unknown:
                 return nil
             }
@@ -146,11 +156,16 @@ public enum NoticePlanner {
         case .brandAnalyze: "Marka profili çıkarma"
         default: "İş"
         }
+        // A generated post waits for approval: the notice opens it.
+        let post = job.type == .contentGenerate ? job.contentId : nil
         switch job.status {
         case .succeeded:
-            return StudioNotice(id: "job:\(job.id):ok", kind: .jobFinished, title: "\(what) bitti", body: "Sonuç Studio'da hazır.")
+            return StudioNotice(id: "job:\(job.id):ok", kind: .jobFinished, title: "\(what) bitti",
+                                body: post == nil ? "Sonuç Studio'da hazır." : "Post onayını bekliyor.",
+                                contentId: post, brandId: post == nil ? nil : job.brandId)
         case .failed:
-            return StudioNotice(id: "job:\(job.id):failed", kind: .jobFailed, title: "\(what) başarısız", body: job.error ?? "İş tamamlanamadı.")
+            return StudioNotice(id: "job:\(job.id):failed", kind: .jobFailed, title: "\(what) başarısız", body: job.error ?? "İş tamamlanamadı.",
+                                contentId: post, brandId: post == nil ? nil : job.brandId)
         default:
             return nil
         }

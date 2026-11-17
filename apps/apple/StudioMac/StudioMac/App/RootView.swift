@@ -513,7 +513,8 @@ final class DetailContainerViewController: NSViewController {
     private lazy var calendarVC = CalendarViewController(app: app)
     private lazy var mediaVC = MediaViewController(app: app)
     private var chatControllers: [EntityID: ChatViewController] = [:]
-    private weak var activeChild: NSViewController?
+    /// The screen shown now (tests).
+    private(set) weak var activeChild: NSViewController?
     private var renderedRoute: Route?
     private var observation: ObservationToken?
 
@@ -540,10 +541,12 @@ final class DetailContainerViewController: NSViewController {
 
     private func syncRoute() {
         let route = app.route
-        // Drop cached chat view controllers whose models were cleared (e.g. reconnect).
+        // Drop cached chat view controllers whose models were cleared (e.g. reconnect). The one on
+        // screen is rebuilt too: it would stay bound to a stopped model and never update again.
         let validIds = Set(app.conversationModels.keys)
-        for key in Array(chatControllers.keys) where !validIds.contains(key) && route != .conversation(key) {
+        for key in Array(chatControllers.keys) where !validIds.contains(key) {
             chatControllers[key] = nil
+            if route == .conversation(key) { renderedRoute = nil }
         }
 
         guard route != renderedRoute else { return }

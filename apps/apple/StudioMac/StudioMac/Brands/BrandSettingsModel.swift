@@ -454,6 +454,8 @@ final class BrandSettingsModel {
             }
             return true
         } catch {
+            // Replaced by a newer save (two quick changes): that one reports the state.
+            if AppModel.isCancellation(error) { return false }
             kitSave = .failed(AppModel.describe(error))
             return false
         }
@@ -474,7 +476,7 @@ final class BrandSettingsModel {
         if let blocker = kit.analysisBlocker { return blocker }
         if isUploading { return "Yüklemeler bitince profil çıkarılabilir." }
         if let problem = kitProblem { return problem }
-        if !app.isSample, app.presence?.online != true { return "Mac worker bağlı değil; sunucu çalışınca profil çıkarılabilir." }
+        if !app.isSample, app.presence?.online != true { return "Arka plan çalışmıyor; Studio hazır olunca profil çıkarılabilir." }
         return nil
     }
 
@@ -542,7 +544,7 @@ final class BrandSettingsModel {
     private func apply(_ job: Job) {
         switch job.status {
         case .queued:
-            let waiting = app.presence?.online == true ? "Sırada bekliyor…" : "Mac worker bağlanınca başlayacak."
+            let waiting = app.presence?.online == true ? "Sırada bekliyor…" : "Arka plan hazır olunca başlayacak."
             analysis = .running(jobId: job.id, progress: nil, message: waiting)
         case .running:
             analysis = .running(jobId: job.id, progress: job.progress, message: job.progressMessage ?? "Çalışıyor…")

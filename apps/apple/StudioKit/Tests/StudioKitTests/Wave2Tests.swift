@@ -111,6 +111,10 @@ struct Wave2Tests {
             .setText(layer: "headline", text: "Venta Borinc\nŞimdi Bayilerde", slideIndex: 0),
             .setVisible(layer: "badge", visible: true, slideIndex: 0),
         ])
+        // A slide that repeats a layer id (generated HTML that failed lint) must not trap.
+        let repeated = layers + [layers[1]]
+        #expect(SlideLayerScanner.diff(from: repeated, to: edited).count == 2)
+
         // design-kit op names (the worker parses these with `PatchOp`), always with the slide index.
         #expect(patches[0].toJSONObject() == [
             "slide": .number(0),

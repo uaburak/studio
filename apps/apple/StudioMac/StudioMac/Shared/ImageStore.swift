@@ -15,26 +15,49 @@ final class ImageStore {
     /// Local images (e.g. a just-uploaded attachment) shown before the server copy loads.
     func seed(_ image: NSImage, for assetId: EntityID) { images[assetId] = image }
 
+    func isLoading(_ assetId: EntityID) -> Bool { loading.contains(assetId) }
+
     /// Cached image; call `load` to fetch it.
     func image(_ assetId: EntityID) -> NSImage? { images[assetId] }
 
+    /// When each failed image failed: one transient error (or an asset that was not readable yet,
+    /// right after a generation) must not leave a grey placeholder for the rest of the session.
+    @ObservationIgnored private var failedAt: [EntityID: Date] = [:]
+    static let retryAfter: TimeInterval = 10
+    @ObservationIgnored var now: () -> Date = Date.init
+
     func load(_ assetId: EntityID) {
-        guard images[assetId] == nil, !loading.contains(assetId), !failed.contains(assetId), let service = app?.dataService else { return }
+        guard images[assetId] == nil, !loading.contains(assetId), let service = app?.dataService else { return }
+        if failed.contains(assetId) {
+            guard let at = failedAt[assetId], now().timeIntervalSince(at) >= Self.retryAfter else { return }
+        }
         loading.insert(assetId)
         Task {
             defer { loading.remove(assetId) }
             do {
                 let data = try await service.imageData(assetId: assetId)
-                if let image = NSImage(data: data) { images[assetId] = image } else { failed.insert(assetId) }
+                if let image = NSImage(data: data) {
+                    images[assetId] = image
+                    failed.remove(assetId)
+                    failedAt[assetId] = nil
+                } else {
+                    markFailed(assetId)
+                }
             } catch {
-                failed.insert(assetId)
+                markFailed(assetId)
             }
         }
+    }
+
+    private func markFailed(_ assetId: EntityID) {
+        failed.insert(assetId)
+        failedAt[assetId] = now()
     }
 
     func clear() {
         images = [:]
         failed = []
+        failedAt = [:]
     }
 }
 

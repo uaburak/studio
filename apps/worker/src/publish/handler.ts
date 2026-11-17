@@ -315,7 +315,10 @@ export async function pushScheduleToCloudPublisher(input: {
   const { scheduleId, deps, signal } = input;
   try {
     const pushed = await pushOrder(input);
-    cloudState(deps).pushed.set(scheduleId, pushed.key);
+    const state = cloudState(deps);
+    state.pushed.set(scheduleId, pushed.key);
+    // A fresh (or replaced, retried) order: its next outcome must be written back.
+    if (pushed.status === "scheduled") state.reported.delete(scheduleId);
     await reportDelivery(
       deps,
       scheduleId,
@@ -456,6 +459,13 @@ async function pushOrder(input: {
   });
 
   if (putOrderRes.status === 409) {
+    // A retried schedule whose earlier order failed there: a cloud publisher that cannot
+    // replace failed orders yet refuses it. Say so instead of treating it as started.
+    if (await everyTargetFailed(doFetch, orderUrl, cloud.token, signal)) {
+      throw new Error(
+        "Bulut yayıncı başarısız olan siparişi yeniden denemeye izin vermedi; bulut yayıncının güncellenmesi gerekiyor.",
+      );
+    }
     // Publishing already started (or the order was cancelled there): nothing to replace.
     return {
       orderId: scheduleId,
@@ -502,6 +512,27 @@ async function pushOrder(input: {
     status: "scheduled",
     key: pushKey(creds.schedule),
   };
+}
+
+/** True when the cloud order exists and every target of it failed (nothing published). */
+async function everyTargetFailed(
+  doFetch: typeof fetch,
+  orderUrl: string,
+  token: string,
+  signal: AbortSignal,
+): Promise<boolean> {
+  try {
+    const res = await doFetch(orderUrl, {
+      headers: { authorization: `Bearer ${token}`, accept: "application/json" },
+      signal,
+    });
+    if (!res.ok) return false;
+    const order = (await res.json()) as { targets?: { status?: string }[] };
+    const targets = order.targets ?? [];
+    return targets.length > 0 && targets.every((t) => t.status === "failed");
+  } catch {
+    return false;
+  }
 }
 
 /** Cancel orders of schedules cancelled on the Mac after they reached the cloud. */

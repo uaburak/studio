@@ -83,6 +83,8 @@ export const FACEBOOK_LIMITS = {
     /** Error docs: valid ratios span 16:9 to 9:16. */
     minAspect: 9 / 16,
     maxAspect: 16 / 9,
+    /** Reels publishing guide: a Page publishes at most 30 API Reels in any 24-hour period. */
+    maxPerDay: 30,
   },
   storyVideo: {
     minDurationMs: 3_000,

@@ -42,7 +42,6 @@ export class SchedulePoller {
   private controller: AbortController | undefined;
   private ticking: Promise<void> | undefined;
   private loaded = false;
-  private readonly reportedStates = new Map<string, string>();
   private updatedSince: string | undefined;
   private readonly stateFile: string;
   private lastTickAt = 0;
@@ -58,6 +57,10 @@ export class SchedulePoller {
 
   private get pushedVersions(): Map<string, string> {
     return cloudState(this.deps).pushed;
+  }
+
+  private get reportedStates(): Map<string, string> {
+    return cloudState(this.deps).reported;
   }
 
   start(intervalMs: number): void {
@@ -121,7 +124,7 @@ export class SchedulePoller {
         if (!this.pushedVersions.has(k)) this.pushedVersions.set(k, v);
       }
       for (const [k, v] of Object.entries(raw.reportedStates ?? {})) {
-        this.reportedStates.set(k, v);
+        if (!this.reportedStates.has(k)) this.reportedStates.set(k, v);
       }
       if (typeof raw.updatedSince === "string") {
         this.updatedSince = raw.updatedSince;
@@ -162,7 +165,7 @@ export class SchedulePoller {
     const lockSet = this.deps.inFlightSchedules;
 
     if (cloud) {
-      const before = JSON.stringify([...this.pushedVersions]);
+      const before = JSON.stringify([...this.pushedVersions, ...this.reportedStates]);
       const errors: string[] = [];
 
       // 1. Push new and moved pending schedules.
@@ -226,7 +229,10 @@ export class SchedulePoller {
       }
       if (syncError) errors.unshift(syncError);
       await this.report(errors.length === 0, errors[0] ?? null, signal);
-      if (before !== JSON.stringify([...this.pushedVersions]) || this.updatedSince) {
+      if (
+        before !== JSON.stringify([...this.pushedVersions, ...this.reportedStates]) ||
+        this.updatedSince
+      ) {
         await this.saveState();
       }
       return;

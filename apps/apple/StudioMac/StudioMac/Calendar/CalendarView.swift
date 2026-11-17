@@ -78,18 +78,26 @@ final class CalendarModel {
 
     var brandId: EntityID? { app?.currentBrandId }
     private var api: (any PublishingAPI)? { app?.publishing.api }
+    @ObservationIgnored private var loadGeneration = 0
 
     func load() async {
         guard let app, let brandId else { return }
+        loadGeneration += 1
+        let generation = loadGeneration
         isLoading = true
-        defer { isLoading = false }
+        defer { if generation == loadGeneration { isLoading = false } }
         do {
             async let loadedSchedules = app.dataService.schedules(brandId: brandId)
             async let loadedContents = app.dataService.contents(brandId: brandId)
             async let loadedPlans = app.dataService.plans(brandId: brandId)
-            self.schedules = try await loadedSchedules
-            self.contents = try await loadedContents
-            self.plans = try await loadedPlans
+            let schedules = try await loadedSchedules
+            let contents = try await loadedContents
+            let plans = try await loadedPlans
+            // A newer load (another brand) started meanwhile: its result wins, not this one.
+            guard generation == loadGeneration, brandId == self.brandId else { return }
+            self.schedules = schedules
+            self.contents = contents
+            self.plans = plans
             lastLoad = Date()
             if app.posts.loadedBrandId != brandId || app.posts.board.cards.isEmpty {
                 await app.posts.load()
@@ -105,6 +113,7 @@ final class CalendarModel {
             if viewMode == .log { await app.publishing.refreshLogs(brandId: brandId) }
             error = nil
         } catch {
+            guard generation == loadGeneration else { return }
             self.error = AppModel.describe(error)
         }
     }
@@ -340,7 +349,7 @@ final class CalendarModel {
     func openPost(contentId: EntityID) async {
         guard let app else { return }
         if app.posts.card(contentId) == nil {
-            await app.posts.load()
+            await app.posts.loadLatest()
         }
         if let card = app.posts.card(contentId) {
             app.detail = PostDetailModel(app: app, card: card, sourceFrame: .zero)

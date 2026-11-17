@@ -128,8 +128,9 @@ public protocol StudioDataService: Sendable {
     func clearCloudPublisher() async throws -> PublishingStatus
     /// Ask the worker to push and pull cloud orders now (app focus).
     func requestPublishingSync() async throws -> PublishingStatus
-    /// Platform rules for `contentId` on the accounts (nil = all usable accounts of its brand).
-    func preflight(contentId: EntityID, accountIds: [EntityID]?) async throws -> SchedulePreflight
+    /// Platform rules for `contentId` on the accounts (nil = all usable accounts of its brand),
+    /// for a publish at `scheduledAt` (nil = now; per-day limits count around it).
+    func preflight(contentId: EntityID, accountIds: [EntityID]?, scheduledAt: Date?) async throws -> SchedulePreflight
     func publishNow(contentId: EntityID, accountIds: [EntityID]) async throws -> PublishNowResult
     /// Move a pending schedule (calendar drag).
     func reschedule(_ scheduleId: EntityID, to date: Date) async throws -> Schedule
@@ -149,8 +150,12 @@ extension StudioDataService {
     }
     public func clearCloudPublisher() async throws -> PublishingStatus { .unknownLocal }
     public func requestPublishingSync() async throws -> PublishingStatus { .unknownLocal }
-    public func preflight(contentId: EntityID, accountIds: [EntityID]?) async throws -> SchedulePreflight {
+    public func preflight(contentId: EntityID, accountIds: [EntityID]?, scheduledAt: Date?) async throws -> SchedulePreflight {
         SchedulePreflight(mode: .local, ok: true, targets: [])
+    }
+    /// Publishing now.
+    public func preflight(contentId: EntityID, accountIds: [EntityID]?) async throws -> SchedulePreflight {
+        try await preflight(contentId: contentId, accountIds: accountIds, scheduledAt: nil)
     }
     public func publishNow(contentId: EntityID, accountIds: [EntityID]) async throws -> PublishNowResult {
         throw StudioAPIError.invalidConfiguration("Bu bağlantıda yayın yapılamıyor.")
@@ -471,8 +476,8 @@ public struct RemoteStudioDataService: StudioDataService {
     }
     public func clearCloudPublisher() async throws -> PublishingStatus { try await client.clearCloudPublisher() }
     public func requestPublishingSync() async throws -> PublishingStatus { try await client.requestPublishingSync() }
-    public func preflight(contentId: EntityID, accountIds: [EntityID]?) async throws -> SchedulePreflight {
-        try await client.preflight(SchedulePreflightInput(contentId: contentId, socialAccountIds: accountIds))
+    public func preflight(contentId: EntityID, accountIds: [EntityID]?, scheduledAt: Date?) async throws -> SchedulePreflight {
+        try await client.preflight(SchedulePreflightInput(contentId: contentId, socialAccountIds: accountIds, scheduledAt: scheduledAt))
     }
     public func publishNow(contentId: EntityID, accountIds: [EntityID]) async throws -> PublishNowResult {
         try await client.publishNow(PublishNowInput(contentId: contentId, socialAccountIds: accountIds))

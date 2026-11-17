@@ -19,6 +19,10 @@ final class InfoPanelViewController: NSViewController {
     private let stack = NSStackView()
 
     private var showFinishedJobs = false
+    /// "Gelişmiş" under Ortam: technical rows, folded by default.
+    private(set) var showAdvancedEnvironment = false
+    /// The plain Ortam state built last (tests).
+    private(set) var shownEnvironment: EnvironmentSummary?
     private var now = Date()
     private var tickTask: Task<Void, Never>?
     private var observation: ObservationToken?
@@ -139,20 +143,27 @@ final class InfoPanelViewController: NSViewController {
     private func buildEnvironmentSection(brandId: EntityID?) -> PanelSectionView {
         let settings = app.settings
         let section = PanelSectionView(title: "Ortam", linkTitle: "Ayarlar") { [weak app] in app?.openSettings(.macServer) }
-        let rows = InspectorContent.environment(
-            isSample: app.isSample,
-            host: app.host.map(HostSnapshot.init),
-            hostEnabled: settings.hostEnabled,
-            serverURL: settings.serverURL,
-            lanEnabled: settings.lanEnabled,
-            remoteEnabled: settings.remoteControlEnabled,
-            remoteHostname: settings.remoteHostname,
-            issue: app.connectionIssue,
-            presence: app.presence
+        let host = app.host.map(HostSnapshot.init)
+        let issue = app.connectionIssue
+
+        // Plain state first: Hazır / Hazırlanıyor / Sorun var, and one action for a problem.
+        let summary = InspectorContent.environmentSummary(
+            isSample: app.isSample, host: host, hostEnabled: settings.hostEnabled, issue: issue, presence: app.presence
         )
-        for row in rows {
-            section.addRow(row) { [weak app] _ in app?.openSettings(.macServer) }
+        shownEnvironment = summary
+        section.addRow(summary.row) { [weak self] _ in
+            guard let self else { return }
+            if let action = summary.action { self.app.perform(action) } else { self.toggleAdvancedEnvironment() }
         }
+        if summary.state == .problem {
+            if let detail = summary.detail { section.addNote(detail) }
+            if let action = summary.action, let title = summary.actionTitle {
+                let button = PillButton(title: title, kind: .secondary, height: 24) { [weak app] in app?.perform(action) }
+                button.setAccessibilityLabel("\(title): \(summary.detail ?? "")")
+                section.add(button, spacingAfter: 8, fullWidth: false)
+            }
+        }
+
         if let brand = app.brand(brandId) {
             section.addRow(PanelRow(label: "Marka", value: brand.name, help: "Marka ayarları, kit, profil ve AI analizi")) { [weak self] anchor in
                 self?.showBrandMenu(brand.id, from: anchor)
@@ -160,7 +171,35 @@ final class InfoPanelViewController: NSViewController {
         } else {
             section.addRow(PanelRow(label: "Marka", value: "Yok", tone: .muted, help: "Bu sohbetin markası yok."))
         }
+
+        // Technical details (API, worker, addresses, tunnel) stay folded under "Gelişmiş".
+        section.addSpacing(4)
+        let toggle = JobsDisclosureRowView(title: "Gelişmiş", count: nil, expanded: showAdvancedEnvironment) { [weak self] in
+            self?.toggleAdvancedEnvironment()
+        }
+        section.add(toggle)
+        if showAdvancedEnvironment {
+            let rows = InspectorContent.advancedEnvironment(
+                isSample: app.isSample,
+                host: host,
+                hostEnabled: settings.hostEnabled,
+                serverURL: settings.serverURL,
+                lanEnabled: settings.lanEnabled,
+                remoteEnabled: settings.remoteControlEnabled,
+                remoteHostname: settings.remoteHostname,
+                issue: issue,
+                presence: app.presence
+            )
+            for row in rows {
+                section.addRow(row) { [weak app] _ in app?.openSettings(.macServer) }
+            }
+        }
         return section
+    }
+
+    private func toggleAdvancedEnvironment() {
+        showAdvancedEnvironment.toggle()
+        rebuild()
     }
 
     private func showBrandMenu(_ brandId: EntityID, from anchor: NSView) {
@@ -896,15 +935,21 @@ final class JobStopButton: NSControl {
     }
 }
 
-/// "› Bitti 12": folds the finished jobs.
+/// "› Bitti 12": folds the finished jobs (and, without a count, "› Gelişmiş" under Ortam).
 final class JobsDisclosureRowView: TapControl {
     private let onToggle: () -> Void
+    let title: String
+    let expanded: Bool
 
-    init(title: String, count: Int, expanded: Bool, onToggle: @escaping () -> Void) {
+    init(title: String, count: Int?, expanded: Bool, onToggle: @escaping () -> Void) {
         self.onToggle = onToggle
+        self.title = title
+        self.expanded = expanded
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
-        setAccessibilityLabel("\(title) \(count), \(expanded ? "gizle" : "göster")")
+        setAccessibilityLabel(count.map { "\(title) \($0)" } ?? title)
+        setAccessibilityValue(expanded ? "Açık" : "Kapalı")
+        setAccessibilityHelp(expanded ? "Gizlemek için bas" : "Göstermek için bas")
 
         let chevron = NSImageView()
         chevron.image = NSImage(systemSymbolName: expanded ? "chevron.down" : "chevron.right", accessibilityDescription: nil)?
@@ -914,7 +959,9 @@ final class JobsDisclosureRowView: TapControl {
         chevron.widthAnchor.constraint(equalToConstant: 12).isActive = true
 
         let text = NSMutableAttributedString(string: title, attributes: [.font: Theme.Panel.rowFont, .foregroundColor: Theme.textSecondary])
-        text.append(NSAttributedString(string: " \(count)", attributes: [.font: Theme.Panel.rowFont, .foregroundColor: Theme.textTertiary]))
+        if let count {
+            text.append(NSAttributedString(string: " \(count)", attributes: [.font: Theme.Panel.rowFont, .foregroundColor: Theme.textTertiary]))
+        }
         let label = NSTextField(labelWithAttributedString: text)
 
         let row = NSStackView(views: [chevron, label])

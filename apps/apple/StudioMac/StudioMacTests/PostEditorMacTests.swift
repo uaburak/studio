@@ -69,6 +69,59 @@ struct PostEditorMacTests {
         #expect(posts.month == MonthKey(year: 2026, month: 11))
     }
 
+    @Test func aPostOpenedBeforeItsVersionLoadedCanStillBeApproved() async throws {
+        let app = await makeApp()
+        var card = try #require(app.posts.board.cards.first { $0.approvableHash != nil })
+        // The board had not loaded the version yet.
+        card.version = nil
+        let detail = PostDetailModel(app: app, card: card, sourceFrame: .zero)
+        await waitUntil { detail.displayedVersion != nil && detail.activity == .idle }
+        #expect(detail.card.version != nil, "the loaded current version is what approval checks")
+        #expect(detail.canApprove, "was stuck on “Sürüm yükleniyor.”: \(detail.approveHelp)")
+    }
+
+    @Test func schedulingAWaitingPostFromTheDetailMovesItsSchedule() async throws {
+        let app = await makeApp()
+        let detail = try await openDetail(app, "post-12a")
+        let date = CalendarMath.defaultTime(on: Date().addingTimeInterval(4 * 86_400))
+        detail.scheduleAccounts = ["sa-ig"]
+        detail.scheduleDate = date
+        await detail.schedule()
+        #expect(detail.error == nil)
+        let waiting = try await app.dataService.schedules(brandId: SampleData.mtm).filter { $0.contentId == "post-12a" && $0.status == .pending }
+        #expect(waiting.map(\.id) == ["sch-1"], "moved, not doubled")
+        #expect(waiting.first?.scheduledAt == date)
+        app.detail = nil
+    }
+
+    @Test func anotherBrandsPostNeverLandsOnThisBoard() async throws {
+        let app = await makeApp()
+        let before = app.posts.board.cards.count
+        var foreign = try #require(app.posts.board.cards.first).content
+        foreign.id = "post-foreign"
+        foreign.brandId = "b-koc"
+        app.posts.update(foreign)
+        #expect(app.posts.board.cards.count == before)
+        #expect(app.posts.card("post-foreign") == nil)
+    }
+
+    @Test func aCaptionChangedOnTheServerShowsUnlessTheOwnerIsEditingIt() async throws {
+        let app = await makeApp()
+        let detail = try await openDetail(app, "post-01")
+        // An AI revision on another screen changed the caption.
+        _ = try await app.dataService.updateCaption(contentId: "post-01", caption: "Yeni açıklama\n#hasat")
+        await detail.reloadVersionsAndContent()
+        #expect(detail.captionDraft == "Yeni açıklama")
+        #expect(detail.hashtagsDraft == "#hasat")
+        // While editing, the owner's draft wins.
+        detail.isEditingCaption = true
+        detail.captionDraft = "Benim taslağım"
+        _ = try await app.dataService.updateCaption(contentId: "post-01", caption: "Başka metin")
+        await detail.reloadVersionsAndContent()
+        #expect(detail.captionDraft == "Benim taslağım")
+        app.detail = nil
+    }
+
     @Test func duplicateAndDeleteWithTheScheduledGuard() async throws {
         let app = await makeApp()
         let original = try #require(app.posts.card("post-02a"))

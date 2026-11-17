@@ -56,6 +56,64 @@ struct PostViewsLayoutTests {
         #expect(all(PillButton.self, in: view).contains { $0.title == "Önceki postlar" && !$0.isHiddenOrHasHiddenAncestor })
     }
 
+    private func views(in view: NSView) -> [NSView] {
+        view.subviews.flatMap { [$0] + views(in: $0) }
+    }
+
+    @Test func postsAndTheOpenedPostSpeakToVoiceOver() async throws {
+        let app = await makeApp()
+        let controller = PostsViewController(app: app)
+        let view = controller.view
+        view.frame = CGRect(x: 0, y: 0, width: 1280, height: 820)
+        view.layoutSubtreeIfNeeded()
+        await settle()
+        view.layoutSubtreeIfNeeded()
+        let elements = views(in: view).filter { $0.isAccessibilityElement() }
+
+        // The grid is a named group; each card is one button that opens its post.
+        let grid = try #require(elements.first { $0.accessibilityRole() == .group && $0.accessibilityLabel() == "Postlar" })
+        #expect(grid.accessibilityValue() as? String == "12 post")
+        let card = try #require(app.posts.card("post-01"))
+        let label = PostAccessibility.cardLabel(card)
+        #expect(label.hasPrefix("\(card.title), "))
+        #expect(label.contains(card.state.label))
+        let cardView = try #require(elements.first { $0.accessibilityLabel() == label })
+        #expect(cardView.accessibilityRole() == .button)
+        let actions = (cardView.accessibilityCustomActions() ?? []).map(\.name)
+        #expect(actions.contains("Çoğalt") && actions.contains("Açıklamayı kopyala"))
+        #expect(cardView.accessibilityPerformPress())
+        #expect(app.detail?.card.id == "post-01")
+        app.detail = nil
+
+        // Status chips read as one text; the filters are a radio group that presses like a click.
+        let chips = all(PostStateLabelView.self, in: view)
+        #expect(!chips.isEmpty && chips.allSatisfy { $0.isAccessibilityElement() && $0.accessibilityLabel()?.hasPrefix("Durum: ") == true })
+        #expect(elements.contains { $0.accessibilityRole() == .radioGroup && $0.accessibilityLabel() == "Durum filtresi" })
+        let readyFilter = try #require(elements.first { $0.accessibilityRole() == .radioButton && $0.accessibilityLabel()?.hasPrefix("\(PostListFilter.ready.label), ") == true })
+        #expect(readyFilter.accessibilityPerformPress())
+        #expect(app.posts.filter == .ready)
+        app.posts.filter = .all
+
+        // The opened post: a named group, section pills and version rows as buttons.
+        let model = PostDetailModel(app: app, card: card, sourceFrame: .zero)
+        app.detail = model
+        let overlay = PostDetailOverlayView(model: model)
+        overlay.frame = CGRect(x: 0, y: 0, width: 1280, height: 820)
+        overlay.layoutSubtreeIfNeeded()
+        await settle()
+        #expect(overlay.isAccessibilityElement() && overlay.accessibilityLabel() == "Açık post: \(card.title)")
+        let pills = views(in: overlay).filter { $0.isAccessibilityElement() && $0.accessibilityRole() == .radioButton }
+        #expect(pills.compactMap { $0.accessibilityLabel() } == PostDetailModel.Tab.allCases.map(\.label))
+        #expect(pills.last?.accessibilityPerformPress() == true)
+        #expect(model.tab == .versions)
+        await settle()
+        overlay.layoutSubtreeIfNeeded()
+        let version = try #require(views(in: overlay).first { $0.isAccessibilityElement() && $0.accessibilityLabel()?.hasPrefix("Sürüm 1, ") == true })
+        #expect(version.accessibilityRole() == .button)
+        #expect(version.accessibilityValue() as? String == "Gösteriliyor")
+        app.detail = nil
+    }
+
     @Test func openedPostLaysOutCanvasPanelAndKeys() async throws {
         let app = await makeApp()
         let card = try #require(app.posts.card("post-01"))

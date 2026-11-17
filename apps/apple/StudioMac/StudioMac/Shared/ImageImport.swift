@@ -24,10 +24,20 @@ enum ImageImport {
     /// Image file types the composer accepts.
     static let fileTypes: [UTType] = [.png, .jpeg, .webP, .gif, .heic, .tiff]
 
+    /// A file this large is refused before it is read (an image never needs it; HEIC/TIFF are
+    /// converted to JPEG and must end up under the 20 MB upload limit anyway).
+    static let maxSourceBytes = 100 * 1024 * 1024
+
+    /// The file's size without reading it (nil when unknown).
+    static func fileSize(_ url: URL) -> Int? {
+        (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize
+    }
+
     static func from(url: URL) throws -> ImportedImage {
         let name = url.lastPathComponent
         let accessing = url.startAccessingSecurityScopedResource()
         defer { if accessing { url.stopAccessingSecurityScopedResource() } }
+        if let size = fileSize(url), size > maxSourceBytes { throw Failure.tooLarge(name) }
         guard let data = try? Data(contentsOf: url) else { throw Failure.unreadable(name) }
         return try from(data: data, filename: name)
     }

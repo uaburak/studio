@@ -58,6 +58,29 @@ export function deriveContentStatusAfterOutcome(
   return "published";
 }
 
+/**
+ * The publish log row an outcome belongs to. A retried schedule (failed, then scheduled
+ * again: same id) starts counting from 1 again on the worker, but its earlier attempts are
+ * already in the log: while the schedule is back in `pending`/`publishing`, a reported attempt
+ * number that already finished belongs to the earlier round, so the outcome goes to the
+ * newest unfinished attempt, or to a new one after the last.
+ */
+export async function logAttempt(
+  db: Db,
+  schedule: { id: string; status: string },
+  reported: number,
+): Promise<number> {
+  if (schedule.status !== "pending" && schedule.status !== "publishing") return reported;
+  const logs = await db
+    .select({ attempt: publishLogs.attempt, finishedAt: publishLogs.finishedAt })
+    .from(publishLogs)
+    .where(eq(publishLogs.scheduleId, schedule.id));
+  const same = logs.find((l) => l.attempt === reported);
+  if (!same?.finishedAt) return reported;
+  const latest = logs.reduce((a, b) => (b.attempt > a.attempt ? b : a));
+  return latest.finishedAt ? latest.attempt + 1 : latest.attempt;
+}
+
 export const workerScheduleRoutes = createRouter();
 
 workerScheduleRoutes.use("/api/worker/*", requireWorkerToken);
@@ -192,6 +215,7 @@ workerScheduleRoutes
         siblingSchedules,
       );
 
+      const attempt = await logAttempt(db, schedule, input.attempt);
       const now = new Date();
       const logStatus =
         input.status === "publishing"
@@ -220,7 +244,7 @@ workerScheduleRoutes
           .values({
             id: newId(),
             scheduleId: id,
-            attempt: input.attempt,
+            attempt,
             status: logStatus,
             externalPostId: input.externalPostId ?? null,
             permalink: input.permalink ?? null,

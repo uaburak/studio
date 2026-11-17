@@ -9,6 +9,7 @@ import Testing
 final class FakePublishingAPI: PublishingAPI {
     var status = PublishingStatus(mode: .local, cloud: .init(configured: false), vaultReady: true)
     var preflightResult: SchedulePreflight?
+    var preflightTimes: [Date?] = []
     var feed: [PublishLogFeedItem] = []
     var rescheduled: [(EntityID, Date)] = []
     var created: [ScheduleCreate] = []
@@ -37,8 +38,9 @@ final class FakePublishingAPI: PublishingAPI {
     }
     func clearCloudPublisher() async throws -> PublishingStatus { status = .unknownLocal; return status }
     func requestPublishingSync() async throws -> PublishingStatus { syncRequests += 1; return status }
-    func preflight(contentId: EntityID, accountIds: [EntityID]?) async throws -> SchedulePreflight {
-        preflightResult ?? SchedulePreflight(mode: .local, ok: true, targets: (accountIds ?? []).map {
+    func preflight(contentId: EntityID, accountIds: [EntityID]?, scheduledAt: Date?) async throws -> SchedulePreflight {
+        preflightTimes.append(scheduledAt)
+        return preflightResult ?? SchedulePreflight(mode: .local, ok: true, targets: (accountIds ?? []).map {
             SchedulePreflightTarget(socialAccountId: $0, platform: .instagram, handle: "h", kind: "instagram.image", ok: true)
         })
     }
@@ -100,6 +102,12 @@ final class RecordingPoster: NoticePoster {
     func authorizationGranted() async -> Bool? { granted }
     func requestAuthorization() async -> Bool { requests += 1; granted = true; return true }
     func post(_ notice: StudioNotice) async { posted.append(notice) }
+}
+
+@MainActor
+private func waitUntil(_ condition: () -> Bool, timeout: Double = 4) async {
+    let deadline = Date().addingTimeInterval(timeout)
+    while !condition() && Date() < deadline { try? await Task.sleep(for: .milliseconds(20)) }
 }
 
 @MainActor
@@ -186,6 +194,14 @@ struct PublishingMacTests {
         model.selectedAccounts = ["sa-ig"]
         model.schedulePreflight(immediately: true)
         try await Task.sleep(for: .milliseconds(100))
+        // The planned time goes with the check (per-day limits); a new time is checked again.
+        #expect(fake.preflightTimes.last == date)
+        let nextDay = date.addingTimeInterval(86_400)
+        model.date = nextDay
+        try await Task.sleep(for: .milliseconds(400))
+        #expect(fake.preflightTimes.last == nextDay)
+        model.date = date
+        try await Task.sleep(for: .milliseconds(400))
         #expect(model.canSchedule)
         let ok = await model.schedule()
         #expect(ok)
@@ -193,6 +209,19 @@ struct PublishingMacTests {
         #expect(fake.created.first?.socialAccountId == "sa-ig")
         // Permission is asked in context (the first schedule), once.
         #expect(poster.requests == 1)
+    }
+
+    @Test func schedulingAPostAlreadyWaitingMovesItsScheduleInsteadOfAddingOne() async throws {
+        let (app, fake, _, _) = await makeP3App()
+        // post-12a already waits on Instagram (sch-1): "Zamanla" on it changes that time.
+        let date = CalendarMath.defaultTime(on: Date().addingTimeInterval(3 * 86_400))
+        let model = ScheduleSheetModel(app: app, request: ScheduleSheetRequest(brandId: SampleData.mtm, contentId: "post-12a", date: date, accountIds: ["sa-ig"]), api: fake)
+        await model.load()
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(await model.schedule())
+        #expect(fake.created.isEmpty, "no second schedule for the same post and account")
+        #expect(fake.rescheduled.map(\.0) == ["sch-1"])
+        #expect(fake.rescheduled.first?.1 == date)
     }
 
     @Test func publishNowAsksForConfirmationTextAndCallsTheAPI() async throws {
@@ -246,6 +275,63 @@ struct PublishingMacTests {
         app.publishing.notifier.enabled = false
         let quiet = await app.publishing.notifier.post([StudioNotice(id: "x", kind: .published, title: "t", body: "b")])
         #expect(quiet.isEmpty)
+    }
+
+    @Test func clickedNotificationsCarryThePostAndOpenIt() async throws {
+        // What a notification carries and what a click opens.
+        let failed = StudioNotice(id: "p:1:failed", kind: .publishFailed, title: "Yayınlanamadı: Hasat", body: "x", contentId: "post-12a", brandId: SampleData.mtm)
+        #expect(NoticeDestination.from(userInfo: NoticeDestination.userInfo(for: failed)) == .post(contentId: "post-12a", brandId: SampleData.mtm))
+        let published = StudioNotice(id: "p:1:ok", kind: .published, title: "t", body: "b", url: "https://www.instagram.com/p/X/", contentId: "post-12a", brandId: SampleData.mtm)
+        #expect(NoticeDestination.from(userInfo: NoticeDestination.userInfo(for: published)) == .post(contentId: "post-12a", brandId: SampleData.mtm),
+                "a published post opens in Studio, not only in the browser")
+        let oldPublished = StudioNotice(id: "p:2:ok", kind: .published, title: "t", body: "b", url: "https://www.instagram.com/p/Y/")
+        #expect(NoticeDestination.from(userInfo: NoticeDestination.userInfo(for: oldPublished)) == .link(URL(string: "https://www.instagram.com/p/Y/")!))
+        let token = StudioNotice(id: "t", kind: .tokenInvalid, title: "t", body: "b")
+        #expect(NoticeDestination.from(userInfo: NoticeDestination.userInfo(for: token)) == .accounts)
+        #expect(NoticeDestination.from(userInfo: NoticeDestination.userInfo(for: StudioNotice(id: "j", kind: .jobFinished, title: "t", body: "b"))) == .app)
+        #expect(NoticeDestination.from(userInfo: ["url": "file:///etc/passwd"]) == .app, "only web links leave the app")
+        #expect(NoticeDestination.from(userInfo: [:]) == .app)
+
+        // The notifier hands a click to the app.
+        let (app, _, poster, defaults) = await makeP3App()
+        app.publishing.notifierForTests(poster: poster, defaults: defaults)
+        var clicked: [NoticeDestination] = []
+        app.publishing.notifier.onOpen = { clicked.append($0) }
+        app.publishing.notifier.open(.accounts)
+        #expect(clicked == [.accounts])
+
+        // The app opens the post in its brand, even from another brand on the posts screen.
+        app.navigate(to: .posts)
+        app.selectBrand("b-koc")
+        await app.posts.loadLatest()
+        #expect(app.posts.loadedBrandId == "b-koc")
+        app.openNotice(.post(contentId: "post-12a", brandId: SampleData.mtm))
+        await waitUntil { app.detail?.content.id == "post-12a" }
+        #expect(app.currentBrandId == SampleData.mtm)
+        #expect(app.route == .posts)
+        #expect(app.detail?.content.id == "post-12a")
+        #expect(app.banner == nil)
+
+        app.openNotice(.accounts)
+        #expect(app.settingsPresented)
+    }
+
+    @Test func notificationClickedWhileLoadingOpensAfterTheBrandsArrive() async throws {
+        let backend = SampleBackend(data: SampleData(now: .now), uploadDelay: .zero)
+        let defaults = UserDefaults(suiteName: "studio.tests.p3.notice.\(UUID().uuidString)")!
+        let settings = AppSettings(defaults: defaults, credentials: InMemoryCredentialStore(), useSampleData: true)
+        let app = AppModel(settings: settings, conversationService: backend, dataService: backend)
+        // Launched by the click: nothing is loaded yet.
+        app.openNotice(.post(contentId: "post-12a", brandId: SampleData.mtm))
+        #expect(app.pendingNotice == .post(contentId: "post-12a", brandId: SampleData.mtm))
+        #expect(app.detail == nil)
+        await app.load()
+        app.restoreSession()
+        app.openPendingNotice()
+        #expect(app.pendingNotice == nil)
+        await waitUntil { app.detail?.content.id == "post-12a" }
+        #expect(app.detail?.content.id == "post-12a")
+        #expect(app.route == .posts)
     }
 
     @Test func metaConnectPicksPagesPerBrand() async throws {
@@ -310,7 +396,8 @@ struct PublishingMacTests {
     }
 
     @Test func loopbackServerCatchesTheRedirectAndRelaysTheFragment() async throws {
-        let port = UInt16(Int.random(in: 50_000...59_000))
+        // A port the system says is free (a random one collided with other apps' listeners).
+        let port = UInt16(try #require(HostEnvironment.freePort(address: "127.0.0.1")))
         let server = OAuthLoopbackServer(port: port)
         async let callback = server.waitForCallback(path: "/meta/callback", timeout: 10) {
             Task {

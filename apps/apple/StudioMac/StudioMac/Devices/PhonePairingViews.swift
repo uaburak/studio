@@ -111,8 +111,22 @@ final class PhonePairingCardView: NSView {
 
     // MARK: Visibility drives the offer
 
+    override func viewWillMove(toWindow newWindow: NSWindow?) {
+        super.viewWillMove(toWindow: newWindow)
+        if let window {
+            NotificationCenter.default.removeObserver(self, name: NSWindow.didChangeOcclusionStateNotification, object: window)
+            NotificationCenter.default.removeObserver(self, name: NSWindow.willCloseNotification, object: window)
+        }
+    }
+
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
+        if let window {
+            // A closed main window (Studio keeps running) or a dismissed Settings sheet keeps its
+            // views: without these the QR offer was polled every second for good.
+            NotificationCenter.default.addObserver(self, selector: #selector(windowVisibilityChanged(_:)), name: NSWindow.didChangeOcclusionStateNotification, object: window)
+            NotificationCenter.default.addObserver(self, selector: #selector(windowWillClose(_:)), name: NSWindow.willCloseNotification, object: window)
+        }
         updateShowing()
     }
 
@@ -120,8 +134,21 @@ final class PhonePairingCardView: NSView {
         didSet { updateShowing() }
     }
 
-    private func updateShowing() {
-        let visible = window != nil && !isHidden
+    @objc private func windowVisibilityChanged(_ note: Notification) { updateShowing() }
+
+    @objc private func windowWillClose(_ note: Notification) { updateShowing(closing: true) }
+
+    /// Shown while in a window that is on screen: not closed or ordered out, not minimized or fully
+    /// covered (a window that has not reported its occlusion yet counts as shown).
+    static func isOnScreen(inWindow: Bool, windowVisible: Bool, hidden: Bool, occlusion: NSWindow.OcclusionState, closing: Bool) -> Bool {
+        guard inWindow, windowVisible, !hidden, !closing else { return false }
+        return occlusion.isEmpty || occlusion.contains(.visible)
+    }
+
+    private func updateShowing(closing: Bool = false) {
+        let visible = Self.isOnScreen(
+            inWindow: window != nil, windowVisible: window?.isVisible ?? false, hidden: isHiddenOrHasHiddenAncestor,
+            occlusion: window?.occlusionState ?? [], closing: closing)
         guard visible != isShowingQR else { return }
         isShowingQR = visible
         if visible { model.showQR() } else { model.hideQR() }

@@ -76,10 +76,13 @@ final class ComposerEditor: NSObject, NSTextViewDelegate, ComposerTextBridge {
 
     // MARK: Bridge
 
+    /// `start` is an offset in the exported text (where an earlier token reads as `@image-1`),
+    /// converted back to the text storage, where each token is one character.
     func insertMention(_ alias: String, replacingQueryStartingAt start: Int) {
         guard let storage = textView.textStorage else { return }
-        let caret = textView.selectedRange().location
-        let range = NSRange(location: start, length: max(0, caret - start))
+        let caret = min(textView.selectedRange().location, storage.length)
+        let location = min(storageOffset(forExported: start), caret)
+        let range = NSRange(location: location, length: caret - location)
         let token = MentionAttachment.string(alias: alias)
         let insertion = NSMutableAttributedString(attributedString: token)
         insertion.append(NSAttributedString(string: " ", attributes: ComposerNSTextView.baseAttributes))
@@ -94,7 +97,15 @@ final class ComposerEditor: NSObject, NSTextViewDelegate, ComposerTextBridge {
     func clear() {
         textView.string = ""
         textView.typingAttributes = ComposerNSTextView.baseAttributes
+        forgetUndo()
         push()
+    }
+
+    /// Programmatic edits (sent, replaced, tokens converted) invalidate the typing undo steps:
+    /// undoing a range that no longer exists would raise.
+    private func forgetUndo() {
+        textView.undoManager?.removeAllActions(withTarget: textView)
+        if let storage = textView.textStorage { textView.undoManager?.removeAllActions(withTarget: storage) }
     }
 
     func focus() {
@@ -106,6 +117,7 @@ final class ComposerEditor: NSObject, NSTextViewDelegate, ComposerTextBridge {
         storage.setAttributedString(NSAttributedString(string: text, attributes: ComposerNSTextView.baseAttributes))
         textView.setSelectedRange(NSRange(location: storage.length, length: 0))
         convertTypedMentions(force: true)
+        forgetUndo()
         push()
     }
 
@@ -166,6 +178,35 @@ final class ComposerEditor: NSObject, NSTextViewDelegate, ComposerTextBridge {
         return out
     }
 
+    /// The text storage offset of an offset in the exported text (inverse of `exportedOffset`;
+    /// an offset inside a token's `@alias` maps to the token's start).
+    func storageOffset(forExported exported: Int) -> Int {
+        guard let storage = textView.textStorage else { return exported }
+        var remaining = max(0, exported)
+        var location = 0
+        storage.enumerateAttribute(.attachment, in: NSRange(location: 0, length: storage.length)) { value, range, stop in
+            if let mention = value as? MentionAttachment {
+                let length = mention.alias.utf16.count + 1
+                if remaining < length {
+                    location = range.location
+                    remaining = 0
+                    stop.pointee = true
+                    return
+                }
+                remaining -= length
+            } else if remaining <= range.length {
+                location = range.location + remaining
+                remaining = 0
+                stop.pointee = true
+                return
+            } else {
+                remaining -= range.length
+            }
+            location = range.location + range.length
+        }
+        return min(location, storage.length)
+    }
+
     /// Caret offset in the exported text (tokens are longer there than the 1-char attachment).
     func exportedOffset(for location: Int) -> Int {
         guard let storage = textView.textStorage else { return location }
@@ -211,7 +252,11 @@ final class ComposerEditor: NSObject, NSTextViewDelegate, ComposerTextBridge {
             if token.end <= caret { newCaret -= range.length - replacement.length }
             shift += range.length - replacement.length
         }
-        if shift > 0 { textView.setSelectedRange(NSRange(location: max(0, newCaret), length: 0)) }
+        if shift > 0 {
+            textView.setSelectedRange(NSRange(location: max(0, newCaret), length: 0))
+            // The typed characters collapsed into a token: their undo ranges are gone.
+            forgetUndo()
+        }
     }
 }
 

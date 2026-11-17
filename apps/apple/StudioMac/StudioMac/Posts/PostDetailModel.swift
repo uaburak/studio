@@ -87,6 +87,7 @@ final class PostDetailModel {
     private var measuredVersionIds: Set<EntityID> = []
     private var nudgeTask: Task<Void, Never>?
     private var nudgeDelta: CGSize = .zero
+    private var nudgeLayerId: String?
     let undoManager = UndoManager()
 
     // Approve & schedule
@@ -247,6 +248,7 @@ final class PostDetailModel {
         if displayedVersion == nil, let ref = content.currentVersion {
             if let version = try? await app.dataService.version(contentId: content.id, version: ref.version) {
                 displayedVersion = version
+                keepIfCurrent(version)
             }
         }
         ensureReelState()
@@ -265,6 +267,7 @@ final class PostDetailModel {
         guard let fresh = try? await app.dataService.content(content.id) else { return }
         let wasCurrent = isViewingCurrentVersion
         card.content = fresh
+        refreshCaptionDrafts()
         if wasCurrent, let ref = fresh.currentVersion, ref.version != displayedVersion?.version {
             await adopt(versionNumber: ref.version)
         } else {
@@ -287,6 +290,7 @@ final class PostDetailModel {
         do {
             let loaded = try await app.dataService.version(contentId: content.id, version: versionNumber)
             displayedVersion = loaded
+            keepIfCurrent(loaded)
             clampSlide()
             if selectedLayerId != nil, !layers.contains(where: { $0.layerId == selectedLayerId }) { selectedLayerId = nil }
             error = nil
@@ -299,9 +303,27 @@ final class PostDetailModel {
     func selectSlide(_ index: Int) {
         let clamped = max(0, min(index, max(0, slides.count - 1)))
         guard clamped != selectedSlideIndex else { return }
+        // A nudge still resting belongs to this slide's layer: send it before switching.
+        flushNudge()
         selectedSlideIndex = clamped
         selectedLayerId = nil
         ensureLayouts()
+    }
+
+    /// The current version loaded here is what approval checks (`card.approvableHash`): without
+    /// it the approve button stayed on "Sürüm yükleniyor." / "eşleşmiyor" while the post was open.
+    private func keepIfCurrent(_ version: ContentVersion) {
+        if version.version == content.currentVersion?.version { card.version = version }
+    }
+
+    /// The caption came back from the server (AI revision, another device): show it, unless the
+    /// owner is editing it right now (their draft wins until they save or cancel).
+    private func refreshCaptionDrafts() {
+        guard !isEditingCaption else { return }
+        let parts = CaptionParts(caption: content.caption)
+        if captionDraft != parts.body { captionDraft = parts.body }
+        let hashtags = parts.hashtags.joined(separator: " ")
+        if hashtagsDraft != hashtags { hashtagsDraft = hashtags }
     }
 
     private func clampSlide() {
@@ -318,6 +340,7 @@ final class PostDetailModel {
             app.posts.store(version, content: fresh)
             if let updated = app.posts.card(fresh.id) { card = updated }
             card.content = fresh
+            refreshCaptionDrafts()
             if version.version == fresh.currentVersion?.version { card.version = version }
             displayedVersion = version
             pendingTransforms = [:]
@@ -411,18 +434,30 @@ final class PostDetailModel {
 
     /// Arrow-key nudges, sent as one edit once the keys rest.
     func nudge(_ layerId: String, dx: CGFloat, dy: CGFloat) {
+        // Another layer's resting nudge is its own move.
+        if let pending = nudgeLayerId, pending != layerId { flushNudge() }
         nudgeDelta.width += dx
         nudgeDelta.height += dy
         if let box = box(for: layerId) { previewBoxes[layerId] = box.offsetBy(dx: dx, dy: dy) }
         nudgeTask?.cancel()
+        nudgeLayerId = layerId
         nudgeTask = Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(450))
             guard !Task.isCancelled, let self else { return }
-            let delta = self.nudgeDelta
-            self.nudgeDelta = .zero
-            self.previewBoxes[layerId] = nil
-            self.move(layerId, by: delta)
+            self.flushNudge()
         }
+    }
+
+    /// Send the arrow-key nudge collected so far (as one move on the current slide).
+    private func flushNudge() {
+        nudgeTask?.cancel()
+        nudgeTask = nil
+        guard let layerId = nudgeLayerId else { return }
+        nudgeLayerId = nil
+        let delta = nudgeDelta
+        nudgeDelta = .zero
+        previewBoxes[layerId] = nil
+        move(layerId, by: delta)
     }
 
     private func applyTransform(_ layerId: String, from current: LayerTransform, to next: LayerTransform, name: String) {
@@ -473,6 +508,8 @@ final class PostDetailModel {
             } catch {
                 activity = .idle
                 self.error = AppModel.describe(error)
+                // Edits made while the picture uploaded were waiting for it: send them now.
+                flushQueuedPatches()
             }
         }
     }
@@ -555,13 +592,17 @@ final class PostDetailModel {
                 self.error = "\(name): \(AppModel.describe(error))"
             }
             activity = .idle
-            if !queuedPatches.isEmpty {
-                let next = queuedPatches
-                let nextName = queuedName
-                queuedPatches = []
-                start(next, name: nextName)
-            }
+            flushQueuedPatches()
         }
+    }
+
+    /// Send the edits that waited for a render or an upload.
+    private func flushQueuedPatches() {
+        guard !queuedPatches.isEmpty, !activity.changesVersion else { return }
+        let next = queuedPatches
+        let nextName = queuedName
+        queuedPatches = []
+        start(next, name: nextName)
     }
 
     // MARK: - Undo / redo (versions)
@@ -731,8 +772,15 @@ final class PostDetailModel {
                 }
                 refresh(try await app.dataService.approve(contentId: content.id, hash: hash))
             }
-            for accountId in scheduleAccounts {
-                let schedule = try await app.dataService.createSchedule(ScheduleCreate(contentId: content.id, socialAccountId: accountId, scheduledAt: scheduleDate))
+            // An account the post already waits on moves to the new time (no second schedule).
+            let waiting = try await app.dataService.schedules(brandId: content.brandId)
+                .filter { $0.contentId == content.id && $0.status == .pending }
+            for accountId in scheduleAccounts.sorted() {
+                let schedule = if let pending = waiting.first(where: { $0.socialAccountId == accountId }) {
+                    try await app.dataService.reschedule(pending.id, to: scheduleDate)
+                } else {
+                    try await app.dataService.createSchedule(ScheduleCreate(contentId: content.id, socialAccountId: accountId, scheduledAt: scheduleDate))
+                }
                 app.posts.scheduleCreated(schedule)
             }
             refresh(try await app.dataService.content(content.id))
@@ -985,6 +1033,13 @@ final class PostDetailModel {
         } catch {
             if loadedVideoAssetId == assetId { videoError = "Video indirilemedi: \(AppModel.describe(error))" }
         }
+    }
+
+    /// After a failed download: try again (the play button offers it).
+    func retryReelVideo() {
+        guard let assetId = loadedVideoAssetId, videoError != nil, !isLoadingVideo else { return }
+        videoError = nil
+        Task { await loadReelVideo(assetId) }
     }
 
     /// The displayed reel's MP4 on disk (downloads it when needed).

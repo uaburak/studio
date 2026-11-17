@@ -182,6 +182,7 @@ final class MacServerSectionView: SettingsPaneView, NSTextFieldDelegate {
         } else {
             remoteRow.detail = "Kapalı. Açınca ev dışındaki iPhone https://\(cleanHost) üzerinden Cloudflare Tunnel ile bağlanır."
         }
+        if let tunnelTokenError { remoteRow.detail = tunnelTokenError }
     }
 
     static func describe(_ phase: ServiceSupervisor.Phase) -> String {
@@ -215,9 +216,15 @@ final class MacServerSectionView: SettingsPaneView, NSTextFieldDelegate {
         settings.remoteHostname = hostText
         remoteHostnameField.stringValue = hostText
         let token = tunnelTokenField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        tunnelTokenError = nil
         if !token.isEmpty {
-            try? settings.tunnelTokens.save(token)
-            tunnelTokenField.stringValue = ""
+            do {
+                try settings.tunnelTokens.save(token)
+                tunnelTokenField.stringValue = ""
+            } catch {
+                // Keep what was typed and say so (it used to look saved).
+                tunnelTokenError = "Tünel anahtarı Anahtar Zinciri'ne kaydedilemedi: \(error.localizedDescription)"
+            }
         }
         render()
         if settings.remoteControlEnabled {
@@ -225,7 +232,10 @@ final class MacServerSectionView: SettingsPaneView, NSTextFieldDelegate {
         }
     }
 
+    private var tunnelTokenError: String?
+
     private func clearTunnelToken() {
+        tunnelTokenError = nil
         try? settings.tunnelTokens.delete()
         tunnelTokenField.stringValue = ""
         render()

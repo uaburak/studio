@@ -30,6 +30,7 @@ import {
   sha256Hex,
   T0,
   target,
+  USER_TOKEN,
   upload,
 } from "./helpers.ts";
 
@@ -237,6 +238,65 @@ describe("replace and cancel", () => {
 
     await runUntilIdle(h);
     expect((await api<CloudOrder>("GET", "/v1/orders/o-s")).body.status).toBe("published");
+  });
+
+  it("replaces a failed order in place for a retry: attempts continue, purged media is re-uploaded", async () => {
+    const h = await setup();
+    await createReadyOrder("o-f", [img(1)], [target("instagram.image")]);
+    h.fake.expireToken(USER_TOKEN);
+    h.clock.t = T0 + HOUR;
+    await runUntilIdle(h);
+    const failed = (await api<CloudOrder>("GET", "/v1/orders/o-f")).body;
+    expect(failed.status).toBe("failed");
+    expect(failed.targets[0]).toMatchObject({ status: "failed", attempts: 1 });
+
+    // Days later the finished order's media is purged.
+    h.clock.t = T0 + HOUR + 4 * 24 * HOUR;
+    await scheduler().tick();
+    const sha = await sha256Hex(img(1).bytes);
+    expect(await env.MEDIA.head(mediaKey("o-f", sha))).toBeNull();
+
+    // The owner reconnects and retries: same order id, nothing new is created.
+    h.fake.addUserToken(USER_TOKEN);
+    const retryAt = h.clock.t + HOUR;
+    const replaced = await api<CloudOrder>(
+      "PUT",
+      "/v1/orders/o-f",
+      await orderBody([img(1)], [target("instagram.image")], retryAt),
+    );
+    expect(replaced.status, replaced.text).toBe(200);
+    expect(replaced.body.status).toBe("awaiting_media");
+    expect(replaced.body.media[0]?.uploaded).toBe(false);
+    expect(replaced.body.targets[0]).toMatchObject({ status: "pending", attempts: 1, error: null });
+    expect((await upload("o-f", img(1))).body.status).toBe("scheduled");
+    expect(await nextAlarm()).toBe(retryAt);
+
+    h.clock.t = retryAt;
+    await runUntilIdle(h);
+    const order = (await api<CloudOrder>("GET", "/v1/orders/o-f")).body;
+    expect(order.status).toBe("published");
+    expect(order.targets[0]).toMatchObject({ status: "published", attempts: 2 });
+    expect(h.fake.igPublishedMedia(IG)).toHaveLength(1);
+    const log = (await api<CloudPublishLog>("GET", "/v1/orders/o-f/log")).body;
+    expect(log.items.map((e) => `${e.event}:${e.attempt}`)).toEqual([
+      "started:1",
+      "failed:1",
+      "started:2",
+      "succeeded:2",
+    ]);
+    const list = (await api<CloudOrderList>("GET", "/v1/orders?limit=50")).body;
+    expect(list.items.map((o) => o.id)).toEqual(["o-f"]);
+
+    // A published order is never replaced.
+    expectError(
+      await api(
+        "PUT",
+        "/v1/orders/o-f",
+        await orderBody([img(1)], [target("instagram.image")], h.clock.t + HOUR),
+      ),
+      409,
+      "conflict",
+    );
   });
 
   it("cancels before start: nothing is published, media is deleted", async () => {
