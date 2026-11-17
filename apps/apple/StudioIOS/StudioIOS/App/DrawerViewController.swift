@@ -47,6 +47,10 @@ final class DrawerViewController: UIViewController, UITableViewDelegate, UITextF
         case destination(IOSDestination)
         case conversation(EntityID)
         case placeholder(String)
+        /// The current brand; tapping it opens the brand list in place (like a submenu).
+        case brandPicker
+        case brandOption(EntityID)
+        case brandProfile
     }
 
     var onDestination: ((IOSDestination) -> Void)?
@@ -61,8 +65,9 @@ final class DrawerViewController: UIViewController, UITableViewDelegate, UITextF
     private(set) lazy var searchButton = UIButton.glassCircle("magnifyingglass", label: "Sohbet ara", side: 44, pointSize: 17) { [weak self] in self?.setSearching(true) }
     let searchField = UISearchTextField()
     private lazy var cancelSearch = UIButton(configuration: .plain(), primaryAction: UIAction(title: "Vazgeç") { [weak self] _ in self?.setSearching(false) })
-    private let brandButton = UIButton(type: .system)
-    private let brandChevron = UIImageView(image: UIImage(systemName: "chevron.up.chevron.down", withConfiguration: UIImage.SymbolConfiguration(pointSize: 12, weight: .medium)))
+    /// The brand list is open under the brand row.
+    private(set) var brandsExpanded = false
+    private let brandChevron = UIImageView(image: UIImage(systemName: "chevron.down", withConfiguration: UIImage.SymbolConfiguration(pointSize: 13, weight: .semibold)))
     private let titleRow = UIStackView()
     private let searchRow = UIStackView()
     private(set) lazy var avatarButton = UIButton.glassCircle(nil, label: "Ayarlar", side: 52) { [weak self] in self?.onDestination?(.settings) }
@@ -125,26 +130,9 @@ final class DrawerViewController: UIViewController, UITableViewDelegate, UITextF
         searchRow.isHidden = true
         searchField.heightAnchor.constraint(equalToConstant: 44).isActive = true
 
-        brandButton.translatesAutoresizingMaskIntoConstraints = false
-        brandButton.showsMenuAsPrimaryAction = true
-        brandButton.contentHorizontalAlignment = .leading
-        brandButton.accessibilityHint = "Markayı değiştirir"
-        brandButton.menu = UIMenu(children: [UIDeferredMenuElement.uncached { [weak self] completion in
-            guard let self else { return completion([]) }
-            completion(StudioMenus.brandSection(self.app, onPick: { self.app.selectBrand($0) }, onProfile: { [weak self] brandId in
-                self?.app.open(.brand(brandId))
-            }))
-        }])
-
         let header = UIStackView.v([titleRow, searchRow], spacing: 2, alignment: .fill)
-        // The brand picker is the first row of the list and scrolls with it.
-        brandHeader.addSubview(brandButton)
-        NSLayoutConstraint.activate([
-            brandButton.leadingAnchor.constraint(equalTo: brandHeader.leadingAnchor, constant: 20),
-            brandButton.trailingAnchor.constraint(equalTo: brandHeader.trailingAnchor, constant: -16),
-            brandButton.topAnchor.constraint(equalTo: brandHeader.topAnchor),
-            brandButton.bottomAnchor.constraint(equalTo: brandHeader.bottomAnchor),
-        ])
+        brandChevron.tintColor = IOSTheme.textTertiary
+        brandChevron.sizeToFit()
         header.setCustomSpacing(0, after: searchRow)
         // Content scrolls under the header and the bottom bar with a soft edge.
         let topEdge = UIScrollEdgeElementContainerInteraction()
@@ -211,17 +199,11 @@ final class DrawerViewController: UIViewController, UITableViewDelegate, UITextF
     }
 
     private weak var headerView: UIView?
-    /// Holds the brand picker as the list's first (scrolling) row.
-    private let brandHeader = UIView(frame: CGRect(x: 0, y: 0, width: 320, height: 52))
 
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
         // Rows start below the header; scrolled ones slide under it.
         let top = max(0, (headerView?.frame.maxY ?? 0) + 4 - view.safeAreaInsets.top)
-        if !isSearching, abs(brandHeader.frame.width - tableView.bounds.width) > 0.5 {
-            brandHeader.frame = CGRect(x: 0, y: 0, width: tableView.bounds.width, height: 52)
-            tableView.tableHeaderView = brandHeader
-        }
         if headerView != nil, abs(tableView.contentInset.top - top) > 0.5 {
             let atTop = tableView.contentOffset.y <= -tableView.adjustedContentInset.top + 1
             tableView.contentInset.top = top
@@ -291,6 +273,8 @@ final class DrawerViewController: UIViewController, UITableViewDelegate, UITextF
 
     func willOpen() {
         pickedConversationId = nil
+        brandsExpanded = false
+        brandChevron.transform = .identity
         reload()
         if let id = currentConversationId?(), let indexPath = dataSource.indexPath(for: .conversation(id)) {
             tableView.scrollToRow(at: indexPath, at: .none, animated: false)
@@ -300,6 +284,18 @@ final class DrawerViewController: UIViewController, UITableViewDelegate, UITextF
     /// First element VoiceOver lands on when the drawer opens.
     var firstAccessibilityElement: UIView { titleLabel }
 
+    /// Opens or closes the brand list under the brand row: the rows below slide down
+    /// and the chevron turns, like a submenu opening inside a menu.
+    func setBrandsExpanded(_ expanded: Bool) {
+        guard expanded != brandsExpanded else { return }
+        brandsExpanded = expanded
+        let animate = view.window != nil
+        UIView.animate(withDuration: animate ? 0.3 : 0, delay: 0, usingSpringWithDamping: 0.85, initialSpringVelocity: 0) {
+            self.brandChevron.transform = expanded ? CGAffineTransform(rotationAngle: .pi) : .identity
+        }
+        reload()
+    }
+
     // MARK: Search
 
     func setSearching(_ on: Bool) {
@@ -307,7 +303,7 @@ final class DrawerViewController: UIViewController, UITableViewDelegate, UITextF
         isSearching = on
         titleRow.isHidden = on
         searchRow.isHidden = !on
-        tableView.tableHeaderView = on ? nil : brandHeader
+        if on { brandsExpanded = false }
         if on {
             searchField.text = query
             searchField.becomeFirstResponder()
@@ -348,7 +344,12 @@ final class DrawerViewController: UIViewController, UITableViewDelegate, UITextF
         var snapshot = NSDiffableDataSourceSnapshot<Int, Item>()
         snapshot.appendSections([0, 1])
         if !isSearching {
-            snapshot.appendItems(IOSDestination.drawerRows.map(Item.destination), toSection: 0)
+            var top: [Item] = [.brandPicker]
+            if brandsExpanded {
+                top += app.brands.map { Item.brandOption($0.id) }
+                if app.currentBrandId != nil { top.append(.brandProfile) }
+            }
+            snapshot.appendItems(top + IOSDestination.drawerRows.map(Item.destination), toSection: 0)
         }
         var history = conversations.map { Item.conversation($0.id) }
         if history.isEmpty {
@@ -380,6 +381,15 @@ final class DrawerViewController: UIViewController, UITableViewDelegate, UITextF
                 if isSearching { hasher.combine(app.brand(rows[id]?.brandId)?.name) }
             case .placeholder(let text):
                 hasher.combine(text)
+            case .brandPicker:
+                hasher.combine(app.currentBrand?.name)
+                hasher.combine(app.brands.isEmpty)
+                hasher.combine(brandsExpanded)
+            case .brandOption(let id):
+                hasher.combine(app.brand(id)?.name)
+                hasher.combine(id == app.currentBrandId)
+            case .brandProfile:
+                break
             }
             newSignatures[item] = hasher.finalize()
         }
@@ -391,6 +401,9 @@ final class DrawerViewController: UIViewController, UITableViewDelegate, UITextF
         renderChrome()
     }
 
+    /// An empty 22 pt box: keeps unchecked brand names aligned with the checked one.
+    private static let blankIcon = UIGraphicsImageRenderer(size: CGSize(width: 22, height: 22)).image { _ in }
+
     /// A symbol centred in the same 22 pt box the rows reserve, so icons and titles line up.
     private static func rowIcon(_ name: String, pointSize: CGFloat = 16) -> UIImage? {
         guard let symbol = UIImage(systemName: name, withConfiguration: UIImage.SymbolConfiguration(pointSize: pointSize, weight: .regular)) else { return nil }
@@ -400,41 +413,7 @@ final class DrawerViewController: UIViewController, UITableViewDelegate, UITextF
         }.withRenderingMode(.alwaysTemplate)
     }
 
-    /// The brand picker looks like the rows below it (icon, title, chevron) and opens the
-    /// brand menu.
     private func renderChrome() {
-        var config = UIButton.Configuration.plain()
-        let brand = app.currentBrand?.name ?? (app.brands.isEmpty ? "Marka yok" : "Marka seç")
-        config.attributedTitle = AttributedString(brand, attributes: AttributeContainer([
-            .font: IOSTheme.font(17), .foregroundColor: IOSTheme.textPrimary,
-        ]))
-        config.image = Self.rowIcon("tag")
-        config.imagePlacement = .leading
-        config.imagePadding = 16
-        config.baseForegroundColor = IOSTheme.textPrimary
-        config.titleLineBreakMode = .byTruncatingTail
-        config.contentInsets = NSDirectionalEdgeInsets(top: 13, leading: 0, bottom: 13, trailing: 8)
-        config.background.cornerRadius = 16
-        // The pressed fill reaches out like the rows' rounded background.
-        config.background.backgroundInsets = NSDirectionalEdgeInsets(top: 1, leading: -10, bottom: 1, trailing: -6)
-        brandButton.configuration = config
-        brandButton.configurationUpdateHandler = { button in
-            var updated = button.configuration
-            updated?.background.backgroundColor = button.isHighlighted ? IOSTheme.fill : .clear
-            button.configuration = updated
-        }
-        if brandChevron.superview == nil {
-            brandChevron.translatesAutoresizingMaskIntoConstraints = false
-            brandChevron.tintColor = IOSTheme.textTertiary
-            brandChevron.isUserInteractionEnabled = false
-            brandButton.addSubview(brandChevron)
-            NSLayoutConstraint.activate([
-                brandChevron.trailingAnchor.constraint(equalTo: brandButton.trailingAnchor),
-                brandChevron.centerYAnchor.constraint(equalTo: brandButton.centerYAnchor),
-            ])
-        }
-        brandButton.accessibilityLabel = "Marka: \(app.currentBrand?.name ?? "seçilmedi")"
-
         var avatar = avatarButton.configuration ?? .glass()
         if let initial = app.settings.greetingName?.first {
             avatar.image = nil
@@ -464,6 +443,8 @@ final class DrawerViewController: UIViewController, UITableViewDelegate, UITextF
         content.imageProperties.reservedLayoutSize = CGSize(width: 22, height: 22)
         content.directionalLayoutMargins = NSDirectionalEdgeInsets(top: 13, leading: 20, bottom: 13, trailing: 16)
         cell.accessoryView = nil
+        cell.accessibilityLabel = nil
+        cell.accessibilityHint = nil
         cell.accessibilityValue = nil
         cell.accessibilityTraits = .button
         var isCurrent = false
@@ -509,6 +490,30 @@ final class DrawerViewController: UIViewController, UITableViewDelegate, UITextF
             content.textProperties.color = IOSTheme.textTertiary
             content.image = nil
             cell.accessibilityTraits = .staticText
+        case .brandPicker:
+            content.text = app.currentBrand?.name ?? (app.brands.isEmpty ? "Marka yok" : "Marka seç")
+            content.image = Self.rowIcon("tag")
+            cell.accessoryView = brandChevron
+            cell.accessibilityLabel = "Marka: \(app.currentBrand?.name ?? "seçilmedi")"
+            cell.accessibilityValue = brandsExpanded ? "Açık" : "Kapalı"
+            cell.accessibilityHint = "Markaları bu listede açar"
+        case .brandOption(let id):
+            // Sub-rows: indented under the brand's name, the current one checked.
+            let current = id == app.currentBrandId
+            content.text = app.brand(id)?.name ?? ""
+            content.textProperties.font = IOSTheme.font(16, current ? .semibold : .regular)
+            content.textProperties.color = current ? IOSTheme.textPrimary : IOSTheme.textSecondary
+            content.image = current ? Self.rowIcon("checkmark", pointSize: 13) : Self.blankIcon
+            content.imageProperties.tintColor = IOSTheme.accent
+            content.directionalLayoutMargins = NSDirectionalEdgeInsets(top: 10, leading: 58, bottom: 10, trailing: 16)
+            if current { cell.accessibilityTraits.insert(.selected) }
+        case .brandProfile:
+            content.text = "Marka profili"
+            content.textProperties.font = IOSTheme.font(16)
+            content.textProperties.color = IOSTheme.textSecondary
+            content.image = Self.rowIcon("person.crop.square", pointSize: 14)
+            content.imageProperties.tintColor = IOSTheme.textSecondary
+            content.directionalLayoutMargins = NSDirectionalEdgeInsets(top: 10, leading: 58, bottom: 10, trailing: 16)
         }
         cell.contentConfiguration = content
         cell.backgroundColor = .clear
@@ -597,6 +602,17 @@ final class DrawerViewController: UIViewController, UITableViewDelegate, UITextF
             onConversation?(id)
         case .placeholder:
             if app.connection == .notPaired { onDestination?(.settings) }
+        case .brandPicker:
+            Haptics.selection()
+            setBrandsExpanded(!brandsExpanded)
+        case .brandOption(let id):
+            Haptics.selection()
+            if id != app.currentBrandId { app.selectBrand(id) }
+            setBrandsExpanded(false)
+        case .brandProfile:
+            guard let id = app.currentBrandId else { return }
+            Haptics.selection()
+            app.open(.brand(id))
         }
     }
 

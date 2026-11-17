@@ -225,8 +225,26 @@ struct IOSShellTests {
         await settle(root.view)
         #expect(drawer.listedConversations.map(\.id) == app.visibleConversations.map(\.id))
         #expect(drawer.tableView.numberOfSections == 2)
-        #expect(drawer.tableView.numberOfRows(inSection: 0) == IOSDestination.drawerRows.count)
+        // The brand row, then the pages.
+        #expect(drawer.tableView.numberOfRows(inSection: 0) == 1 + IOSDestination.drawerRows.count)
         #expect(drawer.tableView.numberOfRows(inSection: 1) == max(1, app.visibleConversations.count))
+
+        // Tapping the brand row opens the brand list in place; picking one closes it.
+        drawer.select(.brandPicker)
+        await settle(root.view)
+        #expect(drawer.brandsExpanded)
+        let extra = app.brands.count + (app.currentBrandId != nil ? 1 : 0)
+        #expect(drawer.tableView.numberOfRows(inSection: 0) == 1 + extra + IOSDestination.drawerRows.count)
+        if let other = app.brands.first(where: { $0.id != app.currentBrandId }) {
+            drawer.select(.brandOption(other.id))
+            await settle(root.view)
+            #expect(app.currentBrandId == other.id)
+            #expect(!drawer.brandsExpanded)
+        } else {
+            drawer.select(.brandPicker)
+            await settle(root.view)
+        }
+        #expect(drawer.tableView.numberOfRows(inSection: 0) == 1 + IOSDestination.drawerRows.count)
 
         let title = try #require(app.visibleConversations.first?.displayTitle)
         let word = try #require(title.split(separator: " ").first.map(String.init))
