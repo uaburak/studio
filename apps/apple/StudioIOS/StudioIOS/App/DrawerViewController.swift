@@ -180,7 +180,9 @@ final class DrawerViewController: UIViewController, UITableViewDelegate, UITextF
 
             tableView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             tableView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            tableView.topAnchor.constraint(equalTo: header.bottomAnchor, constant: 4),
+            // The list runs under the header (and the bottom bar) so both edges get the
+            // soft scroll-edge effect as rows pass beneath them.
+            tableView.topAnchor.constraint(equalTo: view.topAnchor),
             tableView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
 
             bottomBar.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 18),
@@ -194,12 +196,23 @@ final class DrawerViewController: UIViewController, UITableViewDelegate, UITextF
             return cell
         }
         dataSource.defaultRowAnimation = .fade
+        headerView = header
 
         observation = observeIOS { [weak self] in self?.reload() }
     }
 
+    private weak var headerView: UIView?
+
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
+        // Rows start below the header; scrolled ones slide under it.
+        let top = max(0, (headerView?.frame.maxY ?? 0) + 4 - view.safeAreaInsets.top)
+        if headerView != nil, abs(tableView.contentInset.top - top) > 0.5 {
+            let atTop = tableView.contentOffset.y <= -tableView.adjustedContentInset.top + 1
+            tableView.contentInset.top = top
+            tableView.verticalScrollIndicatorInsets.top = top
+            if atTop { tableView.contentOffset.y = -tableView.adjustedContentInset.top }
+        }
         let inset = max(0, view.bounds.height - bottomBar.frame.minY - view.safeAreaInsets.bottom) + 12
         if abs(tableView.contentInset.bottom - inset) > 0.5 {
             tableView.contentInset.bottom = inset
