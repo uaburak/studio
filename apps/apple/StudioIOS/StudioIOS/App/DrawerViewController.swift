@@ -62,6 +62,7 @@ final class DrawerViewController: UIViewController, UITableViewDelegate, UITextF
     let searchField = UISearchTextField()
     private lazy var cancelSearch = UIButton(configuration: .plain(), primaryAction: UIAction(title: "Vazgeç") { [weak self] _ in self?.setSearching(false) })
     private let brandButton = UIButton(type: .system)
+    private let brandChevron = UIImageView(image: UIImage(systemName: "chevron.up.chevron.down", withConfiguration: UIImage.SymbolConfiguration(pointSize: 12, weight: .medium)))
     private let titleRow = UIStackView()
     private let searchRow = UIStackView()
     private(set) lazy var avatarButton = UIButton.glassCircle(nil, label: "Ayarlar", side: 52) { [weak self] in self?.onDestination?(.settings) }
@@ -376,18 +377,48 @@ final class DrawerViewController: UIViewController, UITableViewDelegate, UITextF
         renderChrome()
     }
 
+    /// A symbol centred in the same 22 pt box the rows reserve, so icons and titles line up.
+    private static func rowIcon(_ name: String, pointSize: CGFloat = 16) -> UIImage? {
+        guard let symbol = UIImage(systemName: name, withConfiguration: UIImage.SymbolConfiguration(pointSize: pointSize, weight: .regular)) else { return nil }
+        let box = CGSize(width: 22, height: 22)
+        return UIGraphicsImageRenderer(size: box).image { _ in
+            symbol.withTintColor(.black).draw(at: CGPoint(x: (box.width - symbol.size.width) / 2, y: (box.height - symbol.size.height) / 2))
+        }.withRenderingMode(.alwaysTemplate)
+    }
+
+    /// The brand picker looks like the rows below it (icon, title, chevron) and opens the
+    /// brand menu.
     private func renderChrome() {
         var config = UIButton.Configuration.plain()
         let brand = app.currentBrand?.name ?? (app.brands.isEmpty ? "Marka yok" : "Marka seç")
         config.attributedTitle = AttributedString(brand, attributes: AttributeContainer([
-            .font: IOSTheme.font(15, .medium, style: .subheadline), .foregroundColor: IOSTheme.textSecondary,
+            .font: IOSTheme.font(17), .foregroundColor: IOSTheme.textPrimary,
         ]))
-        config.image = UIImage(systemName: "chevron.down", withConfiguration: UIImage.SymbolConfiguration(pointSize: 10, weight: .semibold))
-        config.imagePlacement = .trailing
-        config.imagePadding = 5
-        config.baseForegroundColor = IOSTheme.textSecondary
-        config.contentInsets = NSDirectionalEdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 8)
+        config.image = Self.rowIcon("tag")
+        config.imagePlacement = .leading
+        config.imagePadding = 16
+        config.baseForegroundColor = IOSTheme.textPrimary
+        config.titleLineBreakMode = .byTruncatingTail
+        config.contentInsets = NSDirectionalEdgeInsets(top: 13, leading: 0, bottom: 13, trailing: 8)
+        config.background.cornerRadius = 16
+        // The pressed fill reaches out like the rows' rounded background.
+        config.background.backgroundInsets = NSDirectionalEdgeInsets(top: 1, leading: -10, bottom: 1, trailing: -6)
         brandButton.configuration = config
+        brandButton.configurationUpdateHandler = { button in
+            var updated = button.configuration
+            updated?.background.backgroundColor = button.isHighlighted ? IOSTheme.fill : .clear
+            button.configuration = updated
+        }
+        if brandChevron.superview == nil {
+            brandChevron.translatesAutoresizingMaskIntoConstraints = false
+            brandChevron.tintColor = IOSTheme.textTertiary
+            brandChevron.isUserInteractionEnabled = false
+            brandButton.addSubview(brandChevron)
+            NSLayoutConstraint.activate([
+                brandChevron.trailingAnchor.constraint(equalTo: brandButton.trailingAnchor),
+                brandChevron.centerYAnchor.constraint(equalTo: brandButton.centerYAnchor),
+            ])
+        }
         brandButton.accessibilityLabel = "Marka: \(app.currentBrand?.name ?? "seçilmedi")"
 
         var avatar = avatarButton.configuration ?? .glass()
@@ -416,7 +447,7 @@ final class DrawerViewController: UIViewController, UITableViewDelegate, UITextF
         content.textProperties.lineBreakMode = .byTruncatingTail
         content.imageToTextPadding = 16
         content.imageProperties.tintColor = IOSTheme.textPrimary
-        content.imageProperties.reservedLayoutSize = CGSize(width: 26, height: 26)
+        content.imageProperties.reservedLayoutSize = CGSize(width: 22, height: 22)
         content.directionalLayoutMargins = NSDirectionalEdgeInsets(top: 13, leading: 20, bottom: 13, trailing: 16)
         cell.accessoryView = nil
         cell.accessibilityValue = nil
@@ -426,7 +457,7 @@ final class DrawerViewController: UIViewController, UITableViewDelegate, UITextF
         switch item {
         case .destination(let destination):
             content.text = destination.title
-            content.image = UIImage(systemName: destination.symbol, withConfiguration: UIImage.SymbolConfiguration(pointSize: 19, weight: .regular))
+            content.image = Self.rowIcon(destination.symbol)
             if destination == .posts, app.posts.attentionCount > 0 {
                 let count = app.posts.attentionCount
                 cell.accessoryView = Self.countBadge(count)
@@ -447,7 +478,7 @@ final class DrawerViewController: UIViewController, UITableViewDelegate, UITextF
                 content.secondaryTextProperties.font = IOSTheme.font(13, style: .footnote)
                 content.secondaryTextProperties.color = IOSTheme.textSecondary
             }
-            content.image = UIImage(systemName: "bubble.left", withConfiguration: UIImage.SymbolConfiguration(pointSize: 18, weight: .regular))
+            content.image = Self.rowIcon("bubble.left", pointSize: 15)
             let waiting = app.isWaitingOnUser(id)
             if waiting {
                 cell.accessoryView = IOSStatusDotView(color: IOSTheme.accent, size: 8).sizedForAccessory()
