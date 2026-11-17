@@ -112,6 +112,12 @@ final class StudioRootViewController: UIViewController, UINavigationControllerDe
 
     /// True while the open/close animation or a drag is running.
     private var isSliding = false
+
+    /// The display's corner radius (55 pt on current iPhones); the system does not publish it.
+    static let screenCornerRadius: CGFloat = {
+        if let radius = UIScreen.main.value(forKey: "_displayCornerRadius") as? CGFloat, radius > 0 { return radius }
+        return 55
+    }()
     private var slideGeneration = 0
 
     override var childForStatusBarStyle: UIViewController? { isDrawerOpen ? drawer : mainNav }
@@ -130,15 +136,15 @@ final class StudioRootViewController: UIViewController, UINavigationControllerDe
         let width = drawerWidth
         mainContainer.transform = CGAffineTransform(translationX: progress * width, y: 0)
         let visible = progress > 0.001 || !settled
-        mainContainer.layer.cornerRadius = 44 * min(1, progress * 2.5)
+        // A fixed radius matching the phone's own screen corners (no growing while sliding).
+        mainContainer.layer.cornerRadius = Self.screenCornerRadius
         mainContainer.layer.masksToBounds = visible
         mainContainer.layer.borderWidth = visible ? 1 : 0
         scrim.alpha = progress
         scrim.isHidden = !visible
-        // Like the Claude app the drawer stays in place under the chat and only grows a
-        // touch as the chat slides away; it never fades or slides itself.
-        let scale = 0.97 + 0.03 * progress
-        drawer.view.transform = CGAffineTransform(scaleX: scale, y: scale)
+        // Like the Claude app the drawer stays still under the chat; only the chat card moves.
+        // (Scaling it made the text shimmer up and down while opening.)
+        drawer.view.transform = .identity
         drawer.view.alpha = 1
         drawer.view.isHidden = !visible
     }

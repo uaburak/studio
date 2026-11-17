@@ -215,7 +215,9 @@ final class DrawerViewController: UIViewController, UITableViewDelegate, UITextF
         config.image = UIImage(systemName: "plus", withConfiguration: UIImage.SymbolConfiguration(pointSize: 16, weight: .medium))
         config.imagePadding = 8
         config.title = "Yeni sohbet"
-        config.contentInsets = NSDirectionalEdgeInsets(top: 14, leading: 22, bottom: 14, trailing: 24)
+        // One line, always: never wrap "Yeni / sohbet" into two lines.
+        config.titleLineBreakMode = .byClipping
+        config.contentInsets = NSDirectionalEdgeInsets(top: 14, leading: 20, bottom: 14, trailing: 22)
         config.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { incoming in
             var out = incoming
             out.font = IOSTheme.font(17, .medium, style: .body)
@@ -236,6 +238,9 @@ final class DrawerViewController: UIViewController, UITableViewDelegate, UITextF
         ])
         newChatButton.translatesAutoresizingMaskIntoConstraints = false
         newChatButton.accessibilityHint = "Boş bir sohbet açar"
+        newChatButton.titleLabel?.numberOfLines = 1
+        newChatButton.setContentCompressionResistancePriority(.required, for: .horizontal)
+        newChatButton.setContentHuggingPriority(.required, for: .horizontal)
         let row = UIStackView.h([avatarButton, UIView.spacer(), newChatButton], spacing: 12)
         bottomBar.addSubview(row)
         row.pin(to: bottomBar)
