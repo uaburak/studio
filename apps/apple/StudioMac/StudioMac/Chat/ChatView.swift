@@ -115,7 +115,7 @@ final class ChatViewController: NSViewController {
 
         let msgWidth = messageColumn.widthAnchor.constraint(equalToConstant: Theme.columnMaxWidth)
         msgWidth.priority = .defaultHigh
-        let compWidth = composerStack.widthAnchor.constraint(equalToConstant: Theme.columnMaxWidth)
+        let compWidth = composerStack.widthAnchor.constraint(equalToConstant: Theme.columnMaxWidth + 2 * Theme.composerOverhang)
         compWidth.priority = .defaultHigh
 
         NSLayoutConstraint.activate([
@@ -129,8 +129,8 @@ final class ChatViewController: NSViewController {
             documentView.topAnchor.constraint(equalTo: clip.topAnchor),
 
             messageColumn.centerXAnchor.constraint(equalTo: documentView.centerXAnchor),
-            messageColumn.leadingAnchor.constraint(greaterThanOrEqualTo: documentView.leadingAnchor, constant: Theme.columnMinMargin),
-            messageColumn.trailingAnchor.constraint(lessThanOrEqualTo: documentView.trailingAnchor, constant: -Theme.columnMinMargin),
+            messageColumn.leadingAnchor.constraint(greaterThanOrEqualTo: documentView.leadingAnchor, constant: Theme.columnMinMargin + Theme.composerOverhang),
+            messageColumn.trailingAnchor.constraint(lessThanOrEqualTo: documentView.trailingAnchor, constant: -(Theme.columnMinMargin + Theme.composerOverhang)),
             msgWidth,
             messageColumn.topAnchor.constraint(equalTo: documentView.topAnchor, constant: 24),
             messageColumn.bottomAnchor.constraint(equalTo: documentView.bottomAnchor, constant: -162),
@@ -333,7 +333,7 @@ final class ChatViewController: NSViewController {
         if !text.isEmpty {
             let bubble = ThemedView()
             bubble.backgroundColor = Theme.fill
-            bubble.cornerRadius = 18
+            bubble.cornerRadius = Theme.bubbleRadius
             bubble.translatesAutoresizingMaskIntoConstraints = false
 
             let mentions = model.state?.mentions(in: message, text: text) ?? []
@@ -349,8 +349,8 @@ final class ChatViewController: NSViewController {
             NSLayoutConstraint.activate([
                 textView.leadingAnchor.constraint(equalTo: bubble.leadingAnchor, constant: 16),
                 textView.trailingAnchor.constraint(equalTo: bubble.trailingAnchor, constant: -16),
-                textView.topAnchor.constraint(equalTo: bubble.topAnchor, constant: 9),
-                textView.bottomAnchor.constraint(equalTo: bubble.bottomAnchor, constant: -9),
+                textView.topAnchor.constraint(equalTo: bubble.topAnchor, constant: 11),
+                textView.bottomAnchor.constraint(equalTo: bubble.bottomAnchor, constant: -11),
             ])
             vStack.addArrangedSubview(bubble)
         }

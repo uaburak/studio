@@ -406,6 +406,10 @@ final class GlyphButton: NSControl {
         }
     }
     var onAction: (() -> Void)?
+    /// The symbol's colour (secondary grey unless a control asks otherwise).
+    var symbolTint: NSColor = Theme.textSecondary {
+        didSet { refreshStyle() }
+    }
 
     override var isEnabled: Bool {
         didSet {
@@ -413,6 +417,9 @@ final class GlyphButton: NSControl {
             refreshStyle()
         }
     }
+
+    /// A button never drags the window (it can sit in the title bar area).
+    override var mouseDownCanMoveWindow: Bool { false }
 
     private let imageView = NSImageView()
     private let spinner = NSProgressIndicator()
@@ -561,7 +568,7 @@ final class GlyphButton: NSControl {
     }
 
     private func refreshStyle() {
-        imageView.contentTintColor = Theme.textSecondary
+        imageView.contentTintColor = symbolTint
         let active = isEnabled && (hovering || pressed)
         layer?.backgroundColor = active ? resolvedCGColor(Theme.fill) : nil
     }
@@ -865,6 +872,11 @@ final class MacStatusControlView: NSView {
     private weak var app: AppModel?
     private var selectedModelProvider: (@MainActor () -> AgentModel)?
     private var observation: ObservationToken?
+    /// The Mac or the chosen model's provider is not ready (the composer's status line shows
+    /// the control only then).
+    private(set) var needsAttention = false
+    /// Called after every refresh (the status line hides the control while all is well).
+    var onChange: (() -> Void)?
 
     init(app: AppModel, selectedModel: (@escaping @MainActor () -> AgentModel) = { .fallbackModel }) {
         self.app = app
@@ -903,29 +915,42 @@ final class MacStatusControlView: NSView {
         dot.color = online ? Theme.accent : Theme.textTertiary
 
         var parts = [online ? "Mac hazır" : "Mac çevrimdışı"]
+        var attention = !online
         let chosen = selectedModelProvider?() ?? app.lastAgentChoice.model
         if online {
             if chosen.isGemini {
                 if let gemini = presence?.gemini {
                     switch gemini.status {
                     case .ready: parts.append("Gemini hazır")
-                    case .notConfigured: parts.append("Gemini yapılandırılmadı")
-                    case .error, .unknown: parts.append("Gemini hatası")
+                    case .notConfigured:
+                        parts.append("Gemini yapılandırılmadı")
+                        attention = true
+                    case .error, .unknown:
+                        parts.append("Gemini hatası")
+                        attention = true
                     }
                 }
             } else {
                 if let claude = presence?.claude {
                     switch claude.status {
                     case .signedIn: break
-                    case .signingIn: parts.append("Claude giriş bekleniyor")
-                    case .signedOut: parts.append("Claude giriş bekliyor")
-                    case .notInstalled: parts.append("Claude kurulu değil")
+                    case .signingIn:
+                        parts.append("Claude giriş bekleniyor")
+                        attention = true
+                    case .signedOut:
+                        parts.append("Claude giriş bekliyor")
+                        attention = true
+                    case .notInstalled:
+                        parts.append("Claude kurulu değil")
+                        attention = true
                     case .error, .unknown: break
                     }
                 }
             }
         }
+        needsAttention = attention
         label.stringValue = parts.joined(separator: " · ")
+        defer { onChange?() }
         toolTip = online
             ? "Mac worker bağlı; işler hemen çalışır."
             : "Mac worker bağlı değil; işler sırada bekler."

@@ -15,7 +15,7 @@ enum SnapshotScene: String, CaseIterable, Sendable {
 
 /// Renders scenes of the real AppKit window and view controllers (sample data) into PNGs.
 ///
-/// Each scene is laid out in a real `MainWindowController` window (titled, unified toolbar,
+/// Each scene is laid out in a real `MainWindowController` window (titled, compact title bar + `TopBarView`,
 /// `RootViewController`) and captured with `cacheDisplay`.
 @MainActor
 enum SnapshotRenderer {

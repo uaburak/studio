@@ -3,17 +3,15 @@ import StudioKit
 
 // MARK: - MainWindowController
 
-final class MainWindowController: NSWindowController, NSToolbarDelegate {
+/// The main window, Claude Code style: no visible title, a transparent compact title bar (an
+/// empty `.unifiedCompact` toolbar only sizes it, so the traffic lights sit centred in a
+/// `Theme.topBarHeight` bar) and the content running underneath. `TopBarView` draws the bar.
+final class MainWindowController: NSWindowController {
     let app: AppModel
     let settings: AppSettings
     let host: LocalHost?
     let rootViewController: RootViewController
 
-    private static let sidebarSeparatorId = NSToolbarItem.Identifier("studio.sidebarSeparator")
-    private static let navGroupId = NSToolbarItem.Identifier("studio.navigation")
-    private static let titleMenuId = NSToolbarItem.Identifier("studio.titleMenu")
-    private static let inspectorId = NSToolbarItem.Identifier("studio.inspector")
-    private static let moreMenuId = NSToolbarItem.Identifier("studio.moreMenu")
     static let frameAutosaveName = "StudioMainWindow"
 
     /// A saved frame from a screen that is gone (or a smaller one) is pulled back on screen.
@@ -26,11 +24,10 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate {
         return out
     }
 
-    private var backButton: NSButton?
-    private var forwardButton: NSButton?
-    private var titleMenuControl: ToolbarTitleMenuControl?
-    private var inspectorButton: NSButton?
-    private var observation: ObservationToken?
+    /// The title bar's height (the top bar matches it).
+    static func titlebarHeight(of window: NSWindow) -> CGFloat {
+        window.frame.height - window.contentLayoutRect.height
+    }
 
     init(app: AppModel, settings: AppSettings, host: LocalHost?) {
         self.app = app
@@ -46,8 +43,7 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate {
         )
         window.identifier = NSUserInterfaceItemIdentifier("main")
         window.title = "Studio"
-        window.titleVisibility = .hidden
-        window.toolbarStyle = .unified
+        Self.applyChrome(to: window)
         window.contentMinSize = NSSize(width: 860, height: 560)
         window.contentViewController = rootViewController
         window.setContentSize(NSSize(width: 1440, height: 900))
@@ -63,381 +59,21 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate {
 
         window.isReleasedWhenClosed = false // closing hides it; Studio keeps running (see applicationShouldTerminateAfterLastWindowClosed)
         super.init(window: window)
+    }
 
+    required init?(coder: NSCoder) { fatalError("not used") }
+
+    /// Transparent title bar over the content, no separator, an empty compact toolbar.
+    static func applyChrome(to window: NSWindow) {
+        window.titleVisibility = .hidden
+        window.titlebarAppearsTransparent = true
+        window.titlebarSeparatorStyle = .none
         let toolbar = NSToolbar(identifier: "studio.main.toolbar")
-        toolbar.delegate = self
         toolbar.displayMode = .iconOnly
         toolbar.allowsUserCustomization = false
         window.toolbar = toolbar
-
-        observation = observe { [weak self] in
-            self?.syncToolbar()
-        }
+        window.toolbarStyle = .unifiedCompact
     }
-
-    required init?(coder: NSCoder) { fatalError("not used") }
-
-    private func syncToolbar() {
-        window?.title = app.title
-        backButton?.isEnabled = app.canGoBack
-        forwardButton?.isEnabled = app.canGoForward
-        titleMenuControl?.titleText = app.title
-        inspectorButton?.toolTip = app.inspectorPresented ? "Sağ paneli gizle (⌥⌘I)" : "Sağ paneli göster (⌥⌘I)"
-    }
-
-    // MARK: NSToolbarDelegate
-
-    func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [
-            .toggleSidebar,
-            Self.sidebarSeparatorId,
-            Self.navGroupId,
-            Self.titleMenuId,
-            .flexibleSpace,
-            Self.inspectorId,
-            Self.moreMenuId,
-        ]
-    }
-
-    func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        toolbarDefaultItemIdentifiers(toolbar)
-    }
-
-    func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier itemIdentifier: NSToolbarItem.Identifier, willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
-        switch itemIdentifier {
-        case Self.sidebarSeparatorId:
-            return NSTrackingSeparatorToolbarItem(
-                identifier: Self.sidebarSeparatorId,
-                splitView: rootViewController.splitController.splitView,
-                dividerIndex: 0
-            )
-
-        case Self.navGroupId:
-            let backItem = NSToolbarItem(itemIdentifier: NSToolbarItem.Identifier("studio.back"))
-            let back = NSButton(image: NSImage(systemSymbolName: "chevron.left", accessibilityDescription: "Geri")!, target: self, action: #selector(goBack))
-            back.bezelStyle = .toolbar
-            back.toolTip = "Geri (⌘[)"
-            back.isEnabled = app.canGoBack
-            backItem.view = back
-            self.backButton = back
-
-            let forwardItem = NSToolbarItem(itemIdentifier: NSToolbarItem.Identifier("studio.forward"))
-            let forward = NSButton(image: NSImage(systemSymbolName: "chevron.right", accessibilityDescription: "İleri")!, target: self, action: #selector(goForward))
-            forward.bezelStyle = .toolbar
-            forward.toolTip = "İleri (⌘])"
-            forward.isEnabled = app.canGoForward
-            forwardItem.view = forward
-            self.forwardButton = forward
-
-            backItem.label = "Geri"
-            forwardItem.label = "İleri"
-            let group = NSToolbarItemGroup(itemIdentifier: Self.navGroupId)
-            group.subitems = [backItem, forwardItem]
-            group.label = "Gezinme"
-            return group
-
-        case Self.titleMenuId:
-            let item = NSToolbarItem(itemIdentifier: Self.titleMenuId)
-            let control = ToolbarTitleMenuControl(title: app.title) { [weak self] in
-                self?.makeTitleMenu() ?? NSMenu()
-            }
-            control.toolTip = "Sohbet, marka ve ekran seçenekleri"
-            item.label = "Başlık"
-            item.view = control
-            if #available(macOS 26.0, *) {
-                item.isBordered = false
-            }
-            self.titleMenuControl = control
-            return item
-
-        case Self.inspectorId:
-            let item = NSToolbarItem(itemIdentifier: Self.inspectorId)
-            let btn = NSButton(image: NSImage(systemSymbolName: "sidebar.right", accessibilityDescription: "Sağ panel")!, target: self, action: #selector(toggleInspector))
-            btn.bezelStyle = .toolbar
-            btn.toolTip = app.inspectorPresented ? "Sağ paneli gizle (⌥⌘I)" : "Sağ paneli göster (⌥⌘I)"
-            item.label = "Sağ panel"
-            item.view = btn
-            self.inspectorButton = btn
-            return item
-
-        case Self.moreMenuId:
-            let item = NSToolbarItem(itemIdentifier: Self.moreMenuId)
-            let btn = ToolbarMenuIconControl(symbol: "ellipsis", help: "Diğer seçenekler") { [weak self] in
-                self?.makeMoreMenu() ?? NSMenu()
-            }
-            item.label = "Diğer"
-            item.view = btn
-            return item
-
-        default:
-            return nil
-        }
-    }
-
-    @objc private func goBack() { app.goBack() }
-    @objc private func goForward() { app.goForward() }
-    @objc private func toggleInspector() { app.toggleInspector() }
-
-    // MARK: Title & More Menus
-
-    private func makeTitleMenu() -> NSMenu {
-        let menu = NSMenu()
-        switch app.route {
-        case .newChat:
-            appendBrandItems(to: menu, disabled: !app.newChat.composer.drafts.isEmpty)
-        case .posts:
-            appendBrandItems(to: menu, disabled: false)
-            let months = app.posts.months
-            if months.count > 1 {
-                menu.addItem(.separator())
-                menu.addItem(.sectionHeader(title: "Ay"))
-                let currentYear = MonthKey(Date()).year
-                for month in months {
-                    let item = NSMenuItem(title: TurkishFormat.monthTitle(month, currentYear: currentYear), action: #selector(pickMonth(_:)), keyEquivalent: "")
-                    item.target = self
-                    item.representedObject = "\(month.year)-\(month.month)"
-                    item.state = app.posts.month == month ? .on : .off
-                    menu.addItem(item)
-                }
-            }
-        case .calendar, .media:
-            appendBrandItems(to: menu, disabled: false)
-        case .conversation(let id):
-            // Claude Code: the title chevron holds the conversation's own actions.
-            for item in ConversationActions.items(app: app, conversationId: id, window: { [weak self] in self?.window }) {
-                menu.addItem(item)
-            }
-            menu.addItem(.separator())
-            let brand = app.brand(app.conversations.first { $0.id == id }?.brandId)
-            let info = NSMenuItem(title: brand.map { "Marka: \($0.name)" } ?? "Markasız sohbet", action: nil, keyEquivalent: "")
-            info.isEnabled = false
-            menu.addItem(info)
-            let postsItem = NSMenuItem(title: "Bu markanın postları", action: #selector(openCurrentConversationBrandPosts), keyEquivalent: "")
-            postsItem.target = self
-            postsItem.representedObject = brand?.id
-            postsItem.isEnabled = brand != nil
-            menu.addItem(postsItem)
-        }
-        return menu
-    }
-
-    private func appendBrandItems(to menu: NSMenu, disabled: Bool) {
-        menu.addItem(.sectionHeader(title: "Marka"))
-        for brand in app.brands {
-            let item = NSMenuItem(title: brand.name, action: #selector(pickBrand(_:)), keyEquivalent: "")
-            item.target = self
-            item.representedObject = brand.id
-            item.state = app.currentBrandId == brand.id ? .on : .off
-            item.isEnabled = !(disabled && app.currentBrandId != brand.id)
-            if disabled && app.currentBrandId != brand.id {
-                item.toolTip = "Eklenmiş görseller markaya bağlı; markayı değiştirmek için önce onları kaldır."
-            }
-            menu.addItem(item)
-        }
-        menu.addItem(.separator())
-        let addBrandItem = NSMenuItem(title: "+ Yeni Marka…", action: #selector(openNewBrandSheet), keyEquivalent: "")
-        addBrandItem.target = self
-        menu.addItem(addBrandItem)
-        if let brandId = app.currentBrandId {
-            let settingsItem = NSMenuItem(title: "Marka ayarları…", action: #selector(openCurrentBrandProfile), keyEquivalent: "")
-            settingsItem.target = self
-            settingsItem.representedObject = brandId
-            menu.addItem(settingsItem)
-        }
-    }
-
-    @objc private func openNewBrandSheet() {
-        app.newBrandPresented = true
-    }
-
-    @objc private func openCurrentBrandProfile(_ sender: NSMenuItem) {
-        guard let brandId = sender.representedObject as? EntityID else { return }
-        app.openBrandSettings(brandId)
-    }
-
-    @objc private func pickBrand(_ sender: NSMenuItem) {
-        guard let id = sender.representedObject as? EntityID else { return }
-        app.selectBrand(id)
-    }
-
-    @objc private func pickMonth(_ sender: NSMenuItem) {
-        guard let raw = sender.representedObject as? String else { return }
-        let parts = raw.split(separator: "-")
-        guard parts.count == 2, let y = Int(parts[0]), let m = Int(parts[1]) else { return }
-        app.posts.month = MonthKey(year: y, month: m)
-    }
-
-    @objc private func openCurrentConversationBrandPosts(_ sender: NSMenuItem) {
-        if let brandId = sender.representedObject as? EntityID {
-            app.currentBrandId = brandId
-        }
-        app.navigate(to: .posts)
-    }
-
-    private func makeMoreMenu() -> NSMenu {
-        let menu = NSMenu()
-        switch app.route {
-        case .conversation:
-            break
-
-        case .posts:
-            let refreshPosts = NSMenuItem(title: "Yenile", action: #selector(reloadPosts), keyEquivalent: "")
-            refreshPosts.target = self
-            menu.addItem(refreshPosts)
-            menu.addItem(.separator())
-
-        case .calendar:
-            let refreshCal = NSMenuItem(title: "Takvimi yenile", action: #selector(reloadCalendar), keyEquivalent: "")
-            refreshCal.target = self
-            menu.addItem(refreshCal)
-            menu.addItem(.separator())
-
-        case .media:
-            let refreshMedia = NSMenuItem(title: "Medyayı yenile", action: #selector(reloadMedia), keyEquivalent: "")
-            refreshMedia.target = self
-            menu.addItem(refreshMedia)
-            menu.addItem(.separator())
-
-        case .newChat:
-            break
-        }
-
-        let reloadAll = NSMenuItem(title: "Verileri yenile", action: #selector(reloadData), keyEquivalent: "")
-        reloadAll.target = self
-        menu.addItem(reloadAll)
-
-        let settingsItem = NSMenuItem(title: "Ayarlar…", action: #selector(openSettings), keyEquivalent: "")
-        settingsItem.target = self
-        menu.addItem(settingsItem)
-        return menu
-    }
-
-    @objc private func reloadPosts() {
-        Task { await app.posts.load() }
-    }
-
-    @objc private func reloadCalendar() {
-        Task { await app.calendar.load() }
-    }
-
-    @objc private func reloadMedia() {
-        Task { await app.media.load() }
-    }
-
-    @objc private func reloadData() {
-        Task { await app.load() }
-    }
-
-    @objc private func openSettings() {
-        app.openSettings()
-    }
-}
-
-// MARK: - Toolbar Custom Controls
-
-private final class ToolbarTitleMenuControl: NSControl {
-    var titleText: String {
-        didSet {
-            label.stringValue = titleText
-            setAccessibilityLabel("\(titleText): marka ve ekran seçenekleri")
-            invalidateIntrinsicContentSize()
-        }
-    }
-    private let buildMenu: () -> NSMenu
-    private let label = NSTextField(labelWithString: "")
-
-    init(title: String, buildMenu: @escaping () -> NSMenu) {
-        self.titleText = title
-        self.buildMenu = buildMenu
-        super.init(frame: .zero)
-        translatesAutoresizingMaskIntoConstraints = false
-
-        setAccessibilityElement(true)
-        setAccessibilityRole(.popUpButton)
-        setAccessibilityLabel("\(title): marka ve ekran seçenekleri")
-        label.stringValue = title
-        label.font = Theme.titleFont
-        label.textColor = Theme.textPrimary
-        label.lineBreakMode = .byTruncatingTail
-        label.maximumNumberOfLines = 1
-        label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-
-        let chevron = NSImageView()
-        chevron.image = NSImage(systemSymbolName: "chevron.down", accessibilityDescription: nil)?
-            .withSymbolConfiguration(.init(pointSize: 8, weight: .semibold))
-        chevron.contentTintColor = Theme.textSecondary
-
-        let row = NSStackView(views: [label, chevron])
-        row.orientation = .horizontal
-        row.alignment = .centerY
-        row.spacing = 5
-        row.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(row)
-
-        NSLayoutConstraint.activate([
-            heightAnchor.constraint(equalToConstant: 28),
-            widthAnchor.constraint(lessThanOrEqualToConstant: 320),
-            row.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
-            row.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
-            row.centerYAnchor.constraint(equalTo: centerYAnchor),
-        ])
-    }
-
-    required init?(coder: NSCoder) { fatalError("not used") }
-
-    override func mouseDown(with event: NSEvent) {
-        let menu = buildMenu()
-        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: -4), in: self)
-    }
-
-    override func accessibilityPerformPress() -> Bool {
-        buildMenu().popUp(positioning: nil, at: NSPoint(x: 0, y: -4), in: self)
-        return true
-    }
-
-    override func accessibilityPerformShowMenu() -> Bool { accessibilityPerformPress() }
-}
-
-private final class ToolbarMenuIconControl: NSControl {
-    private let buildMenu: () -> NSMenu
-
-    init(symbol: String, help: String, buildMenu: @escaping () -> NSMenu) {
-        self.buildMenu = buildMenu
-        super.init(frame: NSRect(x: 0, y: 0, width: 32, height: 28))
-        translatesAutoresizingMaskIntoConstraints = false
-        toolTip = help
-        setAccessibilityElement(true)
-        setAccessibilityRole(.popUpButton)
-        setAccessibilityLabel(help)
-
-        let icon = NSImageView()
-        icon.image = NSImage(systemSymbolName: symbol, accessibilityDescription: help)?
-            .withSymbolConfiguration(.init(pointSize: 13, weight: .medium))
-        icon.contentTintColor = Theme.textPrimary
-        icon.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(icon)
-
-        NSLayoutConstraint.activate([
-            widthAnchor.constraint(equalToConstant: 32),
-            heightAnchor.constraint(equalToConstant: 28),
-            icon.centerXAnchor.constraint(equalTo: centerXAnchor),
-            icon.centerYAnchor.constraint(equalTo: centerYAnchor),
-        ])
-    }
-
-    required init?(coder: NSCoder) { fatalError("not used") }
-
-    override func mouseDown(with event: NSEvent) {
-        let menu = buildMenu()
-        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: -4), in: self)
-    }
-
-    override func accessibilityPerformPress() -> Bool {
-        buildMenu().popUp(positioning: nil, at: NSPoint(x: 0, y: -4), in: self)
-        return true
-    }
-
-    override func accessibilityPerformShowMenu() -> Bool { accessibilityPerformPress() }
 }
 
 // MARK: - RootViewController & MainSplitViewController & DetailContainerViewController
@@ -448,6 +84,8 @@ final class RootViewController: NSViewController {
     let host: LocalHost?
     let splitController: MainSplitViewController
 
+    /// The window's one title bar (Claude Code): navigation, title, tools, the panel's header.
+    private(set) var topBar: TopBarView!
     private let topBanner = InlineErrorBannerView()
     /// Server / API / worker / Claude problems: one honest banner with the fixing action.
     private let connectionBanner = InlineErrorBannerView()
@@ -484,6 +122,9 @@ final class RootViewController: NSViewController {
         splitController.view.translatesAutoresizingMaskIntoConstraints = false
         root.addSubview(splitController.view)
 
+        topBar = TopBarView(app: app, split: splitController)
+        root.addSubview(topBar)
+
         searchOverlay.isHidden = true
         root.addSubview(searchOverlay)
 
@@ -509,6 +150,11 @@ final class RootViewController: NSViewController {
             splitController.view.topAnchor.constraint(equalTo: root.topAnchor),
             splitController.view.bottomAnchor.constraint(equalTo: root.bottomAnchor),
 
+            topBar.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+            topBar.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            topBar.topAnchor.constraint(equalTo: root.topAnchor),
+            topBar.heightAnchor.constraint(equalToConstant: Theme.topBarHeight),
+
             searchOverlay.leadingAnchor.constraint(equalTo: root.leadingAnchor),
             searchOverlay.trailingAnchor.constraint(equalTo: root.trailingAnchor),
             searchOverlay.topAnchor.constraint(equalTo: root.topAnchor),
@@ -520,7 +166,7 @@ final class RootViewController: NSViewController {
             settingsBackdrop.bottomAnchor.constraint(equalTo: root.bottomAnchor),
 
             bannerStack.centerXAnchor.constraint(equalTo: root.centerXAnchor),
-            bannerStack.topAnchor.constraint(equalTo: root.safeAreaLayoutGuide.topAnchor, constant: 8),
+            bannerStack.topAnchor.constraint(equalTo: topBar.bottomAnchor, constant: 8),
             bannerStack.leadingAnchor.constraint(greaterThanOrEqualTo: root.leadingAnchor, constant: 16),
             topBanner.widthAnchor.constraint(lessThanOrEqualToConstant: 420),
             connectionBanner.widthAnchor.constraint(lessThanOrEqualToConstant: 560),
@@ -565,7 +211,7 @@ final class RootViewController: NSViewController {
             if postDetailOverlay?.model !== detailModel {
                 postDetailOverlay?.removeFromSuperview()
                 let overlay = PostDetailOverlayView(model: detailModel)
-                view.addSubview(overlay, positioned: .below, relativeTo: searchOverlay)
+                view.addSubview(overlay, positioned: .below, relativeTo: topBar)
                 NSLayoutConstraint.activate([
                     overlay.leadingAnchor.constraint(equalTo: view.leadingAnchor),
                     overlay.trailingAnchor.constraint(equalTo: view.trailingAnchor),
@@ -695,18 +341,29 @@ extension RootViewController {
     }
 }
 
+/// Hairline dividers in Studio's own colour (the top bar continues them up).
+final class StudioSplitView: NSSplitView {
+    override var dividerColor: NSColor { Theme.hairline }
+}
+
 /// Three columns, Claude Code style: a flush sidebar (its own background, full height under the
 /// title bar), the content, and the toggleable right panel. Collapsed states follow (and are
-/// saved through) `AppModel.sidebarPresented` / `inspectorPresented`.
+/// saved through) `AppModel.sidebarPresented` / `inspectorPresented`; the panel's "expand"
+/// follows `AppModel.inspectorExpanded`.
 final class MainSplitViewController: NSSplitViewController {
     private unowned let app: AppModel
     let sidebarItem: NSSplitViewItem
     let contentItem: NSSplitViewItem
     let inspectorItem: NSSplitViewItem
 
+    /// Normal and expanded right panel: the most it can be dragged to.
+    static let inspectorMaximum: CGFloat = 440
+    static let inspectorExpandedMaximum: CGFloat = 720
+
     private var observation: ObservationToken?
     private var kvoTokens: [NSKeyValueObservation] = []
     private var appliedInitialWidths = false
+    private var appliedExpanded = false
 
     init(app: AppModel, settings: AppSettings) {
         self.app = app
@@ -727,17 +384,27 @@ final class MainSplitViewController: NSSplitViewController {
 
         contentItem = NSSplitViewItem(viewController: detailVC)
         contentItem.minimumThickness = 420
+        contentItem.titlebarSeparatorStyle = .none
         if #available(macOS 26.0, *) {
             contentItem.automaticallyAdjustsSafeAreaInsets = true
         }
 
-        inspectorItem = NSSplitViewItem(inspectorWithViewController: inspectorVC)
+        // A plain item too: `inspectorWithViewController` wraps the panel in a floating Liquid
+        // Glass container; Claude Code's right panel is flat and flush like the sidebar.
+        inspectorItem = NSSplitViewItem(viewController: inspectorVC)
         inspectorItem.minimumThickness = 260
-        inspectorItem.maximumThickness = 380
+        inspectorItem.maximumThickness = Self.inspectorMaximum
         inspectorItem.canCollapse = true
+        inspectorItem.holdingPriority = NSLayoutConstraint.Priority(260)
+        inspectorItem.allowsFullHeightLayout = true
+        inspectorItem.titlebarSeparatorStyle = .none
         inspectorItem.isCollapsed = !app.inspectorPresented
 
         super.init(nibName: nil, bundle: nil)
+        let split = StudioSplitView()
+        split.isVertical = true
+        split.dividerStyle = .thin
+        splitView = split
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
@@ -760,6 +427,11 @@ final class MainSplitViewController: NSSplitViewController {
             let wantInspectorCollapsed = !self.app.inspectorPresented
             if self.inspectorItem.isCollapsed != wantInspectorCollapsed {
                 self.inspectorItem.isCollapsed = wantInspectorCollapsed
+            }
+            let expanded = self.app.inspectorExpanded
+            if expanded != self.appliedExpanded {
+                self.appliedExpanded = expanded
+                self.applyInspectorWidth()
             }
         }
 
@@ -802,6 +474,20 @@ final class MainSplitViewController: NSSplitViewController {
         if !inspectorItem.isCollapsed {
             splitView.setPosition(splitView.bounds.width - Theme.inspectorWidth - splitView.dividerThickness, ofDividerAt: 1)
         }
+    }
+
+    /// The panel's header "expand": wider, or back to `Theme.inspectorWidth`.
+    private func applyInspectorWidth() {
+        let expanded = app.inspectorExpanded
+        inspectorItem.maximumThickness = expanded ? Self.inspectorExpandedMaximum : Self.inspectorMaximum
+        guard !inspectorItem.isCollapsed, splitView.bounds.width > 0 else { return }
+        let target = expanded ? Theme.inspectorExpandedWidth : Theme.inspectorWidth
+        splitView.setPosition(splitView.bounds.width - target - splitView.dividerThickness, ofDividerAt: 1)
+    }
+
+    /// Width of the right panel as laid out now (0 when closed; tests).
+    var inspectorWidth: CGFloat {
+        inspectorItem.isCollapsed ? 0 : inspectorItem.viewController.view.frame.width
     }
 
     override func toggleSidebar(_ sender: Any?) {

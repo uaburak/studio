@@ -20,6 +20,58 @@ enum SidebarItem: Hashable {
     case conversation(EntityID)
 }
 
+/// What the right panel shows. Claude Code style: each top bar icon opens its own pane, and the
+/// pane's title and actions sit in the top bar above the panel.
+enum RightPanelPane: String, CaseIterable, Codable, Sendable {
+    /// Ortam, Kullanım, Bağlam, Hesaplar.
+    case details
+    /// Background jobs (Claude Code's "Background tasks").
+    case jobs
+
+    var title: String {
+        switch self {
+        case .details: "Ayrıntılar"
+        case .jobs: "Arka plan işleri"
+        }
+    }
+}
+
+/// The top bar's mode pill (Claude Code's Chat / Code).
+enum AppMode: CaseIterable, Equatable, Sendable {
+    case chat
+    case posts
+
+    var title: String {
+        switch self {
+        case .chat: "Sohbet"
+        case .posts: "Postlar"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .chat: "bubble.left"
+        case .posts: "square.grid.2x2"
+        }
+    }
+
+    var help: String {
+        switch self {
+        case .chat: "Sohbet: son sohbete dön ya da yeni sohbet (⌘N)"
+        case .posts: "Postlar (⇧⌘P)"
+        }
+    }
+
+    /// The mode a screen belongs to (Takvim and Medya belong to neither).
+    static func of(_ route: Route) -> AppMode? {
+        switch route {
+        case .newChat, .conversation: .chat
+        case .posts: .posts
+        case .calendar, .media: nil
+        }
+    }
+}
+
 struct BrandProfileTarget: Equatable {
     var brandId: EntityID
     var startAnalysis: Bool = false
@@ -59,6 +111,16 @@ final class AppModel {
     var inspectorPresented = true {
         didSet { persistSession() }
     }
+    /// The right panel's pane (top bar icons switch it).
+    var inspectorPane: RightPanelPane = .details {
+        didSet { persistSession() }
+    }
+    /// The right panel's "expand" (wider) state, from its header in the top bar.
+    var inspectorExpanded = false
+    /// "Bitenleri temizle": finished jobs up to this moment leave the jobs pane.
+    var jobsClearedAt: Date?
+    /// The conversation shown last (the mode pill's Sohbet goes back to it).
+    private(set) var lastConversationId: EntityID?
     var expandedBrands: Set<EntityID> = []
     /// Brand for a new chat and the posts screen.
     var currentBrandId: EntityID? {
@@ -160,6 +222,7 @@ final class AppModel {
         if let saved = sessionStore.load() {
             sidebarPresented = saved.sidebarPresented
             inspectorPresented = saved.inspectorPresented
+            inspectorPane = saved.pane
         }
     }
 
@@ -418,10 +481,62 @@ final class AppModel {
 
     private func didNavigate() {
         detail = nil
-        if case .conversation(let id) = route, let brand = conversations.first(where: { $0.id == id })?.brandId {
-            currentBrandId = brand
-            expandedBrands.insert(brand)
+        if case .conversation(let id) = route {
+            lastConversationId = id
+            if let brand = conversations.first(where: { $0.id == id })?.brandId {
+                currentBrandId = brand
+                expandedBrands.insert(brand)
+            }
         }
+    }
+
+    // MARK: Top bar: modes and the right panel's panes
+
+    /// The mode pill's selection (nil on Takvim and Medya).
+    var mode: AppMode? { AppMode.of(route) }
+
+    /// Sohbet: back to the last conversation (or a new chat); Postlar: the posts board.
+    func switchMode(_ next: AppMode) {
+        guard mode != next else { return }
+        switch next {
+        case .chat:
+            if let id = lastConversationId, conversations.contains(where: { $0.id == id }) {
+                navigate(to: .conversation(id))
+            } else {
+                startNewChat()
+            }
+        case .posts:
+            navigate(to: .posts)
+        }
+    }
+
+    /// A top bar icon: opens its pane, or closes the panel when that pane is already open.
+    func togglePanel(_ pane: RightPanelPane) {
+        if inspectorPresented && inspectorPane == pane {
+            inspectorPresented = false
+        } else {
+            inspectorPane = pane
+            inspectorPresented = true
+        }
+    }
+
+    /// The pane's "×" in the top bar.
+    func closePanel() {
+        inspectorPresented = false
+    }
+
+    func toggleInspectorExpanded() {
+        inspectorExpanded.toggle()
+    }
+
+    /// "Bitenleri temizle" in the jobs pane's header (the jobs stay on the server).
+    func clearFinishedJobs(now: Date = Date()) {
+        jobsClearedAt = now
+    }
+
+    /// The jobs the jobs pane lists for the working brand (finished ones for a day, until cleared).
+    func panelJobs(now: Date = Date()) -> JobsPaneContent {
+        JobsPaneContent.make(jobs: jobBoard.jobs, brandId: routeBrandId, clearedAt: jobsClearedAt, now: now)
     }
 
     /// `--route posts` or `--route "conversation:Kasım planı"`: open a screen at launch
@@ -492,7 +607,7 @@ final class AppModel {
     // MARK: Session (window state restoration)
 
     var sessionSnapshot: SessionSnapshot {
-        SessionSnapshot(route: route, brandId: currentBrandId, sidebarPresented: sidebarPresented, inspectorPresented: inspectorPresented)
+        SessionSnapshot(route: route, brandId: currentBrandId, sidebarPresented: sidebarPresented, inspectorPresented: inspectorPresented, inspectorPane: inspectorPane)
     }
 
     private func persistSession() {
@@ -515,9 +630,12 @@ final class AppModel {
         guard restored != route else { return }
         // Not a navigation: the history starts empty.
         route = restored
-        if case .conversation(let id) = restored, let brand = conversations.first(where: { $0.id == id })?.brandId {
-            currentBrandId = brand
-            expandedBrands.insert(brand)
+        if case .conversation(let id) = restored {
+            lastConversationId = id
+            if let brand = conversations.first(where: { $0.id == id })?.brandId {
+                currentBrandId = brand
+                expandedBrands.insert(brand)
+            }
         }
     }
 

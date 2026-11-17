@@ -118,8 +118,9 @@ struct SidebarLayoutTests {
         #expect(selectedRow.interiorBackgroundStyle == .normal, "grey selection keeps normal text colours")
 
         let labels = all(NSTextField.self, in: view).map(\.stringValue)
-        #expect(labels.contains("Burak · MTM Agro"))
-        #expect(labels.contains("Örnek veri"), "Mac server status under the name")
+        #expect(labels.contains("Burak · MTM Agro"), "one line: name · brand (Claude Code footer)")
+        #expect(!labels.contains("Örnek veri"), "no second status line under the name")
+        #expect(all(NSControl.self, in: view).contains { $0.toolTip?.contains("Örnek veri") == true }, "the Mac server status stays in the footer's tooltip and menu")
 
         view.layoutSubtreeIfNeeded()
         #expect(ambiguous(in: view).isEmpty, "ambiguous: \(ambiguous(in: view))")
@@ -284,7 +285,8 @@ struct InspectorContentTests {
         view.frame = CGRect(x: 0, y: 0, width: Theme.inspectorWidth, height: 900)
         view.layoutSubtreeIfNeeded()
         await settle()
-        #expect(controller.sectionTitles == ["Ortam", "Kullanım", "Hesaplar", "İşler"])
+        #expect(controller.shownPane == .details)
+        #expect(controller.sectionTitles == ["Ortam", "Kullanım", "Hesaplar"], "jobs moved to their own pane")
 
         let meters = all(UsageMeterView.self, in: view)
         #expect(meters.map(\.meter.title) == ["5 saatlik", "Haftalık"])
@@ -299,13 +301,42 @@ struct InspectorContentTests {
         let conversation = app.conversationModel(SampleData.hasatConversation)
         await waitUntil { conversation.state != nil }
         await settle()
-        #expect(controller.sectionTitles == ["Ortam", "Kullanım", "Bağlam", "Hesaplar", "İşler"])
+        #expect(controller.sectionTitles == ["Ortam", "Kullanım", "Bağlam", "Hesaplar"])
         #expect(all(PanelRowView.self, in: view).contains { $0.labelText == "Görseller" && $0.valueText == "2" })
 
         view.layoutSubtreeIfNeeded()
         let usageBars = all(UsageBarView.self, in: view)
         #expect(usageBars.count == 2)
         #expect(usageBars.allSatisfy { $0.frame.height == 4 && $0.frame.width > 200 })
+        #expect(ambiguous(in: view).isEmpty, "ambiguous: \(ambiguous(in: view))")
+    }
+
+    @Test func jobsPaneListsRunningQueuedAndFoldedFinishedJobs() async throws {
+        let (app, _) = await makeApp()
+        let controller = InfoPanelViewController(app: app)
+        let view = controller.view
+        view.frame = CGRect(x: 0, y: 0, width: Theme.inspectorWidth, height: 900)
+        app.togglePanel(.jobs)
+        await settle()
+        view.layoutSubtreeIfNeeded()
+        #expect(controller.shownPane == .jobs)
+        #expect(controller.sectionTitles == ["Çalışıyor", "Sırada", "Bitti"])
+        #expect(all(JobsGroupLabel.self, in: view).map { "\($0.title) \($0.count)" } == ["Çalışıyor 1", "Sırada 1"])
+        let cards = all(JobCardView.self, in: view)
+        #expect(cards.map(\.titleText) == ["Bayi buluşması", "Uygulama zamanı"])
+        #expect(cards.last?.valueText == "sırada")
+        #expect(cards.allSatisfy { $0.frame.height == 42 && $0.frame.width > 300 })
+        #expect(!all(PanelRowView.self, in: view).contains { $0.labelText == "Soru cevap" }, "finished jobs start folded")
+
+        // "› Bitti 3" unfolds; the header's trash clears them.
+        let toggle = try #require(all(JobsDisclosureRowView.self, in: view).first)
+        toggle.performTap()
+        await settle()
+        #expect(all(PanelRowView.self, in: view).filter { $0.valueText == "bitti" }.count == 3)
+        app.clearFinishedJobs()
+        await settle()
+        #expect(controller.sectionTitles == ["Çalışıyor", "Sırada"])
+        view.layoutSubtreeIfNeeded()
         #expect(ambiguous(in: view).isEmpty, "ambiguous: \(ambiguous(in: view))")
     }
 }
@@ -323,7 +354,7 @@ struct PanelToggleTests {
         split.view.layoutSubtreeIfNeeded()
         #expect(split.splitViewItems.count == 3)
         #expect(split.sidebarItem.behavior == .default, "flush sidebar, not a floating sidebar panel")
-        #expect(split.inspectorItem.behavior == .inspector)
+        #expect(split.inspectorItem.behavior == .default, "flush right panel, not a floating glass inspector")
         #expect(!split.sidebarItem.isCollapsed)
         #expect(!split.inspectorItem.isCollapsed)
 
@@ -353,9 +384,12 @@ struct PanelToggleTests {
     }
 
     @Test func themeMetricsMatchTheReference() {
-        #expect(Theme.sidebarWidth == 260)
-        #expect(Theme.inspectorWidth == 300)
-        #expect(SidebarRow.action(.newChat).height == 32)
+        #expect(Theme.sidebarWidth == 265)
+        #expect(Theme.inspectorWidth == 357)
+        #expect(Theme.topBarHeight == 40)
+        #expect(SidebarRow.action(.newChat).height == 34)
+        #expect(SidebarRow.groupHeader(SidebarGroup(brandId: nil, title: "x", expanded: true, current: false)).height == 34)
+        #expect(SidebarRow.conversation(Conversation(id: "c", brandId: nil, title: "t", lastActivityAt: clock, createdAt: clock, updatedAt: clock)).height == 34)
         #expect(SidebarRow.conversation(Conversation(id: "c", brandId: nil, title: "t", lastActivityAt: clock, createdAt: clock, updatedAt: clock)).isHoverable)
         #expect(!SidebarRow.groupHeader(SidebarGroup(brandId: nil, title: "x", expanded: true, current: false)).isHoverable)
     }

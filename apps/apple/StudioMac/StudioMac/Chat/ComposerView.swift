@@ -3,10 +3,11 @@ import QuartzCore
 import StudioKit
 import UniformTypeIdentifiers
 
-/// Pure AppKit floating Liquid Glass composer:
+/// Pure AppKit floating Liquid Glass composer (Claude Code's input: a 44 pt rounded field,
+/// `Theme.composerRadius`, raised grey glass with a 1 pt edge):
 /// - `@` mention autocomplete glass popup above the field
 /// - horizontal attachment chip strip (upload progress, double-click rename, retry, remove)
-/// - `+` attach, auto-growing `ComposerEditor`, mic dictation, send (`return`) / stop (`stop.fill`)
+/// - `+` attach, auto-growing `ComposerEditor`, send (orange ↑) / stop (■), mic dictation
 /// - drag-and-drop image/file support.
 final class ComposerControlView: NSView {
     let model: ComposerModel
@@ -18,10 +19,10 @@ final class ComposerControlView: NSView {
     var onSend: () -> Void
 
     private let mergeContainer = GlassMergeContainerView(spacing: 10)
-    private let suggestionGlass = GlassContainerView(cornerRadius: 18)
+    private let suggestionGlass = GlassContainerView(cornerRadius: Theme.composerRadius)
     private let suggestionStack = NSStackView()
 
-    private let composerGlass = GlassContainerView(cornerRadius: Theme.composerHeight / 2, interactive: true)
+    private let composerGlass = GlassContainerView(cornerRadius: Theme.composerRadius, interactive: true, tint: Theme.composerGlassTint)
     private let borderOverlay = ComposerBorderOverlayView()
     private let fieldStack = NSStackView()
     private let draftsScroll = NSScrollView()
@@ -29,9 +30,10 @@ final class ComposerControlView: NSView {
     private let draftsRow = NSStackView()
     private let errorsStack = NSStackView()
 
-    private let attachButton = GlyphButton(symbol: "plus", size: 14)
-    private let dictateButton = GlyphButton(symbol: "mic", size: 13)
-    private let actionButton = GlyphButton(symbol: "return", size: 13)
+    private let attachButton = GlyphButton(symbol: "plus", size: 15)
+    private let dictateButton = GlyphButton(symbol: "mic", size: 14)
+    /// Send (↑ in an orange circle while there is something to send) or stop (■ while a reply runs).
+    private let actionButton = GlyphButton(symbol: "arrow.up.circle.fill", size: 19)
 
     private var observation: ObservationToken?
     private var renderedDrafts: [ComposerModel.Draft] = []
@@ -125,10 +127,12 @@ final class ComposerControlView: NSView {
 
         actionButton.onAction = { [weak self] in self?.performPrimaryAction() }
 
-        let inputRow = NSStackView(views: [attachButton, editor.scrollView, dictateButton, actionButton])
+        // Claude Code: "+" · text · send/stop · mic.
+        let inputRow = NSStackView(views: [attachButton, editor.scrollView, actionButton, dictateButton])
         inputRow.orientation = .horizontal
         inputRow.alignment = .bottom
-        inputRow.spacing = 10
+        inputRow.spacing = 8
+        inputRow.setCustomSpacing(6, after: actionButton)
         inputRow.translatesAutoresizingMaskIntoConstraints = false
 
         fieldStack.orientation = .vertical
@@ -145,10 +149,10 @@ final class ComposerControlView: NSView {
 
         NSLayoutConstraint.activate([
             composerGlass.heightAnchor.constraint(greaterThanOrEqualToConstant: Theme.composerHeight),
-            fieldStack.leadingAnchor.constraint(equalTo: composerGlass.contentContainer.leadingAnchor, constant: 12),
-            fieldStack.trailingAnchor.constraint(equalTo: composerGlass.contentContainer.trailingAnchor, constant: -12),
-            fieldStack.topAnchor.constraint(equalTo: composerGlass.contentContainer.topAnchor, constant: 10),
-            fieldStack.bottomAnchor.constraint(equalTo: composerGlass.contentContainer.bottomAnchor, constant: -10),
+            fieldStack.leadingAnchor.constraint(equalTo: composerGlass.contentContainer.leadingAnchor, constant: 9),
+            fieldStack.trailingAnchor.constraint(equalTo: composerGlass.contentContainer.trailingAnchor, constant: -9),
+            fieldStack.topAnchor.constraint(equalTo: composerGlass.contentContainer.topAnchor, constant: 8.5),
+            fieldStack.bottomAnchor.constraint(equalTo: composerGlass.contentContainer.bottomAnchor, constant: -8.5),
             inputRow.widthAnchor.constraint(equalTo: fieldStack.widthAnchor),
             draftsScroll.widthAnchor.constraint(equalTo: fieldStack.widthAnchor),
             borderOverlay.leadingAnchor.constraint(equalTo: composerGlass.leadingAnchor),
@@ -245,18 +249,16 @@ final class ComposerControlView: NSView {
         attachButton.isEnabled = model.canAttach
         attachButton.toolTip = model.attachDisabledReason ?? "Görsel ekle (yapıştır ya da sürükle de olur)"
 
+        let style = ComposerActionStyle.make(running: onStop != nil, busy: isBusy, canSend: model.canSend)
+        actionButton.showsSpinner = style.spinner
+        actionButton.symbolName = style.symbol
+        actionButton.pointSize = style.pointSize
+        actionButton.symbolTint = style.tint
+        actionButton.isEnabled = style.enabled
         if onStop != nil {
-            actionButton.showsSpinner = false
-            actionButton.symbolName = "stop.fill"
-            actionButton.pointSize = 10
-            actionButton.isEnabled = true
             actionButton.toolTip = "Yanıtı durdur"
             actionButton.setAccessibilityLabel("Yanıtı durdur")
         } else {
-            actionButton.symbolName = "return"
-            actionButton.pointSize = 13
-            actionButton.showsSpinner = isBusy
-            actionButton.isEnabled = model.canSend && !isBusy
             actionButton.toolTip = model.sendBlockedReason ?? "Gönder (↩), yeni satır (⇧↩)"
             actionButton.setAccessibilityLabel("Gönder")
         }
@@ -311,6 +313,33 @@ final class ComposerControlView: NSView {
     }
 }
 
+// MARK: - Send / stop button
+
+/// How the composer's send / stop button looks (tested without views).
+struct ComposerActionStyle: Equatable {
+    var symbol: String
+    var pointSize: CGFloat
+    var tint: NSColor
+    var enabled: Bool
+    var spinner: Bool
+
+    /// Running reply: a small ■ in the primary colour (Claude Code). Otherwise ↑ in an orange
+    /// circle when there is something to send, grey when not; a spinner while sending.
+    static func make(running: Bool, busy: Bool, canSend: Bool) -> ComposerActionStyle {
+        if running {
+            return ComposerActionStyle(symbol: "stop.fill", pointSize: 11, tint: Theme.textPrimary, enabled: true, spinner: false)
+        }
+        let ready = canSend && !busy
+        return ComposerActionStyle(
+            symbol: "arrow.up.circle.fill",
+            pointSize: 19,
+            tint: ready ? Theme.accent : Theme.textTertiary,
+            enabled: ready,
+            spinner: busy
+        )
+    }
+}
+
 // MARK: - Composer Border Overlay
 
 private final class ComposerBorderOverlayView: NSView {
@@ -345,10 +374,10 @@ private final class ComposerBorderOverlayView: NSView {
     private func updateBorder() {
         let inset = bounds.insetBy(dx: 0.5, dy: 0.5)
         guard inset.width > 0, inset.height > 0 else { return }
-        let radius = min(Theme.composerHeight / 2, inset.height / 2)
+        let radius = min(Theme.composerRadius, inset.height / 2)
         shapeLayer.frame = bounds
         shapeLayer.path = CGPath(roundedRect: inset, cornerWidth: radius, cornerHeight: radius, transform: nil)
-        shapeLayer.strokeColor = resolvedCGColor(isDropTargeted ? Theme.textSecondary : Theme.hairline)
+        shapeLayer.strokeColor = resolvedCGColor(isDropTargeted ? Theme.textSecondary : Theme.composerBorder)
         shapeLayer.lineDashPattern = isDropTargeted ? [4, 3] : nil
     }
 }
@@ -623,7 +652,8 @@ private final class MentionSuggestionRowView: ThemedView {
 
     override func layout() {
         super.layout()
-        cornerRadius = bounds.height / 2
+        // Nested in the popup's `Theme.composerRadius` corners with a 6 pt inset.
+        cornerRadius = 8
     }
 
     override func mouseDown(with event: NSEvent) {

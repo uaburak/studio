@@ -1,9 +1,11 @@
 import AppKit
 import StudioKit
 
-/// Pure AppKit status line under the chat composer (and Start composer), Claude Code style:
-/// - Left: `MacStatusControlView` (`● Mac hazır · Gemini hazır` / Claude status)
-/// - Right: the usage ring (popover) and one "Opus Orta" control: model + effort in one menu.
+/// Pure AppKit status line under the chat composer (and Start composer), Claude Code style
+/// ("Opus 5.5  Medium   ◌" on the right):
+/// - Right: one "Opus Orta" control (model in the primary colour, effort in grey; model + effort
+///   in one menu), then the usage ring (popover; the percent appears only near the limit).
+/// - Left, only when something is wrong: `MacStatusControlView` (`● Mac çevrimdışı`, Claude sign-in…).
 final class ComposerFooterControlView: NSView {
     private unowned let app: AppModel
     private let getChoice: @MainActor () -> AgentChoice
@@ -51,14 +53,20 @@ final class ComposerFooterControlView: NSView {
 
         agentButton.buildMenu = { [weak self] in self?.makeAgentMenu() ?? NSMenu() }
         macStatus.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        macStatus.isHidden = true
+        macStatus.onChange = { [weak macStatus] in
+            guard let macStatus else { return }
+            macStatus.isHidden = !macStatus.needsAttention
+        }
 
         let spacer = NSView()
         spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
 
-        let row = NSStackView(views: [macStatus, spacer, usageControl, agentButton])
+        let row = NSStackView(views: [macStatus, spacer, agentButton, usageControl])
         row.orientation = .horizontal
         row.alignment = .centerY
-        row.spacing = 12
+        row.spacing = 14
+        row.detachesHiddenViews = true
         row.translatesAutoresizingMaskIntoConstraints = false
         addSubview(row)
 
@@ -84,6 +92,10 @@ final class ComposerFooterControlView: NSView {
         macStatus.refresh(presenceOverride: presence)
         usageControl.refresh(presence: presence)
     }
+
+    /// Texts of the line (tests): the model + effort, and the Mac status when it is shown.
+    var agentTitle: String { agentButton.titleText }
+    var macStatusShown: Bool { !macStatus.isHidden }
 
     /// One menu, Claude Code style: the models (Gemini, Claude), then the thinking effort.
     private func makeAgentMenu() -> NSMenu {
@@ -143,13 +155,12 @@ enum ComposerStatusText {
 
 // MARK: - FooterMenuButton
 
-/// Grey "Opus Orta ⌄" text control that pops its menu above itself.
+/// "Opus  Orta": the model in the primary colour, the effort in grey; pops its menu above itself.
 private final class FooterMenuButton: NSControl {
     var buildMenu: (() -> NSMenu)?
 
     private let helpText: String
     private let label = NSTextField(labelWithString: "")
-    private let chevron = NSImageView()
 
     init(help: String) {
         self.helpText = help
@@ -159,15 +170,11 @@ private final class FooterMenuButton: NSControl {
         setAccessibilityElement(true)
         setAccessibilityRole(.popUpButton)
 
-        label.font = Theme.smallFont
-        label.textColor = Theme.textSecondary
+        label.font = Theme.captionFont
+        label.textColor = Theme.textPrimary
         label.setContentCompressionResistancePriority(.required, for: .horizontal)
 
-        chevron.image = NSImage(systemSymbolName: "chevron.down", accessibilityDescription: nil)?
-            .withSymbolConfiguration(.init(pointSize: 7, weight: .semibold))
-        chevron.contentTintColor = Theme.textTertiary
-
-        let row = NSStackView(views: [label, chevron])
+        let row = NSStackView(views: [label])
         row.orientation = .horizontal
         row.alignment = .centerY
         row.spacing = 4
@@ -184,15 +191,15 @@ private final class FooterMenuButton: NSControl {
 
     required init?(coder: NSCoder) { fatalError("not used") }
 
-    /// Model in the secondary grey, effort a step lighter.
+    /// Model in the primary colour, effort in grey (Claude Code's "Opus 5.5  Medium").
     func setTitle(model: String, effort: String) {
         let text = NSMutableAttributedString(string: model, attributes: [
-            .font: NSFont.systemFont(ofSize: 11, weight: .medium),
-            .foregroundColor: Theme.textSecondary,
+            .font: Theme.captionFont,
+            .foregroundColor: Theme.textPrimary,
         ])
         text.append(NSAttributedString(string: "  " + effort, attributes: [
-            .font: Theme.smallFont,
-            .foregroundColor: Theme.textTertiary,
+            .font: Theme.captionFont,
+            .foregroundColor: Theme.textSecondary,
         ]))
         label.attributedStringValue = text
         setAccessibilityLabel("\(helpText): \(model) \(effort)")
@@ -273,10 +280,11 @@ private final class UsageIndicatorControlView: NSControl {
         label.font = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular)
         label.textColor = Theme.textSecondary
 
-        let row = NSStackView(views: [ring, label])
+        let row = NSStackView(views: [label, ring])
         row.orientation = .horizontal
         row.alignment = .centerY
-        row.spacing = 4
+        row.spacing = 5
+        row.detachesHiddenViews = true
         row.translatesAutoresizingMaskIntoConstraints = false
         addSubview(row)
 
@@ -293,15 +301,18 @@ private final class UsageIndicatorControlView: NSControl {
     func refresh(presence: WorkerPresence?) {
         if let usage = presence?.usage, let top = usage.mostUsed {
             let percent = top.effectivePercent
-            ring.isHidden = false
             ring.fraction = percent / 100
             ring.strokeColor = UsageIndicator.color(percent)
             label.stringValue = UsageIndicator.percentText(percent)
-            label.textColor = percent >= UsageIndicator.warnPercent ? Theme.accent : Theme.textSecondary
-            toolTip = "Kullanım ve yapay zekâ bağlantıları"
+            label.textColor = Theme.accent
+            // Claude Code shows the ring alone; the percent appears near the limit.
+            label.isHidden = percent < UsageIndicator.warnPercent
+            toolTip = "Kullanım \(UsageIndicator.percentText(percent)) · yapay zekâ bağlantıları"
             setAccessibilityLabel("Abonelik kullanımı \(UsageIndicator.percentText(percent))")
         } else {
-            ring.isHidden = true
+            ring.fraction = 0
+            ring.strokeColor = Theme.textTertiary
+            label.isHidden = true
             label.stringValue = "—"
             label.textColor = Theme.textSecondary
             toolTip = "Yapay zekâ bağlantıları ve kullanım durumu"
@@ -334,8 +345,8 @@ private final class UsageRingView: NSView {
         super.init(frame: frameRect)
         translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([
-            widthAnchor.constraint(equalToConstant: 11),
-            heightAnchor.constraint(equalToConstant: 11),
+            widthAnchor.constraint(equalToConstant: 13),
+            heightAnchor.constraint(equalToConstant: 13),
         ])
     }
 

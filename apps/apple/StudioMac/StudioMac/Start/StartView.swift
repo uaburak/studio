@@ -3,10 +3,11 @@ import StudioKit
 
 /// Pure AppKit Start screen (04):
 /// - Centred `"Ne üretelim?"` (30pt bold)
-/// - `ComposerControlView` (max width 566) + `ComposerFooterControlView` underneath (Mac status, usage ring, "Opus Orta" model + effort menu)
+/// - `ComposerControlView` (max width `composerWidth`) + `ComposerFooterControlView` underneath ("Opus Orta" model + effort menu, usage ring; Mac status only when something is wrong)
 /// - Inline error banner
 /// - Three suggestion pills (`"Bu ayın postlarını üret"`, `"Yeni ürün duyurusu"`, `"Bu haftayı planla"`).
 final class StartViewController: NSViewController {
+    static let composerWidth: CGFloat = 640
     private unowned let app: AppModel
     private var composerView: ComposerControlView!
     private var footerView: ComposerFooterControlView!
@@ -50,8 +51,8 @@ final class StartViewController: NSViewController {
         footerWrapper.translatesAutoresizingMaskIntoConstraints = false
         footerWrapper.addSubview(footerView)
         NSLayoutConstraint.activate([
-            footerView.leadingAnchor.constraint(equalTo: footerWrapper.leadingAnchor, constant: 10),
-            footerView.trailingAnchor.constraint(equalTo: footerWrapper.trailingAnchor, constant: -10),
+            footerView.leadingAnchor.constraint(equalTo: footerWrapper.leadingAnchor, constant: 14),
+            footerView.trailingAnchor.constraint(equalTo: footerWrapper.trailingAnchor, constant: -14),
             footerView.topAnchor.constraint(equalTo: footerWrapper.topAnchor),
             footerView.bottomAnchor.constraint(equalTo: footerWrapper.bottomAnchor),
         ])
@@ -98,7 +99,7 @@ final class StartViewController: NSViewController {
         centerStack.translatesAutoresizingMaskIntoConstraints = false
         root.addSubview(centerStack)
 
-        let widthPref = composerGroup.widthAnchor.constraint(equalToConstant: 566)
+        let widthPref = composerGroup.widthAnchor.constraint(equalToConstant: Self.composerWidth)
         widthPref.priority = .defaultHigh
 
         NSLayoutConstraint.activate([
@@ -108,10 +109,10 @@ final class StartViewController: NSViewController {
             centerStack.trailingAnchor.constraint(lessThanOrEqualTo: root.trailingAnchor, constant: -Theme.columnMinMargin),
 
             widthPref,
-            composerGroup.widthAnchor.constraint(lessThanOrEqualToConstant: 566),
+            composerGroup.widthAnchor.constraint(lessThanOrEqualToConstant: Self.composerWidth),
             composerView.widthAnchor.constraint(equalTo: composerGroup.widthAnchor),
             footerWrapper.widthAnchor.constraint(equalTo: composerGroup.widthAnchor),
-            errorBanner.widthAnchor.constraint(lessThanOrEqualToConstant: 566),
+            errorBanner.widthAnchor.constraint(lessThanOrEqualToConstant: Self.composerWidth),
             pairingContainer.widthAnchor.constraint(equalTo: composerGroup.widthAnchor),
         ])
 

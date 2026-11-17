@@ -78,13 +78,14 @@ enum SidebarRow: Equatable {
     case emptyGroup
     case loadError(String)
 
+    /// Claude Code: every row 34 pt (a 32 pt rounded fill), group headers included.
     var height: CGFloat {
         switch self {
-        case .action: 32
+        case .action: 34
         case .spacer(let height): height
-        case .groupHeader: 28
-        case .conversation: 30
-        case .emptyGroup: 26
+        case .groupHeader: 34
+        case .conversation: 34
+        case .emptyGroup: 28
         case .loadError: 62
         }
     }
@@ -100,6 +101,8 @@ enum SidebarRow: Equatable {
 
 enum SidebarRows {
     static let unbrandedTitle = "Markasız"
+    /// Space after the actions and between history groups.
+    static let groupSpacing: CGFloat = 18
 
     /// Actions, then the history grouped by brand (sidebar order), then unbranded conversations.
     static func build(
@@ -112,7 +115,7 @@ enum SidebarRows {
         loadError: String?
     ) -> [SidebarRow] {
         var list: [SidebarRow] = SidebarAction.allCases.map { .action($0) }
-        list.append(.spacer(14))
+        list.append(.spacer(groupSpacing))
         for brand in brands {
             let expanded = expandedBrands.contains(brand.id)
             list.append(.groupHeader(SidebarGroup(brandId: brand.id, title: brand.name, expanded: expanded, current: brand.id == currentBrandId)))
@@ -124,12 +127,12 @@ enum SidebarRows {
                     list += items.map { .conversation($0) }
                 }
             }
-            list.append(.spacer(8))
+            list.append(.spacer(groupSpacing))
         }
         if !unbranded.isEmpty {
             list.append(.groupHeader(SidebarGroup(brandId: nil, title: unbrandedTitle, expanded: unbrandedExpanded, current: false)))
             if unbrandedExpanded { list += unbranded.map { .conversation($0) } }
-            list.append(.spacer(8))
+            list.append(.spacer(groupSpacing))
         }
         if let loadError { list.append(.loadError(loadError)) }
         return list
@@ -188,7 +191,10 @@ enum SidebarFooter {
 /// - History grouped by brand: small grey header with a chevron (click folds, hover "+" starts a
 ///   chat in that brand, right-click: brand menu); single-line conversation rows with a rounded
 ///   selection, an orange dot while a reply runs and a "…" menu on hover (rename, archive)
-/// - Footer: "B" avatar, "Burak · <marka>" menu (brand switch, Mac server, appearance) and a gear.
+/// - Footer: orange "B" avatar, one line "Burak · <marka> ⌄" (menu: brand switch, Mac server
+///   status, appearance, iPhone, settings) and a gear.
+/// Every row is 34 pt; the column runs up under the top bar (`TopBarView`), whose sidebar part
+/// shares this background.
 final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTableViewDelegate {
     private unowned let app: AppModel
     private unowned let settings: AppSettings
@@ -755,13 +761,13 @@ final class ClosureMenuItem: NSMenuItem {
 
 // MARK: - Footer (`(B) Burak · MTM Agro ⌄   ⚙`)
 
+/// Claude Code's footer: an orange monogram, "Burak · MTM Agro ⌄" (the menu: brand switch, Mac
+/// server status, appearance, iPhone, settings) and the gear on the right.
 private final class SidebarFooterView: NSView {
     private unowned let app: AppModel
     private unowned let settings: AppSettings
     private let nameLabel = NSTextField(labelWithString: "")
     private let initialLabel = NSTextField(labelWithString: "")
-    private let statusDot = StatusDotView(color: Theme.textTertiary, size: 6)
-    private let statusLabel = NSTextField(labelWithString: "")
     private let profileControl: SidebarMenuTrigger
     private var observation: ObservationToken?
 
@@ -772,59 +778,36 @@ private final class SidebarFooterView: NSView {
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
 
-        // Neutral monogram: orange is reserved for the primary action and "waiting on you".
         let avatar = ThemedView()
         avatar.translatesAutoresizingMaskIntoConstraints = false
-        avatar.backgroundColor = Theme.ink
-        avatar.cornerRadius = 12
-        initialLabel.font = NSFont.systemFont(ofSize: 11, weight: .semibold)
-        initialLabel.textColor = Theme.canvas
-        let initial = initialLabel
-        initial.translatesAutoresizingMaskIntoConstraints = false
-        avatar.addSubview(initial)
+        avatar.backgroundColor = Theme.accent
+        avatar.cornerRadius = 9
+        initialLabel.font = NSFont.systemFont(ofSize: 10, weight: .semibold)
+        initialLabel.textColor = Theme.onAccent
+        initialLabel.translatesAutoresizingMaskIntoConstraints = false
+        avatar.addSubview(initialLabel)
         NSLayoutConstraint.activate([
-            avatar.widthAnchor.constraint(equalToConstant: 24),
-            avatar.heightAnchor.constraint(equalToConstant: 24),
-            initial.centerXAnchor.constraint(equalTo: avatar.centerXAnchor),
-            initial.centerYAnchor.constraint(equalTo: avatar.centerYAnchor),
+            avatar.widthAnchor.constraint(equalToConstant: 18),
+            avatar.heightAnchor.constraint(equalToConstant: 18),
+            initialLabel.centerXAnchor.constraint(equalTo: avatar.centerXAnchor),
+            initialLabel.centerYAnchor.constraint(equalTo: avatar.centerYAnchor),
         ])
 
-        nameLabel.font = NSFont.systemFont(ofSize: 13, weight: .medium)
-        nameLabel.textColor = Theme.textPrimary
         nameLabel.lineBreakMode = .byTruncatingTail
         nameLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         let chevron = NSImageView()
-        chevron.image = NSImage(systemSymbolName: "chevron.up.chevron.down", accessibilityDescription: nil)?
+        chevron.image = NSImage(systemSymbolName: "chevron.down", accessibilityDescription: nil)?
             .withSymbolConfiguration(.init(pointSize: 8, weight: .semibold))
-        chevron.contentTintColor = Theme.textTertiary
+        chevron.contentTintColor = Theme.textSecondary
         chevron.setContentCompressionResistancePriority(.required, for: .horizontal)
-        let nameRow = NSStackView(views: [nameLabel, chevron])
-        nameRow.orientation = .horizontal
-        nameRow.alignment = .centerY
-        nameRow.spacing = 4
-
-        statusLabel.font = Theme.smallFont
-        statusLabel.textColor = Theme.textSecondary
-        statusLabel.lineBreakMode = .byTruncatingTail
-        statusLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        let statusRow = NSStackView(views: [statusDot, statusLabel])
-        statusRow.orientation = .horizontal
-        statusRow.alignment = .centerY
-        statusRow.spacing = 5
-
-        let nameColumn = NSStackView(views: [nameRow, statusRow])
-        nameColumn.orientation = .vertical
-        nameColumn.alignment = .leading
-        nameColumn.spacing = 1
-        nameColumn.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
         profileControl.onClick = { [weak self] anchor in self?.showMenu(from: anchor) }
-        profileControl.toolTip = "Marka, durum, görünüm ve ayarlar"
         profileControl.setAccessibilityRole(.popUpButton)
-        let profileStack = NSStackView(views: [avatar, nameColumn])
+        let profileStack = NSStackView(views: [avatar, nameLabel, chevron])
         profileStack.orientation = .horizontal
         profileStack.alignment = .centerY
-        profileStack.spacing = 9
+        profileStack.spacing = 8
+        profileStack.setCustomSpacing(6, after: nameLabel)
         profileStack.translatesAutoresizingMaskIntoConstraints = false
         profileControl.addSubview(profileStack)
         NSLayoutConstraint.activate([
@@ -838,7 +821,7 @@ private final class SidebarFooterView: NSView {
         let spacer = NSView()
         spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
 
-        let gear = GlyphButton(symbol: "gearshape", size: 13) { [weak app] in
+        let gear = GlyphButton(symbol: "gearshape", size: 14) { [weak app] in
             app?.openSettings()
         }
         gear.toolTip = "Ayarlar (⌘,)"
@@ -852,10 +835,10 @@ private final class SidebarFooterView: NSView {
         addSubview(row)
 
         NSLayoutConstraint.activate([
-            row.leadingAnchor.constraint(equalTo: leadingAnchor, constant: SidebarMetrics.contentLeading - 4),
+            row.leadingAnchor.constraint(equalTo: leadingAnchor, constant: SidebarMetrics.contentLeading),
             row.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -(SidebarMetrics.contentTrailing - 2)),
-            row.topAnchor.constraint(equalTo: topAnchor, constant: 10),
-            row.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -12),
+            row.topAnchor.constraint(equalTo: topAnchor, constant: 9),
+            row.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -9),
         ])
 
         observation = observe { [weak self] in self?.sync() }
@@ -863,15 +846,24 @@ private final class SidebarFooterView: NSView {
 
     required init?(coder: NSCoder) { fatalError("not used") }
 
-    /// Name + working brand, and the Mac server status (accent only when it waits on the owner).
+    /// "Burak" in the primary colour, " · MTM Agro" in grey; the Mac server status in the tooltip.
     private func sync() {
+        let name = SidebarFooter.name(app.ownerName)
         let title = SidebarFooter.title(owner: app.ownerName, brandName: app.brand(app.currentBrandId)?.name)
+        let text = NSMutableAttributedString(string: name, attributes: [
+            .font: NSFont.systemFont(ofSize: 13, weight: .medium),
+            .foregroundColor: Theme.textPrimary,
+        ])
+        if title.count > name.count {
+            text.append(NSAttributedString(string: String(title.dropFirst(name.count)), attributes: [
+                .font: Theme.captionFont,
+                .foregroundColor: Theme.textSecondary,
+            ]))
+        }
+        nameLabel.attributedStringValue = text
         initialLabel.stringValue = SidebarFooter.initial(app.ownerName)
-        nameLabel.stringValue = title
         let status = app.serverStatus
-        statusLabel.stringValue = status.text
-        statusDot.color = status.needsOwner ? Theme.accent : (status.text.hasPrefix("Mac hazır") ? Theme.ink : Theme.textTertiary)
-        statusLabel.toolTip = app.connectionIssue?.message ?? status.text
+        profileControl.toolTip = "\(app.connectionIssue?.message ?? status.text)\nMarka, durum, görünüm ve ayarlar"
         profileControl.setAccessibilityLabel("\(title), \(status.text): marka ve ayarlar menüsü")
     }
 

@@ -1,14 +1,16 @@
 import AppKit
 import StudioKit
 
-/// Right panel in the Claude Code layout (Environment / Context / Connectors), pure AppKit
-/// (`NSSplitViewItem(inspectorWithViewController:)`). Small grey section headers, compact
-/// label-left / value-right rows and hairlines between sections:
-/// - Ortam: this Mac's server (API, worker, LAN address, Cloudflare remote access) and the brand
-/// - Kullanım: Claude subscription windows as thin meters with reset times, Claude + Gemini status
-/// - Bağlam (conversation only): messages, image aliases, plans, posts, model and the run
-/// - Hesaplar: the brand's Instagram / Facebook / LinkedIn connections ("Bağla" opens the sheet)
-/// - İşler: background jobs (live elapsed time, right-click cancel, collapsible finished list).
+/// Right panel in the Claude Code layout, pure AppKit (a plain, flush `NSSplitViewItem`, no glass).
+/// Its title and actions sit in the top bar (`TopBarView`); the panel shows one pane:
+/// - Ayrıntılar (Claude Code's Environment / Context / Connectors): small grey section headers,
+///   compact label-left / value-right rows, hairlines between sections:
+///   - Ortam: this Mac's server (API, worker, LAN address, Cloudflare remote access) and the brand
+///   - Kullanım: Claude subscription windows as thin meters with reset times, Claude + Gemini status
+///   - Bağlam (conversation only): messages, image aliases, plans, posts, model and the run
+///   - Hesaplar: the brand's Instagram / Facebook / LinkedIn connections ("Bağla" opens the sheet)
+/// - Arka plan işleri (Claude Code's Background tasks): "Çalışıyor 1" with rounded job cards
+///   (elapsed time, stop), "Sırada", and a collapsible "› Bitti 12" list.
 /// Texts come from `InspectorContent`; nothing is shown that the server does not report.
 final class InfoPanelViewController: NSViewController {
     private unowned let app: AppModel
@@ -25,6 +27,8 @@ final class InfoPanelViewController: NSViewController {
 
     /// Section titles shown now, in order (tests).
     private(set) var sectionTitles: [String] = []
+    /// The pane built last (tests).
+    private(set) var shownPane: RightPanelPane?
 
     init(app: AppModel) {
         self.app = app
@@ -103,14 +107,20 @@ final class InfoPanelViewController: NSViewController {
         }
         sectionTitles = []
 
-        let brandId = app.routeBrandId
-        addSection(buildEnvironmentSection(brandId: brandId))
-        addSection(buildUsageSection())
-        if case .conversation(let id) = app.route {
-            addSection(buildContextSection(conversationId: id))
+        let pane = app.inspectorPane
+        shownPane = pane
+        switch pane {
+        case .details:
+            let brandId = app.routeBrandId
+            addSection(buildEnvironmentSection(brandId: brandId))
+            addSection(buildUsageSection())
+            if case .conversation(let id) = app.route {
+                addSection(buildContextSection(conversationId: id))
+            }
+            addSection(buildAccountsSection(brandId: brandId))
+        case .jobs:
+            buildJobsPane()
         }
-        addSection(buildAccountsSection(brandId: brandId))
-        addSection(buildJobsSection(brandId: brandId))
     }
 
     private func addSection(_ section: PanelSectionView) {
@@ -255,67 +265,83 @@ final class InfoPanelViewController: NSViewController {
         return section
     }
 
-    // MARK: İşler
+    // MARK: Arka plan işleri
 
-    private func buildJobsSection(brandId: EntityID?) -> PanelSectionView {
-        let jobs = app.jobBoard.jobs.filter { brandId == nil || $0.brandId == brandId || $0.brandId == nil }
-        let active = jobs.filter { $0.status.isActive }
-        let finished = jobs.filter { $0.status.isTerminal && ($0.finishedAt ?? $0.updatedAt) > now.addingTimeInterval(-86_400) }
+    private func buildJobsPane() {
+        let content = app.panelJobs(now: now)
 
-        var stateText: String?
         if !app.jobBoard.state.isLive {
-            stateText = app.jobBoard.state == .polling ? "yenileniyor" : "bağlanıyor"
-        }
-        let section = PanelSectionView(title: "İşler", trailingNote: stateText)
-        section.trailingNoteHelp = "Canlı akış kopuk; iş listesi aralıklarla yenileniyor."
-
-        if active.isEmpty && finished.isEmpty {
-            section.addNote("Şu an iş yok.")
-        }
-
-        for job in active {
-            let value = job.status == .running
-                ? TurkishFormat.elapsed(from: job.startedAt ?? job.updatedAt, to: now)
-                : "sırada"
-            let help = job.progressMessage ?? (job.status == .queued ? (app.isOnline ? "Sırada" : "Mac çevrimdışı; Mac açılınca çalışır.") : "Çalışıyor")
-            let row = PanelRowView(row: PanelRow(label: job.displayTitle, value: value, help: help), leadingDot: Theme.accent, onClick: nil)
-            row.labelColor = Theme.textPrimary
-            let menu = NSMenu()
-            menu.addItem(ClosureMenuItem(title: "İşi iptal et") { [weak app] in
-                guard let app else { return }
-                Task { _ = try? await app.dataService.cancelJob(job.id) }
-            })
-            row.menu = menu
-            section.add(row)
-        }
-
-        if !finished.isEmpty {
-            let toggle = PanelRowView(
-                row: PanelRow(label: "\(finished.count) iş bitti", value: showFinishedJobs ? "Gizle" : "Göster", tone: .muted),
-                onClick: { [weak self] _ in
-                    guard let self else { return }
-                    self.showFinishedJobs.toggle()
-                    self.rebuild()
-                }
+            let note = NSTextField.styledLabel(
+                app.jobBoard.state == .polling ? "Canlı akış kopuk; liste aralıklarla yenileniyor." : "İş akışına bağlanılıyor…",
+                font: Theme.Panel.footnoteFont, color: Theme.textTertiary, wraps: true
             )
-            toggle.setAccessibilityLabel("\(finished.count) iş bitti, \(showFinishedJobs ? "gizle" : "göster")")
-            section.add(toggle)
+            addJobsView(note, spacingAfter: 10)
+        }
 
+        if content.isEmpty {
+            addJobsView(NSTextField.styledLabel("Arka planda iş yok.", font: Theme.captionFont, color: Theme.textSecondary), spacingAfter: 8)
+            sectionTitles = []
+            return
+        }
+
+        if !content.running.isEmpty {
+            addJobsGroup(title: "Çalışıyor", jobs: content.running)
+        }
+        if !content.queued.isEmpty {
+            addJobsGroup(title: "Sırada", jobs: content.queued)
+        }
+        if !content.finished.isEmpty {
+            sectionTitles.append("Bitti")
+            let toggle = JobsDisclosureRowView(title: "Bitti", count: content.finished.count, expanded: showFinishedJobs) { [weak self] in
+                guard let self else { return }
+                self.showFinishedJobs.toggle()
+                self.rebuild()
+            }
+            addJobsView(toggle, spacingAfter: 4)
             if showFinishedJobs {
-                for job in finished {
-                    let status: String = switch job.status {
-                    case .succeeded: "bitti"
-                    case .failed: "hata"
-                    case .cancelled: "iptal"
-                    default: ""
-                    }
-                    let row = PanelRowView(row: PanelRow(label: job.displayTitle, value: status, tone: job.status == .failed ? .attention : .muted), onClick: nil)
+                for job in content.finished {
+                    let row = PanelRowView(
+                        row: PanelRow(label: job.displayTitle, value: JobsPaneContent.statusText(job.status), tone: job.status == .failed ? .attention : .muted, help: job.error ?? job.progressMessage),
+                        onClick: nil
+                    )
                     row.labelColor = Theme.textSecondary
-                    section.add(row)
+                    addJobsView(row)
                 }
             }
         }
-        return section
+    }
+
+    /// "Çalışıyor 2" and the job cards under it.
+    private func addJobsGroup(title: String, jobs: [Job]) {
+        sectionTitles.append(title)
+        addJobsView(JobsGroupLabel(title: title, count: jobs.count), spacingAfter: 8)
+        for job in jobs {
+            let value = job.status == .running ? TurkishFormat.elapsed(from: job.startedAt ?? job.updatedAt, to: now) : "sırada"
+            let help = job.progressMessage ?? (job.status == .queued ? (app.isOnline ? "Sırada" : "Mac çevrimdışı; Mac açılınca çalışır.") : "Çalışıyor")
+            let opensPost = job.contentId != nil && (job.brandId ?? app.currentBrandId) != nil
+            let card = JobCardView(
+                title: job.displayTitle,
+                value: value,
+                help: help,
+                cancelling: job.cancelRequestedAt != nil,
+                onOpen: opensPost ? { [weak app] in
+                    guard let app, let contentId = job.contentId, let brandId = job.brandId ?? app.currentBrandId else { return }
+                    Task { await app.openPost(contentId: contentId, brandId: brandId) }
+                } : nil,
+                onStop: { [weak app] in
+                    guard let app else { return }
+                    Task { _ = try? await app.dataService.cancelJob(job.id) }
+                }
+            )
+            addJobsView(card, spacingAfter: 6)
+        }
+        if let last = stack.arrangedSubviews.last { stack.setCustomSpacing(18, after: last) }
+    }
+
+    private func addJobsView(_ view: NSView, spacingAfter: CGFloat? = nil) {
+        stack.addArrangedSubview(view)
+        view.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        if let spacingAfter { stack.setCustomSpacing(spacingAfter, after: view) }
     }
 }
 
@@ -687,4 +713,227 @@ private final class PostMiniRowView: NSControl {
         onClick()
         return true
     }
+}
+
+// MARK: - Jobs pane building blocks (Claude Code's Background tasks)
+
+/// "Çalışıyor 2": a small grey label with the count a step lighter.
+final class JobsGroupLabel: NSView {
+    let title: String
+    let count: Int
+
+    init(title: String, count: Int) {
+        self.title = title
+        self.count = count
+        super.init(frame: .zero)
+        translatesAutoresizingMaskIntoConstraints = false
+        let text = NSMutableAttributedString(string: title, attributes: [.font: Theme.captionFont, .foregroundColor: Theme.textSecondary])
+        text.append(NSAttributedString(string: "  \(count)", attributes: [.font: Theme.captionFont, .foregroundColor: Theme.textTertiary]))
+        let label = NSTextField(labelWithAttributedString: text)
+        label.translatesAutoresizingMaskIntoConstraints = false
+        label.setAccessibilityLabel("\(title): \(count)")
+        addSubview(label)
+        NSLayoutConstraint.activate([
+            label.leadingAnchor.constraint(equalTo: leadingAnchor),
+            label.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor),
+            label.topAnchor.constraint(equalTo: topAnchor),
+            label.bottomAnchor.constraint(equalTo: bottomAnchor),
+        ])
+    }
+
+    required init?(coder: NSCoder) { fatalError("not used") }
+}
+
+/// One job as a rounded card: title, elapsed time (or "sırada") and a stop button.
+/// A job that made a post opens it on click.
+final class JobCardView: TapControl {
+    let titleText: String
+    let valueText: String
+    private let onOpen: (() -> Void)?
+    private let card = ThemedView()
+
+    init(title: String, value: String, help: String?, cancelling: Bool, onOpen: (() -> Void)?, onStop: @escaping () -> Void) {
+        self.titleText = title
+        self.valueText = value
+        self.onOpen = onOpen
+        super.init(frame: .zero)
+        translatesAutoresizingMaskIntoConstraints = false
+        toolTip = help
+        setAccessibilityLabel("\(title), \(value)")
+        if onOpen == nil { setAccessibilityRole(.group) }
+
+        card.backgroundColor = Theme.panelCard
+        card.cornerRadius = 10
+        card.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(card)
+
+        let titleLabel = NSTextField.styledLabel(title, font: Theme.Panel.rowFont, color: Theme.textPrimary)
+        titleLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        var views: [NSView] = [titleLabel]
+        if onOpen != nil {
+            let chevron = NSImageView()
+            chevron.image = NSImage(systemSymbolName: "chevron.right", accessibilityDescription: nil)?
+                .withSymbolConfiguration(.init(pointSize: 9, weight: .semibold))
+            chevron.contentTintColor = Theme.textTertiary
+            chevron.setContentCompressionResistancePriority(.required, for: .horizontal)
+            views.append(chevron)
+        }
+        let spacer = NSView()
+        spacer.setContentHuggingPriority(.init(1), for: .horizontal)
+        views.append(spacer)
+        let valueLabel = NSTextField.styledLabel(
+            cancelling ? "durduruluyor" : value,
+            font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .regular),
+            color: Theme.textSecondary
+        )
+        valueLabel.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(760), for: .horizontal)
+        views.append(valueLabel)
+
+        let stop = JobStopButton(action: onStop)
+        stop.isEnabled = !cancelling
+        views.append(stop)
+
+        let row = NSStackView(views: views)
+        row.orientation = .horizontal
+        row.alignment = .centerY
+        row.spacing = 6
+        row.setCustomSpacing(10, after: valueLabel)
+        row.translatesAutoresizingMaskIntoConstraints = false
+        card.addSubview(row)
+        // Breakable, so a squeezed panel never reports conflicting constraints.
+        let rowTrailing = row.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -8)
+        rowTrailing.priority = NSLayoutConstraint.Priority(999)
+
+        NSLayoutConstraint.activate([
+            card.leadingAnchor.constraint(equalTo: leadingAnchor),
+            card.trailingAnchor.constraint(equalTo: trailingAnchor),
+            card.topAnchor.constraint(equalTo: topAnchor),
+            card.bottomAnchor.constraint(equalTo: bottomAnchor),
+            heightAnchor.constraint(equalToConstant: 42),
+            row.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 12),
+            rowTrailing,
+            row.centerYAnchor.constraint(equalTo: card.centerYAnchor),
+        ])
+
+        let menu = NSMenu()
+        menu.addItem(ClosureMenuItem(title: "İşi durdur", action: onStop))
+        self.menu = menu
+    }
+
+    required init?(coder: NSCoder) { fatalError("not used") }
+
+    override var acceptsFirstResponder: Bool { onOpen != nil && super.acceptsFirstResponder }
+    override func resetCursorRects() { if onOpen != nil { addCursorRect(bounds, cursor: .pointingHand) } }
+    override func mouseDown(with event: NSEvent) { onOpen?() }
+    override func performTap() { onOpen?() }
+}
+
+/// The small rounded square "■" that stops a job.
+final class JobStopButton: NSControl {
+    private let onStop: () -> Void
+    private let icon = NSImageView()
+    private var hovering = false { didSet { refresh() } }
+    private var trackingArea: NSTrackingArea?
+
+    override var isEnabled: Bool { didSet { refresh() } }
+
+    init(action: @escaping () -> Void) {
+        self.onStop = action
+        super.init(frame: .zero)
+        translatesAutoresizingMaskIntoConstraints = false
+        wantsLayer = true
+        layer?.cornerRadius = 6
+        layer?.cornerCurve = .continuous
+        toolTip = "İşi durdur"
+        setAccessibilityElement(true)
+        setAccessibilityRole(.button)
+        setAccessibilityLabel("İşi durdur")
+        icon.image = NSImage(systemSymbolName: "stop.fill", accessibilityDescription: nil)?
+            .withSymbolConfiguration(.init(pointSize: 8, weight: .bold))
+        icon.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(icon)
+        NSLayoutConstraint.activate([
+            widthAnchor.constraint(equalToConstant: 22),
+            heightAnchor.constraint(equalToConstant: 22),
+            icon.centerXAnchor.constraint(equalTo: centerXAnchor),
+            icon.centerYAnchor.constraint(equalTo: centerYAnchor),
+        ])
+        refresh()
+    }
+
+    required init?(coder: NSCoder) { fatalError("not used") }
+
+    private func refresh() {
+        layer?.backgroundColor = resolvedCGColor(hovering && isEnabled ? Theme.border : Theme.fillStrong)
+        icon.contentTintColor = Theme.textPrimary
+        alphaValue = isEnabled ? 1 : 0.4
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        refresh()
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let trackingArea { removeTrackingArea(trackingArea) }
+        let area = NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeInActiveApp, .inVisibleRect], owner: self, userInfo: nil)
+        addTrackingArea(area)
+        trackingArea = area
+    }
+
+    override func mouseEntered(with event: NSEvent) { hovering = true }
+    override func mouseExited(with event: NSEvent) { hovering = false }
+    override func mouseDown(with event: NSEvent) { if isEnabled { onStop() } }
+    override var acceptsFirstResponder: Bool { KeyboardFocus.accepts(isEnabled: isEnabled) }
+    override func keyDown(with event: NSEvent) {
+        if isEnabled, KeyboardFocus.isActivation(event) { onStop() } else { super.keyDown(with: event) }
+    }
+    override func accessibilityPerformPress() -> Bool {
+        guard isEnabled else { return false }
+        onStop()
+        return true
+    }
+}
+
+/// "› Bitti 12": folds the finished jobs.
+final class JobsDisclosureRowView: TapControl {
+    private let onToggle: () -> Void
+
+    init(title: String, count: Int, expanded: Bool, onToggle: @escaping () -> Void) {
+        self.onToggle = onToggle
+        super.init(frame: .zero)
+        translatesAutoresizingMaskIntoConstraints = false
+        setAccessibilityLabel("\(title) \(count), \(expanded ? "gizle" : "göster")")
+
+        let chevron = NSImageView()
+        chevron.image = NSImage(systemSymbolName: expanded ? "chevron.down" : "chevron.right", accessibilityDescription: nil)?
+            .withSymbolConfiguration(.init(pointSize: 9, weight: .semibold))
+        chevron.contentTintColor = Theme.textTertiary
+        chevron.translatesAutoresizingMaskIntoConstraints = false
+        chevron.widthAnchor.constraint(equalToConstant: 12).isActive = true
+
+        let text = NSMutableAttributedString(string: title, attributes: [.font: Theme.Panel.rowFont, .foregroundColor: Theme.textSecondary])
+        text.append(NSAttributedString(string: " \(count)", attributes: [.font: Theme.Panel.rowFont, .foregroundColor: Theme.textTertiary]))
+        let label = NSTextField(labelWithAttributedString: text)
+
+        let row = NSStackView(views: [chevron, label])
+        row.orientation = .horizontal
+        row.alignment = .centerY
+        row.spacing = 6
+        row.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(row)
+        NSLayoutConstraint.activate([
+            heightAnchor.constraint(equalToConstant: 28),
+            row.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 2),
+            row.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor),
+            row.centerYAnchor.constraint(equalTo: centerYAnchor),
+        ])
+    }
+
+    required init?(coder: NSCoder) { fatalError("not used") }
+
+    override func resetCursorRects() { addCursorRect(bounds, cursor: .pointingHand) }
+    override func mouseDown(with event: NSEvent) { onToggle() }
+    override func performTap() { onToggle() }
 }

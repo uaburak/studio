@@ -316,3 +316,48 @@ enum InspectorContent {
         }
     }
 }
+
+// MARK: - Arka plan işleri (jobs pane)
+
+/// What the jobs pane lists: running and queued jobs, then the finished ones of the last day
+/// that were not cleared with "Bitenleri temizle". Jobs of other brands stay out (jobs without
+/// a brand are shown everywhere).
+struct JobsPaneContent: Equatable {
+    var running: [Job] = []
+    var queued: [Job] = []
+    var finished: [Job] = []
+
+    var isEmpty: Bool { running.isEmpty && queued.isEmpty && finished.isEmpty }
+    var activeCount: Int { running.count + queued.count }
+
+    /// Finished jobs stay listed this long.
+    static let finishedWindow: TimeInterval = 86_400
+
+    static func make(jobs: [Job], brandId: EntityID?, clearedAt: Date?, now: Date) -> JobsPaneContent {
+        let relevant = jobs.filter { brandId == nil || $0.brandId == nil || $0.brandId == brandId }
+        let since = now.addingTimeInterval(-finishedWindow)
+        return JobsPaneContent(
+            running: relevant.filter { $0.status == .running },
+            queued: relevant.filter { $0.status == .queued },
+            finished: relevant.filter { job in
+                guard job.status.isTerminal else { return false }
+                let end = job.finishedAt ?? job.updatedAt
+                guard end > since else { return false }
+                if let clearedAt, end <= clearedAt { return false }
+                return true
+            }
+        )
+    }
+
+    /// "bitti" / "hata" / "iptal" for a finished job.
+    static func statusText(_ status: JobStatus) -> String {
+        switch status {
+        case .succeeded: "bitti"
+        case .failed: "hata"
+        case .cancelled: "iptal"
+        case .queued: "sırada"
+        case .running: "çalışıyor"
+        case .unknown: ""
+        }
+    }
+}

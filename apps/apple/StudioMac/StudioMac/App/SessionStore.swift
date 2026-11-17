@@ -14,6 +14,8 @@ struct SessionSnapshot: Codable, Equatable {
     var brandId: EntityID?
     var sidebarPresented = true
     var inspectorPresented = true
+    /// The right panel's pane (`RightPanelPane.rawValue`); missing in older snapshots.
+    var inspectorPane: String?
 
     init(screen: Screen = .newChat, conversationId: EntityID? = nil, brandId: EntityID? = nil, sidebarPresented: Bool = true, inspectorPresented: Bool = true) {
         self.screen = screen
@@ -23,7 +25,7 @@ struct SessionSnapshot: Codable, Equatable {
         self.inspectorPresented = inspectorPresented
     }
 
-    init(route: Route, brandId: EntityID?, sidebarPresented: Bool, inspectorPresented: Bool) {
+    init(route: Route, brandId: EntityID?, sidebarPresented: Bool, inspectorPresented: Bool, inspectorPane: RightPanelPane? = nil) {
         switch route {
         case .newChat: screen = .newChat
         case .conversation(let id):
@@ -36,6 +38,12 @@ struct SessionSnapshot: Codable, Equatable {
         self.brandId = brandId
         self.sidebarPresented = sidebarPresented
         self.inspectorPresented = inspectorPresented
+        self.inspectorPane = inspectorPane?.rawValue
+    }
+
+    /// The pane to reopen (an unknown or missing value: the details pane).
+    var pane: RightPanelPane {
+        inspectorPane.flatMap(RightPanelPane.init(rawValue:)) ?? .details
     }
 
     /// The route to reopen, given what exists now: an archived or deleted conversation falls
