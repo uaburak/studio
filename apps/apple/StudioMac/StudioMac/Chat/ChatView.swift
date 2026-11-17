@@ -221,6 +221,12 @@ final class ChatViewController: NSViewController {
         guard key != renderedSnapshotKey else { return }
         renderedSnapshotKey = key
 
+        // Decide where to land before the column is rebuilt: the rebuild briefly collapses
+        // the document, so reading the position afterwards (or a frame later) makes it jump.
+        let followBottom = isAtBottom()
+        let previousY = scrollView.contentView.bounds.origin.y
+        let userSent = key.messages.count > lastMessageCount && key.messages.last?.role == .user
+
         messageColumn.arrangedSubviews.forEach {
             messageColumn.removeArrangedSubview($0)
             $0.removeFromSuperview()
@@ -271,14 +277,26 @@ final class ChatViewController: NSViewController {
             messageColumn.addArrangedSubview(runRow)
         }
 
-        let totalPlain = key.messages.reduce(0) { $0 + $1.plainText.count }
-        if key.messages.count != lastMessageCount || totalPlain != lastPlainLength {
-            lastMessageCount = key.messages.count
-            lastPlainLength = totalPlain
-            DispatchQueue.main.async { [weak self] in
-                self?.scrollToBottom()
-            }
+        lastMessageCount = key.messages.count
+        lastPlainLength = key.messages.reduce(0) { $0 + $1.plainText.count }
+
+        // Land in the same pass, before anything is drawn: follow the reply while the
+        // reader is at the bottom (or just sent), otherwise stay where they were reading.
+        if followBottom || userSent {
+            scrollToBottom()
+        } else {
+            documentView.layoutSubtreeIfNeeded()
+            let maxY = max(0, documentView.bounds.height - scrollView.contentView.bounds.height)
+            scrollView.contentView.setBoundsOrigin(NSPoint(x: 0, y: min(previousY, maxY)))
+            scrollView.reflectScrolledClipView(scrollView.contentView)
         }
+    }
+
+    /// True while the reader sits at (or within a few lines of) the end of the conversation.
+    private func isAtBottom(threshold: CGFloat = 80) -> Bool {
+        let clip = scrollView.contentView
+        let maxY = documentView.bounds.height - clip.bounds.height
+        return maxY <= 0 || clip.bounds.origin.y >= maxY - threshold
     }
 
     private func makeMessageView(_ message: Message) -> NSView {
@@ -523,7 +541,7 @@ final class ChatViewController: NSViewController {
     private func scrollToBottom() {
         documentView.layoutSubtreeIfNeeded()
         let maxY = max(0, documentView.bounds.height - scrollView.contentView.bounds.height)
-        scrollView.contentView.scroll(to: NSPoint(x: 0, y: maxY))
+        scrollView.contentView.setBoundsOrigin(NSPoint(x: 0, y: maxY))
         scrollView.reflectScrolledClipView(scrollView.contentView)
     }
 

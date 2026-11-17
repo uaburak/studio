@@ -28,6 +28,9 @@ final class IOSChatViewController: UIViewController, UITableViewDelegate {
     private var didInitialScroll = false
     private var shownAsNew: Bool?
     private var scrollButtonShown = false
+    /// True until the reader drags away from the end; streaming replies then stay in view.
+    private var followsBottom = true
+    private var contentSizeObservation: NSKeyValueObservation?
 
     static let starters = ["Bu ayın postlarını üret", "Yeni ürün duyurusu hazırla", "Bu haftayı planla", "Kullanımı sor"]
 
@@ -58,6 +61,10 @@ final class IOSChatViewController: UIViewController, UITableViewDelegate {
         tableView.rowHeight = UITableView.automaticDimension
         tableView.selfSizingInvalidation = .enabledIncludingConstraints
         tableView.register(ChatMessageCell.self, forCellReuseIdentifier: ChatMessageCell.reuseId)
+        contentSizeObservation = tableView.observe(\.contentSize, options: [.old, .new]) { [weak self] _, change in
+            guard change.oldValue != change.newValue else { return }
+            MainActor.assumeIsolated { self?.contentSizeDidChange() }
+        }
         tableView.contentInsetAdjustmentBehavior = .automatic
         tableView.contentInset.top = 4
         // Text scrolls under the status bar and the glass buttons with the system's soft edge.
@@ -254,7 +261,6 @@ final class IOSChatViewController: UIViewController, UITableViewDelegate {
         let changed = reconfigureAll ? rows : rows.filter { signatures[$0] != nil && signatures[$0] != newSignatures[$0] }
         reconfigureAll = false
         signatures = newSignatures
-        let wasNearBottom = isNearBottom()
         let grew = model.messages.count != lastMessageCount
         let userSent = grew && model.messages.last?.role == .user
         lastMessageCount = model.messages.count
@@ -265,15 +271,18 @@ final class IOSChatViewController: UIViewController, UITableViewDelegate {
         snapshot.appendSections([0])
         snapshot.appendItems(rows)
         snapshot.reconfigureItems(changed.filter { rows.contains($0) })
-        let animate = didInitialScroll && view.window != nil
+        // Only animate rows coming or going. Streaming text only reconfigures rows; animating
+        // those fights the pin to the bottom and makes the conversation jump.
+        let rowsChanged = dataSource.snapshot().itemIdentifiers != rows
+        let animate = didInitialScroll && view.window != nil && rowsChanged
+        if userSent { followsBottom = true }
         dataSource.apply(snapshot, animatingDifferences: animate) { [weak self] in
             guard let self else { return }
             if !self.didInitialScroll, !rows.isEmpty, self.model.state != nil || self.model.isNew {
                 self.didInitialScroll = true
-                self.scrollToBottom(animated: false)
-            } else if wasNearBottom || userSent {
-                self.scrollToBottom(animated: animate)
+                self.followsBottom = true
             }
+            if self.followsBottom { self.pinToBottom() }
             self.updateScrollButton()
         }
     }
@@ -509,14 +518,36 @@ final class IOSChatViewController: UIViewController, UITableViewDelegate {
         let overlap = max(0, view.bounds.height - composer.frame.minY)
         let inset = max(0, overlap - view.safeAreaInsets.bottom) + 8
         guard abs(tableView.contentInset.bottom - inset) > 0.5 else { return }
-        let keepBottom = didInitialScroll && isNearBottom()
         tableView.contentInset.bottom = inset
         tableView.verticalScrollIndicatorInsets.bottom = inset
-        if keepBottom { scrollToBottom(animated: false) }
+        if didInitialScroll && followsBottom { pinToBottom() }
     }
 
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
+        // Only the reader's own drags decide whether we keep following the reply.
+        if scrollView.isTracking || scrollView.isDecelerating {
+            followsBottom = isNearBottom(threshold: 40)
+        }
         updateScrollButton()
+    }
+
+    /// Growing content (streamed text, cells measuring themselves) keeps the end in view
+    /// while the reader follows the conversation.
+    private func contentSizeDidChange() {
+        guard didInitialScroll, followsBottom, !tableView.isTracking, !tableView.isDecelerating else { return }
+        pinToBottom()
+    }
+
+    private var bottomOffset: CGFloat {
+        let inset = tableView.adjustedContentInset
+        return max(-inset.top, tableView.contentSize.height + inset.bottom - tableView.bounds.height)
+    }
+
+    /// Sits exactly at the end without animation, so repeated updates never stack up.
+    private func pinToBottom() {
+        let target = bottomOffset
+        guard abs(tableView.contentOffset.y - target) > 0.5 else { return }
+        tableView.setContentOffset(CGPoint(x: 0, y: target), animated: false)
     }
 
     private func updateScrollButton() {
@@ -539,9 +570,9 @@ final class IOSChatViewController: UIViewController, UITableViewDelegate {
     }
 
     private func scrollToBottom(animated: Bool) {
-        let rows = tableView.numberOfRows(inSection: 0)
-        guard rows > 0 else { return }
-        tableView.scrollToRow(at: IndexPath(row: rows - 1, section: 0), at: .bottom, animated: animated)
+        followsBottom = true
+        guard tableView.numberOfRows(inSection: 0) > 0 else { return }
+        tableView.setContentOffset(CGPoint(x: 0, y: bottomOffset), animated: animated)
     }
 }
 
