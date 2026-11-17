@@ -1,0 +1,137 @@
+// Typed contract between the main process and the renderer (through the preload bridge).
+// Only plain JSON values cross it.
+
+export type ServiceName = "api" | "gateway" | "worker" | "tunnel";
+
+export type ServicePhase =
+  | { kind: "idle" }
+  | { kind: "running"; pid: number }
+  /** Exited with `exitStatus`; relaunching after `delayMs`. */
+  | { kind: "restarting"; exitStatus: number; delayMs: number }
+  | { kind: "failed"; message: string }
+  | { kind: "stopped" };
+
+export type HostStatus =
+  | { kind: "stopped" }
+  | { kind: "starting"; message: string }
+  | { kind: "running" }
+  /** Another copy of Studio (e.g. the AppKit app) already serves the API; we use it. */
+  | { kind: "attached" }
+  | { kind: "error"; message: string; log: string };
+
+export interface HostSnapshot {
+  status: HostStatus;
+  /** http://127.0.0.1:<apiPort> while up. */
+  apiPort: number | null;
+  lanPort: number | null;
+  /** HealthResponse.instance of this Mac's host. */
+  instance: string | null;
+  lanUrls: string[];
+  tunnelUrl: string | null;
+  tunnelNote: string | null;
+  services: Partial<Record<ServiceName, ServicePhase>>;
+  /** This app runs the children (quitting stops them). */
+  ownsChildren: boolean;
+}
+
+export type Appearance = "system" | "light" | "dark";
+
+export interface AgentChoiceValue {
+  model: string;
+  effort: string;
+}
+
+export interface SessionState {
+  sidebarPresented: boolean;
+  panelPresented: boolean;
+  panelPane: string;
+  panelExpanded: boolean;
+  /** Last route: "new" or "c:<conversationId>". */
+  route: string;
+  currentBrandId: string | null;
+  collapsedGroups: string[];
+}
+
+export interface DesktopSettings {
+  /** This app runs the API and worker itself (otherwise it only attaches). */
+  hostEnabled: boolean;
+  /** LAN gateway + Bonjour ("Yerel ağdan erişim"). */
+  lanEnabled: boolean;
+  repoPath: string;
+  remoteControlEnabled: boolean;
+  remoteHostname: string;
+  /** "Adın": the sidebar name ("" = the Claude account's name). */
+  ownerName: string;
+  appearance: Appearance;
+  notificationsEnabled: boolean;
+  agent: {
+    last: AgentChoiceValue | null;
+    conversations: Record<string, AgentChoiceValue>;
+  };
+  session: SessionState;
+}
+
+export type SettingsPatch = Partial<Omit<DesktopSettings, "agent" | "session">> & {
+  agent?: Partial<DesktopSettings["agent"]>;
+  session?: Partial<SessionState>;
+};
+
+/** Menu and global shortcuts the main process forwards to the renderer. */
+export type MenuCommand =
+  | "new-chat"
+  | "search"
+  | "settings"
+  | "toggle-sidebar"
+  | "toggle-panel"
+  | "back"
+  | "forward"
+  | "rename"
+  | "gallery";
+
+export interface NoticeInput {
+  /** Stable id: the same id is never shown twice. */
+  id: string;
+  title: string;
+  body: string;
+  /** Renderer route opened when the notice is clicked (e.g. "c:<conversationId>"). */
+  route?: string;
+}
+
+export const IPC = {
+  hostGet: "host:get",
+  hostRestart: "host:restart",
+  hostChanged: "host:changed",
+  settingsGet: "settings:get",
+  settingsUpdate: "settings:update",
+  settingsChanged: "settings:changed",
+  notify: "notify",
+  noticeClicked: "notice:clicked",
+  openExternal: "open-external",
+  menuCommand: "menu:command",
+  windowState: "window:state",
+} as const;
+
+export interface WindowState {
+  fullScreen: boolean;
+  focused: boolean;
+}
+
+/** What the preload exposes as `window.studio`. */
+export interface StudioBridge {
+  platform: string;
+  host: {
+    get(): Promise<HostSnapshot>;
+    restart(): Promise<void>;
+    onChange(listener: (snapshot: HostSnapshot) => void): () => void;
+  };
+  settings: {
+    get(): Promise<DesktopSettings>;
+    update(patch: SettingsPatch): Promise<DesktopSettings>;
+    onChange(listener: (settings: DesktopSettings) => void): () => void;
+  };
+  notify(notice: NoticeInput): Promise<void>;
+  onNoticeClicked(listener: (route: string) => void): () => void;
+  openExternal(url: string): Promise<void>;
+  onMenuCommand(listener: (command: MenuCommand) => void): () => void;
+  onWindowState(listener: (state: WindowState) => void): () => void;
+}

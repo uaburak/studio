@@ -1,0 +1,238 @@
+@import "tailwindcss";
+@import "./tokens.css";
+
+/*
+ * Tailwind v4 theme → the Wecra tokens (tokens.css). Colours resolve per theme at runtime
+ * (`inline`), so `bg-page`, `text-fg-2`, `border-hairline` … follow light / dark / system.
+ */
+@theme inline {
+  --color-*: initial;
+  --color-transparent: transparent;
+  --color-white: #fff;
+  --color-black: #000;
+  --color-page: var(--bg-page);
+  --color-sidebar: var(--bg-sidebar);
+  --color-surface-1: var(--surface-1);
+  --color-surface-2: var(--surface-2);
+  --color-surface-3: var(--surface-3);
+  --color-popover: var(--surface-popover);
+  --color-glass: var(--surface-glass);
+  --color-bubble: var(--surface-bubble);
+  --color-fg: var(--text-primary);
+  --color-fg-2: var(--text-secondary);
+  --color-fg-3: var(--text-tertiary);
+  --color-on-accent: var(--text-on-accent);
+  --color-icon: var(--icon-default);
+  --color-border: var(--border-default);
+  --color-hairline: var(--border-hairline);
+  --color-control: var(--fill-control);
+  --color-control-hover: var(--fill-control-hover);
+  --color-control-pressed: var(--fill-control-pressed);
+  --color-selected: var(--fill-selected);
+  --color-field: var(--fill-field);
+  --color-accent: var(--accent-default);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-pressed: var(--accent-pressed);
+  --color-accent-subtle: var(--accent-subtle);
+  --color-accent-text: var(--accent-text);
+  --color-focus: var(--focus-ring);
+  --color-danger: var(--status-danger);
+  --color-success: var(--status-success);
+  --color-warning: var(--status-warning);
+  --color-info: var(--status-info);
+  --color-scrim: var(--overlay-scrim);
+  --color-glass-stroke: var(--glass-stroke);
+
+  --font-sans:
+    -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro", "Helvetica Neue", sans-serif;
+  --font-mono: "SF Mono", ui-monospace, Menlo, monospace;
+
+  --text-caption: var(--type-caption-size);
+  --text-caption--line-height: var(--type-caption-line);
+  --text-footnote: var(--type-footnote-size);
+  --text-footnote--line-height: var(--type-footnote-line);
+  --text-body: var(--type-body-size);
+  --text-body--line-height: var(--type-body-line);
+  --text-body-lg: var(--type-body-large-size);
+  --text-body-lg--line-height: var(--type-body-large-line);
+  --text-heading: var(--type-heading-size);
+  --text-heading--line-height: var(--type-heading-line);
+  --text-prose: var(--type-prose-size);
+  --text-prose--line-height: var(--type-prose-line);
+  --text-title: var(--type-title-size);
+  --text-title--line-height: var(--type-title-line);
+  --text-title--letter-spacing: var(--type-title-tracking);
+  --text-display: var(--type-display-size);
+  --text-display--line-height: var(--type-display-line);
+  --text-display--letter-spacing: var(--type-display-tracking);
+  --text-mono: var(--type-mono-size);
+  --text-mono--line-height: var(--type-mono-line);
+
+  --radius-full: 9999px;
+  --radius-thumb: var(--radius-thumb);
+  --radius-card: var(--radius-card-10);
+  --radius-card-12: var(--radius-card-12);
+  --radius-card-14: var(--radius-card-14);
+
+  --shadow-sm: var(--shadow-sm);
+  --shadow-md: var(--shadow-md);
+  --shadow-lg: var(--shadow-lg);
+  --shadow-popover: var(--shadow-popover);
+  --shadow-focus: var(--shadow-focus);
+
+  --ease-snap: var(--ease-snap);
+  --ease-out: var(--ease-out);
+  --ease-overshoot: var(--ease-overshoot);
+}
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+  html {
+    background: transparent;
+  }
+  body {
+    margin: 0;
+    font-family: var(--font-sans);
+    font-size: var(--type-body-size);
+    line-height: var(--type-body-line);
+    color: var(--text-primary);
+    -webkit-font-smoothing: antialiased;
+    overflow: hidden;
+    user-select: none;
+    cursor: default;
+  }
+  /* Outside Electron (gallery in a browser, headless checks) the page needs its own backdrop. */
+  :root:not([data-electron]) body {
+    background: var(--bg-page);
+  }
+  button {
+    cursor: default;
+  }
+  ::selection {
+    background: color-mix(in srgb, var(--accent-default) 30%, transparent);
+  }
+  /* Keyboard focus only (Claude: focus rings off for the mouse). */
+  :focus {
+    outline: none;
+  }
+  :focus-visible {
+    outline: none;
+    box-shadow:
+      0 0 0 1px var(--focus-ring),
+      var(--shadow-focus);
+  }
+  a {
+    color: inherit;
+  }
+}
+
+@layer components {
+  /* Liquid-glass surfaces: composer, menus, popovers, floating cards. */
+  .glass {
+    background: var(--surface-glass);
+    -webkit-backdrop-filter: blur(var(--glass-popover-blur)) saturate(1.6);
+    backdrop-filter: blur(var(--glass-popover-blur)) saturate(1.6);
+    box-shadow:
+      inset 0 0 0 1px var(--glass-stroke),
+      var(--glass-popover-shadow);
+  }
+  .glass-composer {
+    background: var(--surface-glass);
+    -webkit-backdrop-filter: blur(var(--glass-composer-blur)) saturate(1.6);
+    backdrop-filter: blur(var(--glass-composer-blur)) saturate(1.6);
+    box-shadow:
+      inset 0 0 0 1px var(--glass-stroke),
+      var(--glass-composer-shadow);
+  }
+  /* Sidebar: a touch of the window's vibrancy shows through in the app. */
+  .sidebar-surface {
+    background: var(--bg-sidebar);
+  }
+  :root[data-electron] .sidebar-surface {
+    background: color-mix(in srgb, var(--bg-sidebar) 88%, transparent);
+  }
+  .drag {
+    -webkit-app-region: drag;
+  }
+  .no-drag {
+    -webkit-app-region: no-drag;
+  }
+  .selectable {
+    user-select: text;
+    cursor: text;
+  }
+  /* Thin overlay scrollbars like macOS. */
+  .scroll-area {
+    overflow-y: auto;
+    scrollbar-width: thin;
+    scrollbar-color: var(--fill-control-hover) transparent;
+  }
+  .scroll-area::-webkit-scrollbar {
+    width: 10px;
+  }
+  .scroll-area::-webkit-scrollbar-thumb {
+    background: var(--fill-control-hover);
+    border-radius: 999px;
+    border: 3px solid transparent;
+    background-clip: content-box;
+  }
+}
+
+@keyframes studio-dot {
+  0%,
+  100% {
+    opacity: 0.25;
+    transform: scale(0.75);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes studio-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes studio-pop-in {
+  from {
+    opacity: 0;
+    transform: translateY(var(--pop-from, 4px)) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes studio-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.animate-pop-in {
+  animation: studio-pop-in var(--dur-snap) var(--ease-snap) both;
+}
+
+.animate-fade-in {
+  animation: studio-fade-in var(--dur-snap) var(--ease-out) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 1ms;
+    transition-duration: 1ms;
+  }
+}

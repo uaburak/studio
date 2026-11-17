@@ -2,6 +2,7 @@
 # independent throwaway projects with their own installs.
 packages:
   - apps/web
+  - apps/desktop
   - apps/api
   - apps/worker
   - apps/cloud-publisher
