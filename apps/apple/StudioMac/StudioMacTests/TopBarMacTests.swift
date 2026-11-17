@@ -447,3 +447,35 @@ struct TopBarViewTests {
         #expect(ambiguous(in: footer).isEmpty)
     }
 }
+
+@MainActor
+struct TitleRenameTests {
+    @Test func doubleClickEditorShowsTheWholeTitleAndSaves() async throws {
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 200), styleMask: [.titled], backing: .buffered, defer: false)
+        let host = NSView(frame: window.contentLayoutRect)
+        window.contentView = host
+        let title = TopBarTitleControl()
+        host.addSubview(title)
+        NSLayoutConstraint.activate([
+            title.leadingAnchor.constraint(equalTo: host.leadingAnchor, constant: 20),
+            title.centerYAnchor.constraint(equalTo: host.centerYAnchor),
+        ])
+        title.titleText = "1 tane görsel oluştur Boro ürünü için"
+        var saved: String?
+        title.onRename = { saved = $0 }
+        host.layoutSubtreeIfNeeded()
+
+        title.beginRename()
+        host.layoutSubtreeIfNeeded()
+        let field = try #require(title.subviews.compactMap { $0 as? InlineRenameField }.first)
+        #expect(field.stringValue == "1 tane görsel oluştur Boro ürünü için")
+        #expect(field.frame.width >= 260, "the editor is wide enough for the title")
+        #expect(title.frame.width >= field.frame.maxX, "the control grows around the editor")
+
+        field.stringValue = "Boro görseli"
+        field.onFinish?(true)
+        #expect(saved == "Boro görseli")
+        #expect(title.labelText == "Boro görseli")
+        window.close()
+    }
+}

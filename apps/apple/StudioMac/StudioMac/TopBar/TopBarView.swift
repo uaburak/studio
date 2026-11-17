@@ -634,6 +634,7 @@ final class TopBarTitleControl: NSControl, TopBarInteractive {
     private let label = NSTextField(labelWithString: "")
     private let chevron = NSImageView()
     private var editor: NSTextField?
+    private var editorWidth: NSLayoutConstraint?
     private var hovering = false { didSet { refreshStyle() } }
     private var trackingArea: NSTrackingArea?
 
@@ -734,17 +735,25 @@ final class TopBarTitleControl: NSControl, TopBarInteractive {
         field.backgroundColor = Theme.fill
         field.focusRingType = .none
         field.wantsLayer = true
-        field.layer?.cornerRadius = 5
+        field.layer?.cornerRadius = 12
+        field.cell?.lineBreakMode = .byClipping
         field.translatesAutoresizingMaskIntoConstraints = false
         field.onFinish = { [weak self] commit in self?.endRename(commit: commit) }
         addSubview(field)
+        // The title keeps its place (hidden by alpha, not removed, so the bar's layout doesn't
+        // collapse) and the control grows to fit the editor.
+        let width = max(label.frame.width + 60, 260)
+        let grow = widthAnchor.constraint(greaterThanOrEqualToConstant: width + 16)
         NSLayoutConstraint.activate([
-            field.leadingAnchor.constraint(equalTo: label.leadingAnchor, constant: -3),
+            field.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 5),
             field.centerYAnchor.constraint(equalTo: centerYAnchor),
-            field.widthAnchor.constraint(equalToConstant: max(label.frame.width + 60, 220)),
+            field.widthAnchor.constraint(equalToConstant: width),
+            field.heightAnchor.constraint(equalToConstant: 24),
+            grow,
         ])
-        label.isHidden = true
-        chevron.isHidden = true
+        editorWidth = grow
+        label.alphaValue = 0
+        chevron.alphaValue = 0
         editor = field
         window?.makeFirstResponder(field)
         field.currentEditor()?.selectAll(nil)
@@ -755,8 +764,10 @@ final class TopBarTitleControl: NSControl, TopBarInteractive {
         editor = nil
         let text = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         field.removeFromSuperview()
-        label.isHidden = false
-        chevron.isHidden = false
+        editorWidth?.isActive = false
+        editorWidth = nil
+        label.alphaValue = 1
+        chevron.alphaValue = 1
         if commit, !text.isEmpty, text != titleText {
             titleText = text
             onRename?(text)
@@ -796,7 +807,20 @@ final class InlineRenameField: NSTextField, NSTextFieldDelegate {
         return false
     }
 
-    func controlTextDidEndEditing(_ obj: Notification) { finish(true) }
+    /// Clicking anywhere else saves (end-editing notifications also fire spuriously while the
+    /// field is being set up, which closed the editor at once).
+    private var monitor: Any?
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if let monitor { NSEvent.removeMonitor(monitor); self.monitor = nil }
+        guard window != nil else { return }
+        monitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] event in
+            guard let self, let window = self.window else { return event }
+            let inside = event.window === window && self.bounds.contains(self.convert(event.locationInWindow, from: nil))
+            if !inside { self.finish(true) }
+            return event
+        }
+    }
 }
 
 extension NSView {
