@@ -4,7 +4,16 @@ import { create } from "zustand";
 import type { SessionState, WindowState } from "../../shared/ipc.ts";
 import type { ChatImage } from "../lib/transcript.ts";
 
-export type Route = { kind: "new" } | { kind: "conversation"; id: string } | { kind: "gallery" };
+export type Route =
+  | { kind: "new" }
+  | { kind: "conversation"; id: string }
+  | { kind: "gallery" }
+  /** Full pages of the right panel's Takvim / Medya / Marka (wave 2B). */
+  | { kind: "calendar" }
+  | { kind: "media" }
+  | { kind: "brand"; id: string }
+  /** The posts board (wave 2A). */
+  | { kind: "posts" };
 
 export type PanelPane = "details" | "jobs" | "calendar" | "media" | "brand" | "phone";
 
@@ -29,12 +38,24 @@ export function routeKey(route: Route): string {
       return `c:${route.id}`;
     case "gallery":
       return "gallery";
+    case "calendar":
+      return "calendar";
+    case "media":
+      return "media";
+    case "brand":
+      return `brand:${route.id}`;
+    case "posts":
+      return "posts";
   }
 }
 
 export function parseRoute(key: string | null | undefined): Route {
   if (key?.startsWith("c:") && key.length > 2) return { kind: "conversation", id: key.slice(2) };
   if (key === "gallery") return { kind: "gallery" };
+  if (key === "calendar") return { kind: "calendar" };
+  if (key === "media") return { kind: "media" };
+  if (key?.startsWith("brand:") && key.length > 6) return { kind: "brand", id: key.slice(6) };
+  if (key === "posts") return { kind: "posts" };
   return { kind: "new" };
 }
 

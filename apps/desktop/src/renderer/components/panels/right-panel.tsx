@@ -1,9 +1,14 @@
 // The right panel (Wecra "Right panel"): the top bar's tool icons switch its pane; the centre
-// never changes. Ayrıntılar (Ortam / Kullanım / Bağlam / Hesaplar) and Arka plan işleri are
-// live; Takvim, Medya, Marka and iPhone come with wave 2.
+// never changes. Ayrıntılar (Ortam / Kullanım / Bağlam / Hesaplar) and Arka plan işleri live
+// here; Takvim, Medya, Marka and iPhone come from features/ (wave 2B).
 import type { AgentRun, Job, Platform, SocialAccount } from "@studio/contract";
 import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useState } from "react";
+import { BrandPane } from "../../features/brand/brand-pane.tsx";
+import { CalendarPane } from "../../features/calendar/calendar-pane.tsx";
+import { PhonePane } from "../../features/devices/phone-pane.tsx";
+import { MediaPane } from "../../features/media/media-pane.tsx";
+import { openSettings } from "../../features/settings/store.ts";
 import { useApi } from "../../lib/api.ts";
 import { compactNumber, formatAgo, formatDuration, percentText } from "../../lib/format.ts";
 import { effortLabel, modelLabel } from "../../lib/models.ts";
@@ -21,7 +26,6 @@ import {
   isHostUp,
   useAccounts,
   useAgentChoice,
-  useBrands,
   useConversation,
   useConversations,
   useHost,
@@ -31,16 +35,12 @@ import {
 import { useNow } from "../chat/blocks.tsx";
 import { cn, Meter, Switch } from "../ui/controls.tsx";
 import {
-  IconCalendar,
   IconCheck,
   IconChevronDown,
   IconChevronRight,
   IconFolder,
-  IconImage,
   IconLaptop,
   IconLink,
-  IconPhone,
-  IconTag,
   PlatformIcon,
 } from "../ui/icons.tsx";
 
@@ -69,39 +69,14 @@ function PaneContent({ pane }: { pane: PanelPane }) {
     case "jobs":
       return <JobsPane />;
     case "calendar":
-      return (
-        <LaterPane
-          icon={<IconCalendar size={18} />}
-          text="Ay görünümü ve seçili günün paylaşımları burada olacak."
-        />
-      );
+      return <CalendarPane />;
     case "media":
-      return (
-        <LaterPane
-          icon={<IconImage size={18} />}
-          text="Markanın görselleri; sürükleyip yazı kutusuna ekleyebileceksin."
-        />
-      );
+      return <MediaPane />;
     case "brand":
       return <BrandPane />;
     case "phone":
-      return (
-        <LaterPane
-          icon={<IconPhone size={18} />}
-          text="iPhone eşleştirme QR kodu ve eşleşmiş cihazlar."
-        />
-      );
+      return <PhonePane />;
   }
-}
-
-function LaterPane({ icon, text }: { icon: ReactNode; text: string }) {
-  return (
-    <div className="flex flex-col items-start gap-2 pt-2 text-body text-fg-2">
-      <span className="text-icon">{icon}</span>
-      <p>{text}</p>
-      <p className="text-footnote text-fg-3">Bir sonraki sürümde.</p>
-    </div>
-  );
 }
 
 // --- building blocks ----------------------------------------------------------------------------
@@ -421,7 +396,6 @@ export function accountRow(platform: Platform, account: SocialAccount | undefine
 function AccountsSection({ conversationId }: { conversationId: string | null }) {
   const accounts = useAccounts();
   const currentBrandId = useAppStore((s) => s.currentBrandId);
-  const showToast = useAppStore((s) => s.showToast);
   const conversations = useConversations();
   const brandId = conversationId
     ? ((conversations.data ?? []).find((c) => c.id === conversationId)?.brandId ?? null)
@@ -448,62 +422,11 @@ function AccountsSection({ conversationId }: { conversationId: string | null }) 
             label={row.label}
             value={row.value}
             tone={row.tone}
-            onClick={() =>
-              showToast({
-                message: "Hesap bağlama bir sonraki sürümde (şimdilik Studio Mac uygulamasından).",
-              })
-            }
+            onClick={() => openSettings("accounts")}
           />
         );
       })}
     </PanelSection>
-  );
-}
-
-// --- Marka ---------------------------------------------------------------------------------------
-
-function BrandPane() {
-  const brands = useBrands();
-  const accounts = useAccounts();
-  const currentBrandId = useAppStore((s) => s.currentBrandId);
-  const brand = (brands.data ?? []).find((b) => b.id === currentBrandId);
-  if (!brand)
-    return <LaterPane icon={<IconTag size={18} />} text="Başlıktaki menüden bir marka seç." />;
-  const list = (accounts.data ?? []).filter((a) => a.brandId === brand.id);
-  return (
-    <>
-      <div className="mb-4 flex items-center gap-3">
-        <div className="flex size-10 items-center justify-center rounded-[10px] bg-accent text-title font-semibold text-on-accent">
-          {brand.name.charAt(0)}
-        </div>
-        <div className="min-w-0">
-          <div className="truncate text-heading font-semibold text-fg">{brand.name}</div>
-          <div className="text-footnote text-fg-3">
-            {brand.slug} · {brand.defaultLanguage.toUpperCase()}
-          </div>
-        </div>
-      </div>
-      <PanelSection title="Platformlar" last>
-        {PLATFORMS.map((p) => {
-          const row = accountRow(
-            p.id,
-            list.find((a) => a.platform === p.id),
-          );
-          return (
-            <PanelRow
-              key={p.id}
-              icon={<PlatformIcon platform={p.id} size={16} />}
-              label={row.label}
-              value={row.value}
-              tone={row.tone}
-            />
-          );
-        })}
-        <p className="mt-2 text-footnote text-fg-3">
-          Marka kiti, renkler ve AI analizi bir sonraki sürümde.
-        </p>
-      </PanelSection>
-    </>
   );
 }
 

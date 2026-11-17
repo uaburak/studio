@@ -3,6 +3,10 @@
 // ⌘[ ⌘] back / forward).
 import { lazy, Suspense, useEffect } from "react";
 import type { MenuCommand } from "../../../shared/ipc.ts";
+import { OnboardingSheet } from "../../features/onboarding/onboarding-sheet.tsx";
+import { PostDetailLayer } from "../../features/post-detail/post-detail.tsx";
+import { PostsPage } from "../../features/posts/posts-page.tsx";
+import { SettingsSheet } from "../../features/settings/settings-sheet.tsx";
 import { bridge, isElectron } from "../../lib/bridge.ts";
 import { parseRoute, useAppStore } from "../../state/app-store.ts";
 import { ChatView } from "../chat/chat-view.tsx";
@@ -10,11 +14,15 @@ import { Lightbox } from "../chat/lightbox.tsx";
 import { NewChatView } from "../chat/new-chat-view.tsx";
 import { PANEL_WIDTH, PANEL_WIDTH_EXPANDED, RightPanel } from "../panels/right-panel.tsx";
 import { ToastHost } from "../ui/popover.tsx";
-import { HostBanner, SearchPalette, SettingsSheet } from "./overlays.tsx";
+import { HostBanner, SearchPalette } from "./overlays.tsx";
 import { Sidebar } from "./sidebar.tsx";
 import { TopBar } from "./top-bar.tsx";
 
 const Gallery = lazy(() => import("../../routes/gallery.tsx"));
+// Full pages of the Takvim / Medya / Marka panes (wave 2B).
+const CalendarPage = lazy(() => import("../../features/calendar/calendar-page.tsx"));
+const MediaPage = lazy(() => import("../../features/media/media-page.tsx"));
+const BrandPage = lazy(() => import("../../features/brand/brand-page.tsx"));
 
 export function runMenuCommand(command: MenuCommand): void {
   const s = useAppStore.getState();
@@ -119,20 +127,30 @@ export function AppShell() {
         <TopBar panelWidth={panelWidth} />
         <HostBanner />
         <div className="flex min-h-0 flex-1">
-          <div className="flex min-w-0 flex-1 flex-col">
+          <div className="relative flex min-w-0 flex-1 flex-col">
             {route.kind === "new" && <NewChatView />}
+            {route.kind === "posts" && <PostsPage />}
             {route.kind === "conversation" && <ChatView key={route.id} id={route.id} />}
             {route.kind === "gallery" && (
               <Suspense fallback={null}>
                 <Gallery />
               </Suspense>
             )}
+            {(route.kind === "calendar" || route.kind === "media" || route.kind === "brand") && (
+              <Suspense fallback={null}>
+                {route.kind === "calendar" && <CalendarPage />}
+                {route.kind === "media" && <MediaPage />}
+                {route.kind === "brand" && <BrandPage key={route.id} brandId={route.id} />}
+              </Suspense>
+            )}
+            <PostDetailLayer />
           </div>
           {panelWidth !== null && <RightPanel width={panelWidth} />}
         </div>
       </main>
       <SearchPalette />
       <SettingsSheet />
+      <OnboardingSheet />
       <Lightbox />
       <ToastHost />
     </div>

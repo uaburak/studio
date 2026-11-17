@@ -70,6 +70,8 @@ export function Menu({
       flip({ padding: 8 }),
       shift({ padding: 8 }),
     ],
+    // left/top, not transform: the pop-in animation's transform would override the position.
+    transform: false,
     whileElementsMounted: autoUpdate,
   });
 
@@ -173,7 +175,7 @@ export function Menu({
             }
       }
       className={cn(
-        "glass z-[90] max-h-[70vh] overflow-y-auto rounded-[12px] p-1 text-body text-fg outline-none",
+        "glass z-[98] max-h-[70vh] overflow-y-auto rounded-[12px] p-1 text-body text-fg outline-none",
         !inline && "animate-pop-in",
       )}
     >

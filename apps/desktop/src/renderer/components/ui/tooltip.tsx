@@ -8,11 +8,13 @@ import {
   type Placement,
   shift,
   useFloating,
+  useMergeRefs,
 } from "@floating-ui/react";
 import {
   cloneElement,
   isValidElement,
   type ReactElement,
+  type Ref,
   useEffect,
   useRef,
   useState,
@@ -41,6 +43,11 @@ export function Tooltip({
     middleware: [offset(6), flip(), shift({ padding: 8 })],
     whileElementsMounted: autoUpdate,
   });
+  // Keep the child's own ref (a MenuButton anchors its menu to it) next to ours.
+  const childRef = isValidElement(children)
+    ? (children.props as { ref?: Ref<Element> }).ref
+    : undefined;
+  const ref = useMergeRefs([refs.setReference, childRef]);
   useEffect(() => () => clearTimeout(timer.current), []);
   if (!isValidElement(children)) return children;
   const show = () => {
@@ -55,7 +62,7 @@ export function Tooltip({
   };
   const props = children.props as Record<string, unknown>;
   const trigger = cloneElement(children as ReactElement<Record<string, unknown>>, {
-    ref: refs.setReference,
+    ref,
     onMouseEnter: (e: unknown) => {
       show();
       (props.onMouseEnter as ((e: unknown) => void) | undefined)?.(e);

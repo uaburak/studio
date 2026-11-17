@@ -37,6 +37,8 @@ export function fallbackSettings(): DesktopSettings {
     notificationsEnabled: true,
     agent: { last: null, conversations: {} },
     session: { ...defaultSession },
+    settingsSection: "",
+    onboarding: { completed: false, skipped: false, step: "welcome" },
   };
 }
 

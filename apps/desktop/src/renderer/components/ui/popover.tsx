@@ -40,6 +40,8 @@ export function Popover({
     placement,
     elements: { reference: anchor },
     middleware: [offset(8), flip({ padding: 8 }), shift({ padding: 8 })],
+    // left/top, not transform: the pop-in animation's transform would override the position.
+    transform: false,
     whileElementsMounted: autoUpdate,
   });
   useEffect(() => {
@@ -77,7 +79,7 @@ export function Popover({
           ["--pop-from" as string]: final.startsWith("top") ? "6px" : "-6px",
         }}
         className={cn(
-          "glass z-[90] animate-pop-in rounded-[14px] p-3.5 text-body text-fg",
+          "glass z-[98] animate-pop-in rounded-[14px] p-3.5 text-body text-fg",
           className,
         )}
       >

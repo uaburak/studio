@@ -50,7 +50,7 @@ export type AssistantBlock =
   | { kind: "plan"; key: string; planId: string; plan: Plan | null; busy: boolean }
   | { kind: "progress"; key: string; steps: ProgressPart[] }
   | { kind: "error"; key: string; error: ErrorPart }
-  | { kind: "post"; key: string; contentId: string; note: string | null }
+  | { kind: "post"; key: string; contentId: string; version: number | null; note: string | null }
   | { kind: "notice"; key: string; text: string }
   | { kind: "unknown"; key: string; text: string };
 
@@ -352,6 +352,7 @@ function assistantItem(message: Message, input: TranscriptInput, isLive: boolean
           kind: "post",
           key: `post-${at}-${part.contentId}`,
           contentId: part.contentId,
+          version: part.version,
           note: part.note,
         });
         break;

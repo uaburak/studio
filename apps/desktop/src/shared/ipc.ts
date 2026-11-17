@@ -1,5 +1,6 @@
 // Typed contract between the main process and the renderer (through the preload bridge).
 // Only plain JSON values cross it.
+import type { AccountsBridge, SystemBridge } from "./accounts-ipc.ts";
 
 export type ServiceName = "api" | "gateway" | "worker" | "tunnel";
 
@@ -69,6 +70,16 @@ export interface DesktopSettings {
     conversations: Record<string, AgentChoiceValue>;
   };
   session: SessionState;
+  /** Ayarlar: the section ⌘, reopens ("" = the default one). */
+  settingsSection: string;
+  /** First-run guide: finished for good, skipped (resumable), and where it stopped. */
+  onboarding: OnboardingState;
+}
+
+export interface OnboardingState {
+  completed: boolean;
+  skipped: boolean;
+  step: string;
 }
 
 export type SettingsPatch = Partial<Omit<DesktopSettings, "agent" | "session">> & {
@@ -134,4 +145,8 @@ export interface StudioBridge {
   openExternal(url: string): Promise<void>;
   onMenuCommand(listener: (command: MenuCommand) => void): () => void;
   onWindowState(listener: (state: WindowState) => void): () => void;
+  /** Ayarlar → Hesaplar: connect flows and app credentials (absent outside Electron). */
+  accounts?: AccountsBridge;
+  /** Version, folders, tunnel token (absent outside Electron). */
+  system?: SystemBridge;
 }

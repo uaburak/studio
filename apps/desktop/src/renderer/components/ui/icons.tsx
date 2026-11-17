@@ -41,6 +41,34 @@ export {
   TriangleAlert as IconWarning,
   X as IconClose,
 } from "lucide-react";
+// Posts and the post editor (wave 2A).
+export {
+  CopyPlus as IconDuplicate,
+  Eye as IconEye,
+  EyeOff as IconEyeOff,
+  Layers as IconLayers,
+  Play as IconPlay,
+  Redo2 as IconRedo,
+  RotateCcw as IconRestore,
+  Send as IconSend,
+  Trash2 as IconTrash,
+  Type as IconType,
+  Undo2 as IconUndo,
+  Upload as IconUpload,
+} from "lucide-react";
+// Calendar, media, brand and iPhone panes (wave 2B).
+export {
+  CircleAlert as IconAlert,
+  FileText as IconDocument,
+  Film as IconVideo,
+  ImagePlus as IconImagePlus,
+  MessageSquarePlus as IconAddToChat,
+  Music as IconAudio,
+  Palette as IconPalette,
+  RefreshCw as IconRefresh,
+  SquarePlay as IconReel,
+  Tablet as IconTablet,
+} from "lucide-react";
 
 type GlyphProps = SVGProps<SVGSVGElement> & { size?: number };
 

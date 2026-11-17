@@ -1,21 +1,12 @@
-// Window overlays: ⌘K search palette, the compact settings sheet (the full one comes with
-// wave 2) and the host status banner.
+// Window overlays: ⌘K search palette and the host status banner (Ayarlar lives in
+// features/settings).
 import type { Conversation } from "@studio/contract";
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { Appearance } from "../../../shared/ipc.ts";
 import { formatAgo } from "../../lib/format.ts";
 import { useAppStore } from "../../state/app-store.ts";
-import { useBrands, useConversations, useHost, useSettings } from "../../state/studio.tsx";
-import {
-  Button,
-  cn,
-  IconButton,
-  SearchField,
-  SegmentedControl,
-  Switch,
-  TextField,
-} from "../ui/controls.tsx";
-import { IconChat, IconClose, IconPlus, IconWarning } from "../ui/icons.tsx";
+import { useBrands, useConversations, useHost } from "../../state/studio.tsx";
+import { Button, cn, SearchField } from "../ui/controls.tsx";
+import { IconChat, IconPlus, IconWarning } from "../ui/icons.tsx";
 
 /** Turkish-insensitive match ("İ" / "i", "ş" / "s" …). */
 export function fold(text: string): string {
@@ -130,148 +121,6 @@ export function SearchPalette() {
           </button>
         </div>
       </div>
-    </div>
-  );
-}
-
-export function SettingsSheet() {
-  const open = useAppStore((s) => s.settingsOpen);
-  const setOpen = useAppStore((s) => s.setSettingsOpen);
-  const { settings, update } = useSettings();
-  const host = useHost();
-  const [name, setName] = useState(settings.ownerName);
-  useEffect(() => {
-    if (open) setName(settings.ownerName);
-  }, [open, settings.ownerName]);
-  useEffect(() => {
-    if (!open) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setOpen(false);
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [open, setOpen]);
-  if (!open) return null;
-  const status = host?.status;
-  return (
-    // biome-ignore lint/a11y/noStaticElementInteractions: backdrop click closes (Esc does too)
-    <div
-      className="fixed inset-0 z-[96] flex items-center justify-center bg-black/30 animate-fade-in"
-      onMouseDown={(e) => {
-        if (e.target === e.currentTarget) setOpen(false);
-      }}
-    >
-      <div
-        role="dialog"
-        aria-label="Ayarlar"
-        className="w-[560px] animate-pop-in rounded-[14px] bg-popover shadow-popover"
-      >
-        <div className="flex h-12 items-center border-b border-hairline pr-2 pl-5">
-          <h2 className="flex-1 text-heading font-semibold text-fg">Ayarlar</h2>
-          <IconButton
-            icon={<IconClose size={16} />}
-            label="Kapat"
-            shortcut="Esc"
-            onClick={() => setOpen(false)}
-          />
-        </div>
-        <div className="px-5">
-          <SettingRow title="Görünüm" description="Sistem, açık ya da koyu tema.">
-            <SegmentedControl<Appearance>
-              label="Görünüm"
-              value={settings.appearance}
-              onChange={(appearance) => update({ appearance })}
-              options={[
-                { value: "system", label: "Sistem" },
-                { value: "light", label: "Açık" },
-                { value: "dark", label: "Koyu" },
-              ]}
-            />
-          </SettingRow>
-          <SettingRow title="Adın" description="Kenar çubuğunda ve karşılamada görünür.">
-            <TextField
-              className="w-[220px]"
-              placeholder="Claude hesabındaki ad"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              onBlur={() => update({ ownerName: name.trim() })}
-            />
-          </SettingRow>
-          <SettingRow
-            title="Bildirimler"
-            description="Uzun işler bitince ve yanıt hazır olunca macOS bildirimi."
-          >
-            <Switch
-              label="Bildirimler"
-              checked={settings.notificationsEnabled}
-              onChange={(on) => update({ notificationsEnabled: on })}
-            />
-          </SettingRow>
-          <SettingRow
-            title="Yerel ağdan erişim"
-            description="iPhone'un bu Mac'e Wi‑Fi üzerinden bağlanması (yeniden başlatınca)."
-          >
-            <Switch
-              label="Yerel ağdan erişim"
-              checked={settings.lanEnabled}
-              onChange={(on) => update({ lanEnabled: on })}
-            />
-          </SettingRow>
-          <SettingRow
-            title="Mac sunucusu"
-            description={
-              status?.kind === "running"
-                ? "Bu uygulama çalıştırıyor."
-                : status?.kind === "attached"
-                  ? "Çalışan Studio sunucusuna bağlı."
-                  : status?.kind === "error"
-                    ? status.message
-                    : status?.kind === "starting"
-                      ? status.message
-                      : "Kapalı"
-            }
-            last
-          >
-            <Button
-              variant="secondary"
-              disabled={status?.kind === "attached"}
-              onClick={() => void window.studio?.host.restart()}
-            >
-              Yeniden başlat
-            </Button>
-          </SettingRow>
-        </div>
-        <p className="border-t border-hairline px-5 py-3 text-footnote text-fg-3">
-          Markalar, hesaplar ve yayın ayarları bir sonraki sürümde bu pencereye gelecek.
-        </p>
-      </div>
-    </div>
-  );
-}
-
-function SettingRow({
-  title,
-  description,
-  children,
-  last,
-}: {
-  title: string;
-  description: string;
-  children: React.ReactNode;
-  last?: boolean;
-}) {
-  return (
-    <div
-      className={cn(
-        "flex min-h-[68px] items-center gap-6 py-3",
-        !last && "border-b border-hairline",
-      )}
-    >
-      <div className="min-w-0 flex-1">
-        <div className="text-body-lg text-fg">{title}</div>
-        <div className="selectable text-body text-fg-2">{description}</div>
-      </div>
-      <div className="shrink-0">{children}</div>
     </div>
   );
 }

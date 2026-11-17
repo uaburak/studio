@@ -6,6 +6,7 @@ import { describeError, useApi } from "../../lib/api.ts";
 import { saveChoicePatch } from "../../lib/models.ts";
 import type { OutgoingMessage } from "../../lib/transcript.ts";
 import { useAppStore } from "../../state/app-store.ts";
+import { useChatDraft } from "../../state/chat-draft.ts";
 import {
   isHostUp,
   useAccounts,
@@ -46,6 +47,15 @@ export function NewChatView() {
   useLayoutEffect(() => {
     composer.current?.focus();
   }, [focusSignal]);
+
+  // "Sohbette aç" / "+ Yeni post": start with the text they prepared.
+  const draft = useChatDraft((s) => s.text);
+  useLayoutEffect(() => {
+    if (draft === null) return;
+    const text = useChatDraft.getState().take();
+    if (text !== null) composer.current?.setText(text);
+    composer.current?.focus();
+  }, [draft]);
 
   const active = (brands.data ?? []).filter((b) => b.status === "active");
   // Default brand: the last one used, else the first.

@@ -114,6 +114,8 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button
 export interface SegmentOption<T extends string> {
   value: T;
   label: string;
+  /** Shown after the label in the tertiary colour (filter counts). */
+  count?: number;
 }
 
 export function SegmentedControl<T extends string>({
@@ -182,6 +184,9 @@ export function SegmentedControl<T extends string>({
             )}
           >
             {option.label}
+            {option.count !== undefined && (
+              <span className="ml-1 text-fg-3 tabular-nums">{option.count}</span>
+            )}
           </button>
         );
       })}

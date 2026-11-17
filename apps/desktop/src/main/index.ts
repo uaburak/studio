@@ -10,6 +10,7 @@ import {
   type NoticeInput,
   type SettingsPatch,
 } from "../shared/ipc.ts";
+import { createSecretStore, setupAccounts } from "./accounts/setup.ts";
 import { DnsSdAdvertiser } from "./host/bonjour.ts";
 import { defaultRepoPath, stateDirectory } from "./host/environment.ts";
 import { defaultHostDeps, type HostConfiguration, LocalHost } from "./host/local-host.ts";
@@ -50,8 +51,19 @@ function hostConfiguration(): HostConfiguration {
   };
 }
 
+// Meta / LinkedIn app secrets and the tunnel token (safeStorage; the AppKit app's Keychain
+// items as a read-only fallback).
+const secrets = createSecretStore(stateDir);
+
 const host = new LocalHost(
-  defaultHostDeps({ stateDir, launcher: new SpawnLauncher(), advertiser: new DnsSdAdvertiser() }),
+  {
+    ...defaultHostDeps({
+      stateDir,
+      launcher: new SpawnLauncher(),
+      advertiser: new DnsSdAdvertiser(),
+    }),
+    readTunnelToken: () => secrets.load("cloudflare-tunnel-token"),
+  },
   hostConfiguration,
 );
 
@@ -147,6 +159,13 @@ function registerIpc(): void {
     if (/^https?:/i.test(url)) return shell.openExternal(url);
   });
   host.onChange((snapshot) => send(IPC.hostChanged, snapshot));
+  setupAccounts({
+    stateDir,
+    logsDir: host.logsDir,
+    secrets,
+    apiPort: () => host.apiPort,
+    send,
+  });
   settings.onChange((value) => {
     applyAppearance(value.appearance);
     send(IPC.settingsChanged, value);

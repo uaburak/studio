@@ -17,6 +17,13 @@ import {
 } from "react";
 import { assetUrl, describeError, useApi } from "../../lib/api.ts";
 import {
+  type AssetDragPayload,
+  attachDecision,
+  hasAssetDrag,
+  onComposerAttach,
+  readAssetDrag,
+} from "../../lib/asset-drag.ts";
+import {
   allocateAlias,
   canSend,
   type Draft,
@@ -111,7 +118,10 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   const previews = useRef(new Set<string>());
   useEffect(() => {
     const current = new Set(drafts.map((d) => d.previewUrl));
-    for (const url of previews.current) if (!current.has(url)) URL.revokeObjectURL(url);
+    for (const url of previews.current) {
+      // Studio assets attached as they are preview from their own URL (nothing to revoke).
+      if (!current.has(url) && url.startsWith("blob:")) URL.revokeObjectURL(url);
+    }
     previews.current = current;
   }, [drafts]);
 
@@ -167,6 +177,68 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     },
     [api, aliases, attachDisabledReason, brandId, canAttach],
   );
+
+  // Studio assets (dragged from Medya, or "Sohbete ekle"): an asset of this brand is attached
+  // as it is; one of another brand is copied into this brand (the API only takes its own).
+  const attachAssets = useCallback(
+    (payloads: AssetDragPayload[]) => {
+      const used = new Set<string>([
+        ...aliases.flatMap((a) => [a.alias, ...a.previousAliases]),
+        ...draftsRef.current.map((d) => d.alias),
+      ]);
+      const added: Draft[] = [];
+      for (const payload of payloads) {
+        const decision = attachDecision(payload, canAttach ? brandId : null);
+        if (decision === "refuse") {
+          setError(
+            canAttach
+              ? "Yalnızca görseller eklenebilir."
+              : (attachDisabledReason ?? "Görsel eklemek için önce bir marka seç."),
+          );
+          continue;
+        }
+        if (decision === "copy") {
+          void fetch(assetUrl(payload.assetId))
+            .then((res) => {
+              if (!res.ok) throw new Error(`HTTP ${res.status}`);
+              return res.blob();
+            })
+            .then((blob) =>
+              upload([
+                new File([blob], payload.filename ?? "gorsel", {
+                  type: blob.type || payload.mimeType,
+                }),
+              ]),
+            )
+            .catch((e) => setError(`Görsel kopyalanamadı: ${describeError(e)}`));
+          continue;
+        }
+        if (
+          draftsRef.current.some(
+            (d) => d.state.kind === "uploaded" && d.state.assetId === payload.assetId,
+          )
+        ) {
+          continue;
+        }
+        const alias = allocateAlias(aliasBaseFor(payload.mimeType), used);
+        used.add(alias);
+        added.push({
+          id: newClientMessageId(),
+          alias,
+          previewUrl: assetUrl(payload.assetId),
+          filename: payload.filename ?? alias,
+          state: { kind: "uploaded", assetId: payload.assetId },
+        });
+      }
+      if (added.length === 0) return;
+      draftsRef.current = [...draftsRef.current, ...added];
+      setDrafts((current) => [...current, ...added]);
+      setError(null);
+      textarea.current?.focus();
+    },
+    [aliases, attachDisabledReason, brandId, canAttach, upload],
+  );
+  useEffect(() => onComposerAttach(attachAssets), [attachAssets]);
 
   // @mentions
   const candidates = useMemo<MentionCandidate[]>(
@@ -247,7 +319,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
         ref={setShell}
         data-focused={focused || forceFocus || undefined}
         onDragOver={(event) => {
-          if (event.dataTransfer.types.includes("Files")) {
+          if (event.dataTransfer.types.includes("Files") || hasAssetDrag(event.dataTransfer)) {
             event.preventDefault();
             setDragOver(true);
           }
@@ -256,7 +328,9 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
         onDrop={(event) => {
           event.preventDefault();
           setDragOver(false);
-          upload([...event.dataTransfer.files]);
+          const assets = readAssetDrag(event.dataTransfer);
+          if (assets.length > 0) attachAssets(assets);
+          else upload([...event.dataTransfer.files]);
         }}
         className={cn(
           "glass-composer flex flex-col rounded-[22px] transition-shadow duration-200",

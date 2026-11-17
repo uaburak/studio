@@ -2,6 +2,13 @@
 // Sohbet | Postlar pill, the title with its menu (double-click renames inline), the right
 // panel's tool icons (they only switch the right panel) and the panel header above the panel.
 import { useEffect, useRef, useState } from "react";
+import { isPageRoute, PageTitle } from "../../features/page-title.tsx";
+import {
+  type Mode,
+  modeOf,
+  PostsTitleButton,
+  switchMode,
+} from "../../features/posts/posts-title.tsx";
 import { type PanelPane, panelTitle, useAppStore } from "../../state/app-store.ts";
 import { useBrands, useConversations } from "../../state/studio.tsx";
 import { cn, IconButton, SegmentedControl } from "../ui/controls.tsx";
@@ -105,19 +112,15 @@ export function PanelHeader() {
 
 function ModePill() {
   const route = useAppStore((s) => s.route);
-  const showToast = useAppStore((s) => s.showToast);
   return (
-    <SegmentedControl
+    <SegmentedControl<Mode>
       label="Mod"
-      value={route.kind === "gallery" ? null : "chat"}
+      value={modeOf(route)}
       options={[
         { value: "chat", label: "Sohbet" },
         { value: "posts", label: "Postlar" },
       ]}
-      onChange={(value) => {
-        if (value === "posts")
-          showToast({ message: "Postlar ekranı bir sonraki sürümde geliyor." });
-      }}
+      onChange={switchMode}
     />
   );
 }
@@ -156,6 +159,8 @@ function TitleButton() {
   if (route.kind === "gallery") {
     return <span className="px-2.5 text-body-lg text-fg">Bileşen galerisi</span>;
   }
+  if (route.kind === "posts") return <PostsTitleButton />;
+  if (isPageRoute(route)) return <PageTitle route={route} />;
 
   if (editing && conversation) {
     const commit = async () => {

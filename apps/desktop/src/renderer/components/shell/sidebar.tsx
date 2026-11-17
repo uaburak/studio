@@ -238,7 +238,6 @@ export function Sidebar() {
   const currentBrandId = useAppStore((s) => s.currentBrandId);
   const setSearchOpen = useAppStore((s) => s.setSearchOpen);
   const togglePanel = useAppStore((s) => s.togglePanel);
-  const showToast = useAppStore((s) => s.showToast);
   const fullScreen = useAppStore((s) => s.window.fullScreen);
   const brands = useBrands();
   const conversations = useConversations();
@@ -252,7 +251,6 @@ export function Sidebar() {
       ),
     [conversations.data, brands.data, currentBrandId],
   );
-  const later = (what: string) => showToast({ message: `${what} bir sonraki sürümde geliyor.` });
 
   return (
     <aside
@@ -280,22 +278,28 @@ export function Sidebar() {
         <SidebarRow
           icon={<IconGrid size={16} strokeWidth={1.5} />}
           label="Postlar"
-          onClick={() => later("Postlar ekranı")}
+          selected={route.kind === "posts"}
+          onClick={() => navigate({ kind: "posts" })}
         />
         <SidebarRow
           icon={<IconCalendar size={16} strokeWidth={1.5} />}
           label="Takvim"
-          onClick={() => togglePanel("calendar")}
+          selected={route.kind === "calendar"}
+          onClick={() => navigate({ kind: "calendar" })}
         />
         <SidebarRow
           icon={<IconImage size={16} strokeWidth={1.5} />}
           label="Medya"
-          onClick={() => togglePanel("media")}
+          selected={route.kind === "media"}
+          onClick={() => navigate({ kind: "media" })}
         />
         <SidebarRow
           icon={<IconTag size={16} strokeWidth={1.5} />}
           label="Markalar"
-          onClick={() => togglePanel("brand")}
+          selected={route.kind === "brand"}
+          onClick={() =>
+            currentBrandId ? navigate({ kind: "brand", id: currentBrandId }) : togglePanel("brand")
+          }
         />
       </nav>
       <div className="scroll-area min-h-0 flex-1 pb-3">

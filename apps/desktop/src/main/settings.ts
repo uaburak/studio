@@ -32,6 +32,8 @@ export function defaultSettings(repoPath: string): DesktopSettings {
       currentBrandId: null,
       collapsedGroups: [],
     },
+    settingsSection: "",
+    onboarding: { completed: false, skipped: false, step: "welcome" },
   };
 }
 
@@ -90,6 +92,20 @@ export function normalizeSettings(raw: unknown, defaults: DesktopSettings): Desk
     notificationsEnabled: bool(r.notificationsEnabled, defaults.notificationsEnabled),
     agent: { last: choice(agentRaw.last), conversations },
     session,
+    settingsSection: str(r.settingsSection, defaults.settingsSection),
+    onboarding: onboardingState(r.onboarding, defaults.onboarding),
+  };
+}
+
+function onboardingState(
+  value: unknown,
+  fallback: DesktopSettings["onboarding"],
+): DesktopSettings["onboarding"] {
+  const o = (value && typeof value === "object" ? value : {}) as Record<string, unknown>;
+  return {
+    completed: bool(o.completed, fallback.completed),
+    skipped: bool(o.skipped, fallback.skipped),
+    step: str(o.step, fallback.step),
   };
 }
 

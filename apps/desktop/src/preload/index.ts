@@ -1,6 +1,7 @@
 // The only bridge between the sandboxed renderer and the main process: a small, typed API
 // (`window.studio`). No Node APIs reach the page.
 import { contextBridge, type IpcRendererEvent, ipcRenderer } from "electron";
+import { ACCOUNTS_IPC as A } from "../shared/accounts-ipc.ts";
 import { IPC, type StudioBridge } from "../shared/ipc.ts";
 
 function subscribe<T>(channel: string, listener: (value: T) => void): () => void {
@@ -26,6 +27,30 @@ const bridge: StudioBridge = {
   openExternal: (url) => ipcRenderer.invoke(IPC.openExternal, url),
   onMenuCommand: (listener) => subscribe(IPC.menuCommand, listener),
   onWindowState: (listener) => subscribe(IPC.windowState, listener),
+  accounts: {
+    state: () => ipcRenderer.invoke(A.state),
+    onChange: (listener) => subscribe(A.changed, listener),
+    apps: () => ipcRenderer.invoke(A.apps),
+    saveMetaApp: (input) => ipcRenderer.invoke(A.saveMetaApp, input),
+    saveLinkedInApp: (input) => ipcRenderer.invoke(A.saveLinkedInApp, input),
+    forgetMetaSecret: () => ipcRenderer.invoke(A.forgetMetaSecret),
+    connectMeta: (brandId) => ipcRenderer.invoke(A.connectMeta, brandId),
+    connectLinkedIn: (brandId) => ipcRenderer.invoke(A.connectLinkedIn, brandId),
+    confirmMeta: (selections) => ipcRenderer.invoke(A.confirmMeta, selections),
+    cancel: () => ipcRenderer.invoke(A.cancel),
+    dismiss: () => ipcRenderer.invoke(A.dismiss),
+    check: (account) => ipcRenderer.invoke(A.check, account),
+    disconnect: (id) => ipcRenderer.invoke(A.disconnect, id),
+  },
+  system: {
+    info: () => ipcRenderer.invoke(A.systemInfo),
+    reveal: (target) => ipcRenderer.invoke(A.systemReveal, target),
+    tunnelToken: {
+      has: () => ipcRenderer.invoke(A.tunnelHas),
+      save: (token) => ipcRenderer.invoke(A.tunnelSave, token),
+      forget: () => ipcRenderer.invoke(A.tunnelForget),
+    },
+  },
 };
 
 contextBridge.exposeInMainWorld("studio", bridge);

@@ -3,6 +3,7 @@
 // bubble with "Şimdi gönder".
 import type { ConversationAlias, MessageMention } from "@studio/contract";
 import { type ReactNode, useState } from "react";
+import { ChatPostCard } from "../../features/posts/chat-post-card.tsx";
 import type {
   AssistantBlock,
   ChatImage,
@@ -275,12 +276,7 @@ function AssistantBlockView({
     case "error":
       return <ErrorBlock error={block.error} />;
     case "post":
-      return (
-        <div className="my-3.5 rounded-[12px] border border-hairline px-4 py-2.5 text-body text-fg-2">
-          Post{block.note ? ` · ${block.note}` : ""}{" "}
-          <span className="text-fg-3">(post kartı bir sonraki sürümde)</span>
-        </div>
-      );
+      return <ChatPostCard contentId={block.contentId} version={block.version} note={block.note} />;
     case "notice":
     case "unknown":
       return <NoticeLine text={block.text} />;
