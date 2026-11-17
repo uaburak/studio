@@ -469,7 +469,11 @@ final class DrawerViewController: UIViewController, UITableViewDelegate, UITextF
             background.backgroundInsets = NSDirectionalEdgeInsets(top: 1, leading: 10, bottom: 1, trailing: 10)
             cell.backgroundConfiguration = background
         }
-        cell.selectionStyle = selectable ? .default : .none
+        // No system selection fill (it drew a full-width grey band behind the row): the
+        // rounded background above is the only highlight.
+        cell.selectionStyle = .none
+        cell.selectedBackgroundView = nil
+        cell.multipleSelectionBackgroundView = nil
     }
 
     private static func countBadge(_ count: Int) -> UIView {
