@@ -172,9 +172,16 @@ final class LocalHost {
         self.instance = instance
         macName = BonjourAdvertiser.computerName
 
-        // 1. Attach to our own running copy (another app instance or crash leftovers).
-        let lastPort = (try? JSONDecoder().decode(HostFile.self, from: Data(contentsOf: hostFile)))?.apiPort
-        for port in Set([lastPort, config.preferredAPIPort].compactMap { $0 }) {
+        // 1. Attach to our own running copy, but only if the app that started it is still
+        //    alive. Children left behind by a force-quit run old code against an old
+        //    database (migrations never ran), so they are stopped and started fresh.
+        let previous = try? JSONDecoder().decode(HostFile.self, from: Data(contentsOf: hostFile))
+        if let previous, previous.pid != getpid(), !Self.isAlive(previous.pid) {
+            await Self.stopLeftovers(repoPath: NSString(string: config.repoPath).expandingTildeInPath)
+        }
+        let ownerAlive = previous.map { $0.pid != getpid() && Self.isAlive($0.pid) } ?? false
+        let lastPort = ownerAlive ? previous?.apiPort : nil
+        for port in Set([lastPort, ownerAlive ? config.preferredAPIPort : nil].compactMap { $0 }) {
             if await health(port: port)?.instance == instance {
                 apiPort = port
                 status = .attached
@@ -524,6 +531,53 @@ final class LocalHost {
     /// Log tail for one service (Settings shows it on errors).
     func lastLines(_ service: Service, lines: Int = 12) -> String {
         HostEnvironment.tail(logFile(service.rawValue), lines: lines)
+    }
+
+    /// Whether a process with this id still runs.
+    nonisolated static func isAlive(_ pid: Int32) -> Bool {
+        pid > 0 && (kill(pid, 0) == 0 || errno == EPERM)
+    }
+
+    /// Stops this repo's API, gateway and worker processes that outlived their app
+    /// (matched by their full paths inside the repo, so nothing else is touched).
+    nonisolated static func stopLeftovers(repoPath: String) async {
+        let patterns = [
+            "\(repoPath)/apps/api/node_modules/wrangler",
+            "\(repoPath)/node_modules/.pnpm/wrangler",
+            "\(repoPath)/apps/api/scripts/lan-gateway.mjs",
+        ]
+        let workerDir = "\(repoPath)/apps/worker"
+        await Task.detached {
+            // The worker runs as `tsx src/main.ts` inside apps/worker: match its
+            // working directory, not just the (generic) command line.
+            for pid in Self.output("/usr/bin/pgrep", ["-f", "tsx src/main.ts"]).split(whereSeparator: \.isNewline) {
+                let cwd = Self.output("/usr/sbin/lsof", ["-a", "-p", String(pid), "-d", "cwd", "-Fn"])
+                    .split(whereSeparator: \.isNewline).first { $0.hasPrefix("n") }.map { String($0.dropFirst()) }
+                if cwd == workerDir, let id = Int32(pid) { kill(id, SIGTERM) }
+            }
+            for pattern in patterns {
+                let pkill = Process()
+                pkill.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
+                pkill.arguments = ["-TERM", "-f", pattern]
+                try? pkill.run()
+                pkill.waitUntilExit()
+            }
+            // Give them a moment to release their ports.
+            try? await Task.sleep(for: .seconds(1.5))
+        }.value
+    }
+
+    nonisolated private static func output(_ tool: String, _ arguments: [String]) -> String {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: tool)
+        process.arguments = arguments
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = FileHandle.nullDevice
+        guard (try? process.run()) != nil else { return "" }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        return String(decoding: data, as: UTF8.self)
     }
 
     private struct HostFile: Codable {
