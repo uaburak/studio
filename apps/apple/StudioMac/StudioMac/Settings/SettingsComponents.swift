@@ -468,6 +468,7 @@ enum SettingsControls {
         field.placeholderString = placeholder
         field.stringValue = value
         field.bezelStyle = .roundedBezel
+        field.controlSize = .large
         field.controlSize = .regular
         field.font = Theme.Settings.rowTitleFont
         field.translatesAutoresizingMaskIntoConstraints = false
@@ -631,7 +632,11 @@ final class SettingsSidebarRow: TapControl {
 
 /// Search field + grouped section rows.
 final class SettingsSidebarView: NSView {
-    let searchField = NSSearchField()
+    let searchField: NSSearchField = {
+        let field = NSSearchField()
+        field.controlSize = .large
+        return field
+    }()
     private(set) var rows: [SettingsSidebarRow] = []
     var onSelect: ((SettingsSection) -> Void)?
 

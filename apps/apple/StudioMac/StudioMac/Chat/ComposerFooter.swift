@@ -209,14 +209,16 @@ private final class FooterMenuButton: NSControl {
         addSubview(row)
 
         NSLayoutConstraint.activate([
-            row.leadingAnchor.constraint(equalTo: leadingAnchor),
-            row.trailingAnchor.constraint(equalTo: trailingAnchor),
-            row.topAnchor.constraint(equalTo: topAnchor),
-            row.bottomAnchor.constraint(equalTo: bottomAnchor),
+            row.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
+            row.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
+            row.topAnchor.constraint(equalTo: topAnchor, constant: 3),
+            row.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -3),
         ])
+        hover.attach(to: self)
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
+    private let hover = CapsuleHover()
 
     /// Model in the primary colour, effort in grey (Claude Code's "Opus 5.5  Medium").
     func setTitle(model: String, effort: String) {
@@ -318,14 +320,16 @@ private final class UsageIndicatorControlView: NSControl {
         addSubview(row)
 
         NSLayoutConstraint.activate([
-            row.leadingAnchor.constraint(equalTo: leadingAnchor),
-            row.trailingAnchor.constraint(equalTo: trailingAnchor),
-            row.topAnchor.constraint(equalTo: topAnchor),
-            row.bottomAnchor.constraint(equalTo: bottomAnchor),
+            row.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 6),
+            row.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -6),
+            row.topAnchor.constraint(equalTo: topAnchor, constant: 4),
+            row.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -4),
         ])
+        hover.attach(to: self)
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
+    private let hover = CapsuleHover()
 
     func refresh(presence: WorkerPresence?) {
         if let usage = presence?.usage, let top = usage.mostUsed {
@@ -692,5 +696,36 @@ private final class UsagePopoverViewController: NSViewController {
             stack.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -14),
         ])
         self.view = root
+    }
+}
+
+/// A capsule hover fill for small text controls (Claude Code's footer buttons).
+@MainActor
+final class CapsuleHover: NSObject {
+    private weak var view: NSView?
+    private var area: NSTrackingArea?
+
+    func attach(to view: NSView) {
+        self.view = view
+        view.wantsLayer = true
+        view.layer?.cornerCurve = .continuous
+        let area = NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeInActiveApp, .inVisibleRect], owner: self, userInfo: nil)
+        view.addTrackingArea(area)
+        self.area = area
+    }
+
+    @objc func mouseEntered(with event: NSEvent) { set(true) }
+    @objc func mouseExited(with event: NSEvent) { set(false) }
+
+    private func set(_ on: Bool) {
+        guard let view, let layer = view.layer else { return }
+        layer.cornerRadius = view.bounds.height / 2
+        var color: CGColor?
+        view.effectiveAppearance.performAsCurrentDrawingAppearance { color = on ? Theme.barButtonHover.cgColor : nil }
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.12
+            context.allowsImplicitAnimation = true
+            layer.backgroundColor = color
+        }
     }
 }

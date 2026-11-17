@@ -94,7 +94,8 @@ enum Theme {
     static let rowRadius: CGFloat = 16
     static let composerHeight: CGFloat = 44
     /// Rounded-rect composer (not a capsule), like Claude Code's input.
-    static let composerRadius: CGFloat = 14
+    /// Full radius for the one-line composer (44 pt tall), like every input.
+    static let composerRadius: CGFloat = 22
     /// User message bubbles.
     static let bubbleRadius: CGFloat = 14
 

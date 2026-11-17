@@ -151,7 +151,11 @@ final class SettingsTabButton: TapControl {
 /// Tabs on the left; a search field and the add button on the right.
 final class SettingsTableToolbar: NSView {
     let tabs: SettingsTabsView
-    let searchField = NSSearchField()
+    let searchField: NSSearchField = {
+        let field = NSSearchField()
+        field.controlSize = .large
+        return field
+    }()
 
     init(tabs: SettingsTabsView, searchPlaceholder: String, trailing: [NSView]) {
         self.tabs = tabs

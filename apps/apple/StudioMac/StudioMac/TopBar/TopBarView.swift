@@ -334,6 +334,11 @@ protocol TopBarInteractive: NSView {}
 /// A bar background / hairline that never moves the window by itself (the bar does).
 final class BarSegmentView: ThemedView {
     override var mouseDownCanMoveWindow: Bool { false }
+    /// Full radius: every control in the bar is a capsule.
+    override func layout() {
+        super.layout()
+        layer?.cornerRadius = bounds.height / 2
+    }
 }
 
 // MARK: - BarIconButton
@@ -370,7 +375,6 @@ final class BarIconButton: NSControl, TopBarInteractive {
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
         wantsLayer = true
-        layer?.cornerRadius = 6
         layer?.cornerCurve = .continuous
         setAccessibilityElement(true)
         setAccessibilityRole(.button)
@@ -391,6 +395,11 @@ final class BarIconButton: NSControl, TopBarInteractive {
     required init?(coder: NSCoder) { fatalError("not used") }
 
     override var mouseDownCanMoveWindow: Bool { false }
+    /// Full radius: every control in the bar is a capsule.
+    override func layout() {
+        super.layout()
+        layer?.cornerRadius = bounds.height / 2
+    }
 
     private func updateImage() {
         imageView.image = NSImage(systemSymbolName: symbolName, accessibilityDescription: nil)?
@@ -477,7 +486,7 @@ final class ModePillControl: NSView, TopBarInteractive {
     }
     var onSelect: ((AppMode) -> Void)?
 
-    private let glass = GlassContainerView(cornerRadius: 8, interactive: true, tint: Theme.modePillTrack)
+    private let glass = GlassContainerView(cornerRadius: 14, interactive: true, tint: Theme.modePillTrack)
     private(set) var segments: [ModePillSegment] = []
 
     init() {
@@ -515,6 +524,11 @@ final class ModePillControl: NSView, TopBarInteractive {
     required init?(coder: NSCoder) { fatalError("not used") }
 
     override var mouseDownCanMoveWindow: Bool { false }
+    /// Full radius: every control in the bar is a capsule.
+    override func layout() {
+        super.layout()
+        layer?.cornerRadius = bounds.height / 2
+    }
     /// The border between the segments does nothing (and does not drag the window).
     override func mouseDown(with event: NSEvent) {}
 }
@@ -538,7 +552,6 @@ final class ModePillSegment: NSControl, TopBarInteractive {
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
         wantsLayer = true
-        layer?.cornerRadius = 6
         layer?.cornerCurve = .continuous
         toolTip = mode.help
         setAccessibilityElement(true)
@@ -561,6 +574,11 @@ final class ModePillSegment: NSControl, TopBarInteractive {
     required init?(coder: NSCoder) { fatalError("not used") }
 
     override var mouseDownCanMoveWindow: Bool { false }
+    /// Full radius: every control in the bar is a capsule.
+    override func layout() {
+        super.layout()
+        layer?.cornerRadius = bounds.height / 2
+    }
 
     private func refreshStyle() {
         let fill: NSColor? = isSelected ? Theme.modePillSelection : (hovering ? Theme.barButtonHover : nil)
@@ -623,7 +641,6 @@ final class TopBarTitleControl: NSControl, TopBarInteractive {
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
         wantsLayer = true
-        layer?.cornerRadius = 6
         layer?.cornerCurve = .continuous
         toolTip = "Sohbet, marka ve ekran seçenekleri"
         setAccessibilityElement(true)
@@ -660,6 +677,11 @@ final class TopBarTitleControl: NSControl, TopBarInteractive {
     var labelText: String { label.stringValue }
 
     override var mouseDownCanMoveWindow: Bool { false }
+    /// Full radius: every control in the bar is a capsule.
+    override func layout() {
+        super.layout()
+        layer?.cornerRadius = bounds.height / 2
+    }
 
     private func refreshStyle() {
         layer?.backgroundColor = hovering ? resolvedCGColor(Theme.barButtonHover) : nil

@@ -686,7 +686,11 @@ enum MediaPanelActions {
 /// Search, a 3-column grid of square thumbnails, "Tümü". Click previews; drag a picture into
 /// the composer to attach it.
 final class MediaPaneView: PanelPaneView {
-    let searchField = NSSearchField()
+    let searchField: NSSearchField = {
+        let field = NSSearchField()
+        field.controlSize = .large
+        return field
+    }()
     let grid = MediaTilesGridView()
     private let statusNote = paneNote("")
     private let uploadButton: PillButton
