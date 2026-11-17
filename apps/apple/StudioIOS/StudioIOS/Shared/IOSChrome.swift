@@ -48,7 +48,7 @@ enum StudioMenus {
             return [UIAction(title: "Marka yok", subtitle: "Mac'te yeni marka oluştur (⇧⌘N)", attributes: .disabled) { _ in }]
         }
         return app.brands.map { brand in
-            UIAction(title: brand.name, subtitle: brand.slug, state: brand.id == app.currentBrandId ? .on : .off) { _ in
+            UIAction(title: brand.name, state: brand.id == app.currentBrandId ? .on : .off) { _ in
                 onPick(brand.id)
                 Haptics.selection()
             }

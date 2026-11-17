@@ -279,13 +279,26 @@ final class DrawerViewController: UIViewController, UITableViewDelegate, UITextF
     /// The brand row's menu (the system menu, which grows out of the row): brands with a
     /// check on the current one, then "Marka profili".
     func brandMenuElements() -> [UIMenuElement] {
+        // The pick waits until the menu has folded back into the row: changing the row
+        // while the menu is still morphing into it made the two animations collide.
         StudioMenus.brandSection(app, onPick: { [weak self] id in
             guard let self, id != self.app.currentBrandId else { return }
-            self.app.selectBrand(id)
-        }, onProfile: { [weak self] id in self?.app.open(.brand(id)) })
+            self.afterBrandMenuCloses { self.app.selectBrand(id) }
+        }, onProfile: { [weak self] id in
+            self?.afterBrandMenuCloses { self?.app.open(.brand(id)) }
+        })
     }
 
     private static let brandMenuButtonTag = 0xB4A2D
+
+    private func afterBrandMenuCloses(_ action: @escaping () -> Void) {
+        guard let indexPath = dataSource.indexPath(for: .brandPicker),
+              let button = tableView.cellForRow(at: indexPath)?.viewWithTag(Self.brandMenuButtonTag) as? MenuSourceButton else {
+            action()
+            return
+        }
+        button.afterMenuCloses(action)
+    }
 
         // MARK: Search
 
@@ -482,7 +495,7 @@ final class DrawerViewController: UIViewController, UITableViewDelegate, UITextF
         let menuButton = cell.viewWithTag(Self.brandMenuButtonTag) as? UIButton
         if item == .brandPicker {
             let button = menuButton ?? {
-                let button = UIButton(type: .custom)
+                let button = MenuSourceButton(type: .custom)
                 button.tag = Self.brandMenuButtonTag
                 button.frame = cell.bounds
                 button.autoresizingMask = [.flexibleWidth, .flexibleHeight]
@@ -491,9 +504,11 @@ final class DrawerViewController: UIViewController, UITableViewDelegate, UITextF
                 cell.addSubview(button)
                 return button
             }()
-            button.menu = UIMenu(children: [UIDeferredMenuElement.uncached { [weak self] completion in
-                completion(self?.brandMenuElements() ?? [])
-            }])
+            if button.menu == nil {
+                button.menu = UIMenu(children: [UIDeferredMenuElement.uncached { [weak self] completion in
+                    completion(self?.brandMenuElements() ?? [])
+                }])
+            }
             cell.bringSubviewToFront(button)
             cell.accessibilityCustomActions = nil
         } else {
@@ -668,3 +683,31 @@ private extension UIView {
 /// The brand dropdown: a Liquid Glass panel that grows out of the brand row (its top is
 /// the row itself) and floats over the drawer. Brands with a check on the current one,
 /// then "Marka profili". Tapping outside or picking folds it back into the row.
+
+/// A button whose menu can run work once the menu has fully closed (its fold-back
+/// animation into the button is over).
+final class MenuSourceButton: UIButton {
+    private var pending: [() -> Void] = []
+    private var menuOpen = false
+
+    func afterMenuCloses(_ action: @escaping () -> Void) {
+        if menuOpen { pending.append(action) } else { action() }
+    }
+
+    override func contextMenuInteraction(_ interaction: UIContextMenuInteraction, willDisplayMenuFor configuration: UIContextMenuConfiguration, animator: (any UIContextMenuInteractionAnimating)?) {
+        super.contextMenuInteraction(interaction, willDisplayMenuFor: configuration, animator: animator)
+        menuOpen = true
+    }
+
+    override func contextMenuInteraction(_ interaction: UIContextMenuInteraction, willEndFor configuration: UIContextMenuConfiguration, animator: (any UIContextMenuInteractionAnimating)?) {
+        super.contextMenuInteraction(interaction, willEndFor: configuration, animator: animator)
+        let run = { [weak self] in
+            guard let self else { return }
+            self.menuOpen = false
+            let actions = self.pending
+            self.pending.removeAll()
+            actions.forEach { $0() }
+        }
+        if let animator { animator.addCompletion(run) } else { run() }
+    }
+}
