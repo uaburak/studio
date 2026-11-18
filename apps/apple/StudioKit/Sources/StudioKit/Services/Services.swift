@@ -38,6 +38,10 @@ public protocol ConversationService: PostChatSender {
     func rejectPlan(_ planId: EntityID, reason: String?) async throws -> Plan
     /// Queue generation for an already accepted plan (items without a running job).
     func generatePlan(_ planId: EntityID, model: AgentModel?, effort: AgentEffort?) async throws -> Plan
+    /// `acceptAndGenerate` with the server's answer: the jobs and the items it left alone (`skipped`).
+    func acceptAndGenerateResult(_ plan: Plan, model: AgentModel?, effort: AgentEffort?) async throws -> PlanGenerateResult
+    /// `generatePlan` with the jobs and the skipped items.
+    func generatePlanResult(_ planId: EntityID, model: AgentModel?, effort: AgentEffort?) async throws -> PlanGenerateResult
     /// Upload an image the user attaches to a message.
     func uploadImage(_ file: UploadFile, brandId: EntityID, progress: @escaping @Sendable (Double) -> Void) async throws -> Asset
 }
@@ -122,6 +126,10 @@ public protocol StudioDataService: Sendable {
         targetContentId: EntityID?, targetSlotId: String?
     ) async throws -> Job
     func imageData(assetId: EntityID) async throws -> Data
+    /// A resized copy `width` px wide (the original bytes when it cannot be resized).
+    func thumbnailData(assetId: EntityID, width: Int) async throws -> Data
+    /// Take a post back out of the trash.
+    func restoreContent(_ id: EntityID) async throws -> Content
 
     // Presence, AI providers & jobs
     func presence() async throws -> WorkerPresence
@@ -136,6 +144,14 @@ public protocol StudioDataService: Sendable {
     /// Live jobs + presence (all brands).
     func jobFeed() -> AsyncStream<JobFeedEvent>
     func cancelJob(_ id: EntityID) async throws -> Job
+    /// Queue a failed or cancelled job again ("Yeniden dene"); returns the new job.
+    func retryJob(_ id: EntityID) async throws -> Job
+
+    // Paid AI (S7)
+    func aiSpend() async throws -> AISpendSummary
+    func aiPreferences() async throws -> AIPreferences
+    /// Answer the Claude limit ("Gemini ile devam et" / "Sınırı bekle").
+    func decideClaudeLimit(_ choice: ClaudeLimitChoice) async throws -> AIPreferences
 
     // Publishing, accounts and calendar (P3). Defaults below keep other conformers compiling.
     func publishingStatus() async throws -> PublishingStatus
@@ -201,6 +217,24 @@ extension StudioDataService {
     }
 }
 
+/// Faz 6 defaults (thumbnails, trash, retry, paid AI): sample and test backends.
+extension StudioDataService {
+    public func thumbnailData(assetId: EntityID, width: Int) async throws -> Data { try await imageData(assetId: assetId) }
+    public func restoreContent(_ id: EntityID) async throws -> Content {
+        throw StudioAPIError.invalidConfiguration("Bu bağlantıda silinen post geri alınamıyor.")
+    }
+    public func retryJob(_ id: EntityID) async throws -> Job {
+        throw StudioAPIError.invalidConfiguration("Bu bağlantıda iş yeniden denenemiyor.")
+    }
+    public func aiSpend() async throws -> AISpendSummary {
+        throw StudioAPIError.invalidConfiguration("Harcama bu bağlantıda okunamıyor.")
+    }
+    public func aiPreferences() async throws -> AIPreferences { AIPreferences() }
+    public func decideClaudeLimit(_ choice: ClaudeLimitChoice) async throws -> AIPreferences {
+        throw StudioAPIError.invalidConfiguration("Bu karar bu bağlantıda verilemiyor.")
+    }
+}
+
 /// Brand kit, archived brands and single-job reads (P2). Default implementations keep
 /// other conformers compiling; the real API and the sample backend implement them.
 extension StudioDataService {
@@ -228,6 +262,14 @@ extension ConversationService {
     /// Accept and generate with the worker's default model and effort.
     public func acceptAndGenerate(_ plan: Plan) async throws -> Plan {
         try await acceptAndGenerate(plan, model: nil, effort: nil)
+    }
+
+    public func acceptAndGenerateResult(_ plan: Plan, model: AgentModel?, effort: AgentEffort?) async throws -> PlanGenerateResult {
+        PlanGenerateResult(plan: try await acceptAndGenerate(plan, model: model, effort: effort))
+    }
+
+    public func generatePlanResult(_ planId: EntityID, model: AgentModel?, effort: AgentEffort?) async throws -> PlanGenerateResult {
+        PlanGenerateResult(plan: try await generatePlan(planId, model: model, effort: effort))
     }
 
     /// Default for conformers without plan generation (the sample backend generates on accept).
@@ -334,8 +376,16 @@ public struct RemoteConversationService: ConversationService {
     }
 
     public func acceptAndGenerate(_ plan: Plan, model: AgentModel?, effort: AgentEffort?) async throws -> Plan {
+        try await acceptAndGenerateResult(plan, model: model, effort: effort).plan
+    }
+
+    public func acceptAndGenerateResult(_ plan: Plan, model: AgentModel?, effort: AgentEffort?) async throws -> PlanGenerateResult {
         let accepted = try await client.acceptPlan(plan.id, PlanAccept(revision: plan.revision))
-        return try await client.generatePlan(accepted.id, PlanGenerate(model: model, effort: effort)).plan
+        return try await client.generatePlan(accepted.id, PlanGenerate(model: model, effort: effort))
+    }
+
+    public func generatePlanResult(_ planId: EntityID, model: AgentModel?, effort: AgentEffort?) async throws -> PlanGenerateResult {
+        try await client.generatePlan(planId, PlanGenerate(model: model?.sendable, effort: effort?.sendable))
     }
 
     public func rejectPlan(_ planId: EntityID, reason: String?) async throws -> Plan {
@@ -489,6 +539,16 @@ public struct RemoteStudioDataService: StudioDataService {
     }
 
     public func imageData(assetId: EntityID) async throws -> Data { try await client.assetData(assetId) }
+    public func thumbnailData(assetId: EntityID, width: Int) async throws -> Data {
+        try await client.assetThumbnailData(assetId, width: width)
+    }
+    public func restoreContent(_ id: EntityID) async throws -> Content { try await client.restoreContent(id) }
+    public func retryJob(_ id: EntityID) async throws -> Job { try await client.retryJob(id) }
+    public func aiSpend() async throws -> AISpendSummary { try await client.aiSpend() }
+    public func aiPreferences() async throws -> AIPreferences { try await client.aiPreferences() }
+    public func decideClaudeLimit(_ choice: ClaudeLimitChoice) async throws -> AIPreferences {
+        try await client.decideClaudeLimit(ClaudeLimitDecisionCreate(choice: choice))
+    }
     public func presence() async throws -> WorkerPresence { try await client.presence() }
     public func claudeControl() async throws -> ClaudeControl { try await client.claudeControl() }
     public func claudeLogin() async throws -> ClaudeControl { try await client.claudeLogin() }

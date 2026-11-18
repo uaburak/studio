@@ -154,7 +154,64 @@ public struct PlanGenerate: Encodable, Sendable, Equatable {
     }
 }
 
+/// Why `POST /api/plans/{id}/generate` left an accepted item alone (`PlanGenerateSkipReason`).
+public enum PlanGenerateSkipReason: String, OpenEnum {
+    case generating, generated, edited, approved, published
+    case noContent = "no_content"
+    case unknown
+
+    public var label: String {
+        switch self {
+        case .generating: "zaten üretiliyor"
+        case .generated: "tasarımı hazır"
+        case .edited: "elle düzenlenmiş"
+        case .approved: "onaylanmış"
+        case .published: "yayınlanmış"
+        case .noContent: "postu silinmiş"
+        case .unknown: "atlandı"
+        }
+    }
+}
+
+public struct PlanGenerateSkip: Codable, Sendable, Hashable {
+    public var itemId: EntityID
+    public var reason: PlanGenerateSkipReason
+
+    public init(itemId: EntityID, reason: PlanGenerateSkipReason) {
+        self.itemId = itemId
+        self.reason = reason
+    }
+}
+
 public struct PlanGenerateResult: Decodable, Sendable, Equatable {
     public var plan: Plan
     public var jobs: [Job]
+    /// Accepted items left alone this round (absent from older servers: empty).
+    public var skipped: [PlanGenerateSkip]
+
+    public init(plan: Plan, jobs: [Job] = [], skipped: [PlanGenerateSkip] = []) {
+        self.plan = plan
+        self.jobs = jobs
+        self.skipped = skipped
+    }
+
+    enum CodingKeys: String, CodingKey { case plan, jobs, skipped }
+
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        plan = try c.decode(Plan.self, forKey: .plan)
+        jobs = try c.decodeIfPresent([Job].self, forKey: .jobs) ?? []
+        skipped = try c.decodeIfPresent([PlanGenerateSkip].self, forKey: .skipped) ?? []
+    }
+
+    /// "2 post atlandı: Kahvaltı (tasarımı hazır), …" (nil when nothing was skipped).
+    public var skippedSummary: String? {
+        guard !skipped.isEmpty else { return nil }
+        let names = skipped.prefix(4).map { skip -> String in
+            let title = plan.items.first { $0.id == skip.itemId }?.title ?? "Post"
+            return "\(title) (\(skip.reason.label))"
+        }
+        let more = skipped.count > 4 ? ", … ve \(skipped.count - 4) post daha" : ""
+        return "\(skipped.count) post atlandı: " + names.joined(separator: ", ") + more
+    }
 }

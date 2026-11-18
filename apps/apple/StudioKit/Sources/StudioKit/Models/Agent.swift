@@ -159,12 +159,16 @@ public struct ClaudeAccount: Codable, Sendable, Hashable {
     /// First name from Claude Code's local profile on the Mac (`~/.claude.json`); the apps greet
     /// with it unless the owner typed a name. Nil from older workers or when signed out.
     public var displayName: String?
+    /// Set while Claude's usage window is used up and work waits (S7); nil otherwise.
+    public var limit: ClaudeLimitState?
     public var checkedAt: Date
 
     public init(
         status: ClaudeAccountStatus, email: String? = nil, plan: String? = nil, cliVersion: String? = nil,
-        loginUrl: String? = nil, detail: String? = nil, displayName: String? = nil, checkedAt: Date
+        loginUrl: String? = nil, detail: String? = nil, displayName: String? = nil, limit: ClaudeLimitState? = nil,
+        checkedAt: Date
     ) {
+        self.limit = limit
         self.status = status
         self.email = email
         self.plan = plan

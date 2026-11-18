@@ -178,12 +178,16 @@ public struct Content: Codable, Sendable, Hashable, Identifiable {
     public var approval: ContentApproval?
     public var createdAt: Date
     public var updatedAt: Date
+    /// Set while the post is in the trash (restore with `POST /api/contents/{id}/restore`).
+    public var deletedAt: Date?
 
     public init(
         id: EntityID, brandId: EntityID, type: ContentType, title: String, brief: String = "",
         status: ContentStatus, targetPlatforms: [Platform], caption: String,
-        currentVersion: ContentVersionRef?, approval: ContentApproval? = nil, createdAt: Date, updatedAt: Date
+        currentVersion: ContentVersionRef?, approval: ContentApproval? = nil, createdAt: Date, updatedAt: Date,
+        deletedAt: Date? = nil
     ) {
+        self.deletedAt = deletedAt
         self.id = id
         self.brandId = brandId
         self.type = type
