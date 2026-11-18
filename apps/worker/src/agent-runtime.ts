@@ -478,15 +478,19 @@ export class AgentRuntime {
   }
 
   /**
-   * N12: once per start, queue tagging of the pictures not read yet (and, with the Vision helper,
-   * redo the ones read without it). Best effort; the API keeps at most one waiting job.
+   * N12: once per start, queue tagging of the pictures not read yet and redo the ones read
+   * without the Vision helper. Without the helper there is no backfill (a colours-only pass over
+   * the whole library would be redone anyway); new uploads still get colours and shape. Best
+   * effort; the API keeps at most one waiting job.
    */
   async startMediaBackfill(): Promise<void> {
     const { logger } = this.options;
     try {
-      const helper = await this.vision.available();
-      if (!helper) logger.warn(`media tagging without Vision: ${VISION_HELPER_MISSING}`);
-      const res = await this.api.client.assets.backfillAnalysis({ includePartial: helper });
+      if (!(await this.vision.available())) {
+        logger.warn(`media tagging without Vision (no backfill): ${VISION_HELPER_MISSING}`);
+        return;
+      }
+      const res = await this.api.client.assets.backfillAnalysis({ includePartial: true });
       if (res.pending > 0) {
         logger.info(`media: ${res.pending} picture(s) to tag (job ${res.jobId ?? "none"})`);
       }

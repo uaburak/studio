@@ -5,7 +5,9 @@ import type { Job } from "@studio/contract";
 import sharp from "sharp";
 import { describe, expect, it } from "vitest";
 import { loadAgentSettings } from "../src/agent.ts";
+import { AgentRuntime } from "../src/agent-runtime.ts";
 import { AiPolicy } from "../src/ai/policy.ts";
+import { loadConfig } from "../src/config.ts";
 import {
   chooseAutoPosition,
   lightGains,
@@ -488,5 +490,33 @@ describe("media.analyze job (N12)", () => {
     policy.apply(settings(true, 5, 5));
     expect((await run()).caption).toBeNull();
     expect(calls).toBe(1);
+  });
+
+  it("queues the one-time backfill at start only when the Vision helper is there", async () => {
+    const make = (vision: VisionHelper) => {
+      const { api, state } = createFakeApi();
+      const runtime = new AgentRuntime({
+        config: loadConfig({
+          STUDIO_WORKER_ID: "mac",
+          STUDIO_STATE_DIR: mkdtempSync(path.join(tmpdir(), "worker-rt-")),
+        }),
+        settings: loadAgentSettings({}),
+        logger: silentLogger,
+        api,
+        runner: async () => {
+          throw new Error("unused");
+        },
+        selfTest: async () => ({ state: "ok", message: "ok", checkedAt: NOW }),
+        recheckIntervalMs: 0,
+        vision,
+      });
+      return { runtime, state };
+    };
+    const withHelper = make(fakeVision());
+    await withHelper.runtime.startMediaBackfill();
+    expect(withHelper.state.backfills).toEqual([{ includePartial: true }]);
+    const without = make(missingVisionHelper());
+    await without.runtime.startMediaBackfill();
+    expect(without.state.backfills).toEqual([]);
   });
 });
