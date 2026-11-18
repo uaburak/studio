@@ -94,8 +94,18 @@ final class ShareFormViewController: UITableViewController, UITextViewDelegate {
             }
         }
         if case .editing = model.phase {} else { next.append((nil, nil, [.status])) }
-        sections = next.map { (title: $0.0, footer: $0.1, rows: $0.2) }
-        tableView.reloadData()
+        let rebuilt = next.map { (title: $0.0, footer: $0.1, rows: $0.2) }
+        let sameShape = rebuilt.map(\.rows) == sections.map(\.rows)
+        sections = rebuilt
+        if sameShape, messageView.isFirstResponder {
+            // Typing a message: refresh the other rows without taking the keyboard away.
+            let others = sections.enumerated().flatMap { section, content in
+                content.rows.enumerated().compactMap { row, kind in kind == .message ? nil : IndexPath(row: row, section: section) }
+            }
+            tableView.reloadRows(at: others, with: .none)
+        } else {
+            tableView.reloadData()
+        }
 
         sendItem.isEnabled = model.canSend
         switch model.phase {
