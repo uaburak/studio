@@ -12,10 +12,16 @@ Branch: worktree-agent-a50895c07dfa95b99. Delete this file when the wave is merg
 - `POST /api/ai/claude-limit/decision` is **Mac only** (`requireLocal`, there is an API test for it) → phone gets 403. Phone shows the banner and tries; on 403 tells the user to decide on the Mac. Open item for the owner/manager.
 
 ## Plan / status
-- [ ] M5 image cache (NSCache + memory warning + ImageIO downsample + thumbnail endpoint), reels streaming
-- [ ] New server states (deletedAt, Üretilemedi + Yeniden dene, plan skipped, Claude limit banner, spend in usage sheet)
-- [ ] M6 targeted post refresh + debounce
-- [ ] M7 background check: LAN then tunnel, waiting conversations, Claude limit notification
-- [ ] M9 TARGETED_DEVICE_FAMILY = 1
-- [ ] Background upload with retry (StudioKit APIClient.uploadAsset keeps its API)
-- [ ] StudioKit tests, builds, final commit
+- [x] M5 image cache (NSCache + memory warning + ImageIO downsample + thumbnail endpoint), reels streaming
+- [x] New server states (deletedAt, Üretilemedi + Yeniden dene, plan skipped, Claude limit banner, spend in usage sheet)
+- [x] M6 targeted post refresh + debounce
+- [x] M7 background check: LAN then tunnel, waiting conversations, Claude limit notification
+- [x] M9 TARGETED_DEVICE_FAMILY = 1
+- [x] Background upload with retry (StudioKit APIClient.uploadAsset keeps its API)
+- [x] StudioKit tests, builds, final commit
+
+## State
+All items done and committed; StudioKit 173 tests pass; StudioIOS build-for-testing and StudioMac build succeed.
+Not verified on a device or simulator (not allowed in this wave): image memory under load, AVPlayer streaming through
+the resource loader, background session uploads after leaving the app, BGAppRefresh notices.
+Open: phone's Claude-limit decision is refused by the API (Mac only) until the API allows paired devices.
