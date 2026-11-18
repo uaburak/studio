@@ -117,6 +117,11 @@ export interface LintConfig {
   maxLayers?: number;
   /** Brand font families; when omitted the font-family rule is skipped. */
   brandFonts?: readonly string[];
+  /**
+   * Brand families that come from fonts installed on the rendering Mac (not @font-face).
+   * Each is measured in the page; one that is not installed is reported as `font-missing`.
+   */
+  systemFonts?: readonly string[];
   /** facts.json `allowedNumbers`; when omitted numbers are not checked (`numbers-unchecked`). */
   allowedNumbers?: readonly string[];
   /** Brand language for `lang` (default `tr`). */

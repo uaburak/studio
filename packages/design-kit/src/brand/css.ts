@@ -7,6 +7,11 @@
  * written into the CSS. The default is a URL relative to the stylesheet (`fonts/x.woff2`),
  * which resolves to `/brand/fonts/x.woff2` in the renderer and to the editor's asset host
  * in previews, without rewriting.
+ *
+ * System fonts (`font.<role>.system`): the family is used by name, so Chromium takes the font
+ * installed on the Mac. An @font-face with the same name would hide the installed font, so the
+ * role's files (the fallback) are declared as `<family> Fallback` and follow it in the stack:
+ * `--font-display: 'Avenir Next', 'Avenir Next Fallback', sans-serif`.
  */
 import { KIT_VERSION } from "../version.ts";
 import {
@@ -18,9 +23,11 @@ import {
 } from "./components.ts";
 import {
   type BrandTokens,
+  brandSystemFontFamilies,
   colorValue,
   type FontFile,
   type FontRole,
+  fallbackFamilyName,
   parseBrandTokens,
   resolveUsage,
 } from "./tokens.ts";
@@ -90,6 +97,8 @@ export interface BrandCssManifest {
   components: { name: string; description: string; example: string }[];
   /** Font families brand.css loads (what the linter accepts). */
   fontFamilies: string[];
+  /** Of those, the families that come from fonts installed on the Mac (checked by the linter). */
+  systemFontFamilies: string[];
 }
 
 export interface BrandCss {
@@ -99,14 +108,22 @@ export interface BrandCss {
 
 const SAFE_URL = /^[A-Za-z0-9._~\-/%:+@=,]+$/;
 
+/** `--font-<role>` value: the family, its fallback files' family (system fonts), the generic. */
+export function fontStack(role: FontRole): string {
+  return role.system && role.files.length > 0
+    ? `'${role.family}', '${fallbackFamilyName(role.family)}', ${role.fallback}`
+    : `'${role.family}', ${role.fallback}`;
+}
+
 function fontFaces(role: FontRole, fontUrl: (f: ResolvedFontFile) => string): string[] {
+  const family = role.system ? fallbackFamilyName(role.family) : role.family;
   return role.files.map((file) => {
     const f = resolveFontFile(file, role);
     const url = fontUrl(f);
     if (!SAFE_URL.test(url) || /^(?:javascript|data):/i.test(url))
       throw new Error(`unsafe font URL: ${url}`);
     const lines = [
-      `  font-family: '${role.family}';`,
+      `  font-family: '${family}';`,
       `  font-style: ${f.style};`,
       f.weight ? `  font-weight: ${f.weight};` : null,
       f.stretch ? `  font-stretch: ${f.stretch};` : null,
@@ -154,8 +171,7 @@ export function generateBrandCss(
   const vars: [string, string][] = [];
   for (const [name, c] of Object.entries(tokens.color))
     vars.push([`--color-${name}`, colorValue(c).toUpperCase()]);
-  for (const [name, f] of Object.entries(tokens.font))
-    vars.push([`--font-${name}`, `'${f.family}', ${f.fallback}`]);
+  for (const [name, f] of Object.entries(tokens.font)) vars.push([`--font-${name}`, fontStack(f)]);
   vars.push(["--margin", `${tokens.space.margin}px`]);
   if (tokens.space.gutter !== undefined) vars.push(["--gutter", `${tokens.space.gutter}px`]);
   for (const s of tokens.space.scale) vars.push([`--space-${s}`, `${s}px`]);
@@ -265,6 +281,7 @@ export function generateBrandCss(
         example,
       })),
       fontFamilies: [...new Set(Object.values(tokens.font).map((f) => f.family))],
+      systemFontFamilies: brandSystemFontFamilies(tokens),
     },
   };
 }

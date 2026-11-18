@@ -116,7 +116,7 @@ ${brand.voice || "(none)"}
 
 <facts_json>
 ${brand.facts ? json(brand.facts) : '{ "allowedNumbers": [], "note": "No brand facts: state no numbers and no claims about the brand or its products." }'}
-</facts_json>`;
+</facts_json>${brand.skillsBlock ? `\n\n${brand.skillsBlock}` : ""}`;
 }
 
 function slotRequirement(brief: DesignBrief): string[] {

@@ -89,6 +89,42 @@ struct DecodingTests {
         #expect(finished.effort == nil)
     }
 
+    @Test func newProvidersDecodeAndUnknownValuesStayOpen() throws {
+        // Models the desktop added (roadmap 7) decode as known cases; anything newer stays `.unknown`.
+        let models = try StudioJSON.decoder().decode([AgentModel].self, from: Data(#"["codex","gpt","antigravity","gpt-9-future"]"#.utf8))
+        #expect(models == [.codex, .gpt, .antigravity, .unknown])
+        #expect(AgentModel.codex.displayName == "Codex (ChatGPT)")
+        #expect(AgentModel.gpt.otherProvider == .openai)
+        #expect(AgentModel.opus.otherProvider == nil)
+        #expect(AgentModel.otherCases.allSatisfy { !$0.isGemini })
+
+        let run = #"{"id":"r1","conversationId":"c1","triggerMessageId":"m1","jobId":null,"status":"queued","attempt":0,"model":"codex","effort":"high","usage":null,"error":null,"createdAt":"2026-11-18T10:00:00.000Z","updatedAt":"2026-11-18T10:00:00.000Z","startedAt":null,"finishedAt":null}"#
+        #expect(try StudioJSON.decoder().decode(AgentRun.self, from: Data(run.utf8)).requestedModel == .codex)
+
+        // Presence with the new `providers` rows and Gemini `keySource`; an unknown provider / state stays open.
+        let presenceJSON = #"""
+        {"online":true,"lastSeenAt":"2026-11-18T10:00:00.000Z","workers":[],"currentJobs":[],"queueLength":0,
+         "gemini":{"status":"ready","mode":"api","apiKeyConfigured":true,"keySource":"vault","cliVersion":null,"defaultModel":"gemini-2.5-flash-lite","detail":null,"checkedAt":"2026-11-18T10:00:00.000Z"},
+         "providers":[
+          {"provider":"codex","state":"signed_out","account":null,"cliVersion":"0.169.1","defaultModel":null,"models":[],"loginUrl":null,"tools":true,"detail":"Giriş yapılmadı.","checkedAt":"2026-11-18T10:00:00.000Z"},
+          {"provider":"openai","state":"ready","account":"API anahtarı","cliVersion":null,"defaultModel":"gpt-6-sol","models":["gpt-6-sol"],"loginUrl":null,"tools":true,"detail":null,"checkedAt":"2026-11-18T10:00:00.000Z"},
+          {"provider":"mistral","state":"warming_up","account":null,"cliVersion":null,"defaultModel":null,"models":[],"loginUrl":null,"tools":false,"detail":null,"checkedAt":"2026-11-18T10:00:00.000Z","extra":1}
+         ]}
+        """#
+        let presence = try StudioJSON.decoder().decode(WorkerPresence.self, from: Data(presenceJSON.utf8))
+        #expect(presence.gemini?.keySource == "vault")
+        #expect(presence.providers?.map(\.provider) == [.codex, .openai, .unknown])
+        #expect(presence.providers?.last?.state == .unknown)
+        #expect(AssistantStatus.isAvailable(.gpt, presence: presence))
+        #expect(!AssistantStatus.isAvailable(.codex, presence: presence))
+        #expect(!AssistantStatus.isAvailable(.antigravity, presence: presence))
+
+        // Older workers send no `providers`: the phone does not block the choice.
+        let old = try StudioJSON.decoder().decode(WorkerPresence.self, from: Data(#"{"online":true,"lastSeenAt":null,"workers":[],"currentJobs":[],"queueLength":0}"#.utf8))
+        #expect(old.providers == nil)
+        #expect(AssistantStatus.isAvailable(.codex, presence: old))
+    }
+
     @Test func toolStepsConsentsGeminiModelsAndWorkerControls() throws {
         // AgentModel Gemini cases & helpers
         #expect(AgentModel.geminiCases == [.geminiFlashLite, .geminiFlash, .geminiPro])

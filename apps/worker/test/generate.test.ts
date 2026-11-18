@@ -263,6 +263,25 @@ describe("content.generate handler (fake renderer)", () => {
       bytes: new Uint8Array(readFileSync(kit("venta/assets/product-venta-borinc.png"))),
       contentType: "image/png",
     });
+    // Brand skills: the enabled one reaches the design prompt and the version note.
+    const skillBase = {
+      brandId: "brand_1",
+      description: "Venta ürün postları",
+      origin: "manual" as const,
+      createdAt: NOW,
+      updatedAt: NOW,
+    };
+    state.skills.push(
+      {
+        ...skillBase,
+        id: "skill_1",
+        name: "venta-urun",
+        body: "# Ürün postu\n- Ürün sağda, başlık solda.",
+        enabled: true,
+        version: 2,
+      },
+      { ...skillBase, id: "skill_2", name: "kapali", body: "# Kapalı", enabled: false, version: 1 },
+    );
 
     const calls: ClaudeCallOptions[] = [];
     const runner: ClaudeRunner = async (options) => {
@@ -326,6 +345,8 @@ describe("content.generate handler (fake renderer)", () => {
     expect(calls[0]?.system).toContain("<design_contract>");
     expect(calls[0]?.system).toContain("PROFILE STATUS: PROVISIONAL");
     expect(calls[0]?.system).toContain("/brand/logos/venta-wordmark-black.standin.png");
+    expect(calls[0]?.system).toContain('<skill name="venta-urun" version="2"');
+    expect(calls[0]?.system).not.toContain("kapali");
     const genText = calls[0]?.content[0];
     expect(genText?.type === "text" && genText.text).toContain("FILLED state");
     expect(genText?.type === "text" && genText.text).toContain(
@@ -357,6 +378,7 @@ describe("content.generate handler (fake renderer)", () => {
     });
     expect(created?.slides[0]).toMatchObject({ width: 1080, height: 1350 });
     expect(created?.note).toContain("geçici marka profili v2");
+    expect(created?.note).toContain("Skill'ler: venta-urun v2.");
     expect(state.contentUpdates).toEqual([
       { caption: "Venta Borinc. Bor ve çinko bir arada. #venta" },
     ]);
@@ -368,6 +390,7 @@ describe("content.generate handler (fake renderer)", () => {
       finalPass: "v2",
       preset: "instagram-feed-portrait",
       media: ["@image"],
+      brandSkills: ["venta-urun v2"],
       brandProfile: { mode: "provisional", version: 2 },
       passes: [
         { pass: "v1", errors: 2 },

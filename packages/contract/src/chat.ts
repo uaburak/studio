@@ -10,6 +10,7 @@ import {
 import { Asset, AssetKind } from "./asset.ts";
 import { Brand } from "./brand.ts";
 import { BrandProfile } from "./brand-profile.ts";
+import { BrandSkill } from "./brand-skill.ts";
 import { AttachmentAlias, MessageMention, TurnAlias } from "./chat-alias.ts";
 import {
   AgentEffort,
@@ -626,6 +627,11 @@ export const TurnContext = z
      * `messages`), for the agent session check. Always sent by the server.
      */
     messageCount: z.number().int().min(0).optional(),
+    /**
+     * The conversation brand's enabled skills (current versions, by name); empty without a
+     * brand. The worker puts them into the prompt within a size budget.
+     */
+    brandSkills: z.array(BrandSkill).optional(),
   })
   .meta({ id: "TurnContext" });
 export type TurnContext = z.infer<typeof TurnContext>;

@@ -76,6 +76,7 @@ export const JOB_TYPE_LABELS: Record<JobType, string> = {
   "content.generate": "İçerik üretimi",
   "content.render": "Render",
   "brand.analyze": "Marka analizi",
+  "brand.skill_draft": "Skill taslağı",
   "image.generate": "Görsel üretimi",
   "schedule.publish": "Zamanlı yayın",
   "demo.echo": "Deneme (echo)",
@@ -150,6 +151,9 @@ export const AGENT_MODEL_OPTIONS: readonly { value: AgentModel; label: string; g
   { value: "opus", label: "Opus", group: "Claude" },
   { value: "sonnet", label: "Sonnet", group: "Claude" },
   { value: "haiku", label: "Haiku", group: "Claude" },
+  { value: "codex", label: "Codex (ChatGPT)", group: "OpenAI" },
+  { value: "gpt", label: "GPT (OpenAI API)", group: "OpenAI" },
+  { value: "antigravity", label: "Antigravity", group: "Google Antigravity" },
 ];
 
 export const AGENT_MODEL_LABELS: Record<AgentModel, string> = {
@@ -159,6 +163,9 @@ export const AGENT_MODEL_LABELS: Record<AgentModel, string> = {
   opus: "Opus",
   sonnet: "Sonnet",
   haiku: "Haiku",
+  codex: "Codex (ChatGPT)",
+  gpt: "GPT (OpenAI API)",
+  antigravity: "Antigravity",
 };
 
 export const AGENT_EFFORT_OPTIONS: readonly { value: AgentEffort; label: string }[] = [

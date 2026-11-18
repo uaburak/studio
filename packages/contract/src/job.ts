@@ -1,5 +1,7 @@
 import { z } from "zod";
 import { ClaudeAccount, GeminiAccount } from "./agent.ts";
+import { AiProviderStatus } from "./ai.ts";
+import { BrandSkillDraftPayload } from "./brand-skill.ts";
 import {
   AgentEffort,
   AgentModel,
@@ -26,6 +28,7 @@ export type JobId = z.infer<typeof JobId>;
  * - `chat.turn` runs one agent turn of a conversation (A2). Only the API
  *   creates it (when a user message or answer arrives); `POST /api/jobs`
  *   refuses it. Payload: `ChatTurnPayload`.
+ * - `brand.skill_draft` drafts a brand skill with AI (`BrandSkillDraftPayload`).
  */
 export const JobType = z
   .enum([
@@ -36,6 +39,7 @@ export const JobType = z
     "image.generate",
     "schedule.publish",
     "chat.turn",
+    "brand.skill_draft",
   ])
   .meta({ id: "JobType" });
 export type JobType = z.infer<typeof JobType>;
@@ -54,6 +58,7 @@ export const JOB_TYPE_REQUIREMENTS = {
   "image.generate": { brand: true, content: false },
   "schedule.publish": { brand: true, content: true },
   "chat.turn": { brand: false, content: false },
+  "brand.skill_draft": { brand: true, content: false },
 } as const satisfies Record<JobType, { brand: boolean; content: boolean }>;
 
 export const MAX_JOB_PAYLOAD_BYTES = 100_000;
@@ -261,6 +266,7 @@ export const JOB_PAYLOAD_SCHEMAS: Partial<Record<JobType, z.ZodType>> = {
   "content.render": ContentRenderPayload,
   "image.generate": ImageGeneratePayload,
   "schedule.publish": SchedulePublishPayload,
+  "brand.skill_draft": BrandSkillDraftPayload,
 };
 
 // --- Live updates and worker presence (F1-6) --------------------------------
@@ -346,6 +352,11 @@ export const WorkerPresence = z
      * (`worker.gemini`, kept across hub restarts); absent until a worker sent one.
      */
     gemini: GeminiAccount.optional(),
+    /**
+     * The Mac's other AI providers (Codex CLI, OpenAI API, Antigravity CLI) as the worker last
+     * reported them (`worker.providers`); absent until a worker sent them.
+     */
+    providers: z.array(AiProviderStatus).optional(),
   })
   .meta({ id: "WorkerPresence" });
 export type WorkerPresence = z.infer<typeof WorkerPresence>;

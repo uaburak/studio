@@ -214,18 +214,21 @@ public struct GeminiAccount: Codable, Sendable, Hashable {
     public var status: GeminiAccountStatus
     public var mode: GeminiMode
     public var apiKeyConfigured: Bool
+    /// "vault" (key entered in the desktop app) or "env" (`.env`); nil without a key or from older workers.
+    public var keySource: String?
     public var cliVersion: String?
     public var defaultModel: String?
     public var detail: String?
     public var checkedAt: Date
 
     public init(
-        status: GeminiAccountStatus, mode: GeminiMode, apiKeyConfigured: Bool, cliVersion: String? = nil,
-        defaultModel: String? = nil, detail: String? = nil, checkedAt: Date
+        status: GeminiAccountStatus, mode: GeminiMode, apiKeyConfigured: Bool, keySource: String? = nil,
+        cliVersion: String? = nil, defaultModel: String? = nil, detail: String? = nil, checkedAt: Date
     ) {
         self.status = status
         self.mode = mode
         self.apiKeyConfigured = apiKeyConfigured
+        self.keySource = keySource
         self.cliVersion = cliVersion
         self.defaultModel = defaultModel
         self.detail = detail
@@ -243,5 +246,56 @@ public struct GeminiControl: Codable, Sendable, Hashable {
         self.account = account
         self.online = online
         self.sent = sent
+    }
+}
+
+// MARK: - Other AI providers (Codex CLI, OpenAI API, Antigravity CLI)
+
+/// `AiProvider` in ai.ts.
+public enum AIProvider: String, OpenEnum {
+    case claude, gemini, codex, openai, antigravity
+    case unknown
+}
+
+/// `AiProviderState` in ai.ts.
+public enum AIProviderState: String, OpenEnum {
+    case ready
+    case signedOut = "signed_out"
+    case signingIn = "signing_in"
+    case notInstalled = "not_installed"
+    case notConfigured = "not_configured"
+    case error
+    case unknown
+}
+
+/// One provider as the Mac's worker last saw it (`AiProviderStatus` in ai.ts, presence `providers`).
+public struct AIProviderStatus: Codable, Sendable, Hashable {
+    public var provider: AIProvider
+    public var state: AIProviderState
+    public var account: String?
+    public var cliVersion: String?
+    public var defaultModel: String?
+    public var models: [String]
+    public var loginUrl: String?
+    /// True when chat turns can use Studio's tools with it.
+    public var tools: Bool
+    public var detail: String?
+    public var checkedAt: Date
+
+    public init(
+        provider: AIProvider, state: AIProviderState, account: String? = nil, cliVersion: String? = nil,
+        defaultModel: String? = nil, models: [String] = [], loginUrl: String? = nil, tools: Bool = true,
+        detail: String? = nil, checkedAt: Date
+    ) {
+        self.provider = provider
+        self.state = state
+        self.account = account
+        self.cliVersion = cliVersion
+        self.defaultModel = defaultModel
+        self.models = models
+        self.loginUrl = loginUrl
+        self.tools = tools
+        self.detail = detail
+        self.checkedAt = checkedAt
     }
 }

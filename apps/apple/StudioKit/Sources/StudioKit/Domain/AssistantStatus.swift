@@ -82,6 +82,10 @@ public enum AssistantStatus {
     public static func isAvailable(_ model: AgentModel, presence: WorkerPresence?) -> Bool {
         guard let presence, presence.online else { return false }
         if model.isGemini { return presence.gemini?.status == .ready || presence.gemini == nil }
+        if let provider = model.otherProvider {
+            guard let rows = presence.providers else { return true }
+            return rows.first(where: { $0.provider == provider })?.state == .ready
+        }
         return presence.claude?.status == .signedIn || presence.claude == nil
     }
 }

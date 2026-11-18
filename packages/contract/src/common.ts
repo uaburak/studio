@@ -15,11 +15,48 @@ export type EntityId = z.infer<typeof EntityId>;
 export const Platform = z.enum(["instagram", "facebook", "linkedin"]).meta({ id: "Platform" });
 export type Platform = z.infer<typeof Platform>;
 
-/** Model family the user picked for a chat turn or a generation (the worker maps it to a model id). */
+/**
+ * Model family the user picked for a chat turn or a generation (the worker maps it to a model id).
+ * `codex`: Codex CLI with its own sign-in (ChatGPT account); `gpt`: OpenAI API with the key in
+ * the vault; `antigravity`: Antigravity CLI (Google account). Clients must tolerate values they
+ * do not know (newer servers add models).
+ */
 export const AgentModel = z
-  .enum(["opus", "sonnet", "haiku", "gemini-flash-lite", "gemini-flash", "gemini-pro"])
+  .enum([
+    "opus",
+    "sonnet",
+    "haiku",
+    "gemini-flash-lite",
+    "gemini-flash",
+    "gemini-pro",
+    "codex",
+    "gpt",
+    "antigravity",
+  ])
   .meta({ id: "AgentModel" });
 export type AgentModel = z.infer<typeof AgentModel>;
+
+/** Which provider runs a model family (`AiProvider` values). */
+export function agentModelProvider(
+  model: AgentModel,
+): "claude" | "gemini" | "codex" | "openai" | "antigravity" {
+  switch (model) {
+    case "opus":
+    case "sonnet":
+    case "haiku":
+      return "claude";
+    case "gemini-flash-lite":
+    case "gemini-flash":
+    case "gemini-pro":
+      return "gemini";
+    case "codex":
+      return "codex";
+    case "gpt":
+      return "openai";
+    case "antigravity":
+      return "antigravity";
+  }
+}
 
 /** Reasoning effort the user picked for a chat turn or a generation. */
 export const AgentEffort = z.enum(["low", "medium", "high", "xhigh"]).meta({ id: "AgentEffort" });

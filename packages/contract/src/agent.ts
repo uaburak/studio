@@ -204,8 +204,13 @@ export const GeminiAccount = z
   .object({
     status: GeminiAccountStatus,
     mode: GeminiMode,
-    /** True when `GEMINI_API_KEY` is present in the worker's environment. */
+    /** True when the worker has a Gemini API key (the vault or `GEMINI_API_KEY` in its environment). */
     apiKeyConfigured: z.boolean(),
+    /**
+     * Where the key came from: `vault` (Ayarlar → Yapay zekâ, preferred) or `env` (`.env`
+     * `GEMINI_API_KEY`); null without a key. Absent from older workers.
+     */
+    keySource: z.enum(["vault", "env"]).nullable().optional(),
     /** Installed `gemini` CLI version when found, else null. */
     cliVersion: z.string().max(64).nullable(),
     /** Default Gemini model id the worker uses for cheap chat turns. */
@@ -220,8 +225,20 @@ export type GeminiAccount = z.infer<typeof GeminiAccount>;
 export const GeminiCommand = z.enum(["gemini.status"]).meta({ id: "GeminiCommand" });
 export type GeminiCommand = z.infer<typeof GeminiCommand>;
 
+/**
+ * `providers.status`: re-check Codex / OpenAI / Antigravity; `codex.login` / `antigravity.login`:
+ * start the CLI's browser sign-in; `ai.credentials`: the stored API keys changed, read them again.
+ */
 export const WorkerCommand = z
-  .enum(["claude.login", "claude.status", "gemini.status"])
+  .enum([
+    "claude.login",
+    "claude.status",
+    "gemini.status",
+    "providers.status",
+    "codex.login",
+    "antigravity.login",
+    "ai.credentials",
+  ])
   .meta({ id: "WorkerCommand" });
 export type WorkerCommand = z.infer<typeof WorkerCommand>;
 

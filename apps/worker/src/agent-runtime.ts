@@ -10,11 +10,13 @@
  */
 import type { spawn as nodeSpawn } from "node:child_process";
 import path from "node:path";
-import type { ClaudeAccount, GeminiAccount } from "@studio/contract";
+import type { AiProviderStatus, ClaudeAccount, GeminiAccount } from "@studio/contract";
 import { createRenderer, type Renderer } from "@studio/design-kit/render";
 import { type AgentSettings, claudeLogDir } from "./agent.ts";
+import { AiUsageRecorder } from "./ai/usage-recorder.ts";
 import { apiBaseFromHubUrl, createStudioApi, type StudioApi } from "./api.ts";
 import { createBrandAnalyzeHandler } from "./brand/handler.ts";
+import { createBrandSkillDraftHandler } from "./brand/skill-draft.ts";
 import { findSkillsDir, loadSkills } from "./chat/skills.ts";
 import { createChatTurnHandler } from "./chat/turn.ts";
 import { buildClaudeEnv } from "./claude/args.ts";
@@ -32,10 +34,14 @@ import {
 import { readCliUsage, UsagePoller } from "./claude/usage-cli.ts";
 import type { WorkerConfig } from "./config.ts";
 import { checkGeminiHealth } from "./gemini/health.ts";
+import { geminiKeySource, getGeminiApiKey } from "./gemini/json-call.ts";
 import { type ContentGenerateDeps, createContentGenerateHandler } from "./generate/handler.ts";
 import { createImageGenerateHandler } from "./image/handler.ts";
 import type { Logger } from "./log.ts";
 import { StudioMcpServer } from "./mcp/server.ts";
+import type { AntigravityProbe } from "./providers/antigravity.ts";
+import type { CodexProbe } from "./providers/codex.ts";
+import { ProvidersController } from "./providers/status.ts";
 import { createSchedulePublishHandler, type SchedulePublishDeps } from "./publish/handler.ts";
 import { SchedulePoller } from "./publish/poller.ts";
 import type { JobRegistry } from "./registry.ts";
@@ -47,6 +53,7 @@ export const AI_JOB_TYPES = [
   "content.generate",
   "brand.analyze",
   "image.generate",
+  "brand.skill_draft",
 ] as const;
 export const CLAUDE_JOB_TYPES = AI_JOB_TYPES;
 
@@ -69,6 +76,15 @@ export interface AgentRuntimeOptions {
   schedulePollIntervalMs?: number;
   /** `claude -p /usage` reader (default: run the CLI; tests inject one). */
   usageReader?: () => Promise<UsageReport | null>;
+  /** Codex / Antigravity probes (default: run the CLIs; unit tests with `selfTest` never do). */
+  codexProbe?: () => Promise<CodexProbe>;
+  antigravityProbe?: () => Promise<AntigravityProbe>;
+  providerLoginSpawn?: typeof nodeSpawn;
+  codexSpawn?: typeof nodeSpawn;
+  antigravitySpawn?: typeof nodeSpawn;
+  openaiFetch?: typeof globalThis.fetch;
+  /** How often to read the stored AI keys again (default 5 min; 0 = only on command). */
+  credentialsIntervalMs?: number;
 }
 
 export class AgentRuntime {
@@ -83,6 +99,10 @@ export class AgentRuntime {
   readonly mcpServer: StudioMcpServer;
   /** `claude -p /usage` at startup and after each chat turn (≥ 60 s apart). */
   readonly usagePoller: UsagePoller;
+  /** Codex CLI / OpenAI API / Antigravity CLI readiness and sign-ins (`worker.providers`). */
+  readonly providers: ProvidersController;
+  /** Paid AI calls (Gemini spend) to the API. */
+  readonly aiUsage: AiUsageRecorder;
 
   private current: ClaudeHealth = {
     state: "error",
@@ -92,6 +112,7 @@ export class AgentRuntime {
   private gemini: GeminiAccount;
   private renderer: Renderer | undefined;
   private timer: ReturnType<typeof setInterval> | undefined;
+  private credentialsTimer: ReturnType<typeof setInterval> | undefined;
   private onChange: (() => void) | undefined;
   private readonly geminiListeners = new Set<(account: GeminiAccount) => void>();
   private checking: Promise<ClaudeHealth> | undefined;
@@ -100,15 +121,18 @@ export class AgentRuntime {
 
   constructor(private readonly options: AgentRuntimeOptions) {
     const { config, settings, logger } = options;
+    settings.vault ??= {};
+    const hasKey = Boolean(getGeminiApiKey(settings));
     this.gemini = {
-      status: settings.geminiApiKey && settings.geminiMode !== "cli" ? "ready" : "not_configured",
-      mode: settings.geminiApiKey ? "api" : "none",
-      apiKeyConfigured: Boolean(settings.geminiApiKey),
+      status: hasKey && settings.geminiMode !== "cli" ? "ready" : "not_configured",
+      mode: hasKey ? "api" : "none",
+      apiKeyConfigured: hasKey,
+      keySource: geminiKeySource(settings),
       cliVersion: null,
       defaultModel: settings.geminiModels["gemini-flash-lite"],
-      detail: settings.geminiApiKey
-        ? `GEMINI_API_KEY hazır · doğrudan API (${settings.geminiModels["gemini-flash-lite"]})`
-        : ".env dosyasında GEMINI_API_KEY tanımlı değil",
+      detail: hasKey
+        ? `Gemini API anahtarı hazır · doğrudan API (${settings.geminiModels["gemini-flash-lite"]})`
+        : "Gemini API anahtarı yok: Ayarlar → Yapay zekâ'dan girin (ya da .env GEMINI_API_KEY)",
       checkedAt: new Date(0).toISOString(),
     };
 
@@ -224,12 +248,47 @@ export class AgentRuntime {
       options.geminiHealthCheck ??
       (() =>
         checkGeminiHealth({
-          apiKey: settings.parentEnv.GEMINI_API_KEY ?? settings.geminiApiKey,
+          apiKey: getGeminiApiKey(settings),
+          keySource: geminiKeySource(settings),
           bin: settings.geminiBin,
           preferredMode: settings.geminiMode,
           defaultModel: settings.geminiModels["gemini-flash-lite"],
           parentEnv: settings.parentEnv,
         }));
+
+    this.aiUsage = new AiUsageRecorder({ api: this.api, logger });
+    const hermetic = Boolean(options.selfTest);
+    this.providers = new ProvidersController({
+      settings,
+      logger,
+      ...(options.codexProbe
+        ? { probeCodex: options.codexProbe }
+        : hermetic
+          ? {
+              probeCodex: async () => ({
+                installed: false,
+                version: null,
+                loggedIn: false,
+                method: null,
+                error: null,
+              }),
+            }
+          : {}),
+      ...(options.antigravityProbe
+        ? { probeAntigravity: options.antigravityProbe }
+        : hermetic
+          ? {
+              probeAntigravity: async () => ({
+                installed: false,
+                version: null,
+                loggedIn: false,
+                models: [],
+                error: null,
+              }),
+            }
+          : {}),
+      ...(options.providerLoginSpawn ? { loginSpawn: options.providerLoginSpawn } : {}),
+    });
 
     const inFlightSchedules = new Set<string>();
 
@@ -242,6 +301,8 @@ export class AgentRuntime {
       claudeAccount: () => this.claudeAuth.latest(),
       geminiAccount: () => this.gemini,
       usage: this.usage,
+      aiUsage: this.aiUsage,
+      providers: () => this.providers.list(),
       refreshUsage: () => void this.usagePoller.refresh(),
       mcpServer: this.mcpServer,
       skills: () => loadSkills(skillsDir),
@@ -249,6 +310,9 @@ export class AgentRuntime {
       inFlightSchedules,
       ...(options.geminiFetch ? { geminiFetch: options.geminiFetch } : {}),
       ...(options.geminiCliSpawn ? { geminiCliSpawn: options.geminiCliSpawn } : {}),
+      ...(options.codexSpawn ? { codexSpawn: options.codexSpawn } : {}),
+      ...(options.antigravitySpawn ? { antigravitySpawn: options.antigravitySpawn } : {}),
+      ...(options.openaiFetch ? { openaiFetch: options.openaiFetch } : {}),
       ...(options.publisherFetch ? { publisherFetch: options.publisherFetch } : {}),
       renderer: () => {
         this.renderer ??= createRenderer({ timeoutMs: 60_000 });
@@ -281,9 +345,26 @@ export class AgentRuntime {
     return this.gemini.status === "ready";
   }
 
-  /** All AI job types are active whenever either Claude or Gemini is ready! */
+  /** Codex CLI, the OpenAI API key or Antigravity CLI can answer chat turns. */
+  otherChatAvailable(): boolean {
+    return (
+      this.providers.codexReady() ||
+      this.providers.openaiReady() ||
+      this.providers.antigravityReady()
+    );
+  }
+
+  /** Chat turns run on any ready provider. */
   chatAvailable(): boolean {
-    return this.claudeAvailable() || this.geminiAvailable();
+    return this.aiAvailable() || this.otherChatAvailable();
+  }
+
+  providerStatuses(): AiProviderStatus[] {
+    return this.providers.list();
+  }
+
+  onProvidersChange(fn: (providers: AiProviderStatus[]) => void): () => void {
+    return this.providers.onChange(fn);
   }
 
   aiAvailable(): boolean {
@@ -299,6 +380,9 @@ export class AgentRuntime {
       for (const t of AI_JOB_TYPES) {
         if (!out.includes(t)) out.push(t);
       }
+    } else if (this.otherChatAvailable() && !out.includes("chat.turn")) {
+      // Structured jobs need Claude or Gemini; chat turns also run on Codex / OpenAI / Antigravity.
+      out.push("chat.turn");
     }
     return out;
   }
@@ -314,7 +398,8 @@ export class AgentRuntime {
       .register("chat.turn", createChatTurnHandler(this.deps))
       .register("content.generate", createContentGenerateHandler(this.deps))
       .register("brand.analyze", createBrandAnalyzeHandler(this.deps))
-      .register("image.generate", createImageGenerateHandler(this.deps));
+      .register("image.generate", createImageGenerateHandler(this.deps))
+      .register("brand.skill_draft", createBrandSkillDraftHandler(this.deps));
   }
 
   /** Called when capabilities or health state change (the worker re-announces itself). */
@@ -336,9 +421,20 @@ export class AgentRuntime {
     if (onChange) this.onChange = onChange;
     await this.usage.load();
     await this.mcpServer.start();
+    await this.refreshCredentials({ silent: true });
     // Subscription usage without a model call (`claude -p /usage`), in the background.
     void this.usagePoller.refresh();
     await this.refreshGeminiStatus({ silentReannounce: true });
+    // `agy models` asks Google: in the background, re-announcing if chat becomes possible.
+    const beforeChat = this.chatAvailable();
+    void this.providers
+      .refresh()
+      .then(() => {
+        if (beforeChat !== this.chatAvailable()) this.onChange?.();
+      })
+      .catch((error: unknown) =>
+        this.options.logger.warn(`providers: check failed: ${(error as Error).message}`),
+      );
     const health = await this.check();
     const interval = this.options.recheckIntervalMs ?? 5 * 60_000;
     if (interval > 0) {
@@ -347,6 +443,15 @@ export class AgentRuntime {
         void this.check();
       }, interval);
       this.timer.unref?.();
+    }
+
+    const credentialsInterval =
+      this.options.credentialsIntervalMs ?? (this.options.recheckIntervalMs === 0 ? 0 : 5 * 60_000);
+    if (credentialsInterval > 0) {
+      this.credentialsTimer = setInterval(() => {
+        void this.refreshCredentials();
+      }, credentialsInterval);
+      this.credentialsTimer.unref?.();
     }
 
     const scheduleInterval =
@@ -383,6 +488,56 @@ export class AgentRuntime {
     return this.claudeAuth.startLogin();
   }
 
+  /**
+   * Read the stored AI keys from the API (`worker.command ai.credentials`, start, every 5 min).
+   * A failed read keeps the last keys. Never logs a key.
+   */
+  async refreshCredentials(opts: { silent?: boolean } = {}): Promise<void> {
+    const { settings, logger } = this.options;
+    let next: {
+      gemini?: { apiKey: string; models: string[] };
+      openai?: { apiKey: string; models: string[] };
+    };
+    try {
+      const remote = await this.api.client.workerAi.credentials();
+      next = {
+        ...(remote.gemini ? { gemini: remote.gemini } : {}),
+        ...(remote.openai ? { openai: remote.openai } : {}),
+      };
+    } catch (error) {
+      logger.debug(`ai credentials: not read (${(error as Error).message})`);
+      return;
+    }
+    settings.vault ??= {};
+    const vault = settings.vault;
+    const fingerprint = (v: typeof next) =>
+      JSON.stringify([
+        v.gemini?.apiKey.slice(-6),
+        v.gemini?.models.length,
+        v.openai?.apiKey.slice(-6),
+        v.openai?.models.length,
+      ]);
+    const changed = fingerprint(vault) !== fingerprint(next);
+    vault.gemini = next.gemini;
+    vault.openai = next.openai;
+    if (!changed) return;
+    const beforeChat = this.chatAvailable();
+    logger.info(
+      `ai credentials: gemini ${next.gemini ? "stored key" : "no stored key"}, openai ${next.openai ? "stored key" : "no stored key"}`,
+    );
+    this.providers.vaultChanged();
+    await this.refreshGeminiStatus({ silentReannounce: opts.silent === true });
+    if (!opts.silent && beforeChat !== this.chatAvailable()) this.onChange?.();
+  }
+
+  /** Handle `worker.command` `providers.status`. */
+  async refreshProviders(): Promise<AiProviderStatus[]> {
+    const before = this.chatAvailable();
+    const list = await this.providers.refresh();
+    if (before !== this.chatAvailable()) this.onChange?.();
+    return list;
+  }
+
   /** Handle `worker.command` `gemini.status`. */
   async refreshGeminiStatus(opts: { silentReannounce?: boolean } = {}): Promise<GeminiAccount> {
     const beforeAi = this.aiAvailable();
@@ -416,6 +571,10 @@ export class AgentRuntime {
   async stop(): Promise<void> {
     clearInterval(this.timer);
     this.timer = undefined;
+    clearInterval(this.credentialsTimer);
+    this.credentialsTimer = undefined;
+    this.providers.stop();
+    await this.aiUsage.stop();
     await this.schedulePoller.stop();
     this.claudeAuth.stop();
     await this.mcpServer.stop();

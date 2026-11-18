@@ -54,6 +54,8 @@ export const ENUMS = {
   imageSlot: ["none", "user_upload", "ai_generate"],
   // --- devices (L1) ---
   devicePlatform: ["ios", "ipados", "macos", "other"],
+  // --- brand skills ---
+  brandSkillOrigin: ["manual", "ai_draft", "restore"],
 } as const;
 
 /** `col in ('a', 'b')` for CHECK constraints (values are constants above, never input). */
@@ -196,6 +198,59 @@ export const brandProducts = sqliteTable(
     updatedAt: updatedAt(),
   },
   (t) => [index("brand_products_brand_idx").on(t.brandId, t.id)],
+);
+
+// --- brand skills (Marka Kiti → Skill'ler) ---------------------------------------
+// Markdown instructions the agent follows for one brand. `brand_skills` holds the current
+// text (copied from its newest version); every text change appends a `brand_skill_versions`
+// row. Names are unique per brand. Deleting a skill deletes its versions.
+
+export const brandSkills = sqliteTable(
+  "brand_skills",
+  {
+    id: text("id").primaryKey(),
+    brandId: text("brand_id")
+      .notNull()
+      .references(() => brands.id),
+    name: text("name").notNull(),
+    description: text("description").notNull().default(""),
+    body: text("body").notNull(),
+    enabled: integer("enabled", { mode: "boolean" }).notNull().default(true),
+    version: integer("version").notNull().default(1),
+    origin: text("origin", { enum: ENUMS.brandSkillOrigin }).notNull().default("manual"),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    uniqueIndex("brand_skills_brand_name_idx").on(t.brandId, t.name),
+    index("brand_skills_brand_idx").on(t.brandId, t.id),
+    check("brand_skills_origin_check", oneOf(t.origin, ENUMS.brandSkillOrigin)),
+  ],
+);
+
+export const brandSkillVersions = sqliteTable(
+  "brand_skill_versions",
+  {
+    id: text("id").primaryKey(),
+    skillId: text("skill_id")
+      .notNull()
+      .references(() => brandSkills.id, { onDelete: "cascade" }),
+    brandId: text("brand_id")
+      .notNull()
+      .references(() => brands.id),
+    version: integer("version").notNull(),
+    name: text("name").notNull(),
+    description: text("description").notNull().default(""),
+    body: text("body").notNull(),
+    origin: text("origin", { enum: ENUMS.brandSkillOrigin }).notNull().default("manual"),
+    note: text("note").notNull().default(""),
+    jobId: text("job_id"),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    uniqueIndex("brand_skill_versions_skill_version_idx").on(t.skillId, t.version),
+    check("brand_skill_versions_origin_check", oneOf(t.origin, ENUMS.brandSkillOrigin)),
+  ],
 );
 
 // --- assets ---------------------------------------------------------------------
@@ -802,3 +857,63 @@ export const pairingFailures = sqliteTable(
     index("pairing_failures_client_idx").on(t.clientIp, t.createdAt),
   ],
 );
+
+// --- AI providers (roadmap 7 + 11) ------------------------------------------------------------
+
+/**
+ * API keys the owner entered in Ayarlar → Yapay zekâ (Gemini, OpenAI), sealed with the token
+ * vault (AES-GCM, `TOKEN_ENCRYPTION_KEY`) and bound to the provider name. Only the worker reads
+ * the plaintext (`GET /api/worker/ai/credentials`); the apps see `hint` (last 4 characters).
+ */
+export const aiKeys = sqliteTable("ai_keys", {
+  provider: text("provider").primaryKey(),
+  ciphertext: text("ciphertext").notNull(),
+  iv: text("iv").notNull(),
+  keyVersion: integer("key_version").notNull(),
+  hint: text("hint"),
+  /** Result of the last models.list check; null = not checked (or not reachable). */
+  valid: integer("valid", { mode: "boolean" }),
+  checkedAt: integer("checked_at", { mode: "timestamp_ms" }),
+  detail: text("detail"),
+  /** JSON array of model ids the key can use (from the last check). */
+  models: text("models").notNull().default("[]"),
+  createdAt: createdAt(),
+  updatedAt: updatedAt(),
+});
+
+/**
+ * One row per paid AI call the worker made (today: Gemini API calls), with its token counts
+ * and the cost the worker computed from its pricing table. `cost_usd` null = model not priced.
+ */
+export const aiUsage = sqliteTable(
+  "ai_usage",
+  {
+    id: text("id").primaryKey(),
+    provider: text("provider").notNull(),
+    model: text("model").notNull(),
+    /** chat | generate | brand | image | transcribe | reel | other */
+    kind: text("kind").notNull(),
+    jobId: text("job_id"),
+    runId: text("run_id"),
+    inputTokens: integer("input_tokens").notNull().default(0),
+    outputTokens: integer("output_tokens").notNull().default(0),
+    thoughtsTokens: integer("thoughts_tokens").notNull().default(0),
+    cachedTokens: integer("cached_tokens").notNull().default(0),
+    costUsd: real("cost_usd"),
+    /** Date the worker's pricing table was checked (YYYY-MM-DD). */
+    pricingVersion: text("pricing_version"),
+    occurredAt: integer("occurred_at", { mode: "timestamp_ms" }).notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    index("ai_usage_provider_time_idx").on(t.provider, t.occurredAt),
+    index("ai_usage_job_idx").on(t.jobId),
+  ],
+);
+
+/** AI settings (single row, id `main`): the owner's monthly Gemini budget. */
+export const aiSettings = sqliteTable("ai_settings", {
+  id: text("id").primaryKey(),
+  geminiMonthlyBudgetUsd: real("gemini_monthly_budget_usd"),
+  updatedAt: updatedAt(),
+});

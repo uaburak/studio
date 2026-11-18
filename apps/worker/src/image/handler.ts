@@ -9,7 +9,9 @@
  */
 import { ApiError, ImageGeneratePayload } from "@studio/contract";
 import sharp from "sharp";
-import { getGeminiApiKey } from "../gemini/json-call.ts";
+import { geminiUsageSink } from "../ai/usage-recorder.ts";
+import { GEMINI_KEY_MISSING, getGeminiApiKey } from "../gemini/json-call.ts";
+import { type GeminiUsageMetadata, sampleFromMetadata } from "../gemini/pricing.ts";
 import { defineHandler, type JobContext, RetryableError } from "../registry.ts";
 import { type ContentRenderDeps, executeContentRender } from "../render/handler.ts";
 
@@ -294,9 +296,7 @@ export function createImageGenerateHandler(deps: ImageGenerateDeps) {
 
       const apiKey = getGeminiApiKey(deps.settings);
       if (!apiKey) {
-        throw new Error(
-          "Görsel üretimi için GEMINI_API_KEY gerekli: lütfen apps/worker/.env dosyasına GEMINI_API_KEY anahtarınızı ekleyin.",
-        );
+        throw new Error(`Görsel üretimi için Gemini API anahtarı gerekli. ${GEMINI_KEY_MISSING}`);
       }
 
       const model =
@@ -370,6 +370,15 @@ export function createImageGenerateHandler(deps: ImageGenerateDeps) {
             throw new RetryableError(`Gemini görsel hatası (${res.status}): ${msg}`);
           }
           throw new Error(`Gemini görsel üretimi başarısız (${res.status}): ${msg}`);
+        }
+
+        const usage = (rawBody as { usageMetadata?: GeminiUsageMetadata; modelVersion?: string })
+          .usageMetadata;
+        if (usage) {
+          const version = (rawBody as { modelVersion?: string }).modelVersion;
+          geminiUsageSink(deps.aiUsage, { kind: "image", jobId: ctx.jobId })?.(
+            sampleFromMetadata(version ?? model, usage),
+          );
         }
 
         const candidate = (

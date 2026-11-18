@@ -326,7 +326,12 @@ export function Select<T extends string>({
   width = 220,
 }: {
   value: T;
-  options: ({ value: T; label: string } | { separator: true })[];
+  /** `heading`: a grey group title (e.g. the model menu's providers). */
+  options: (
+    | { value: T; label: string; disabled?: boolean }
+    | { separator: true }
+    | { heading: string }
+  )[];
   onChange(value: T): void;
   label: string;
   width?: number;
@@ -337,12 +342,15 @@ export function Select<T extends string>({
   const entries: MenuEntry[] = options.map((o, i) =>
     "separator" in o
       ? { type: "separator", id: `sep-${i}` }
-      : {
-          id: o.value,
-          label: o.label,
-          checked: o.value === value,
-          onSelect: () => onChange(o.value),
-        },
+      : "heading" in o
+        ? { type: "label", id: `heading-${i}`, label: o.heading }
+        : {
+            id: o.value,
+            label: o.label,
+            checked: o.value === value,
+            ...(o.disabled ? { disabled: true } : {}),
+            onSelect: () => onChange(o.value),
+          },
   );
   return (
     <MenuButton entries={entries} width={width} label={label} placement="bottom-end">

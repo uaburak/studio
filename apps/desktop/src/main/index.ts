@@ -3,6 +3,7 @@
 // notifications and the typed IPC the preload exposes.
 import { join } from "node:path";
 import { app, BrowserWindow, ipcMain, Menu, Notification, nativeTheme, shell } from "electron";
+import { FONTS_IPC } from "../shared/fonts.ts";
 import {
   type DesktopSettings,
   IPC,
@@ -11,6 +12,7 @@ import {
   type SettingsPatch,
 } from "../shared/ipc.ts";
 import { createSecretStore, setupAccounts } from "./accounts/setup.ts";
+import { FontLister } from "./fonts.ts";
 import { DnsSdAdvertiser } from "./host/bonjour.ts";
 import { defaultRepoPath, stateDirectory } from "./host/environment.ts";
 import { defaultHostDeps, type HostConfiguration, LocalHost } from "./host/local-host.ts";
@@ -170,6 +172,11 @@ function registerIpc(): void {
   ipcMain.handle(IPC.openExternal, (_event, url: string) => {
     if (/^https?:/i.test(url)) return shell.openExternal(url);
   });
+  // Fonts installed on this Mac (Marka Kiti, the post editor), cached until a font folder changes.
+  const fonts = new FontLister();
+  ipcMain.handle(FONTS_IPC.list, (_event, options?: { refresh?: boolean }) =>
+    fonts.list({ refresh: options?.refresh === true }),
+  );
   host.onChange((snapshot) => send(IPC.hostChanged, snapshot));
   setupAccounts({
     stateDir,

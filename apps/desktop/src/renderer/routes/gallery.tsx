@@ -43,6 +43,7 @@ import {
   UsageRing,
   WorkingDots,
 } from "../components/ui/controls.tsx";
+import { FontPicker } from "../components/ui/font-picker.tsx";
 import { IconList, IconPlus, IconSearch, PlatformIcon } from "../components/ui/icons.tsx";
 import { Menu, type MenuEntry } from "../components/ui/menu.tsx";
 import tokens from "../design/tokens.json";
@@ -341,6 +342,41 @@ const PRESSED: Record<ButtonVariant, string> = {
 };
 const FOCUS = "shadow-[0_0_0_1px_var(--focus-ring),var(--shadow-focus)]";
 
+/** The FontPicker as a field and as a button (this Mac's fonts; a stand-in list in a browser). */
+function FontPickerDemo() {
+  const [value, setValue] = useState<{ family: string; style?: string | null }>({
+    family: "Avenir Next",
+    style: "Demi Bold",
+  });
+  return (
+    <div className="flex flex-wrap items-center gap-4">
+      <FontPicker
+        label="Başlık yazı tipi"
+        className="w-[240px]"
+        value={value}
+        pinned={["Avenir Next", "Söhne"]}
+        onChange={(choice) =>
+          setValue({ family: choice.family, style: choice.style?.name ?? null })
+        }
+      />
+      <FontPicker
+        trigger="button"
+        label="Mac'ten seç"
+        placeholder="Mac'ten seç"
+        value={null}
+        pinned={["Avenir Next"]}
+        onChange={(choice) =>
+          setValue({ family: choice.family, style: choice.style?.name ?? null })
+        }
+      />
+      <span className="text-footnote text-fg-3">
+        Seçili: {value.family}
+        {value.style ? ` · ${value.style}` : ""}
+      </span>
+    </div>
+  );
+}
+
 export default function Gallery() {
   const [segment, setSegment] = useState<"chat" | "posts">("chat");
   const [toggle, setToggle] = useState(true);
@@ -596,6 +632,10 @@ export default function Gallery() {
               </div>
             </div>
           </div>
+        </Section>
+
+        <Section title="Yazı tipi seçici (FontPicker)">
+          <FontPickerDemo />
         </Section>
 
         <Section title="Composer · durumlar">

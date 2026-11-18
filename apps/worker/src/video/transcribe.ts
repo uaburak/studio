@@ -15,6 +15,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { z } from "zod";
 import { callGeminiJson } from "../gemini/json-call.ts";
+import type { GeminiUsageSample } from "../gemini/pricing.ts";
 import { extractSpeechWav, type FfmpegRunner, findExecutable } from "./ffmpeg.ts";
 
 const execFileAsync = promisify(nodeExecFile);
@@ -205,6 +206,8 @@ export interface DefaultTranscriberOptions {
   geminiApiKey?: string | undefined;
   geminiModelId?: string;
   fetch?: typeof globalThis.fetch;
+  /** Gemini transcriptions report their tokens here (spend tracking). */
+  onGeminiUsage?: ((sample: GeminiUsageSample) => void) | undefined;
   execWhisper?: (
     bin: string,
     args: readonly string[],
@@ -282,6 +285,7 @@ export function createDefaultClipTranscriber(options: DefaultTranscriberOptions)
     if (options.geminiApiKey?.trim()) {
       const bytes = new Uint8Array(await readFile(input.path));
       const res = await callGeminiJson({
+        onUsage: options.onGeminiUsage,
         apiKey: options.geminiApiKey,
         modelId: options.geminiModelId ?? "gemini-2.5-flash",
         system:

@@ -36,9 +36,23 @@ const kit: BrandKit = {
     { assetId: "logo-light", background: "light" },
   ],
   fonts: [
-    { assetId: "f1", family: "Montserrat", role: "display", licenseNote: "" },
-    { assetId: "f2", family: "montserrat", role: "text", licenseNote: "" },
-    { assetId: "f3", family: "Inter", role: "any", licenseNote: "" },
+    {
+      source: "file",
+      assetId: "f1",
+      family: "Montserrat",
+      role: "display",
+      styles: [],
+      licenseNote: "",
+    },
+    {
+      source: "file",
+      assetId: "f2",
+      family: "montserrat",
+      role: "text",
+      styles: [],
+      licenseNote: "",
+    },
+    { source: "file", assetId: "f3", family: "Inter", role: "any", styles: [], licenseNote: "" },
   ],
   palette: [
     { name: "toprak", hex: "#2f5d2a" },

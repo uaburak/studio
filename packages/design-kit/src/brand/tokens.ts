@@ -14,7 +14,7 @@ const HexColor = z
   );
 const FamilyName = z
   .string()
-  .regex(/^[A-Za-z0-9][A-Za-z0-9 -]{0,63}$/, "font family: letters, digits, spaces, hyphens");
+  .regex(/^[\p{L}\p{N}][\p{L}\p{N} -]{0,63}$/u, "font family: letters, digits, spaces, hyphens");
 const FilePath = z
   .string()
   .max(256)
@@ -47,6 +47,14 @@ export type FontFile = z.infer<typeof FontFileSchema>;
 export const FontRoleSchema = z.looseObject({
   family: FamilyName,
   files: z.array(FontFileSchema).max(32).default([]),
+  /**
+   * The family is a font installed on the Mac that renders (Chromium uses it by name). `files`,
+   * when given, are the fallback for a machine without it: brand.css loads them under
+   * `fallbackFamilyName(family)` and puts that family right after the installed one.
+   */
+  system: z.boolean().optional(),
+  /** Weights the brand uses / the installed family offers (documentation for designers and models). */
+  weights: z.array(z.number().int().min(1).max(1000)).max(32).optional(),
   axes: z
     .object({
       wght: Range2.optional(),
@@ -245,6 +253,16 @@ export function resolveUsage(t: BrandTokens): ResolvedUsage {
 /** Font family names the linter accepts (`font-family` rule). */
 export function brandFontFamilies(t: BrandTokens): string[] {
   return [...new Set(Object.values(t.font).map((f) => f.family))];
+}
+
+/** Families that come from fonts installed on the rendering Mac (`system: true`). */
+export function brandSystemFontFamilies(t: BrandTokens): string[] {
+  return [...new Set(Object.values(t.font).flatMap((f) => (f.system ? [f.family] : [])))];
+}
+
+/** Family name brand.css gives a system role's fallback files: `Avenir Next Fallback`. */
+export function fallbackFamilyName(family: string): string {
+  return `${family} Fallback`;
 }
 
 /** Token names for patch validation (`PatchContext.colorTokens` / `fontTokens`). */

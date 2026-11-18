@@ -23,6 +23,7 @@ import { parseBrandTokens } from "@studio/design-kit/brand";
 import sharp from "sharp";
 import { z } from "zod";
 import type { AgentDeps } from "../agent.ts";
+import { geminiUsageSink } from "../ai/usage-recorder.ts";
 import { describeClaudeError, isClaudeError } from "../claude/errors.ts";
 import type { ClaudeContentBlock } from "../claude/runner.ts";
 import { describeGeminiError, isGeminiError } from "../gemini/errors.ts";
@@ -163,10 +164,10 @@ function sanitizeHexColor(raw: string): string | null {
 
 function sanitizeFontFamily(raw: string, fallback: string): string {
   const cleaned = raw
-    .replace(/[^A-Za-z0-9 -]/g, "")
+    .replace(/[^\p{L}\p{N} -]/gu, "")
     .trim()
     .slice(0, 64);
-  return /^[A-Za-z0-9][A-Za-z0-9 -]{0,63}$/.test(cleaned) ? cleaned : fallback;
+  return /^[\p{L}\p{N}][\p{L}\p{N} -]{0,63}$/u.test(cleaned) ? cleaned : fallback;
 }
 
 function safeFileSlug(name: string, fallback: string): string {
@@ -238,11 +239,23 @@ export function buildValidatedBrandTokens(input: {
       if (asset) addLogo(asset, i, entry.background);
     }
     for (const [i, entry] of kit.fonts.entries()) {
-      const asset = assetById.get(entry.assetId);
+      const note = entry.licenseNote ? `${entry.family}: ${entry.licenseNote}` : "";
+      // A font installed on the Mac: used by family name (files of the same family are its fallback).
+      if (entry.source === "system") {
+        if (entry.role !== "text") {
+          displayFamilyFromKit ??= entry.family;
+          if (note) displayLicenses.push(note);
+        }
+        if (entry.role !== "display") {
+          textFamilyFromKit ??= entry.family;
+          if (note) textLicenses.push(note);
+        }
+        continue;
+      }
+      const asset = entry.assetId ? assetById.get(entry.assetId) : undefined;
       if (asset?.kind !== "font") continue;
       const rel = fontRel(asset, i);
       fileAssets[rel] = asset.id;
-      const note = entry.licenseNote ? `${entry.family}: ${entry.licenseNote}` : "";
       if (entry.role !== "text") {
         displayFiles.push(rel);
         displayFamilyFromKit ??= entry.family;
@@ -324,6 +337,22 @@ export function buildValidatedBrandTokens(input: {
         textFiles.length > 0 ? "Brand Text" : "Helvetica Neue",
       );
 
+  // System fonts (kit `source: "system"`): the family is an installed font; its styles' weights
+  // are what the brand uses, so the role's default weight snaps to the nearest one.
+  const systemRole = (family: string, target: number) => {
+    const entries = (kit?.fonts ?? []).filter((f) => f.source === "system" && f.family === family);
+    if (entries.length === 0) return null;
+    const weights = [...new Set(entries.flatMap((e) => e.styles.map((s) => s.weight)))].sort(
+      (a, b) => a - b,
+    );
+    const weight = weights.length
+      ? weights.reduce((best, w) => (Math.abs(w - target) < Math.abs(best - target) ? w : best))
+      : target;
+    return { weights, weight };
+  };
+  const displaySystem = systemRole(displayFamily, 800);
+  const textSystem = systemRole(textFamily, 400);
+
   const radius = { ...NEUTRAL_TOKENS.radius };
   if (input.analyzed.cornerRadiusPx !== undefined) {
     const md = Math.round(Math.min(200, Math.max(0, input.analyzed.cornerRadiusPx)));
@@ -340,15 +369,27 @@ export function buildValidatedBrandTokens(input: {
       display: {
         family: displayFamily,
         files: displayFiles.slice(0, 8),
+        ...(displaySystem
+          ? {
+              system: true,
+              ...(displaySystem.weights.length ? { weights: displaySystem.weights } : {}),
+            }
+          : {}),
         fallback: "sans-serif",
-        default: { weight: 800, leading: 1.0 },
+        default: { weight: displaySystem?.weight ?? 800, leading: 1.0 },
         ...(displayLicenses.length > 0 ? { license: displayLicenses.join(" · ") } : {}),
       },
       text: {
         family: textFamily,
         files: textFiles.slice(0, 8),
+        ...(textSystem
+          ? {
+              system: true,
+              ...(textSystem.weights.length ? { weights: textSystem.weights } : {}),
+            }
+          : {}),
         fallback: "sans-serif",
-        default: { weight: 400, leading: 1.38 },
+        default: { weight: textSystem?.weight ?? 400, leading: 1.38 },
         ...(textLicenses.length > 0 ? { license: textLicenses.join(" · ") } : {}),
       },
     },
@@ -527,7 +568,7 @@ export function createBrandAnalyzeHandler(deps: AgentDeps) {
           const known = new Set(uploadedAssets.map((a) => a.id));
           const referenced = [
             ...kit.logos.map((l) => l.assetId),
-            ...kit.fonts.map((f) => f.assetId),
+            ...kit.fonts.flatMap((f) => (f.assetId ? [f.assetId] : [])),
             ...kit.samples.map((s) => s.assetId),
           ];
           for (const id of referenced) {
@@ -659,7 +700,11 @@ export function createBrandAnalyzeHandler(deps: AgentDeps) {
         const kitFonts = (kit?.fonts ?? [])
           .map(
             (f) =>
-              `- ${f.family} (${f.role === "display" ? "başlık" : f.role === "text" ? "gövde" : "başlık ve gövde"})${f.licenseNote ? ` — lisans: ${f.licenseNote}` : ""}`,
+              `- ${f.family} (${f.role === "display" ? "başlık" : f.role === "text" ? "gövde" : "başlık ve gövde"})${
+                f.source === "system"
+                  ? ` — bu Mac'te yüklü sistem fontu${f.styles.length ? `; stiller: ${f.styles.map((st) => `${st.name} ${st.weight}`).join(", ")}` : ""}`
+                  : " — yüklenen font dosyası"
+              }${f.licenseNote ? ` — lisans: ${f.licenseNote}` : ""}`,
           )
           .join("\n");
         const notes = [kit?.notes?.trim(), payload.notes?.trim()].filter(Boolean).join("\n\n");
@@ -689,7 +734,7 @@ Kullanıcı paleti ve font aileleri verildiyse onlar kesindir; görsellerden far
             ? `<kullanici_paleti>\nKullanıcının onayladığı marka renkleri; bunları aynen kullan ve rollere (paper, mist, ink, graphite, stone, accent, accent-deep) eşle, yeni ton uydurma:\n${kitPalette}\n</kullanici_paleti>`
             : "",
           kitFonts
-            ? `<marka_fontlari>\nYüklenen font dosyaları (aile adları kesin; displayFontFamily ve textFontFamily bunlardan seçilmeli):\n${kitFonts}\n</marka_fontlari>`
+            ? `<marka_fontlari>\nMarka fontları (aile adları kesin; displayFontFamily ve textFontFamily bunlardan seçilmeli):\n${kitFonts}\n</marka_fontlari>`
             : "",
           docAssets ? `<yuklu_dosyalar>\n${docAssets}\n</yuklu_dosyalar>` : "",
           existingProfile
@@ -718,6 +763,7 @@ Kullanıcı paleti ve font aileleri verildiyse onlar kesindir; görsellerden far
           timeoutMs: deps.settings.claudeTimeoutMs,
           signal,
           ...(deps.geminiFetch ? { geminiFetch: deps.geminiFetch } : {}),
+          onGeminiUsage: geminiUsageSink(deps.aiUsage, { kind: "brand", jobId: ctx.jobId }),
         });
 
         const parsed = BrandAnalysisModelOutput.parse(aiResult.output);

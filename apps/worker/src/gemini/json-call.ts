@@ -22,6 +22,7 @@ import {
   resolveGeminiModelId,
   thinkingConfigFor,
 } from "./models.ts";
+import { type GeminiUsageMetadata, type GeminiUsageSample, sampleFromMetadata } from "./pricing.ts";
 
 export type GeminiInlineInput =
   | ClaudeContentBlock
@@ -37,6 +38,8 @@ export interface CallGeminiJsonOptions {
   signal?: AbortSignal;
   fetch?: typeof globalThis.fetch;
   sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
+  /** Called with the call's token counts (spend tracking). */
+  onUsage?: ((sample: GeminiUsageSample) => void) | undefined;
 }
 
 export interface StructuredAiResult {
@@ -54,11 +57,7 @@ interface GeminiGenerateResponse {
     };
     finishReason?: string;
   }[];
-  usageMetadata?: {
-    promptTokenCount?: number;
-    candidatesTokenCount?: number;
-    cachedContentTokenCount?: number;
-  };
+  usageMetadata?: GeminiUsageMetadata;
   modelVersion?: string;
   error?: { code?: number; message?: string; status?: string };
 }
@@ -92,10 +91,7 @@ export async function callGeminiJson(options: CallGeminiJsonOptions): Promise<St
   const sleep = options.sleep ?? abortableSleep;
   const apiKey = options.apiKey.trim();
   if (!apiKey) {
-    throw new GeminiError(
-      "auth",
-      "GEMINI_API_KEY tanımlı değil: lütfen apps/worker/.env dosyasına GEMINI_API_KEY ekleyin.",
-    );
+    throw new GeminiError("auth", GEMINI_KEY_MISSING);
   }
 
   const parts = options.content.map((block) => {
@@ -198,9 +194,16 @@ export async function callGeminiJson(options: CallGeminiJsonOptions): Promise<St
       );
     }
 
-    const output = extractJsonObject(text);
     const wallMs = Math.max(1, Date.now() - startedAt);
     const u = body.usageMetadata;
+    if (u) {
+      try {
+        options.onUsage?.(sampleFromMetadata(body.modelVersion ?? options.modelId, u));
+      } catch {
+        // spend tracking never breaks a call
+      }
+    }
+    const output = extractJsonObject(text);
 
     return {
       output,
@@ -245,12 +248,27 @@ export type StructuredRoute =
       effort: Effort;
     };
 
-export function hasGeminiApiKey(settings: AgentSettings): boolean {
-  const key = settings.parentEnv.GEMINI_API_KEY ?? settings.geminiApiKey;
-  return Boolean(key && key.trim().length > 0);
+/** Turkish: no Gemini key anywhere (vault or .env). */
+export const GEMINI_KEY_MISSING =
+  "Gemini API anahtarı yok: Ayarlar → Yapay zekâ'dan anahtarı girin (ya da .env dosyasına GEMINI_API_KEY ekleyin).";
+
+type KeySettings = Pick<AgentSettings, "parentEnv" | "geminiApiKey" | "vault">;
+
+/** Where the Gemini key comes from: the vault (Ayarlar) wins over `.env`. */
+export function geminiKeySource(settings: KeySettings): "vault" | "env" | null {
+  if (settings.vault?.gemini?.apiKey.trim()) return "vault";
+  const env = (settings.parentEnv.GEMINI_API_KEY ?? settings.geminiApiKey)?.trim();
+  return env ? "env" : null;
 }
 
-export function getGeminiApiKey(settings: AgentSettings): string | undefined {
+export function hasGeminiApiKey(settings: KeySettings): boolean {
+  return geminiKeySource(settings) !== null;
+}
+
+/** The Gemini API key: the vault's (Ayarlar → Yapay zekâ) first, else `.env` `GEMINI_API_KEY`. */
+export function getGeminiApiKey(settings: KeySettings): string | undefined {
+  const vault = settings.vault?.gemini?.apiKey.trim();
+  if (vault) return vault;
   const key = (settings.parentEnv.GEMINI_API_KEY ?? settings.geminiApiKey)?.trim();
   return key && key.length > 0 ? key : undefined;
 }
@@ -269,10 +287,7 @@ export function resolveStructuredRoute(input: StructuredRouteOptions): Structure
 
   if (isGeminiModelAlias(input.requestedModel)) {
     if (!geminiReady) {
-      throw new GeminiError(
-        "auth",
-        "Gemini modeli seçildi ancak .env dosyasında GEMINI_API_KEY tanımlı değil.",
-      );
+      throw new GeminiError("auth", `Gemini modeli seçildi. ${GEMINI_KEY_MISSING}`);
     }
     return {
       provider: "gemini",
@@ -287,10 +302,7 @@ export function resolveStructuredRoute(input: StructuredRouteOptions): Structure
     input.requestedModel.toLowerCase().startsWith("gemini-")
   ) {
     if (!geminiReady) {
-      throw new GeminiError(
-        "auth",
-        "Gemini modeli seçildi ancak .env dosyasında GEMINI_API_KEY tanımlı değil.",
-      );
+      throw new GeminiError("auth", `Gemini modeli seçildi. ${GEMINI_KEY_MISSING}`);
     }
     return {
       provider: "gemini",
@@ -357,6 +369,8 @@ export interface CallStructuredAiOptions {
   signal: AbortSignal;
   hooks?: GateHooks;
   geminiFetch?: typeof globalThis.fetch;
+  /** Gemini calls report their tokens here (spend tracking). */
+  onGeminiUsage?: ((sample: GeminiUsageSample) => void) | undefined;
 }
 
 export async function callStructuredAi(
@@ -367,12 +381,10 @@ export async function callStructuredAi(
   if (route.provider === "gemini") {
     const apiKey = getGeminiApiKey(settings);
     if (!apiKey) {
-      throw new GeminiError(
-        "auth",
-        "GEMINI_API_KEY tanımlı değil: lütfen apps/worker/.env dosyasına GEMINI_API_KEY ekleyin.",
-      );
+      throw new GeminiError("auth", GEMINI_KEY_MISSING);
     }
     return callGeminiJson({
+      onUsage: options.onGeminiUsage,
       apiKey,
       modelId: route.modelId,
       system: options.system,
@@ -417,6 +429,7 @@ export async function callStructuredAi(
       const apiKey = getGeminiApiKey(settings);
       if (apiKey) {
         return callGeminiJson({
+          onUsage: options.onGeminiUsage,
           apiKey,
           modelId: route.fallbackModelId,
           system: options.system,

@@ -13,6 +13,8 @@ import {
   type BrandKit,
   type BrandProfile,
   type BrandProfileCreate,
+  type BrandSkill,
+  BrandSkillCreate,
   type Content,
   type ContentStatus,
   type ContentVersion,
@@ -55,6 +57,8 @@ export interface FakeApiState {
   brands: Brand[];
   /** Brand kits by brand id (P2); a brand without one reads as an empty kit. */
   kits: Map<string, BrandKit>;
+  /** Brand skills (every brand, oldest first). */
+  skills: BrandSkill[];
   profiles: Map<string, BrandProfile>;
   profileHistory: BrandProfile[];
   contents: Map<string, Content>;
@@ -156,6 +160,7 @@ export function createFakeApi(init: Partial<FakeApiState> = {}): {
     failed: [],
     brands: [],
     kits: new Map(),
+    skills: [],
     profiles: new Map(),
     profileHistory: [],
     contents: new Map(),
@@ -387,6 +392,32 @@ export function createFakeApi(init: Partial<FakeApiState> = {}): {
         };
         state.brands.push(brand);
         return brand;
+      },
+    },
+    brandSkills: {
+      list: async (brandId: string) => ({
+        items: state.skills.filter((s) => s.brandId === brandId),
+        nextCursor: null,
+      }),
+      create: async (brandId: string, raw: unknown) => {
+        const input = BrandSkillCreate.parse(raw);
+        if (state.skills.some((s) => s.brandId === brandId && s.name === input.name)) {
+          throw conflict(`a skill named "${input.name}" already exists`);
+        }
+        const created: BrandSkill = {
+          id: `skill_${state.skills.length + 1}`,
+          brandId,
+          name: input.name,
+          description: input.description,
+          body: input.body,
+          enabled: input.enabled,
+          version: 1,
+          origin: input.origin,
+          createdAt: NOW,
+          updatedAt: NOW,
+        };
+        state.skills.push(created);
+        return created;
       },
     },
     brandKits: {

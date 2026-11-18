@@ -48,6 +48,7 @@ export function inPageInput(config: LintConfig): InPageInput {
     warnFont: config.bodyFontSize ?? CONTRACT_LIMITS.bodyFontSize,
     legalMinFont: config.legalMinFontSize ?? CONTRACT_LIMITS.legalMinFontSize,
     brandFonts: config.brandFonts ? [...config.brandFonts] : null,
+    systemFonts: config.systemFonts ? [...config.systemFonts] : [],
   };
 }
 

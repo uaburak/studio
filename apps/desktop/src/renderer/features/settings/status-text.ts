@@ -1,6 +1,6 @@
 // What Ayarlar → Yapay zekâ / Gelişmiş and the onboarding say about the Mac's Claude and Gemini
 // sign-ins and the host (the AppKit AIPaneView / MacServerSectionView wording). Pure.
-import type { ClaudeAccount, GeminiAccount } from "@studio/contract";
+import type { AiProviderStatus, ClaudeAccount, GeminiAccount } from "@studio/contract";
 import type { HostSnapshot, ServicePhase } from "../../../shared/ipc.ts";
 
 export interface ClaudeStatus {
@@ -79,13 +79,14 @@ export function geminiStatusLines(
   const lines: string[] = [];
   if (account.status === "ready") {
     const cli = `Gemini CLI${account.cliVersion ? ` ${account.cliVersion}` : ""}`;
+    const key = account.keySource === "vault" ? "API anahtarı (kasada)" : ".env GEMINI_API_KEY";
     const source =
       account.mode === "api"
-        ? ".env GEMINI_API_KEY"
+        ? key
         : account.mode === "cli"
           ? cli
           : account.mode === "both"
-            ? `.env GEMINI_API_KEY + ${cli}`
+            ? `${key} + ${cli}`
             : "";
     lines.push(source ? `Hazır · ${source}` : "Hazır.");
   } else if (account.status === "not_configured") {
@@ -101,6 +102,48 @@ export function geminiStatusLines(
     .join(" · ");
   if (notes) lines.push(notes);
   return lines;
+}
+
+/** Codex / Antigravity row of Ayarlar → Yapay zekâ: what the worker says, and whether to offer sign-in. */
+export function providerStatusLines(
+  row: AiProviderStatus | null | undefined,
+  online: boolean,
+  detail: string,
+): { lines: string[]; canLogin: boolean } {
+  if (!row) {
+    return {
+      lines: [
+        online ? "Durum okunuyor…" : "Arka plan çalışmıyor; Studio hazır olunca okunur.",
+        detail,
+      ],
+      canLogin: false,
+    };
+  }
+  const head: Record<AiProviderStatus["state"], string> = {
+    ready: row.account ? `Hazır · ${row.account}` : "Hazır.",
+    signed_out: "Giriş yapılmadı.",
+    signing_in: "Tarayıcıda giriş bekleniyor…",
+    not_installed: "Bu Mac'te kurulu değil.",
+    not_configured: "Yapılandırılmadı.",
+    error: "Durum okunamadı.",
+  };
+  const lines = [head[row.state] ?? "Bilinmeyen durum."];
+  const notes = [
+    row.cliVersion && !row.detail?.includes(row.cliVersion) ? `CLI ${row.cliVersion}` : null,
+    row.detail,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  if (notes) lines.push(notes);
+  return {
+    lines,
+    // Antigravity's sign-in is only offered while signed out (its CLI keeps one Google account).
+    canLogin:
+      online &&
+      (row.state === "signed_out" ||
+        row.state === "error" ||
+        (row.state === "ready" && row.provider === "codex")),
+  };
 }
 
 export function phaseText(phase: ServicePhase): string {

@@ -33,6 +33,7 @@ import {
 import { type Browser, chromium } from "playwright-core";
 import sharp from "sharp";
 import type { AgentDeps } from "../agent.ts";
+import { geminiUsageSink } from "../ai/usage-recorder.ts";
 import type { StudioApi } from "../api.ts";
 import {
   callStructuredAi,
@@ -321,6 +322,7 @@ async function transcribeClip(
       geminiModelId: ctx.deps.settings.geminiModels["gemini-flash"],
       ...(ctx.deps.geminiFetch ? { fetch: ctx.deps.geminiFetch } : {}),
       env: ctx.deps.settings.parentEnv,
+      onGeminiUsage: geminiUsageSink(ctx.deps.aiUsage, { kind: "transcribe" }),
     });
   const result = await transcriber({
     path: clip.path,
@@ -766,6 +768,7 @@ async function callPlanner(
     timeoutMs: deps.settings.claudeTimeoutMs,
     signal: input.signal,
     ...(deps.geminiFetch ? { geminiFetch: deps.geminiFetch } : {}),
+    onGeminiUsage: geminiUsageSink(deps.aiUsage, { kind: "reel" }),
   });
   const parsed = ReelPlanSchema.safeParse(res.output);
   if (!parsed.success) throw new Error("Model geçerli bir Reels planı döndürmedi.");

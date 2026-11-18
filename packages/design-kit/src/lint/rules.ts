@@ -133,6 +133,11 @@ export const LINT_RULES = {
   // text
   "font-load": r("error", "layout", "Brand fonts load."),
   "font-family": r("error", "layout", "Text uses a brand font."),
+  "font-missing": r(
+    "warning",
+    "layout",
+    "System brand fonts are installed on the Mac that renders (else the fallback is used).",
+  ),
   "min-font-size": r("error", "layout", "Text is at least 24px (legal 20px)."),
   "small-font-size": r("warning", "layout", "Running text is at least 28px."),
   "text-occluded": r("error", "layout", "Text is not painted under another element."),

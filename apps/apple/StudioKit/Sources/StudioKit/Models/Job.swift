@@ -219,10 +219,13 @@ public struct WorkerPresence: Codable, Sendable, Hashable {
     public var claude: ClaudeAccount?
     /// Latest Gemini API / CLI readiness the Mac reported; nil until it sent one.
     public var gemini: GeminiAccount?
+    /// Codex CLI / OpenAI API / Antigravity CLI as the Mac last reported them; nil from older workers.
+    public var providers: [AIProviderStatus]?
 
     public init(
         online: Bool, lastSeenAt: Date? = nil, workers: [ConnectedWorker] = [], currentJobs: [PresenceJob] = [], queueLength: Int = 0,
-        usage: WorkerUsage? = nil, claude: ClaudeAccount? = nil, gemini: GeminiAccount? = nil
+        usage: WorkerUsage? = nil, claude: ClaudeAccount? = nil, gemini: GeminiAccount? = nil,
+        providers: [AIProviderStatus]? = nil
     ) {
         self.online = online
         self.lastSeenAt = lastSeenAt
@@ -232,6 +235,7 @@ public struct WorkerPresence: Codable, Sendable, Hashable {
         self.usage = usage
         self.claude = claude
         self.gemini = gemini
+        self.providers = providers
     }
 
     public static let offline = WorkerPresence(online: false)

@@ -14,6 +14,7 @@ import type { Effort } from "../claude/models.ts";
 import type { ClaudeContentBlock } from "../claude/runner.ts";
 import { GeminiError } from "./errors.ts";
 import { type GeminiModelAlias, thinkingConfigFor } from "./models.ts";
+import { type GeminiUsageMetadata, type GeminiUsageSample, sampleFromMetadata } from "./pricing.ts";
 
 export interface GeminiPart {
   text?: string;
@@ -121,6 +122,8 @@ export interface GeminiApiTurnOptions {
   maxRounds?: number;
   fetch?: typeof globalThis.fetch;
   sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
+  /** Called once per request round with its token counts (spend tracking). */
+  onUsage?: (sample: GeminiUsageSample) => void;
 }
 
 export interface GeminiTurnResult {
@@ -134,13 +137,7 @@ interface GeminiStreamChunk {
     content?: { role?: string; parts?: GeminiPart[] };
     finishReason?: string;
   }[];
-  usageMetadata?: {
-    promptTokenCount?: number;
-    candidatesTokenCount?: number;
-    cachedContentTokenCount?: number;
-    thoughtsTokenCount?: number;
-    totalTokenCount?: number;
-  };
+  usageMetadata?: GeminiUsageMetadata & { totalTokenCount?: number };
   modelVersion?: string;
   error?: { code?: number; message?: string; status?: string };
 }
@@ -295,6 +292,7 @@ export async function runGeminiApiTurn(options: GeminiApiTurnOptions): Promise<G
     let roundCandidates = 0;
     let roundCached = 0;
     let roundThoughts = 0;
+    let roundMeta: GeminiUsageMetadata | undefined;
 
     for await (const chunk of parseSseJsonStream<GeminiStreamChunk>(res.body, options.signal)) {
       if (chunk.error) {
@@ -303,6 +301,7 @@ export async function runGeminiApiTurn(options: GeminiApiTurnOptions): Promise<G
       }
       if (chunk.modelVersion) modelVersion = chunk.modelVersion;
       if (chunk.usageMetadata) {
+        roundMeta = chunk.usageMetadata;
         if (typeof chunk.usageMetadata.promptTokenCount === "number") {
           roundPrompt = chunk.usageMetadata.promptTokenCount;
         }
@@ -326,6 +325,13 @@ export async function runGeminiApiTurn(options: GeminiApiTurnOptions): Promise<G
       }
     }
 
+    if (roundMeta) {
+      try {
+        options.onUsage?.(sampleFromMetadata(modelVersion ?? options.modelId, roundMeta));
+      } catch {
+        // spend tracking never breaks a turn
+      }
+    }
     inputTokens += roundPrompt;
     outputTokens += roundCandidates;
     cacheReadTokens += roundCached;

@@ -277,6 +277,7 @@ export async function runDesignPipeline(input: PipelineInput): Promise<PipelineR
           lint: {
             safeArea: brief.preset.safeArea,
             brandFonts: brand.fontFamilies,
+            systemFonts: brand.manifest.systemFontFamilies,
             allowedNumbers: allowed,
             lang: brief.language,
             logoClearSpaceByPath: brand.logoClearSpaceByPath,

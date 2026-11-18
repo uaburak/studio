@@ -45,7 +45,7 @@ import {
   type ReelEngineTestSeams,
   renderExistingReelVersion,
 } from "../video/render-reel.ts";
-import { layoutFromReport } from "./layout.ts";
+import { layoutFromReport, missingSystemFonts } from "./layout.ts";
 
 export const RENDER_ASSET_PREFIXES = ["/brand/", "/media/", "/api/assets/"] as const;
 
@@ -426,7 +426,15 @@ async function renderSlideRaster(input: {
   resolver: AssetResolver;
   signal: AbortSignal;
   formats: ("png" | "jpeg")[];
-}): Promise<{ png?: Uint8Array; jpeg?: Uint8Array; layout: SlideLayout | null }> {
+  /** Brand families that must be installed fonts (reported back when they are not). */
+  systemFonts?: readonly string[];
+}): Promise<{
+  png?: Uint8Array;
+  jpeg?: Uint8Array;
+  layout: SlideLayout | null;
+  /** System font families that are not installed on this Mac. */
+  missingFonts: string[];
+}> {
   const request = {
     html: input.html,
     width: input.width,
@@ -437,11 +445,16 @@ async function renderSlideRaster(input: {
     signal: input.signal,
   };
   try {
-    const res = await input.renderer.renderAndLint(request);
+    const res = await input.renderer.renderAndLint(
+      input.systemFonts?.length
+        ? { ...request, lint: { systemFonts: input.systemFonts } }
+        : request,
+    );
     return {
       ...(res.png ? { png: res.png } : {}),
       ...(res.jpeg ? { jpeg: res.jpeg } : {}),
       layout: layoutFromReport(res.report),
+      missingFonts: missingSystemFonts([res.report]),
     };
   } catch (error) {
     input.signal.throwIfAborted();
@@ -451,6 +464,7 @@ async function renderSlideRaster(input: {
       ...(res.png ? { png: res.png } : {}),
       ...(res.jpeg ? { jpeg: res.jpeg } : {}),
       layout: null,
+      missingFonts: [],
     };
   }
 }
@@ -463,7 +477,14 @@ async function renderSingleSlideJpeg(input: {
   clampInstagramWidth: boolean;
   resolver: AssetResolver;
   signal: AbortSignal;
-}): Promise<{ jpeg: Uint8Array; width: number; height: number; layout: SlideLayout | null }> {
+  systemFonts?: readonly string[];
+}): Promise<{
+  jpeg: Uint8Array;
+  width: number;
+  height: number;
+  layout: SlideLayout | null;
+  missingFonts: string[];
+}> {
   const res = await renderSlideRaster({ ...input, formats: ["png", "jpeg"] });
   const pngBytes = res.png;
   const jpegBytes = res.jpeg;
@@ -485,18 +506,26 @@ async function renderSingleSlideJpeg(input: {
       width: out.info.width,
       height: out.info.height,
       layout: res.layout,
+      missingFonts: res.missingFonts,
     };
   }
 
   if (pngBytes) {
     const srgbJpeg = await pngToSrgbJpeg(pngBytes, 92);
-    return { jpeg: srgbJpeg, width: input.width, height: input.height, layout: res.layout };
+    return {
+      jpeg: srgbJpeg,
+      width: input.width,
+      height: input.height,
+      layout: res.layout,
+      missingFonts: res.missingFonts,
+    };
   }
   return {
     jpeg: jpegBytes as Uint8Array,
     width: input.width,
     height: input.height,
     layout: res.layout,
+    missingFonts: res.missingFonts,
   };
 }
 
@@ -523,6 +552,8 @@ export interface ContentRenderOutput extends Record<string, unknown> {
   pdfAssetId?: string;
   videoAssetId?: string;
   coverAssetId?: string;
+  /** System brand fonts that are not installed on this Mac (the fallback was rendered). */
+  missingFonts?: string[];
 }
 
 /** `/media/<id><ext>` for each slot assignment (extension from the asset's mime type). */
@@ -733,6 +764,7 @@ export async function executeContentRender(
     cssHeight: number;
   }[] = [];
 
+  const missingFonts = new Set<string>();
   if (toRender.length > 0) {
     progress(0.45, "Slaytlar JPEG olarak render ediliyor");
     const clampInstagram = content.targetPlatforms.includes("instagram");
@@ -750,7 +782,9 @@ export async function executeContentRender(
         clampInstagramWidth: clampInstagram,
         resolver,
         signal,
+        systemFonts: brand.manifest.systemFontFamilies,
       });
+      for (const family of rendered.missingFonts) missingFonts.add(family);
       renderedJpegPages[i] = {
         jpeg: rendered.jpeg,
         pixelWidth: rendered.width,
@@ -866,6 +900,7 @@ export async function executeContentRender(
     renderedSlides: toRender,
     ...(pngAssetIds ? { pngAssetIds } : {}),
     ...(pdfAssetId ? { pdfAssetId } : {}),
+    ...(missingFonts.size > 0 ? { missingFonts: [...missingFonts] } : {}),
   };
 }
 

@@ -56,6 +56,8 @@ export function readGeminiCliVersion(
 
 export interface CheckGeminiHealthOptions {
   apiKey?: string | undefined;
+  /** Where `apiKey` came from: the vault (Ayarlar) or `.env`. */
+  keySource?: "vault" | "env" | null | undefined;
   bin?: string | undefined;
   preferredMode?: "auto" | "api" | "cli" | undefined;
   defaultModel?: string | undefined;
@@ -76,6 +78,9 @@ export async function checkGeminiHealth(
   const defaultModel = options.defaultModel ?? "gemini-2.5-flash-lite";
   const preferred = options.preferredMode ?? "auto";
   const env = buildGeminiEnv(options.parentEnv ?? {});
+  const keySource = apiKeyConfigured ? (options.keySource ?? "env") : null;
+  const keyLabel =
+    keySource === "vault" ? "Studio kasasındaki API anahtarı" : ".env GEMINI_API_KEY";
 
   let cliVersion: string | null = null;
   try {
@@ -100,9 +105,10 @@ export async function checkGeminiHealth(
       status: "not_configured",
       mode,
       apiKeyConfigured,
+      keySource,
       cliVersion,
       defaultModel,
-      detail: ".env dosyasında GEMINI_API_KEY tanımlı değil (STUDIO_GEMINI_MODE=api).",
+      detail: "Gemini API anahtarı yok (STUDIO_GEMINI_MODE=api): Ayarlar → Yapay zekâ'dan girin.",
       checkedAt,
     };
   }
@@ -111,6 +117,7 @@ export async function checkGeminiHealth(
       status: "not_configured",
       mode,
       apiKeyConfigured,
+      keySource,
       cliVersion,
       defaultModel,
       detail: `STUDIO_GEMINI_MODE=cli seçili ancak Mac'te \`${bin}\` komutu bulunamadı.`,
@@ -121,19 +128,20 @@ export async function checkGeminiHealth(
   const ready = apiKeyConfigured || cliVersion !== null;
   let detail: string;
   if (mode === "both") {
-    detail = `GEMINI_API_KEY ve Gemini CLI (${cliVersion}) hazır · doğrudan API (${defaultModel})`;
+    detail = `${keyLabel} ve Gemini CLI (${cliVersion}) hazır · doğrudan API (${defaultModel})`;
   } else if (mode === "api") {
-    detail = `GEMINI_API_KEY hazır · doğrudan API (${defaultModel})`;
+    detail = `${keyLabel} hazır · doğrudan API (${defaultModel})`;
   } else if (mode === "cli") {
     detail = `Gemini CLI (${cliVersion}) hazır · (${defaultModel})`;
   } else {
-    detail = ".env dosyasında GEMINI_API_KEY tanımlı değil";
+    detail = "Gemini API anahtarı yok: Ayarlar → Yapay zekâ'dan girin (ya da .env GEMINI_API_KEY)";
   }
 
   return {
     status: ready ? "ready" : "not_configured",
     mode,
     apiKeyConfigured,
+    keySource,
     cliVersion,
     defaultModel,
     detail: detail.slice(0, 500),

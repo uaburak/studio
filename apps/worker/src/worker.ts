@@ -81,6 +81,11 @@ export function startWorker(options: StartWorkerOptions): RunningWorker {
     connection.send({ type: "worker.gemini", account: agent.geminiAccount() });
   };
 
+  const sendProviders = () => {
+    if (!agent || !connection) return;
+    connection.send({ type: "worker.providers", providers: agent.providerStatuses() });
+  };
+
   const handleWorkerCommand = async (command: WorkerCommand) => {
     if (!agent) {
       logger.debug(`ignoring worker.command (${command}): agent runtime disabled`);
@@ -96,6 +101,20 @@ export function startWorker(options: StartWorkerOptions): RunningWorker {
         return;
       case "gemini.status":
         await agent.refreshGeminiStatus();
+        return;
+      case "providers.status":
+        await agent.refreshProviders();
+        sendProviders();
+        return;
+      case "codex.login":
+        agent.providers.startCodexLogin();
+        return;
+      case "antigravity.login":
+        agent.providers.startAntigravityLogin();
+        return;
+      case "ai.credentials":
+        await agent.refreshCredentials();
+        sendProviders();
         return;
     }
   };
@@ -128,6 +147,7 @@ export function startWorker(options: StartWorkerOptions): RunningWorker {
       runner.onConnected();
       sendClaude();
       sendGemini();
+      sendProviders();
       sendUsage();
     },
     onMessage: (message) => {
@@ -154,6 +174,9 @@ export function startWorker(options: StartWorkerOptions): RunningWorker {
   const unsubGemini = agent?.onGeminiAccountChange((account) => {
     conn.send({ type: "worker.gemini", account });
   });
+  const unsubProviders = agent?.onProvidersChange((providers) => {
+    conn.send({ type: "worker.providers", providers });
+  });
   agent?.onHealthChange(() => {
     logger.info("agent health changed: re-announcing capabilities to the hub");
     conn.reannounce();
@@ -169,6 +192,7 @@ export function startWorker(options: StartWorkerOptions): RunningWorker {
       unsubUsage?.();
       unsubClaude?.();
       unsubGemini?.();
+      unsubProviders?.();
       await runner.shutdown(config.shutdownTimeoutMs);
       conn.stop();
       await agent?.stop();
@@ -177,6 +201,7 @@ export function startWorker(options: StartWorkerOptions): RunningWorker {
       unsubUsage?.();
       unsubClaude?.();
       unsubGemini?.();
+      unsubProviders?.();
       runner.stop();
       conn.stop();
       void agent?.stop();

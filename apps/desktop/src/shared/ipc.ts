@@ -1,6 +1,7 @@
 // Typed contract between the main process and the renderer (through the preload bridge).
 // Only plain JSON values cross it.
 import type { AccountsBridge, SystemBridge } from "./accounts-ipc.ts";
+import type { FontsBridge } from "./fonts.ts";
 
 export type ServiceName = "api" | "gateway" | "worker" | "tunnel";
 
@@ -156,4 +157,6 @@ export interface StudioBridge {
   accounts?: AccountsBridge;
   /** Version, folders, tunnel token (absent outside Electron). */
   system?: SystemBridge;
+  /** Fonts installed on this Mac (absent outside Electron and in an app started before it). */
+  fonts?: FontsBridge;
 }

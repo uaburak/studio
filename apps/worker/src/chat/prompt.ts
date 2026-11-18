@@ -5,6 +5,13 @@
  * through Studio's tool registry.
  */
 import type { Brand, Message, Plan, TurnAlias, TurnContext } from "@studio/contract";
+import {
+  brandSkillsUsed,
+  CHAT_SKILLS_BUDGET,
+  chatSkillsBlock,
+  type SelectedSkill,
+  selectBrandSkills,
+} from "../brand/skills.ts";
 import { latestUserMessage } from "./images.ts";
 
 export const CHAT_SYSTEM_PROMPT = `Sen Studio'nun içerik ve sosyal medya ajanısın. Studio, stüdyo sahibinin kendi markaları ve müşterileri için sosyal medya içeriği planladığı, ürettiği ve yayınladığı masaüstü uygulamasıdır. Stüdyo sahibi sana Türkçe yazar; sen deneyimli bir sosyal medya stratejisti ve Türkçe metin yazarı gibi doğal, net ve akıcı çalışırsın.
@@ -216,7 +223,32 @@ function formatAliasesBlock(
   return `<takma_adlar>\n${rows.join("\n")}\n</takma_adlar>`;
 }
 
-/** Metadata blocks (`<bugun>`, `<marka>`, `<marka_profili>`, `<takma_adlar>`, `<acik_plan>`) without transcript. */
+/** Text of the latest user message (what the brand skills are ranked against). */
+function latestUserText(context: TurnContext): string {
+  return (
+    latestUserMessage(context)
+      ?.parts.filter((p) => p.type === "text")
+      .map((p) => p.text)
+      .join("\n") ?? ""
+  );
+}
+
+/** The brand skills this turn's prompt carries (in full, clipped or by name only). */
+export function chatBrandSkills(context: TurnContext): SelectedSkill[] {
+  if (!context.brand) return [];
+  return selectBrandSkills(context.brandSkills ?? [], {
+    budget: CHAT_SKILLS_BUDGET,
+    task: latestUserText(context),
+  });
+}
+
+/** Job output field: which brand skills the turn used (`brandSkills: ["mtm v3"]`), or nothing. */
+export function brandSkillsOutput(context: TurnContext): { brandSkills?: string[] } {
+  const used = brandSkillsUsed(chatBrandSkills(context));
+  return used.length > 0 ? { brandSkills: used } : {};
+}
+
+/** Metadata blocks (`<bugun>`, `<marka>`, `<marka_profili>`, `<marka_skilleri>`, `<takma_adlar>`, `<acik_plan>`) without transcript. */
 export function buildConversationMetadataBlock(input: ChatPromptInput): string {
   const { context } = input;
   const aliases = context.aliases ?? [];
@@ -256,6 +288,9 @@ export function buildConversationMetadataBlock(input: ChatPromptInput): string {
     );
   }
 
+  const skills = chatSkillsBlock(chatBrandSkills(context));
+  if (skills) blocks.push(skills);
+
   blocks.push(formatAliasesBlock(aliases, input.images));
 
   if (context.openPlan) {
@@ -285,6 +320,18 @@ export function buildIncrementalChatPrompt(input: {
   const { context } = input;
   const aliases = context.aliases ?? [];
   const blocks: string[] = [`<bugun>${todayLine(input.now)}</bugun>`];
+  // The session saw the brand skills when it started; skills changed since its last turn
+  // come again in full.
+  const since = context.conversation.agentSession?.updatedAt;
+  const changed = since ? chatBrandSkills(context).filter((s) => s.skill.updatedAt > since) : [];
+  if (changed.length > 0) {
+    blocks.push(
+      chatSkillsBlock(changed).replace(
+        "<marka_skilleri>",
+        "<marka_skilleri>\nSon turdan beri güncellenen skill'ler (öncekilerin yerine geçer):",
+      ),
+    );
+  }
   if (aliases.length > 0) {
     blocks.push(formatAliasesBlock(aliases, input.images));
   }

@@ -25,8 +25,13 @@ export interface SectionInfo {
 }
 
 export const SECTIONS: SectionInfo[] = [
-  { id: "ai", title: "Yapay zekâ", group: 0, keywords: "claude gemini model efor" },
-  { id: "usage", title: "Kullanım", group: 0, keywords: "limit kota sınır yüzde" },
+  {
+    id: "ai",
+    title: "Yapay zekâ",
+    group: 0,
+    keywords: "claude gemini codex openai gpt antigravity model efor",
+  },
+  { id: "usage", title: "Kullanım", group: 0, keywords: "limit kota sınır yüzde harcama bütçe" },
   { id: "appearance", title: "Görünüm", group: 1, keywords: "tema açık koyu karanlık mod" },
   { id: "notifications", title: "Bildirimler", group: 1, keywords: "bildirim uyarı" },
   { id: "brands", title: "Markalar", group: 2, keywords: "marka brand" },
@@ -113,6 +118,27 @@ export const ITEMS = {
     "Claude Code'un bildirdiği 5 saatlik ve haftalık kullanım.",
     "haftalık sıfırlanma",
   ),
+  geminiSpend: item(
+    "usage.gemini",
+    "usage",
+    "Gemini API harcaması",
+    "Her Gemini çağrısının token sayısı × fiyat tablosu (tahmini, USD).",
+    "maliyet dolar fatura token gemini",
+  ),
+  geminiBudget: item(
+    "usage.geminiBudget",
+    "usage",
+    "Aylık Gemini bütçesi",
+    "Kalan bütçe ve %80'de uyarı için (USD). Boş bırakılırsa bütçe yok.",
+    "bütçe limit dolar uyarı",
+  ),
+  geminiCredit: item(
+    "usage.geminiCredit",
+    "usage",
+    "Kalan kredi",
+    "Gemini API kalan krediyi bildirmez; AI Studio faturalandırma sayfasından bakılır.",
+    "kredi bakiye faturalandırma aistudio",
+  ),
   // Görünüm
   theme: item(
     "appearance.theme",
@@ -154,8 +180,36 @@ export const ITEMS = {
     "ai.gemini",
     "ai",
     "Gemini",
-    "Depodaki .env içindeki GEMINI_API_KEY ya da Gemini CLI otomatik algılanır.",
+    "Gemini API anahtarı (aşağıda) ya da depodaki .env GEMINI_API_KEY; Gemini CLI otomatik algılanır.",
     "api key cli anahtar",
+  ),
+  geminiKey: item(
+    "ai.geminiKey",
+    "ai",
+    "Gemini API anahtarı",
+    "Bu Mac'teki kasada şifreli saklanır; worker .env yerine bunu kullanır. AI Studio'dan alınır.",
+    "api key anahtar kasa denetle aistudio",
+  ),
+  codex: item(
+    "ai.codex",
+    "ai",
+    "Codex (ChatGPT)",
+    "OpenAI Codex CLI; ChatGPT hesabıyla giriş yapılır, sohbet Studio araçlarıyla çalışır.",
+    "openai chatgpt codex cli giriş",
+  ),
+  openaiKey: item(
+    "ai.openaiKey",
+    "ai",
+    "OpenAI API anahtarı",
+    "GPT modelleri için (Responses API). Kasada şifreli saklanır; kullanım OpenAI hesabından ücretlendirilir.",
+    "openai gpt api key anahtar chatgpt",
+  ),
+  antigravity: item(
+    "ai.antigravity",
+    "ai",
+    "Antigravity",
+    "Google Antigravity CLI (agy); Google hesabıyla giriş. Studio araçları bu sağlayıcıda yok.",
+    "google agy antigravity cli giriş",
   ),
   // Bildirimler
   notifications: item(

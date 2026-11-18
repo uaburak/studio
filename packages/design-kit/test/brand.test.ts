@@ -3,11 +3,13 @@ import {
   BrandTokensSchema,
   brandFontFamilies,
   brandPatchContext,
+  brandSystemFontFamilies,
   ComponentRegistry,
   componentContext,
   createComponentRegistry,
   defineComponent,
   describeBrandCss,
+  fallbackFamilyName,
   generateBrandCss,
   parseBrandTokens,
   resolveFontFile,
@@ -205,6 +207,31 @@ describe("brand.css", () => {
       stretch: null,
       unicodeRange: "U+0000-00FF",
     });
+  });
+
+  it("uses system fonts by name and loads their files as a fallback family", () => {
+    const { css: c, manifest } = generateBrandCss({
+      ...minimal,
+      font: {
+        display: {
+          family: "Avenir Next",
+          system: true,
+          weights: [400, 600, 800],
+          files: ["fonts/avenir-fallback.woff2"],
+        },
+        text: { family: "Helvetica Neue", system: true },
+      },
+    });
+    expect(c).toContain("--font-display: 'Avenir Next', 'Avenir Next Fallback', sans-serif;");
+    expect(c).toContain("--font-text: 'Helvetica Neue', sans-serif;");
+    // An @font-face named like the installed family would hide it.
+    expect(c).toContain("font-family: 'Avenir Next Fallback';");
+    expect(c).not.toContain("font-family: 'Avenir Next';");
+    expect(c).toContain("src: url('fonts/avenir-fallback.woff2') format('woff2');");
+    expect(manifest.fontFamilies).toEqual(["Avenir Next", "Helvetica Neue"]);
+    expect(manifest.systemFontFamilies).toEqual(["Avenir Next", "Helvetica Neue"]);
+    expect(fallbackFamilyName("Avenir Next")).toBe("Avenir Next Fallback");
+    expect(brandSystemFontFamilies(parseBrandTokens(ventaBrandJson()))).toEqual([]);
   });
 
   it("works for a minimal brand with defaults", () => {

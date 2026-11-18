@@ -16,7 +16,12 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import sharp from "sharp";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { brandFontFamilies, componentContext, generateBrandCss } from "../src/brand/index.ts";
+import {
+  brandFontFamilies,
+  componentContext,
+  generateBrandCss,
+  parseBrandTokens,
+} from "../src/brand/index.ts";
 import { createSlideHtml } from "../src/document/index.ts";
 import {
   IN_PAGE_LINT_SCRIPT,
@@ -475,7 +480,10 @@ describe.skipIf(!enabled)("renderer (Chromium)", () => {
     };
 
     const covered = RULE_IDS.filter(
-      (id) => ["layout", "pixel", "render"].includes(LINT_RULES[id].stage) && id !== "font-load",
+      (id) =>
+        ["layout", "pixel", "render"].includes(LINT_RULES[id].stage) &&
+        id !== "font-load" &&
+        id !== "font-missing",
     );
 
     it("every layout, pixel and render rule has a failing fixture", () => {
@@ -520,6 +528,40 @@ describe.skipIf(!enabled)("renderer (Chromium)", () => {
         expect.arrayContaining(["font-load", "network-request"]),
       );
       expect(res.network.missing).toContain("/brand/fonts/missing-latin.woff2");
+    });
+
+    it("font-missing fires for a system font that is not installed; its fallback file renders", async () => {
+      const raw = structuredClone(ventaBrandJson()) as {
+        font: { display: Record<string, unknown>; text: Record<string, unknown> };
+      };
+      raw.font.display = { ...raw.font.display, family: "Studio Missing Grotesk", system: true };
+      // An installed family (every Mac has Helvetica Neue) passes.
+      raw.font.text = { ...raw.font.text, family: "Helvetica Neue", system: true, files: [] };
+      const parsed = parseBrandTokens(raw);
+      const { css, manifest } = generateBrandCss(parsed);
+      expect(manifest.systemFontFamilies).toEqual(["Studio Missing Grotesk", "Helvetica Neue"]);
+      const res = await renderer.renderAndLint({
+        html: doc(
+          `<h1 data-layer="t" data-type="text" class="ts-display-m" style="position:absolute; left:72px; top:72px; width:936px">Bor</h1>`,
+        ),
+        width: 1080,
+        height: 1350,
+        resolver: resolverWith(css),
+        lint: {
+          ...lint,
+          brandFonts: brandFontFamilies(parsed),
+          systemFonts: manifest.systemFontFamilies,
+        },
+      });
+      const missing = res.report.issues.filter((i) => i.rule === "font-missing");
+      expect(missing.map((i) => i.data?.family)).toEqual(["Studio Missing Grotesk"]);
+      expect(missing[0]?.severity).toBe("warning");
+      // The display files load under the fallback family and the text uses it.
+      expect(
+        res.report.fontsLoaded?.some((f) => f.startsWith("Studio Missing Grotesk Fallback")),
+      ).toBe(true);
+      expect(res.report.issues.map((i) => i.rule)).not.toContain("font-family");
+      expect(res.report.issues.map((i) => i.rule)).not.toContain("font-load");
     });
   });
 

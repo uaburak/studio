@@ -9,7 +9,8 @@ import { requireBrand } from "./brands.ts";
 
 /**
  * The brand kit (P2): the user's logos (with the background they are made for),
- * fonts (family + licence note), palette, sample posts and notes. `brand.analyze`
+ * fonts (uploaded files, or fonts installed on the Mac picked by family and style;
+ * family + licence note), palette, sample posts and notes. `brand.analyze`
  * reads it to extract a draft profile.
  *
  * Stored as one small JSON document per brand in the MEDIA bucket next to the
@@ -79,7 +80,10 @@ export const brandKitRoutes = createRouter()
 
       const refs: { list: keyof typeof KIT_KINDS; index: number; assetId: string }[] = [
         ...input.logos.map((l, index) => ({ list: "logos" as const, index, assetId: l.assetId })),
-        ...input.fonts.map((f, index) => ({ list: "fonts" as const, index, assetId: f.assetId })),
+        // System fonts (installed on the Mac, used by name) reference no file.
+        ...input.fonts.flatMap((f, index) =>
+          f.assetId ? [{ list: "fonts" as const, index, assetId: f.assetId }] : [],
+        ),
         ...input.samples.map((s, index) => ({
           list: "samples" as const,
           index,

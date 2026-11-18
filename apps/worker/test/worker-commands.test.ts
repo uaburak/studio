@@ -226,6 +226,7 @@ describe("worker.claude, worker.gemini & worker.command over HubConnection", () 
       "content.generate",
       "brand.analyze",
       "image.generate",
+      "brand.skill_draft",
     ]);
 
     const fake = fakeSocketFactory();
@@ -250,6 +251,7 @@ describe("worker.claude, worker.gemini & worker.command over HubConnection", () 
         "content.generate",
         "brand.analyze",
         "image.generate",
+        "brand.skill_draft",
       ],
     });
     expect(firstSocket?.sent.find((m) => m.type === "worker.claude")).toMatchObject({
@@ -313,6 +315,7 @@ describe("worker.claude, worker.gemini & worker.command over HubConnection", () 
         "content.generate",
         "brand.analyze",
         "image.generate",
+        "brand.skill_draft",
       ],
       workerVersion: "0.1.0",
     });

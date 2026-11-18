@@ -13,10 +13,11 @@
  * - Multi-part interleaved streaming (`Düşünüyor…` -> `text` -> `tool_step` -> `consent` -> `text`).
  */
 import { randomUUID } from "node:crypto";
-import { mkdir, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import {
   type AgentEffort,
+  type AiProviderStatus,
   ApiError,
   type Brand,
   ChatTurnPayload,
@@ -26,6 +27,7 @@ import {
   type TurnContext,
 } from "@studio/contract";
 import type { AgentDeps, AgentSettings } from "../agent.ts";
+import { geminiUsageSink } from "../ai/usage-recorder.ts";
 import { ClaudeError, describeClaudeError, formatClock, isClaudeError } from "../claude/errors.ts";
 import type { AgentStreamEvent } from "../claude/events.ts";
 import type { ParkInfo } from "../claude/gate.ts";
@@ -45,16 +47,26 @@ import { type UsageReport, usageFromRateLimit } from "../claude/usage.ts";
 import { buildGeminiContents, runGeminiApiTurn } from "../gemini/api-runner.ts";
 import { runGeminiCliTurn } from "../gemini/cli-runner.ts";
 import { describeGeminiError, GeminiError, isGeminiError } from "../gemini/errors.ts";
+import { GEMINI_KEY_MISSING, geminiKeySource, getGeminiApiKey } from "../gemini/json-call.ts";
 import {
   type GeminiModelAlias,
   isGeminiModelAlias,
   resolveGeminiModelId,
 } from "../gemini/models.ts";
 import { type McpGrant, StudioMcpServer, writeMcpConfig } from "../mcp/server.ts";
+import { runAntigravityTurn } from "../providers/antigravity.ts";
+import { describeProviderError, isProviderError } from "../providers/cli.ts";
+import { runCodexTurn } from "../providers/codex.ts";
+import { pickOpenAiModel, runOpenAiTurn } from "../providers/openai.ts";
 import { defineHandler, type JobContext, RetryableError } from "../registry.ts";
 import { latestUserMessage, loadTurnImages, selectTurnImages } from "./images.ts";
 import { startMcpBridge } from "./mcp-bridge.ts";
-import { buildChatContext, buildIncrementalChatPrompt, CHAT_SYSTEM_PROMPT } from "./prompt.ts";
+import {
+  brandSkillsOutput,
+  buildChatContext,
+  buildIncrementalChatPrompt,
+  CHAT_SYSTEM_PROMPT,
+} from "./prompt.ts";
 import { invokedSkill, type Skill, skillsNote } from "./skills.ts";
 import { StudioToolExecutor } from "./tools.ts";
 import { RunClosedError, TurnWriter } from "./writer.ts";
@@ -67,7 +79,7 @@ export interface ChatTurnOutputSummary extends Record<string, unknown> {
   planNotes?: string[];
   toolCalls?: string[];
   images: string[];
-  provider?: "claude" | "gemini" | "system";
+  provider?: "claude" | "gemini" | "codex" | "openai" | "antigravity" | "system";
   model?: string;
   effort?: string;
   resumedSession?: boolean;
@@ -115,19 +127,42 @@ type ResolvedRoute =
       modelId: string;
       effort: Effort;
       execution: "api" | "cli";
-    };
+    }
+  | { provider: "codex"; model: string | undefined; effort: Effort }
+  | { provider: "openai"; model: string; effort: Effort }
+  | { provider: "antigravity"; model: string | undefined; effort: Effort };
+
+/** Turkish: why a provider cannot answer, from its presence row. */
+function providerNotReady(status: AiProviderStatus | undefined, name: string): Error {
+  const why =
+    status?.state === "not_installed"
+      ? `${name} bu Mac'te kurulu değil.`
+      : status?.state === "signed_out"
+        ? `${name} oturumu kapalı.`
+        : status?.state === "signing_in"
+          ? `${name} girişi sürüyor.`
+          : status?.state === "not_configured"
+            ? `${name} yapılandırılmadı.`
+            : `${name} hazır değil.`;
+  return new Error(
+    `${why} ${status?.detail ?? ""} Ayarlar → Yapay zekâ'dan düzeltebilir ya da başka bir model seçebilirsiniz.`
+      .replace(/\s+/g, " ")
+      .trim(),
+  );
+}
 
 function defaultGeminiAccount(settings: AgentSettings): GeminiAccount {
-  const apiKeyConfigured = Boolean(settings.geminiApiKey?.trim());
+  const apiKeyConfigured = Boolean(getGeminiApiKey(settings));
   return {
     status: apiKeyConfigured && settings.geminiMode !== "cli" ? "ready" : "not_configured",
     mode: apiKeyConfigured ? "api" : "none",
     apiKeyConfigured,
+    keySource: geminiKeySource(settings),
     cliVersion: null,
     defaultModel: settings.geminiModels["gemini-flash-lite"],
     detail: apiKeyConfigured
-      ? `GEMINI_API_KEY hazır · doğrudan API (${settings.geminiModels["gemini-flash-lite"]})`
-      : ".env dosyasında GEMINI_API_KEY tanımlı değil",
+      ? `Gemini API anahtarı hazır · doğrudan API (${settings.geminiModels["gemini-flash-lite"]})`
+      : GEMINI_KEY_MISSING,
     checkedAt: new Date().toISOString(),
   };
 }
@@ -139,16 +174,12 @@ function resolveGeminiExecution(
   gemini: GeminiAccount,
 ): ResolvedRoute {
   const modelId = resolveGeminiModelId(alias, settings.geminiModels);
-  const apiKey = settings.parentEnv.GEMINI_API_KEY ?? settings.geminiApiKey;
-  const hasKey = Boolean(apiKey && apiKey.trim().length > 0);
+  const hasKey = Boolean(getGeminiApiKey(settings));
   const hasCli = gemini.cliVersion !== null || gemini.mode === "cli" || gemini.mode === "both";
 
   if (settings.geminiMode === "api") {
     if (!hasKey) {
-      throw new GeminiError(
-        "auth",
-        "Gemini API seçildi ancak .env dosyasında GEMINI_API_KEY tanımlı değil.",
-      );
+      throw new GeminiError("auth", `Gemini API seçildi. ${GEMINI_KEY_MISSING}`);
     }
     return { provider: "gemini", alias, modelId, effort, execution: "api" };
   }
@@ -172,7 +203,7 @@ function resolveGeminiExecution(
   }
   throw new GeminiError(
     "auth",
-    "Gemini kullanıma hazır değil: .env dosyasına GEMINI_API_KEY ekleyin veya Mac'e `gemini` CLI kurun.",
+    "Gemini kullanıma hazır değil: Ayarlar → Yapay zekâ'dan Gemini API anahtarını girin (ya da Mac'e `gemini` CLI kurun).",
   );
 }
 
@@ -182,10 +213,34 @@ export function resolveChatRoute(input: {
   settings: AgentSettings;
   claudeHealth: ClaudeHealth;
   geminiAccount: GeminiAccount;
+  /** Codex / OpenAI / Antigravity readiness (presence `providers`). */
+  providers?: readonly AiProviderStatus[];
 }): ResolvedRoute {
   const { runModel, runEffort, settings, claudeHealth, geminiAccount } = input;
   const effort: Effort = runEffort ?? (settings.effortChat as Effort | undefined) ?? DEFAULT_EFFORT;
   const geminiReady = geminiAccount.status === "ready";
+  const status = (id: AiProviderStatus["provider"]) =>
+    input.providers?.find((p) => p.provider === id);
+
+  if (runModel === "codex") {
+    const codex = status("codex");
+    if (codex?.state !== "ready") throw providerNotReady(codex, "Codex");
+    return { provider: "codex", model: settings.codexModel, effort };
+  }
+  if (runModel === "gpt") {
+    const key = settings.vault?.openai;
+    if (!key?.apiKey) throw providerNotReady(status("openai"), "OpenAI API");
+    return {
+      provider: "openai",
+      model: pickOpenAiModel(settings.openaiModel, key.models),
+      effort,
+    };
+  }
+  if (runModel === "antigravity") {
+    const agy = status("antigravity");
+    if (agy?.state !== "ready") throw providerNotReady(agy, "Antigravity");
+    return { provider: "antigravity", model: settings.antigravityModel, effort };
+  }
 
   if (isGeminiModelAlias(runModel)) {
     return resolveGeminiExecution(runModel, effort, settings, geminiAccount);
@@ -319,7 +374,7 @@ export function formatUsageSlashReport(input: {
     geminiAccount.mode === "both"
       ? `Doğrudan API + Gemini CLI (${geminiAccount.cliVersion ?? "?"})`
       : geminiAccount.mode === "api"
-        ? "Doğrudan API (.env GEMINI_API_KEY)"
+        ? `Doğrudan API (${geminiAccount.keySource === "vault" ? "Studio kasasındaki anahtar" : ".env GEMINI_API_KEY"})`
         : geminiAccount.mode === "cli"
           ? `Gemini CLI (${geminiAccount.cliVersion ?? "?"})`
           : "Yok";
@@ -354,6 +409,12 @@ export function sessionToResume(context: TurnContext): string | undefined {
   const added = trigger.role === "user" ? 1 : 0;
   return total === session.messageCount + added ? session.id : undefined;
 }
+
+/** Antigravity turns run without Studio's tools (see providers/antigravity.ts). */
+const ANTIGRAVITY_NOTE =
+  "ÖNEMLİ: Bu turda Studio araçların (plan, post üretimi, zamanlama, marka okuma) YOK; araç çağırmaya çalışma. " +
+  "Yalnızca metinle yanıt ver (fikir, metin, açıklama taslağı). Kullanıcı post / plan / zamanlama isterse bunun için " +
+  "model seçiciden Claude, Gemini, Codex ya da GPT seçmesini kısaca söyle.";
 
 /** MCP_TOOL_TIMEOUT for the CLI: longer than any tool holds a call (consent 5, ask_user 10 min). */
 const MCP_TOOL_TIMEOUT_MS = 30 * 60_000;
@@ -463,6 +524,7 @@ async function runChatTurn(
       settings,
       claudeHealth,
       geminiAccount,
+      providers: deps.providers?.() ?? [],
     });
   } catch (error) {
     writer.dispose();
@@ -492,6 +554,25 @@ async function runChatTurn(
         ? (route.choice.model as ModelAlias)
         : undefined;
     const rawEffort = route.provider === "claude" ? route.choice.effort : route.effort;
+    const runSummary = (
+      provider: NonNullable<ChatTurnOutputSummary["provider"]>,
+      usedModel: string,
+      usage: RunUsage,
+    ): ChatTurnOutputSummary => ({
+      runId: payload.runId,
+      action: executor.outcome.action,
+      ...(executor.outcome.planId ? { planId: executor.outcome.planId } : {}),
+      ...(executor.outcome.planItems !== undefined
+        ? { planItems: executor.outcome.planItems }
+        : {}),
+      ...(executor.outcome.planNotes ? { planNotes: executor.outcome.planNotes } : {}),
+      ...(executor.outcome.toolCalls.length > 0 ? { toolCalls: executor.outcome.toolCalls } : {}),
+      images: loaded.notes.filter((n) => n.attached).map((n) => n.alias),
+      provider,
+      model: usedModel,
+      effort: rawEffort,
+      usage,
+    });
     const genEffort: AgentEffort | undefined = rawEffort !== "max" ? rawEffort : "xhigh";
 
     const skills: Skill[] = (await deps.skills?.().catch(() => [])) ?? [];
@@ -531,13 +612,120 @@ async function runChatTurn(
       now,
     });
 
+    if (route.provider === "codex") {
+      ctx.progress(0.15, "Codex yanıtlıyor");
+      const bridge = await startMcpBridge(executor, {
+        workRoot: path.join(deps.stateDir, "mcp-work"),
+        signal,
+      });
+      try {
+        const images: string[] = [];
+        let n = 0;
+        for (const block of loaded.blocks) {
+          if (block.type !== "image") continue;
+          const ext = block.mediaType.split("/")[1]?.replace(/[^a-z0-9]/gi, "") || "png";
+          const file = path.join(bridge.workDir, `image-${++n}.${ext}`);
+          await writeFile(file, block.data);
+          images.push(file);
+        }
+        const prompt = [
+          buildChatContext({ context, now: now(), brands, images: loaded.notes }),
+          skillsBlock,
+        ]
+          .filter(Boolean)
+          .join("\n\n");
+        const res = await runCodexTurn({
+          bin: settings.codexBin,
+          parentEnv: settings.parentEnv,
+          model: route.model,
+          effort: route.effort,
+          system: CHAT_SYSTEM_PROMPT,
+          prompt,
+          cwd: bridge.workDir,
+          bridge,
+          images,
+          onTextDelta: (text) => writer.appendText(text),
+          timeoutMs: settings.claudeTimeoutMs,
+          signal,
+          ...(deps.codexSpawn ? { spawn: deps.codexSpawn } : {}),
+        });
+        await writer.flush();
+        ctx.progress(0.9, "Yanıt kaydediliyor");
+        await writer.complete(res.model, res.usage);
+        ctx.progress(1, "Tamamlandı");
+        return runSummary("codex", res.model, res.usage);
+      } finally {
+        await bridge.close();
+      }
+    }
+
+    if (route.provider === "openai") {
+      ctx.progress(0.15, "OpenAI yanıtlıyor");
+      const contents = buildGeminiContents({
+        context,
+        now: now(),
+        brands,
+        imageNotes: loaded.notes,
+        imageBlocks: loaded.blocks,
+      });
+      const res = await runOpenAiTurn({
+        apiKey: settings.vault?.openai?.apiKey ?? "",
+        model: route.model,
+        effort: route.effort,
+        system: [CHAT_SYSTEM_PROMPT, skillsBlock].filter(Boolean).join("\n\n"),
+        contents,
+        executor,
+        onTextDelta: (text) => writer.appendText(text),
+        signal,
+        ...(deps.openaiFetch ? { fetch: deps.openaiFetch } : {}),
+      });
+      await writer.flush();
+      ctx.progress(0.9, "Yanıt kaydediliyor");
+      await writer.complete(res.model, res.usage);
+      ctx.progress(1, "Tamamlandı");
+      return runSummary("openai", res.model, res.usage);
+    }
+
+    if (route.provider === "antigravity") {
+      ctx.progress(0.15, "Antigravity yanıtlıyor");
+      const workRoot = path.join(deps.stateDir, "antigravity-work");
+      await mkdir(workRoot, { recursive: true });
+      const cwd = await mkdtemp(path.join(workRoot, "turn-"));
+      try {
+        const prompt = [
+          buildChatContext({ context, now: now(), brands, images: loaded.notes }),
+          ANTIGRAVITY_NOTE,
+        ].join("\n\n");
+        const res = await runAntigravityTurn({
+          bin: settings.antigravityBin,
+          parentEnv: settings.parentEnv,
+          model: route.model,
+          effort: route.effort,
+          system: CHAT_SYSTEM_PROMPT,
+          prompt,
+          cwd,
+          onTextDelta: (text) => writer.appendText(text),
+          timeoutMs: settings.claudeTimeoutMs,
+          signal,
+          ...(deps.antigravitySpawn ? { spawn: deps.antigravitySpawn } : {}),
+        });
+        await writer.flush();
+        ctx.progress(0.9, "Yanıt kaydediliyor");
+        await writer.complete(res.model, res.usage);
+        ctx.progress(1, "Tamamlandı");
+        return runSummary("antigravity", res.model, res.usage);
+      } finally {
+        await rm(cwd, { recursive: true, force: true }).catch(() => undefined);
+      }
+    }
+
     if (route.provider === "gemini") {
       ctx.progress(0.15, "Gemini yanıtlıyor");
       let usedModel: string;
       let usage: RunUsage;
 
       if (route.execution === "api") {
-        const apiKey = (settings.parentEnv.GEMINI_API_KEY ?? settings.geminiApiKey ?? "").trim();
+        const apiKey = getGeminiApiKey(settings) ?? "";
         const contents = buildGeminiContents({
           context,
           now: now(),
@@ -557,6 +745,11 @@ async function runChatTurn(
           signal,
           timeoutMs: settings.claudeTimeoutMs,
           ...(deps.geminiFetch ? { fetch: deps.geminiFetch } : {}),
+          onUsage: geminiUsageSink(deps.aiUsage, {
+            kind: "chat",
+            jobId: ctx.jobId,
+            runId: payload.runId,
+          }),
         });
         usedModel = gemRes.model;
         usage = gemRes.usage;
@@ -574,7 +767,7 @@ async function runChatTurn(
           });
           const cliRes = await runGeminiCliTurn({
             bin: settings.geminiBin,
-            apiKey: settings.parentEnv.GEMINI_API_KEY ?? settings.geminiApiKey,
+            apiKey: getGeminiApiKey(settings),
             parentEnv: settings.parentEnv,
             modelId: route.modelId,
             requestedModel: route.alias,
@@ -589,6 +782,19 @@ async function runChatTurn(
           });
           usedModel = cliRes.model;
           usage = cliRes.usage;
+          // With an API key the CLI's calls are billed like the API's (a Google sign-in is not).
+          if (getGeminiApiKey(settings)) {
+            deps.aiUsage?.gemini(
+              {
+                model: cliRes.model,
+                promptTokens: cliRes.usage.inputTokens ?? 0,
+                cachedTokens: cliRes.usage.cacheReadTokens ?? 0,
+                candidatesTokens: cliRes.usage.outputTokens ?? 0,
+                thoughtsTokens: 0,
+              },
+              { kind: "chat", jobId: ctx.jobId, runId: payload.runId },
+            );
+          }
         } finally {
           await bridge.close();
         }
@@ -609,6 +815,7 @@ async function runChatTurn(
         ...(executor.outcome.planNotes ? { planNotes: executor.outcome.planNotes } : {}),
         ...(executor.outcome.toolCalls.length > 0 ? { toolCalls: executor.outcome.toolCalls } : {}),
         images: loaded.notes.filter((n) => n.attached).map((n) => n.alias),
+        ...brandSkillsOutput(context),
         provider: "gemini",
         model: usedModel,
         effort: route.effort,
@@ -802,6 +1009,7 @@ async function runChatTurn(
         ...(executor.outcome.planNotes ? { planNotes: executor.outcome.planNotes } : {}),
         ...(executor.outcome.toolCalls.length > 0 ? { toolCalls: executor.outcome.toolCalls } : {}),
         images: loaded.notes.filter((n) => n.attached).map((n) => n.alias),
+        ...brandSkillsOutput(context),
         provider: "claude",
         ...(result.model ? { model: result.model } : {}),
         effort: choice.effort,
@@ -829,11 +1037,17 @@ async function runChatTurn(
     if (isGeminiError(error) && (error.code === "transient" || error.code === "timeout")) {
       throw new RetryableError(describeGeminiError(error));
     }
+    // A CLI may have written part of the answer already: only retry clean failures.
+    if (isProviderError(error) && error.code === "transient" && !writer.written) {
+      throw new RetryableError(describeProviderError(error));
+    }
     const message = isClaudeError(error)
       ? describeClaudeError(error)
       : isGeminiError(error)
         ? describeGeminiError(error)
-        : `Tur tamamlanamadı: ${(error as Error).message.slice(0, 500)}`;
+        : isProviderError(error)
+          ? describeProviderError(error)
+          : `Tur tamamlanamadı: ${(error as Error).message.slice(0, 500)}`;
     logger.warn(`[job ${ctx.jobId}] chat turn failed: ${(error as Error).message}`);
     await writer
       .fail(message)

@@ -36,11 +36,13 @@ public enum Platform: String, OpenEnum {
 }
 
 /// Model family the user picks for a turn or a generation (`AgentModel` in common.ts).
+/// `codex`: Codex CLI (ChatGPT sign-in), `gpt`: OpenAI API key, `antigravity`: Antigravity CLI.
 public enum AgentModel: String, OpenEnum {
     case opus, sonnet, haiku
     case geminiFlashLite = "gemini-flash-lite"
     case geminiFlash = "gemini-flash"
     case geminiPro = "gemini-pro"
+    case codex, gpt, antigravity
     case unknown
 
     public var displayName: String {
@@ -51,6 +53,9 @@ public enum AgentModel: String, OpenEnum {
         case .geminiFlashLite: "Gemini Flash-Lite"
         case .geminiFlash: "Gemini Flash"
         case .geminiPro: "Gemini Pro"
+        case .codex: "Codex (ChatGPT)"
+        case .gpt: "GPT (OpenAI API)"
+        case .antigravity: "Antigravity"
         case .unknown: "Bilinmeyen model"
         }
     }
@@ -58,9 +63,22 @@ public enum AgentModel: String, OpenEnum {
     public var isGemini: Bool {
         switch self {
         case .geminiFlashLite, .geminiFlash, .geminiPro: true
-        case .opus, .sonnet, .haiku, .unknown: false
+        case .opus, .sonnet, .haiku, .codex, .gpt, .antigravity, .unknown: false
         }
     }
+
+    /// The provider row in presence `providers` that runs this model (nil: Claude / Gemini).
+    public var otherProvider: AIProvider? {
+        switch self {
+        case .codex: .codex
+        case .gpt: .openai
+        case .antigravity: .antigravity
+        default: nil
+        }
+    }
+
+    /// Codex, GPT (OpenAI API) and Antigravity (the desktop app offers them; the phone shows their names).
+    public static var otherCases: [AgentModel] { [.codex, .gpt, .antigravity] }
 
     public static var claudeCases: [AgentModel] { [.opus, .sonnet, .haiku] }
     public static var geminiCases: [AgentModel] { [.geminiFlashLite, .geminiFlash, .geminiPro] }

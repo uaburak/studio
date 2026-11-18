@@ -43,6 +43,7 @@ import {
   planItems,
 } from "../db/schema.ts";
 import { notFound } from "../lib/errors.ts";
+import { enabledBrandSkills } from "../routes/brand-skills.ts";
 
 /*
  * Read helpers shared by the API routes (plain reads) and the Hub (snapshots,
@@ -213,6 +214,7 @@ export async function turnContext(db: Db, runId: string): Promise<TurnContext> {
     assistantMessage: assistant ? toMessage(assistant) : null,
     aliases: (await loadAliases(db, conv.id)).map(toTurnAlias),
     messageCount: total,
+    brandSkills: conv.brandId ? await enabledBrandSkills(db, conv.brandId) : [],
   };
 }
 

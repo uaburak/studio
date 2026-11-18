@@ -5,13 +5,14 @@ import type { WorkerPresence } from "@studio/contract";
 import { useState } from "react";
 import {
   type AgentChoice,
-  CLAUDE_MODELS,
   EFFORTS,
   effortLabel,
-  GEMINI_MODELS,
-  isGemini,
+  MODEL_GROUPS,
   modelLabel,
+  modelNote,
+  modelUnavailableReason,
 } from "../../lib/models.ts";
+import { budgetLine, formatUsd, useGeminiSpend, useSpendAvailable } from "../../lib/spend.ts";
 import { canRunChat, macLine, ringMeter, usageMeters } from "../../lib/usage.ts";
 import { useAppStore } from "../../state/app-store.ts";
 import { cn, Meter, UsageRing } from "../ui/controls.tsx";
@@ -20,19 +21,37 @@ import { MenuButton, type MenuEntry } from "../ui/menu.tsx";
 import { Popover } from "../ui/popover.tsx";
 import { Tooltip } from "../ui/tooltip.tsx";
 
+/**
+ * Models grouped by provider (Claude, Gemini, OpenAI, Google Antigravity); a model whose
+ * provider cannot answer on this Mac right now is greyed out with the reason.
+ */
 export function modelMenu(
   choice: AgentChoice,
   onChange: (choice: AgentChoice) => void,
+  presence?: WorkerPresence | null,
 ): MenuEntry[] {
+  let digit = 0;
+  const groups: MenuEntry[] = MODEL_GROUPS.flatMap((group, gi) => [
+    ...(gi > 0 ? [{ type: "separator" as const, id: `sep-${group.provider}` }] : []),
+    { type: "label" as const, id: `label-${group.provider}`, label: group.title },
+    ...group.models.map((m) => {
+      const reason = modelUnavailableReason(m.id, presence);
+      const note = reason ? null : modelNote(m.id, presence);
+      digit++;
+      return {
+        id: m.id,
+        label: m.label,
+        ...(digit <= 9 ? { shortcut: String(digit) } : {}),
+        checked: choice.model === m.id,
+        ...(reason && choice.model !== m.id ? { disabled: true, detail: reason } : {}),
+        ...(reason && choice.model === m.id ? { detail: reason } : {}),
+        ...(note ? { detail: note } : {}),
+        onSelect: () => onChange({ ...choice, model: m.id }),
+      };
+    }),
+  ]);
   return [
-    { type: "label", label: "Model" },
-    ...CLAUDE_MODELS.map((m, i) => ({
-      id: m.id,
-      label: m.label,
-      shortcut: String(i + 1),
-      checked: choice.model === m.id,
-      onSelect: () => onChange({ ...choice, model: m.id }),
-    })),
+    ...groups,
     { type: "separator" },
     {
       id: "effort",
@@ -46,24 +65,40 @@ export function modelMenu(
         onSelect: () => onChange({ ...choice, effort: e.id }),
       })),
     },
-    { type: "separator" },
-    {
-      id: "more",
-      label: "Diğer modeller",
-      detail: isGemini(choice.model) ? modelLabel(choice.model) : undefined,
-      shortcut: "D",
-      submenu: GEMINI_MODELS.map((m) => ({
-        id: m.id,
-        label: m.label,
-        checked: choice.model === m.id,
-        onSelect: () => onChange({ ...choice, model: m.id }),
-      })),
-    },
   ];
+}
+
+/** Gemini API spend under the Claude limits (hidden until something was spent). */
+function GeminiSpendLine() {
+  const spend = useGeminiSpend();
+  const data = spend.data;
+  if (!data || (data.month.calls === 0 && data.budget.monthlyUsd === null)) return null;
+  const budget = budgetLine(data);
+  return (
+    <div className="mt-3.5 border-t border-hairline pt-3">
+      <div className="flex items-baseline justify-between text-body">
+        <span className="text-fg">Gemini API</span>
+        <span className={data.budget.warning ? "text-accent-text" : "text-fg-2"}>
+          {formatUsd(data.month.costUsd)} bu ay
+        </span>
+      </div>
+      <div className="text-footnote text-fg-3">Bugün {formatUsd(data.today.costUsd)}</div>
+      {budget && (
+        <>
+          <div className="mt-1 mb-1.5 text-footnote text-fg-3">{budget}</div>
+          <Meter
+            percent={Math.min(100, data.budget.usedPercent ?? 0)}
+            tone={data.budget.warning ? "danger" : "info"}
+          />
+        </>
+      )}
+    </div>
+  );
 }
 
 export function UsageCard({ presence }: { presence: WorkerPresence | null }) {
   const togglePanel = useAppStore((s) => s.togglePanel);
+  const spendAvailable = useSpendAvailable();
   const meters = usageMeters(presence?.usage);
   const plan = presence?.claude?.plan;
   return (
@@ -101,6 +136,7 @@ export function UsageCard({ presence }: { presence: WorkerPresence | null }) {
           ))}
         </div>
       )}
+      {spendAvailable && <GeminiSpendLine />}
     </div>
   );
 }
@@ -131,7 +167,7 @@ export function StatusLine({
       )}
       <div className="flex-1" />
       <MenuButton
-        entries={() => modelMenu(choice, onChoice)}
+        entries={() => modelMenu(choice, onChoice, presence)}
         placement="top-end"
         label="Model ve efor"
         width={248}

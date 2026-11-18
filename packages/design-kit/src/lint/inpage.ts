@@ -25,6 +25,8 @@ export interface InPageInput {
   legalMinFont: number;
   /** Brand font families; `null` skips the font-family rule. */
   brandFonts: string[] | null;
+  /** Brand families that must be installed fonts (checked for `font-missing`); optional. */
+  systemFonts?: string[];
 }
 
 export interface InPageFinding {
@@ -285,6 +287,35 @@ export function studioInPageLint(input: InPageInput, docArg?: Document): InPageR
   const fontsLoaded = faces
     .filter((f) => f.status === "loaded")
     .map((f) => `${f.family.replace(/["']/g, "")} ${f.style} ${f.weight} ${f.stretch}`);
+  // System brand fonts are used by name: one that is not installed falls back silently. A
+  // family is installed when text set in it measures differently from at least one generic.
+  const systemFonts = input.systemFonts ?? [];
+  if (systemFonts.length > 0) {
+    const c2d = doc.createElement("canvas").getContext("2d");
+    if (c2d) {
+      const sample = "mmmmmmmmmmlli WwQq ĞğİıŞş 0123456789";
+      for (const family of systemFonts) {
+        const quoted = `"${family.replace(/["\\]/g, "")}"`;
+        let installed = false;
+        for (const generic of ["monospace", "serif", "sans-serif"]) {
+          c2d.font = `72px ${generic}`;
+          const base = c2d.measureText(sample).width;
+          c2d.font = `72px ${quoted}, ${generic}`;
+          if (Math.abs(c2d.measureText(sample).width - base) > 0.5) {
+            installed = true;
+            break;
+          }
+        }
+        if (!installed)
+          add(
+            "font-missing",
+            null,
+            `System font "${family}" is not installed on this Mac; text set in it used the fallback.`,
+            { family },
+          );
+      }
+    }
+  }
 
   // ---------- text metrics ----------
   type Line = { left: number; right: number; top: number; bottom: number };

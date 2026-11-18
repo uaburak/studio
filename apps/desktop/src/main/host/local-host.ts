@@ -103,6 +103,9 @@ export function buildSpecs(input: {
   apiPort: number;
   claude: string | null;
   gemini: string | null;
+  /** Codex CLI / Antigravity CLI (`agy`) when installed (optional: older callers omit them). */
+  codex?: string | null;
+  antigravity?: string | null;
 }) {
   const apiDir = join(input.repo, "apps", "api");
   const workerDir = join(input.repo, "apps", "worker");
@@ -169,6 +172,8 @@ export function buildSpecs(input: {
   };
   if (input.claude) workerEnv.STUDIO_CLAUDE_BIN = input.claude;
   if (input.gemini) workerEnv.STUDIO_GEMINI_BIN = input.gemini;
+  if (input.codex) workerEnv.STUDIO_CODEX_BIN = input.codex;
+  if (input.antigravity) workerEnv.STUDIO_ANTIGRAVITY_BIN = input.antigravity;
   const worker: ProcessSpec = {
     name: "worker",
     executable: input.node,
@@ -391,6 +396,8 @@ export class LocalHost {
     if (!node) return this.fail(`node bulunamadı. PATH: ${path}`);
     const claude = deps.which("claude", path);
     const gemini = deps.which("gemini", path);
+    const codex = deps.which("codex", path);
+    const antigravity = deps.which("agy", path);
 
     // 3. Secrets (shared with the AppKit app).
     let token: string;
@@ -435,6 +442,8 @@ export class LocalHost {
       apiPort,
       claude,
       gemini,
+      codex,
+      antigravity,
     });
     for (const required of specs.required) {
       if (!deps.fileExists(required)) {

@@ -28,6 +28,7 @@ const NOTICE_TYPES = new Set([
   "content.generate",
   "content.render",
   "brand.analyze",
+  "brand.skill_draft",
   "image.generate",
   "schedule.publish",
 ]);

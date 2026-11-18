@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { ClaudeAccount, GeminiAccount, WorkerCommand } from "./agent.ts";
+import { AiProviderStatus } from "./ai.ts";
 import { Job, JobId, WorkerPresence, WorkerUsage } from "./job.ts";
 
 /**
@@ -131,6 +132,15 @@ export const WorkerGeminiMessage = z.object({
   account: GeminiAccount,
 });
 
+/**
+ * The Mac's other AI providers (Codex CLI, OpenAI API, Antigravity CLI) as the worker sees
+ * them. The hub keeps the latest list and shows it in presence as `providers`.
+ */
+export const WorkerProvidersMessage = z.object({
+  type: z.literal("worker.providers"),
+  providers: z.array(AiProviderStatus).max(16),
+});
+
 /** Hub forwards an app request about AI sign-in / status (start Claude login, re-read Claude/Gemini status). */
 export const WorkerCommandMessage = z.object({
   type: z.literal("worker.command"),
@@ -173,6 +183,7 @@ export const ProtocolMessage = z.discriminatedUnion("type", [
   WorkerUsageMessage,
   WorkerClaudeMessage,
   WorkerGeminiMessage,
+  WorkerProvidersMessage,
   JobCancelMessage,
   JobResultAckMessage,
   WorkerCommandMessage,
@@ -191,6 +202,7 @@ export type WorkerDrainMessage = z.infer<typeof WorkerDrainMessage>;
 export type WorkerUsageMessage = z.infer<typeof WorkerUsageMessage>;
 export type WorkerClaudeMessage = z.infer<typeof WorkerClaudeMessage>;
 export type WorkerGeminiMessage = z.infer<typeof WorkerGeminiMessage>;
+export type WorkerProvidersMessage = z.infer<typeof WorkerProvidersMessage>;
 export type WorkerCommandMessage = z.infer<typeof WorkerCommandMessage>;
 export type JobCancelMessage = z.infer<typeof JobCancelMessage>;
 export type JobResultAckMessage = z.infer<typeof JobResultAckMessage>;
@@ -214,6 +226,7 @@ export type WorkerToHubMessage = Extract<
       | "worker.usage"
       | "worker.claude"
       | "worker.gemini"
+      | "worker.providers"
       | "ping"
       | "pong";
   }

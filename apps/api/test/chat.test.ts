@@ -380,6 +380,10 @@ describe("happy path", () => {
     const profile = await api("POST", `/api/brands/${brand.id}/profiles`, { voice: "samimi" });
     expect(profile.status).toBe(201);
     expect((await api("POST", `/api/brands/${brand.id}/profiles/1/approve`)).status).toBe(200);
+    const skill = (name: string, enabled: boolean) =>
+      api("POST", `/api/brands/${brand.id}/skills`, { name, body: `# ${name}`, enabled });
+    expect((await skill("mtm", true)).status).toBe(201);
+    expect((await skill("kapali", false)).status).toBe(201);
     const asset = await uploadAsset(brand.id);
     const conv = await newConversation(brand.id);
 
@@ -447,6 +451,8 @@ describe("happy path", () => {
     expect(context.run.status).toBe("running");
     expect(context.brand?.id).toBe(brand.id);
     expect(context.brandProfile).toMatchObject({ version: 1, voice: "samimi" });
+    // Only the brand's enabled skills, by name.
+    expect(context.brandSkills?.map((s) => s.name)).toEqual(["mtm"]);
     expect(context.messages.map((m) => m.id)).toEqual([sent.message.id]);
     expect(context.assets.map((a) => a.id)).toEqual([asset.id]);
     expect(context.openPlan).toBeNull();
@@ -628,7 +634,7 @@ describe("happy path", () => {
 describe("rules and edge cases", () => {
   it("keeps the requested model and effort on the run and in the turn context", async () => {
     const conv = await newConversation();
-    expectError(await send(conv.id, { text: "selam", model: "gpt" }), 400, "validation_error");
+    expectError(await send(conv.id, { text: "selam", model: "gpt-4" }), 400, "validation_error");
     expectError(await send(conv.id, { text: "selam", effort: "max" }), 400, "validation_error");
 
     const sent = await send(conv.id, { text: "selam", model: "opus", effort: "xhigh" });

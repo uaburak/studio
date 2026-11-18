@@ -4,12 +4,7 @@
 // draft, AI analysis), Hesaplar (connection state; connecting lives in Settings) and Ürünler
 // (the brand's products). The section is part of the route, so back / forward step through
 // sections too. The content uses the page's full width; only long text keeps a reading width.
-import type {
-  Brand,
-  BrandKitFontRole,
-  BrandKitLogoBackground,
-  BrandProfile,
-} from "@studio/contract";
+import type { Brand, BrandKitLogoBackground, BrandProfile } from "@studio/contract";
 import { MAX_KIT_SAMPLES, MIN_KIT_SAMPLES } from "@studio/contract";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -46,7 +41,6 @@ import {
   analysisBlocker,
   brandCard,
   colorName,
-  FONT_ROLE_LABEL,
   familyGuess,
   type KitDraft,
   kitDraft,
@@ -60,7 +54,9 @@ import {
   tokenRows,
 } from "./brand-model.ts";
 import { BrandMark, LanguageSelect } from "./brand-views.tsx";
+import { AddSystemFontButton, KitFontList } from "./kit-fonts.tsx";
 import { ProductsTab } from "./products-tab.tsx";
+import { SkillsSection } from "./skills-section.tsx";
 
 export const BRAND_TAB_OPTIONS: { value: BrandTab; label: string }[] = [
   { value: "general", label: "Genel" },
@@ -394,7 +390,14 @@ function KitTab({ brand }: { brand: Brand }) {
               ...d,
               fonts: [
                 ...d.fonts,
-                { assetId: asset.id, family: familyGuess(file.name), role: "any", licenseNote: "" },
+                {
+                  source: "file",
+                  assetId: asset.id,
+                  family: familyGuess(file.name),
+                  role: "any",
+                  styles: [],
+                  licenseNote: "",
+                },
               ],
             };
           }
@@ -547,89 +550,26 @@ function KitTab({ brand }: { brand: Brand }) {
 
       <KitSection
         title="Yazı tipleri"
-        detail="Font dosyası, aile adı ve lisans notu."
+        detail="Mac'te yüklü yazı tipleri adıyla kullanılır; aynı ailenin dosyası, yüklü olmayan bir Mac için yedektir."
         action={
-          <UploadButton
-            label="Font yükle"
-            accept=".woff2,.woff,.ttf,.otf,font/woff2,font/woff,font/ttf,font/otf"
-            onFiles={(f) => void uploadFiles(f, "font")}
-          />
+          <div className="flex items-center gap-2">
+            <AddSystemFontButton
+              fonts={draft.fonts}
+              onChange={(fonts) => change((d) => ({ ...d, fonts }))}
+            />
+            <UploadButton
+              label="Font yükle"
+              accept=".woff2,.woff,.ttf,.otf,font/woff2,font/woff,font/ttf,font/otf"
+              onFiles={(f) => void uploadFiles(f, "font")}
+            />
+          </div>
         }
       >
-        {draft.fonts.length === 0 ? (
-          <Empty>Yazı tipi yok; sistem fontu kullanılır.</Empty>
-        ) : (
-          <div className="grid grid-cols-[repeat(auto-fill,minmax(620px,1fr))] gap-x-6 gap-y-2">
-            {draft.fonts.map((font) => (
-              <div key={font.assetId} className="flex items-center gap-2">
-                <span
-                  className="w-[150px] shrink-0 truncate text-footnote text-fg-3"
-                  title={fileName(font.assetId)}
-                >
-                  {fileName(font.assetId) || "Font dosyası"}
-                </span>
-                <TextField
-                  aria-label="Aile adı"
-                  className="w-[200px]"
-                  value={font.family}
-                  onChange={(e) =>
-                    change((d) => ({
-                      ...d,
-                      fonts: d.fonts.map((f) =>
-                        f.assetId === font.assetId ? { ...f, family: e.target.value } : f,
-                      ),
-                    }))
-                  }
-                />
-                <select
-                  aria-label="Rol"
-                  value={font.role}
-                  onChange={(e) =>
-                    change((d) => ({
-                      ...d,
-                      fonts: d.fonts.map((f) =>
-                        f.assetId === font.assetId
-                          ? { ...f, role: e.target.value as BrandKitFontRole }
-                          : f,
-                      ),
-                    }))
-                  }
-                  className="h-7 rounded-full bg-field px-3 text-body text-fg shadow-[inset_0_0_0_1px_var(--border-hairline)] outline-none"
-                >
-                  {(Object.keys(FONT_ROLE_LABEL) as BrandKitFontRole[]).map((role) => (
-                    <option key={role} value={role}>
-                      {FONT_ROLE_LABEL[role]}
-                    </option>
-                  ))}
-                </select>
-                <TextField
-                  aria-label="Lisans notu"
-                  className="min-w-0 flex-1"
-                  placeholder="Lisans notu (nereden, ne izin veriyor)"
-                  value={font.licenseNote}
-                  onChange={(e) =>
-                    change((d) => ({
-                      ...d,
-                      fonts: d.fonts.map((f) =>
-                        f.assetId === font.assetId ? { ...f, licenseNote: e.target.value } : f,
-                      ),
-                    }))
-                  }
-                />
-                <IconButton
-                  icon={<IconClose size={14} strokeWidth={1.75} />}
-                  label="Yazı tipini kaldır"
-                  onClick={() =>
-                    change((d) => ({
-                      ...d,
-                      fonts: d.fonts.filter((f) => f.assetId !== font.assetId),
-                    }))
-                  }
-                />
-              </div>
-            ))}
-          </div>
-        )}
+        <KitFontList
+          fonts={draft.fonts}
+          fileName={fileName}
+          onChange={(fonts) => change((d) => ({ ...d, fonts }))}
+        />
       </KitSection>
 
       <KitSection
@@ -703,6 +643,8 @@ function KitTab({ brand }: { brand: Brand }) {
           )}
         />
       </KitSection>
+
+      <SkillsSection brand={brand} />
     </div>
   );
 }

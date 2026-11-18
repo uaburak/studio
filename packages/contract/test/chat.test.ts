@@ -251,7 +251,7 @@ describe("plans", () => {
     expect(full.planItem?.itemId).toBe("i1");
     const chosen = ContentGeneratePayload.parse({ ...legacy, model: "haiku", effort: "low" });
     expect(chosen).toMatchObject({ model: "haiku", effort: "low" });
-    expect(ContentGeneratePayload.safeParse({ ...legacy, model: "gpt" }).success).toBe(false);
+    expect(ContentGeneratePayload.safeParse({ ...legacy, model: "gpt-4" }).success).toBe(false);
   });
 
   it("carries the model and effort choice on messages, runs and plan generation", () => {

@@ -1,5 +1,11 @@
 import { createRoute } from "@hono/zod-openapi";
-import { ApiErrorBody, ClaudeControl, GeminiControl, WorkerPresence } from "@studio/contract";
+import {
+  AiProvidersControl,
+  ApiErrorBody,
+  ClaudeControl,
+  GeminiControl,
+  WorkerPresence,
+} from "@studio/contract";
 import { authenticateWorker } from "../hub/auth.ts";
 import { conflict } from "../lib/errors.ts";
 import { createRouter, errors, json } from "../lib/router.ts";
@@ -145,6 +151,94 @@ hubRoutes.openapi(
   }),
   async (c) => {
     const result = GeminiControl.parse(await hubStub(c.env).geminiControl("gemini.status"));
+    if (result.sent === 0) throw conflict("the Mac worker is not connected");
+    return c.json(result, 200);
+  },
+);
+
+// --- The Mac's other AI providers (roadmap 7): Codex CLI, OpenAI API, Antigravity CLI ----------
+
+hubRoutes.openapi(
+  createRoute({
+    method: "get",
+    path: "/api/workers/providers",
+    tags: ["Workers"],
+    summary: "Codex CLI, OpenAI API and Antigravity CLI as the worker last reported them",
+    responses: { 200: json(AiProvidersControl, "Latest report (empty until a worker sent one).") },
+  }),
+  async (c) => {
+    const result = AiProvidersControl.parse(await hubStub(c.env).providersControl());
+    return c.json(result, 200);
+  },
+);
+
+hubRoutes.openapi(
+  createRoute({
+    method: "post",
+    path: "/api/workers/providers/status",
+    tags: ["Workers"],
+    summary: "Ask the worker to re-check Codex, OpenAI and Antigravity",
+    description: "The answer arrives as presence `providers`. 409 when no worker is connected.",
+    responses: {
+      200: json(AiProvidersControl, "Sent to the connected worker(s)."),
+      409: errors[409],
+    },
+  }),
+  async (c) => {
+    const result = AiProvidersControl.parse(
+      await hubStub(c.env).providersControl("providers.status"),
+    );
+    if (result.sent === 0) throw conflict("the Mac worker is not connected");
+    return c.json(result, 200);
+  },
+);
+
+hubRoutes.use("/api/workers/codex/login", requireLocal);
+
+hubRoutes.openapi(
+  createRoute({
+    method: "post",
+    path: "/api/workers/codex/login",
+    tags: ["Workers"],
+    summary: "Start the Codex CLI sign-in (ChatGPT account) on the Mac (the Mac itself only)",
+    description:
+      "The worker runs `codex login` in the background: the sign-in page opens in the Mac's " +
+      "browser and the CLI waits for it (at most 10 minutes). Follow presence `providers` " +
+      "(`codex`: `signing_in`, then `ready`). 409 when no worker is connected.",
+    responses: {
+      200: json(AiProvidersControl, "Sent to the connected worker(s)."),
+      403: json(ApiErrorBody, "Not the Mac itself (`forbidden`)."),
+      409: errors[409],
+    },
+  }),
+  async (c) => {
+    const result = AiProvidersControl.parse(await hubStub(c.env).providersControl("codex.login"));
+    if (result.sent === 0) throw conflict("the Mac worker is not connected");
+    return c.json(result, 200);
+  },
+);
+
+hubRoutes.use("/api/workers/antigravity/login", requireLocal);
+
+hubRoutes.openapi(
+  createRoute({
+    method: "post",
+    path: "/api/workers/antigravity/login",
+    tags: ["Workers"],
+    summary: "Start the Antigravity CLI sign-in (Google account) on the Mac (the Mac itself only)",
+    description:
+      "The worker runs `agy acp --login` in the background (sign-in page in the Mac's browser, " +
+      "at most 10 minutes). Follow presence `providers` (`antigravity`). 409 when no worker is connected.",
+    responses: {
+      200: json(AiProvidersControl, "Sent to the connected worker(s)."),
+      403: json(ApiErrorBody, "Not the Mac itself (`forbidden`)."),
+      409: errors[409],
+    },
+  }),
+  async (c) => {
+    const result = AiProvidersControl.parse(
+      await hubStub(c.env).providersControl("antigravity.login"),
+    );
     if (result.sent === 0) throw conflict("the Mac worker is not connected");
     return c.json(result, 200);
   },

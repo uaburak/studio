@@ -3,8 +3,8 @@ import { EntityId, Timestamp } from "./common.ts";
 
 /**
  * The brand kit is the user's raw input for a brand (P2): logo files with the
- * background they are made for, font files with a family name and a licence
- * note, a colour palette picked by hand, sample post images (3–12 are needed
+ * background they are made for, fonts (uploaded files with a family name, or
+ * fonts installed on this Mac picked by family and style) with a licence note, a colour palette picked by hand, sample post images (3–12 are needed
  * before `brand.analyze` can extract a profile) and free notes.
  *
  * It is *input*, not output: `brand.analyze` reads it (plus the images) and
@@ -52,22 +52,74 @@ export const BrandKitLogo = z
   .meta({ id: "BrandKitLogo" });
 export type BrandKitLogo = z.infer<typeof BrandKitLogo>;
 
+/**
+ * Where a kit font comes from: an uploaded font file (`file`, an asset of the brand), or a
+ * font installed on this Mac (`system`, used by family name: the renderer runs Chromium on
+ * the same Mac). A system font and a file of the same family go together: the installed
+ * font is used, the file is the fallback when it is not installed.
+ */
+export const BrandKitFontSource = z.enum(["file", "system"]).meta({ id: "BrandKitFontSource" });
+export type BrandKitFontSource = z.infer<typeof BrandKitFontSource>;
+
+export const MAX_KIT_FONT_STYLES = 32;
+
+/** One installed style of a system font (as the Mac's font list names it). */
+export const BrandKitFontStyle = z
+  .object({
+    /** Style name: `Regular`, `Demi Bold Italic`. */
+    name: z.string().trim().min(1).max(64),
+    /** CSS weight (100 … 900). */
+    weight: z.number().int().min(1).max(1000),
+    italic: z.boolean().default(false),
+    /** PostScript name (`AvenirNext-DemiBold`), when known. */
+    postscriptName: z.string().trim().max(128).optional(),
+  })
+  .meta({ id: "BrandKitFontStyle" });
+export type BrandKitFontStyle = z.infer<typeof BrandKitFontStyle>;
+
+export const KitFontFamily = z
+  .string()
+  .trim()
+  .min(1)
+  .max(64)
+  .regex(/^[\p{L}\p{N}][\p{L}\p{N} -]*$/u, "letters, digits, spaces and dashes");
+
 export const BrandKitFont = z
   .object({
-    assetId: EntityId,
-    /** CSS family name the file provides: `Archivo`, `Inter Display`. */
-    family: z
-      .string()
-      .trim()
-      .min(1)
-      .max(64)
-      .regex(/^[A-Za-z0-9][A-Za-z0-9 -]*$/, "letters, digits, spaces and dashes"),
+    /** Absent in kits saved before system fonts: an uploaded file. */
+    source: BrandKitFontSource.default("file"),
+    /** The font file (`source: "file"`); absent for system fonts. */
+    assetId: EntityId.optional(),
+    /** CSS family name: what the file provides, or the installed family (`Avenir Next`). */
+    family: KitFontFamily,
     role: BrandKitFontRole.default("any"),
+    /** System fonts: the styles the brand uses (empty = the family as a whole). */
+    styles: z.array(BrandKitFontStyle).max(MAX_KIT_FONT_STYLES).default([]),
     /** Licence note the user wrote: where it came from, what it allows. */
     licenseNote: z.string().trim().max(500).default(""),
   })
+  .superRefine((font, ctx) => {
+    if (font.source === "file" && !font.assetId) {
+      ctx.addIssue({ code: "custom", path: ["assetId"], message: "a font file needs assetId" });
+    }
+    if (font.source === "system" && font.assetId) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["assetId"],
+        message: "a system font has no file (add the file as its own entry)",
+      });
+    }
+  })
   .meta({ id: "BrandKitFont" });
 export type BrandKitFont = z.infer<typeof BrandKitFont>;
+export type BrandKitFontInput = z.input<typeof BrandKitFont>;
+
+/** Identity of a kit font: its file, or `system:<family>` for an installed font. */
+export function kitFontKey(font: Pick<BrandKitFont, "source" | "assetId" | "family">): string {
+  return font.source === "system" || !font.assetId
+    ? `system:${font.family.trim().toLowerCase()}`
+    : font.assetId;
+}
 
 export const BrandKitColor = z
   .object({
@@ -107,10 +159,7 @@ export const BrandKitPut = z
     fonts: z
       .array(BrandKitFont)
       .max(MAX_KIT_FONTS)
-      .refine(
-        uniqueBy<BrandKitFont>((f) => f.assetId),
-        "a font is listed twice",
-      )
+      .refine(uniqueBy<BrandKitFont>(kitFontKey), "a font is listed twice")
       .default([]),
     palette: z
       .array(BrandKitColor)

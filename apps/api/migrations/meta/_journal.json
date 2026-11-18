@@ -92,6 +92,20 @@
       "when": 1794959789149,
       "tag": "0012_brand_products",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "6",
+      "when": 1794961477299,
+      "tag": "0013_ai_providers",
+      "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "6",
+      "when": 1794961531275,
+      "tag": "0014_brand_skills",
+      "breakpoints": true
     }
   ]
 }

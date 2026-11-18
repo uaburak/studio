@@ -1,5 +1,18 @@
 import type { z } from "zod";
 import { ClaudeControl, type ConsentDecisionCreate, GeminiControl } from "./agent.ts";
+import {
+  type AiBudgetPut,
+  AiKeyList,
+  type AiKeyProvider,
+  type AiKeyPut,
+  AiKeyState,
+  AiProvidersControl,
+  type AiSpendQuery,
+  AiSpendSummary,
+  WorkerAiCredentials,
+  WorkerAiUsageAck,
+  type WorkerAiUsageReport,
+} from "./ai.ts";
 import { Asset, AssetList, type AssetListQuery, type AssetUploadFields } from "./asset.ts";
 import {
   Brand,
@@ -23,6 +36,16 @@ import {
   type BrandProfileListQuery,
   type BrandProfileUpdate,
 } from "./brand-profile.ts";
+import {
+  BrandSkill,
+  type BrandSkillCreate,
+  BrandSkillList,
+  type BrandSkillListQuery,
+  type BrandSkillUpdate,
+  BrandSkillVersion,
+  BrandSkillVersionList,
+  type BrandSkillVersionListQuery,
+} from "./brand-skill.ts";
 import {
   AgentRun,
   AgentRunList,
@@ -439,6 +462,60 @@ export function createApiClient(options: ApiClientOptions = {}) {
       },
     },
 
+    brandSkills: {
+      /** Oldest first. */
+      list: (brandId: string, query?: BrandSkillListQuery, init?: RequestInit) =>
+        call(BrandSkillList, `/api/brands/${enc(brandId)}/skills`, { query: q(query), init }),
+      get: (brandId: string, skillId: string, init?: RequestInit) =>
+        call(BrandSkill, `/api/brands/${enc(brandId)}/skills/${enc(skillId)}`, { init }),
+      create: (brandId: string, input: BrandSkillCreate, init?: RequestInit) =>
+        call(BrandSkill, `/api/brands/${enc(brandId)}/skills`, {
+          method: "POST",
+          json: input,
+          init,
+        }),
+      /** Name, description or body changes store a new version; `enabled` alone does not. */
+      update: (brandId: string, skillId: string, input: BrandSkillUpdate, init?: RequestInit) =>
+        call(BrandSkill, `/api/brands/${enc(brandId)}/skills/${enc(skillId)}`, {
+          method: "PATCH",
+          json: input,
+          init,
+        }),
+      delete: async (brandId: string, skillId: string, init?: RequestInit): Promise<void> => {
+        await send(`/api/brands/${enc(brandId)}/skills/${enc(skillId)}`, {
+          method: "DELETE",
+          init,
+        });
+      },
+      versions: {
+        /** Newest first. */
+        list: (
+          brandId: string,
+          skillId: string,
+          query?: BrandSkillVersionListQuery,
+          init?: RequestInit,
+        ) =>
+          call(
+            BrandSkillVersionList,
+            `/api/brands/${enc(brandId)}/skills/${enc(skillId)}/versions`,
+            { query: q(query), init },
+          ),
+        get: (brandId: string, skillId: string, version: number, init?: RequestInit) =>
+          call(
+            BrandSkillVersion,
+            `/api/brands/${enc(brandId)}/skills/${enc(skillId)}/versions/${version}`,
+            { init },
+          ),
+        /** Stores that version's text as a new current version. */
+        restore: (brandId: string, skillId: string, version: number, init?: RequestInit) =>
+          call(
+            BrandSkill,
+            `/api/brands/${enc(brandId)}/skills/${enc(skillId)}/versions/${version}/restore`,
+            { method: "POST", init },
+          ),
+      },
+    },
+
     brandProfiles: {
       list: (brandId: string, query?: BrandProfileListQuery, init?: RequestInit) =>
         call(BrandProfileList, `/api/brands/${enc(brandId)}/profiles`, { query: q(query), init }),
@@ -650,6 +727,18 @@ export function createApiClient(options: ApiClientOptions = {}) {
       /** Ask the worker to re-check Gemini API key / CLI readiness. */
       geminiRefresh: (init?: RequestInit) =>
         call(GeminiControl, "/api/workers/gemini/status", { method: "POST", init }),
+      /** Codex CLI, OpenAI API and Antigravity CLI as the worker last reported them. */
+      providers: (init?: RequestInit) =>
+        call(AiProvidersControl, "/api/workers/providers", { init }),
+      /** Ask the worker to re-check Codex / OpenAI / Antigravity. */
+      providersRefresh: (init?: RequestInit) =>
+        call(AiProvidersControl, "/api/workers/providers/status", { method: "POST", init }),
+      /** Ask the worker to start `codex login` (sign-in page in the Mac's browser; Mac only). */
+      codexLogin: (init?: RequestInit) =>
+        call(AiProvidersControl, "/api/workers/codex/login", { method: "POST", init }),
+      /** Ask the worker to start `agy acp --login` (Google sign-in in the browser; Mac only). */
+      antigravityLogin: (init?: RequestInit) =>
+        call(AiProvidersControl, "/api/workers/antigravity/login", { method: "POST", init }),
     },
 
     pairing: {
@@ -901,6 +990,30 @@ export function createApiClient(options: ApiClientOptions = {}) {
       /** Schedules that were sent to the cloud and later cancelled (cancel the orders). */
       cancelled: (query?: { since?: string; limit?: number }, init?: RequestInit) =>
         call(WorkerDueSchedules, "/api/worker/schedules/cancelled", { query: q(query), init }),
+    },
+
+    /** AI provider keys in the vault and Gemini spend (Ayarlar → Yapay zekâ / Kullanım). */
+    ai: {
+      keys: (init?: RequestInit) => call(AiKeyList, "/api/ai/keys", { init }),
+      /** Check (models.list) and store a key (the Mac itself only). */
+      setKey: (provider: AiKeyProvider, input: AiKeyPut, init?: RequestInit) =>
+        call(AiKeyState, `/api/ai/keys/${enc(provider)}`, { method: "PUT", json: input, init }),
+      /** Check the stored key again (models.list; free). */
+      checkKey: (provider: AiKeyProvider, init?: RequestInit) =>
+        call(AiKeyState, `/api/ai/keys/${enc(provider)}/check`, { method: "POST", init }),
+      deleteKey: (provider: AiKeyProvider, init?: RequestInit) =>
+        call(AiKeyState, `/api/ai/keys/${enc(provider)}`, { method: "DELETE", init }),
+      spend: (query?: AiSpendQuery, init?: RequestInit) =>
+        call(AiSpendSummary, "/api/ai/spend", { query: q(query), init }),
+      setBudget: (input: AiBudgetPut, init?: RequestInit) =>
+        call(AiSpendSummary, "/api/ai/budget", { method: "PUT", json: input, init }),
+    },
+
+    workerAi: {
+      credentials: (init?: RequestInit) =>
+        call(WorkerAiCredentials, "/api/worker/ai/credentials", { init }),
+      reportUsage: (input: WorkerAiUsageReport, init?: RequestInit) =>
+        call(WorkerAiUsageAck, "/api/worker/ai/usage", { method: "POST", json: input, init }),
     },
 
     workerPublishing: {

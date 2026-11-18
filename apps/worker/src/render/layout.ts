@@ -31,3 +31,15 @@ export function layoutFromReport(report: LintReport | null | undefined): SlideLa
   }
   return out;
 }
+
+/** System font families the linter found not installed on this Mac (`font-missing`), once each. */
+export function missingSystemFonts(reports: readonly (LintReport | null | undefined)[]): string[] {
+  const out = new Set<string>();
+  for (const report of reports) {
+    for (const issue of report?.issues ?? []) {
+      const family = issue.data?.family;
+      if (issue.rule === "font-missing" && typeof family === "string") out.add(family);
+    }
+  }
+  return [...out];
+}

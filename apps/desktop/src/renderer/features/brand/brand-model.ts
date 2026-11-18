@@ -32,7 +32,7 @@ export function colorName(raw: string): string | null {
 /** Family names the contract accepts: letters, digits, spaces, dashes. */
 export function isValidFamily(raw: string): boolean {
   const t = raw.trim();
-  return t.length > 0 && t.length <= 64 && /^[A-Za-z0-9][A-Za-z0-9 -]*$/.test(t);
+  return t.length > 0 && t.length <= 64 && /^[\p{L}\p{N}][\p{L}\p{N} -]*$/u.test(t);
 }
 
 /** `Archivo-BoldItalic.woff2` → `Archivo`, `InterDisplay.ttf` → `Inter Display`. */
@@ -486,4 +486,90 @@ export function newBrandInput(
     return { ok: false, reason: "Kısa ad yalnızca küçük harf, rakam ve tek tire içerebilir." };
   }
   return { ok: true, input: { name: n, slug: s, defaultLanguage: language || "tr" } };
+}
+
+// --- kit fonts: installed (system) fonts next to uploaded files ---------------------------------------
+
+export type KitFont = KitDraft["fonts"][number];
+
+/** A picked installed style as the kit stores it. */
+export function kitFontStyle(style: {
+  name: string;
+  weight: number;
+  italic: boolean;
+  postscriptName?: string;
+}): KitFont["styles"][number] {
+  return {
+    name: style.name,
+    weight: style.weight,
+    italic: style.italic,
+    ...(style.postscriptName ? { postscriptName: style.postscriptName } : {}),
+  };
+}
+
+const sameFamily = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase();
+
+/**
+ * Add an installed font picked in the FontPicker: a new system entry, or (same family already in
+ * the kit) the picked style added to it. A family pick (no style) means the family as a whole.
+ */
+export function addSystemFont(
+  fonts: readonly KitFont[],
+  choice: { family: string; style: Parameters<typeof kitFontStyle>[0] | null },
+): KitFont[] {
+  const index = fonts.findIndex(
+    (f) => f.source === "system" && sameFamily(f.family, choice.family),
+  );
+  if (index < 0) {
+    return [
+      ...fonts,
+      {
+        source: "system",
+        family: choice.family,
+        role: "any",
+        styles: choice.style ? [kitFontStyle(choice.style)] : [],
+        licenseNote: "",
+      },
+    ];
+  }
+  if (!choice.style) return [...fonts];
+  const style = choice.style;
+  return fonts.map((f, i) =>
+    i === index && !f.styles.some((s) => s.name === style.name)
+      ? { ...f, styles: [...f.styles, kitFontStyle(style)].sort((a, b) => a.weight - b.weight) }
+      : f,
+  );
+}
+
+/** Switch one style of a system entry on or off (none left = the family as a whole). */
+export function toggleSystemFontStyle(
+  font: KitFont,
+  style: Parameters<typeof kitFontStyle>[0],
+): KitFont {
+  const has = font.styles.some((s) => s.name === style.name);
+  return {
+    ...font,
+    styles: has
+      ? font.styles.filter((s) => s.name !== style.name)
+      : [...font.styles, kitFontStyle(style)].sort((a, b) => a.weight - b.weight),
+  };
+}
+
+/** A file whose family is also an installed kit font: used only when that font is missing. */
+export function isFallbackFile(fonts: readonly KitFont[], font: KitFont): boolean {
+  return (
+    font.source === "file" &&
+    fonts.some((f) => f.source === "system" && sameFamily(f.family, font.family))
+  );
+}
+
+/** A file entry of the same family (the fallback of a system font), if any. */
+export function fallbackFileOf(fonts: readonly KitFont[], font: KitFont): KitFont | null {
+  if (font.source !== "system") return null;
+  return fonts.find((f) => f.source === "file" && sameFamily(f.family, font.family)) ?? null;
+}
+
+/** "Tüm stiller" or "Regular · Demi Bold". */
+export function kitStylesLabel(font: KitFont): string {
+  return font.styles.length === 0 ? "Tüm stiller" : font.styles.map((s) => s.name).join(" · ");
 }

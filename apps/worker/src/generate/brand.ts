@@ -70,6 +70,8 @@ export interface BrandContext {
   logoClearSpaceByPath: Record<string, number>;
   /** Serves `/brand/brand.css` and the mapped brand files. */
   resolver: AssetResolver;
+  /** `<brand_skills>` for the design prompt (set by the generation handler; "" = none). */
+  skillsBlock?: string;
 }
 
 /** Neutral default: system fonts (present on every Mac), quiet colours, no logo. */

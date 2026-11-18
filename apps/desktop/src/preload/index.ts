@@ -2,6 +2,7 @@
 // (`window.studio`). No Node APIs reach the page.
 import { contextBridge, type IpcRendererEvent, ipcRenderer } from "electron";
 import { ACCOUNTS_IPC as A } from "../shared/accounts-ipc.ts";
+import { FONTS_IPC } from "../shared/fonts.ts";
 import { IPC, type StudioBridge } from "../shared/ipc.ts";
 
 function subscribe<T>(channel: string, listener: (value: T) => void): () => void {
@@ -41,6 +42,9 @@ const bridge: StudioBridge = {
     dismiss: () => ipcRenderer.invoke(A.dismiss),
     check: (account) => ipcRenderer.invoke(A.check, account),
     disconnect: (id) => ipcRenderer.invoke(A.disconnect, id),
+  },
+  fonts: {
+    list: (options) => ipcRenderer.invoke(FONTS_IPC.list, options),
   },
   system: {
     info: () => ipcRenderer.invoke(A.systemInfo),

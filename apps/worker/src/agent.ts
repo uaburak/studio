@@ -3,8 +3,9 @@
  */
 import type { spawn as nodeSpawn } from "node:child_process";
 import path from "node:path";
-import type { ClaudeAccount, GeminiAccount } from "@studio/contract";
+import type { AiProviderStatus, ClaudeAccount, GeminiAccount } from "@studio/contract";
 import { z } from "zod";
+import type { AiUsageRecorder } from "./ai/usage-recorder.ts";
 import type { StudioApi } from "./api.ts";
 import type { Skill } from "./chat/skills.ts";
 import type { ClaudeGate } from "./claude/gate.ts";
@@ -51,6 +52,16 @@ const AgentEnv = z.object({
   STUDIO_GEMINI_MODEL_PRO: z.string().min(1).default(DEFAULT_GEMINI_MODELS["gemini-pro"]),
   STUDIO_GEMINI_IMAGE_MODEL: z.string().min(1).default("gemini-nano-banana-2.1"),
 
+  // --- Other providers (roadmap 7): Codex CLI, OpenAI API (key in the vault), Antigravity CLI ---
+  STUDIO_CODEX_BIN: z.string().min(1).default("codex"),
+  /** Model for `codex exec -m`; unset = the Codex CLI's own default. */
+  STUDIO_CODEX_MODEL: z.string().trim().min(1).optional(),
+  /** OpenAI API model; unset = the first available of OPENAI_MODEL_PREFERENCE. */
+  STUDIO_OPENAI_MODEL: z.string().trim().min(1).optional(),
+  STUDIO_ANTIGRAVITY_BIN: z.string().min(1).default("agy"),
+  /** Model slug for `agy --model` (see `agy models`); unset = the CLI's default. */
+  STUDIO_ANTIGRAVITY_MODEL: z.string().trim().min(1).optional(),
+
   // --- Reels Video / TTS / Transcription ---
   ELEVENLABS_API_KEY: z.string().trim().min(1).optional(),
   STUDIO_ELEVENLABS_VOICE_ID: z.string().trim().min(1).default("21m00Tcm4TlvDq8ikWAM"),
@@ -89,6 +100,16 @@ export interface AgentSettings {
   geminiMode: "auto" | "api" | "cli";
   geminiModels: Record<GeminiModelAlias, string>;
   geminiImageModel: string;
+  codexBin: string;
+  codexModel: string | undefined;
+  openaiModel: string | undefined;
+  antigravityBin: string;
+  antigravityModel: string | undefined;
+  /**
+   * API keys from the vault (Ayarlar → Yapay zekâ), filled by the runtime from the API and
+   * preferred over `.env`. Mutable; never logged.
+   */
+  vault?: AiVault;
   /** ElevenLabs API key from `.env` (never logged). */
   elevenLabsApiKey: string | undefined;
   elevenLabsVoiceId: string;
@@ -139,6 +160,12 @@ export function loadAgentSettings(env: NodeJS.ProcessEnv = process.env): AgentSe
       "gemini-pro": e.STUDIO_GEMINI_MODEL_PRO,
     },
     geminiImageModel: e.STUDIO_GEMINI_IMAGE_MODEL,
+    codexBin: e.STUDIO_CODEX_BIN,
+    codexModel: e.STUDIO_CODEX_MODEL,
+    openaiModel: e.STUDIO_OPENAI_MODEL,
+    antigravityBin: e.STUDIO_ANTIGRAVITY_BIN,
+    antigravityModel: e.STUDIO_ANTIGRAVITY_MODEL,
+    vault: {},
     elevenLabsApiKey: e.ELEVENLABS_API_KEY,
     elevenLabsVoiceId: e.STUDIO_ELEVENLABS_VOICE_ID,
     ffmpegBin: e.STUDIO_FFMPEG_BIN,
@@ -149,6 +176,12 @@ export function loadAgentSettings(env: NodeJS.ProcessEnv = process.env): AgentSe
     skillsDir: e.STUDIO_SKILLS_DIR,
     parentEnv: env,
   };
+}
+
+/** Keys the owner stored in the vault, as the worker last read them (`GET /api/worker/ai/credentials`). */
+export interface AiVault {
+  gemini?: { apiKey: string; models: string[] } | undefined;
+  openai?: { apiKey: string; models: string[] } | undefined;
 }
 
 export function claudeLogDir(stateDir: string): string {
@@ -177,9 +210,16 @@ export interface AgentDeps {
   /** Where caches and MCP work dirs live. */
   stateDir: string;
   now?: () => Date;
+  /** Records paid AI calls (Gemini spend); absent in tests that do not care. */
+  aiUsage?: AiUsageRecorder;
+  /** Codex CLI / OpenAI API / Antigravity CLI readiness (`worker.providers`). */
+  providers?: () => AiProviderStatus[];
   /** Test seams for Gemini, publishers & consent polling. */
   geminiFetch?: typeof globalThis.fetch;
   geminiCliSpawn?: typeof nodeSpawn;
+  codexSpawn?: typeof nodeSpawn;
+  antigravitySpawn?: typeof nodeSpawn;
+  openaiFetch?: typeof globalThis.fetch;
   publisherFetch?: typeof globalThis.fetch;
   consentPollIntervalMs?: number;
   consentTimeoutMs?: number;

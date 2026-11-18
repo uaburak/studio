@@ -684,6 +684,9 @@ final class ModelPickerViewController: UITableViewController {
         case .geminiPro: "Gemini'nin en güçlüsü"
         case .geminiFlash: "Hızlı ve dengeli"
         case .geminiFlashLite: "En hafif ve en hızlı"
+        case .codex: "ChatGPT hesabıyla Codex"
+        case .gpt: "OpenAI API anahtarıyla"
+        case .antigravity: "Google Antigravity (araçsız)"
         case .unknown: ""
         }
     }

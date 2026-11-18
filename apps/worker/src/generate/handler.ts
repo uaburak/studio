@@ -16,6 +16,14 @@ import {
   resolveAliasMentions,
 } from "@studio/contract";
 import type { AgentDeps } from "../agent.ts";
+import { geminiUsageSink } from "../ai/usage-recorder.ts";
+import {
+  brandSkillsUsed,
+  DESIGN_SKILLS_BUDGET,
+  designSkillsBlock,
+  loadEnabledBrandSkills,
+  selectBrandSkills,
+} from "../brand/skills.ts";
 import { describeClaudeError, formatClock, isClaudeError } from "../claude/errors.ts";
 import type { ParkInfo } from "../claude/gate.ts";
 import { describeGeminiError, isGeminiError } from "../gemini/errors.ts";
@@ -23,7 +31,7 @@ import { callStructuredAi, hasGeminiApiKey, resolveStructuredRoute } from "../ge
 import { extensionForMime, imageInfo } from "../media.ts";
 import { defineHandler, type JobContext, RetryableError } from "../registry.ts";
 import { RENDER_ASSET_PREFIXES } from "../render/handler.ts";
-import { layoutFromReport } from "../render/layout.ts";
+import { layoutFromReport, missingSystemFonts } from "../render/layout.ts";
 import {
   createApiAssetPathResolver,
   generateAndRenderReel,
@@ -208,6 +216,20 @@ async function runContentGenerate(
       baseSlide && (baseSlide.width !== basePreset.width || baseSlide.height !== basePreset.height)
         ? { ...basePreset, width: baseSlide.width, height: baseSlide.height }
         : basePreset;
+    // The brand's enabled skills, the ones that fit this brief first.
+    const skills = selectBrandSkills(await loadEnabledBrandSkills(api, brandId, signal), {
+      budget: DESIGN_SKILLS_BUDGET,
+      task: [
+        payload.title ?? content.title,
+        payload.brief || content.brief,
+        payload.instructions ?? "",
+        contentType,
+        platforms.join(" "),
+      ].join("\n"),
+    });
+    brand.skillsBlock = designSkillsBlock(skills);
+    const skillsUsed = brandSkillsUsed(skills);
+
     const brief: DesignBrief = {
       title: payload.title ?? content.title,
       brief: payload.brief || content.brief,
@@ -256,6 +278,10 @@ async function runContentGenerate(
                 signal: callInput.signal,
                 hooks,
                 ...(deps.geminiFetch ? { geminiFetch: deps.geminiFetch } : {}),
+                onGeminiUsage: geminiUsageSink(deps.aiUsage, {
+                  kind: "generate",
+                  jobId: ctx.jobId,
+                }),
               }),
           }
         : {}),
@@ -323,6 +349,7 @@ async function runContentGenerate(
       0,
     );
     const providerLabel = result.provider === "gemini" ? "Gemini" : "Claude";
+    const missingFonts = missingSystemFonts(final.slides.map((s) => s.report));
     const note = [
       revision
         ? `AI düzenleme (v${revision.input.baseVersion} üzerine): ${instruction.slice(0, 400)}`
@@ -331,6 +358,10 @@ async function runContentGenerate(
         ? `Denetim temiz (${final.warnings} uyarı).`
         : `Denetimde ${final.errors} hata kaldı; düzenleyicide düzeltilmeli.`,
       emptySlots ? `${emptySlots} boş görsel yuvası.` : "",
+      skillsUsed.length > 0 ? `Skill'ler: ${skillsUsed.join(", ")}.` : "",
+      missingFonts.length > 0
+        ? `Bu Mac'te yüklü olmayan font: ${missingFonts.join(", ")} (yedek kullanıldı).`
+        : "",
       `${result.calls} ${providerLabel} çağrısı.`,
     ]
       .filter(Boolean)
@@ -382,6 +413,8 @@ async function runContentGenerate(
       emptySlots,
       media: media.files.map((m) => `@${m.alias}`),
       unresolvedAliases: media.unresolved,
+      brandSkills: skillsUsed,
+      ...(missingFonts.length > 0 ? { missingFonts } : {}),
       brandProfile: {
         mode: brand.mode,
         version: brand.profile?.version ?? null,

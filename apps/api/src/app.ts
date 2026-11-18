@@ -7,10 +7,12 @@ import { jobs } from "./db/schema.ts";
 import { errorBody, handleError } from "./lib/errors.ts";
 import { createRouter } from "./lib/router.ts";
 import { accessControl } from "./middleware/access.ts";
+import { aiRoutes } from "./routes/ai.ts";
 import { assetRoutes } from "./routes/assets.ts";
 import { brandKitRoutes } from "./routes/brand-kits.ts";
 import { brandProductRoutes } from "./routes/brand-products.ts";
 import { brandProfileRoutes } from "./routes/brand-profiles.ts";
+import { brandSkillRoutes } from "./routes/brand-skills.ts";
 import { brandRoutes } from "./routes/brands.ts";
 import { contentRoutes } from "./routes/contents.ts";
 import { conversationRoutes } from "./routes/conversations.ts";
@@ -75,12 +77,14 @@ app.route("/", brandRoutes);
 app.route("/", brandProfileRoutes);
 app.route("/", brandKitRoutes);
 app.route("/", brandProductRoutes);
+app.route("/", brandSkillRoutes);
 app.route("/", socialAccountRoutes);
 app.route("/", assetRoutes);
 app.route("/", contentRoutes);
 app.route("/", jobRoutes);
 app.route("/", scheduleRoutes);
 app.route("/", publishingRoutes); // /api/publishing/*, /api/publish-logs, /api/worker/publishing/* (P3)
+app.route("/", aiRoutes); // /api/ai/*, /api/worker/ai/* (roadmap 7 + 11)
 app.route("/", hubRoutes); // /api/hub (worker WebSocket), /api/workers/presence
 
 // --- Chat (A2): conversations, agent runs, plans, the worker's turn API -------------

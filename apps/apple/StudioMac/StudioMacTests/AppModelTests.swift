@@ -219,7 +219,7 @@ struct AppModelTests {
         #expect(UsagePopover.usedText(UsageWindow(kind: .weekly, limited: true)) == "Sınıra ulaşıldı")
         #expect(UsagePopover.usedText(UsageWindow(kind: .other)) == "—")
         #expect(AgentEffort.knownCases.map(\.displayName) == ["Düşük", "Orta", "Yüksek", "Çok yüksek"])
-        #expect(AgentModel.knownCases.map(\.displayName) == ["Opus", "Sonnet", "Haiku", "Gemini Flash-Lite", "Gemini Flash", "Gemini Pro"])
+        #expect(AgentModel.knownCases.map(\.displayName) == ["Opus", "Sonnet", "Haiku", "Gemini Flash-Lite", "Gemini Flash", "Gemini Pro", "Codex (ChatGPT)", "GPT (OpenAI API)", "Antigravity"])
         #expect(AgentChoice.fallback.model == .geminiFlashLite)
     }
 

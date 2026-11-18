@@ -54,7 +54,19 @@ describe("brand kit", () => {
         { assetId: logo.id, background: "light" },
         { assetId: logoDark.id, background: "dark", label: "Beyaz" },
       ],
-      fonts: [{ assetId: font.id, family: "Archivo", role: "display", licenseNote: "SIL OFL 1.1" }],
+      fonts: [
+        { assetId: font.id, family: "Archivo", role: "display", licenseNote: "SIL OFL 1.1" },
+        // A font installed on the Mac: no file, used by family name.
+        {
+          source: "system",
+          family: "Avenir Next",
+          role: "text",
+          styles: [
+            { name: "Regular", weight: 400, postscriptName: "AvenirNext-Regular" },
+            { name: "Demi Bold", weight: 600 },
+          ],
+        },
+      ],
       palette: [{ name: "accent", hex: "#ff6a00", use: "ana vurgu" }],
       samples: samples.map((s, i) => ({
         assetId: s.id,
@@ -67,6 +79,16 @@ describe("brand kit", () => {
     expect(saved.palette).toEqual([{ name: "accent", hex: "#FF6A00", use: "ana vurgu" }]);
     expect(saved.logos.map((l) => l.background)).toEqual(["light", "dark"]);
     expect(saved.fonts[0]?.licenseNote).toBe("SIL OFL 1.1");
+    expect(saved.fonts[0]?.source).toBe("file");
+    expect(saved.fonts[1]).toMatchObject({
+      source: "system",
+      family: "Avenir Next",
+      styles: [
+        { name: "Regular", weight: 400, italic: false, postscriptName: "AvenirNext-Regular" },
+        { name: "Demi Bold", weight: 600, italic: false },
+      ],
+    });
+    expect(saved.fonts[1]?.assetId).toBeUndefined();
     expect(saved.samples).toHaveLength(3);
     expect(saved.updatedAt).not.toBeNull();
 
@@ -100,6 +122,29 @@ describe("brand kit", () => {
 
     expectError(
       await api("PUT", kitPath(brand.id), { palette: [{ name: "accent", hex: "red" }] }),
+      400,
+      "validation_error",
+    );
+    // A file font needs its file; a system font has none; the same system family twice is refused.
+    expectError(
+      await api("PUT", kitPath(brand.id), { fonts: [{ family: "Archivo" }] }),
+      400,
+      "validation_error",
+    );
+    expectError(
+      await api("PUT", kitPath(brand.id), {
+        fonts: [{ source: "system", assetId: image.id, family: "Archivo" }],
+      }),
+      400,
+      "validation_error",
+    );
+    expectError(
+      await api("PUT", kitPath(brand.id), {
+        fonts: [
+          { source: "system", family: "Avenir Next" },
+          { source: "system", family: "avenir next", role: "text" },
+        ],
+      }),
       400,
       "validation_error",
     );

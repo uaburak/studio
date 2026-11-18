@@ -1,5 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 import {
+  type AiProviderStatus,
+  type AiProvidersControl,
   type ClaudeAccount,
   type ClaudeCommand,
   type ClaudeControl,
@@ -20,6 +22,7 @@ import {
   type JobResultMessage,
   type JobStreamMessage,
   PROTOCOL_VERSION,
+  type WorkerCommand,
   type WorkerPresence,
   type WorkerToHubMessage,
   type WorkerUsage,
@@ -83,6 +86,8 @@ const USAGE_KEY = "presence:usage";
 const CLAUDE_KEY = "presence:claude";
 /** Latest `worker.gemini` report (the Mac's Gemini readiness), shown in presence as `gemini`. */
 const GEMINI_KEY = "presence:gemini";
+/** Latest `worker.providers` report (Codex / OpenAI / Antigravity), shown in presence as `providers`. */
+const PROVIDERS_KEY = "presence:providers";
 
 /**
  * Hub — the job dispatcher (one instance, "main").
@@ -351,6 +356,29 @@ export class Hub extends DurableObject<Env> {
     });
   }
 
+  /**
+   * Codex CLI, OpenAI API and Antigravity CLI as the worker last reported them. With a
+   * command (`providers.status`, `codex.login`, `ai.credentials`), forward it to the workers.
+   */
+  async providersControl(command?: WorkerCommand): Promise<AiProvidersControl> {
+    return this.serial(async () => {
+      const workers = this.workerSockets().filter((w) => !w.att.draining);
+      let sent = 0;
+      if (command) {
+        for (const { ws } of workers) {
+          try {
+            sendWorker(ws, { type: "worker.command", command });
+            sent++;
+          } catch {
+            // closing
+          }
+        }
+      }
+      const providers = (await this.ctx.storage.get<AiProviderStatus[]>(PROVIDERS_KEY)) ?? [];
+      return { providers, online: workers.length > 0, sent };
+    });
+  }
+
   // --- worker messages -----------------------------------------------------------
 
   private async onWorkerMessage(
@@ -466,6 +494,11 @@ export class Hub extends DurableObject<Env> {
       }
       case "worker.gemini": {
         await this.ctx.storage.put(GEMINI_KEY, message.account);
+        await this.broadcastPresence();
+        return;
+      }
+      case "worker.providers": {
+        await this.ctx.storage.put(PROVIDERS_KEY, message.providers);
         await this.broadcastPresence();
         return;
       }
@@ -702,13 +735,14 @@ export class Hub extends DurableObject<Env> {
 
   private async computePresence(exclude?: WebSocket): Promise<WorkerPresence> {
     const workers = this.workerSockets().filter(({ ws }) => ws !== exclude);
-    const [running, queueLength, stored, usage, claude, gemini] = await Promise.all([
+    const [running, queueLength, stored, usage, claude, gemini, providers] = await Promise.all([
       this.store.running(),
       this.store.queueLength(),
       this.ctx.storage.get<number>(LAST_SEEN_KEY),
       this.ctx.storage.get<WorkerUsage>(USAGE_KEY),
       this.ctx.storage.get<ClaudeAccount>(CLAUDE_KEY),
       this.ctx.storage.get<GeminiAccount>(GEMINI_KEY),
+      this.ctx.storage.get<AiProviderStatus[]>(PROVIDERS_KEY),
     ]);
     const lastSeen = Math.max(stored ?? 0, ...workers.map((w) => w.att.lastSeenAt));
     return {
@@ -739,6 +773,7 @@ export class Hub extends DurableObject<Env> {
       ...(usage ? { usage } : {}),
       ...(claude ? { claude } : {}),
       ...(gemini ? { gemini } : {}),
+      ...(providers ? { providers } : {}),
     };
   }
 

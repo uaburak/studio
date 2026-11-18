@@ -288,9 +288,11 @@ describe("brand.analyze handler", () => {
       ],
       fonts: [
         {
+          source: "file",
           assetId: "font_archivo",
           family: "Archivo",
           role: "display",
+          styles: [],
           licenseNote: "SIL OFL 1.1, Google Fonts",
         },
       ],
