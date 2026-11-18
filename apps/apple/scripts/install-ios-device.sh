@@ -25,7 +25,8 @@ for f in "$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles/"*; do
 done
 [ -n "$PROFILE" ] || { echo "Bu iPhone'u kapsayan joker geliştirme profili yok. Xcode'da bir kez hesabınla Run et." >&2; exit 1; }
 TEAM=$(security cms -D -i "$PROFILE" | plutil -extract TeamIdentifier.0 raw -)
-IDENTITY=$(security find-identity -v -p codesigning | grep "Apple Development" | head -1 | awk '{print $2}')
+IDENTITY=$(security find-identity -v -p codesigning | grep "Apple Development" | head -1 | awk '{print $2}' || true)
+[ -n "$IDENTITY" ] || { echo "Bu Mac'te geçerli bir \"Apple Development\" sertifikası yok. Xcode → Ayarlar → Hesaplar → Sertifikaları yönet → + Apple Development ile oluştur." >&2; exit 1; }
 
 xcodebuild -project StudioIOS.xcodeproj -scheme StudioIOS -configuration Debug \
   -destination 'generic/platform=iOS' -derivedDataPath build/DeviceData CODE_SIGNING_ALLOWED=NO \
