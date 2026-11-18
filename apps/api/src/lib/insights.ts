@@ -907,6 +907,9 @@ export async function contentScores(
 
 // --- when to sync ---------------------------------------------------------------------------------
 
+/** A follower count that could not be read is not asked for again sooner than this. */
+const FOLLOWERS_RETRY_MS = 6 * HOUR;
+
 /** True while a job of `type` waits or runs (one at a time). */
 async function jobActive(db: Db, type: string): Promise<boolean> {
   const row = await db
@@ -945,13 +948,15 @@ export async function dueEngagementJobs(
     if (!insights) {
       const today = trDay(now.getTime());
       const accounts = await db
-        .select({ id: socialAccounts.id })
+        .select({ id: socialAccounts.id, reportedAt: engagementSync.updatedAt })
         .from(socialAccounts)
         .innerJoin(socialAccountTokens, eq(socialAccountTokens.socialAccountId, socialAccounts.id))
+        .leftJoin(engagementSync, eq(engagementSync.socialAccountId, socialAccounts.id))
         .where(
           and(
             inArray(socialAccounts.platform, ["instagram", "facebook"]),
             eq(socialAccounts.status, "connected"),
+            isNotNull(socialAccounts.externalId),
           ),
         );
       const read = new Set(
@@ -962,7 +967,14 @@ export async function dueEngagementJobs(
             .where(eq(accountInsights.day, today))
         ).map((r) => r.id),
       );
-      insights = accounts.some((a) => !read.has(a.id) && !paused.has(a.id));
+      // An account that reported in the last 6 hours (even without a count: no permission) waits.
+      const recent = now.getTime() - FOLLOWERS_RETRY_MS;
+      insights = accounts.some(
+        (a) =>
+          !read.has(a.id) &&
+          !paused.has(a.id) &&
+          !(a.reportedAt && a.reportedAt.getTime() > recent),
+      );
     }
   }
 
