@@ -11,6 +11,7 @@ import {
   pageOf,
   Timestamp,
 } from "./common.ts";
+import { ContentCheckPayload } from "./content-check.ts";
 import { ReelSpecPatch } from "./reel.ts";
 
 export const JobId = z.string().min(1).max(128);
@@ -29,6 +30,8 @@ export type JobId = z.infer<typeof JobId>;
  *   creates it (when a user message or answer arrives); `POST /api/jobs`
  *   refuses it. Payload: `ChatTurnPayload`.
  * - `brand.skill_draft` drafts a brand skill with AI (`BrandSkillDraftPayload`).
+ * - `content.check` runs the generation checks on a version and fixes the fixable findings on
+ *   request (`ContentCheckPayload`, roadmap 13).
  */
 export const JobType = z
   .enum([
@@ -40,6 +43,7 @@ export const JobType = z
     "schedule.publish",
     "chat.turn",
     "brand.skill_draft",
+    "content.check",
   ])
   .meta({ id: "JobType" });
 export type JobType = z.infer<typeof JobType>;
@@ -59,6 +63,7 @@ export const JOB_TYPE_REQUIREMENTS = {
   "schedule.publish": { brand: true, content: true },
   "chat.turn": { brand: false, content: false },
   "brand.skill_draft": { brand: true, content: false },
+  "content.check": { brand: true, content: true },
 } as const satisfies Record<JobType, { brand: boolean; content: boolean }>;
 
 export const MAX_JOB_PAYLOAD_BYTES = 100_000;
@@ -267,6 +272,7 @@ export const JOB_PAYLOAD_SCHEMAS: Partial<Record<JobType, z.ZodType>> = {
   "image.generate": ImageGeneratePayload,
   "schedule.publish": SchedulePublishPayload,
   "brand.skill_draft": BrandSkillDraftPayload,
+  "content.check": ContentCheckPayload,
 };
 
 // --- Live updates and worker presence (F1-6) --------------------------------

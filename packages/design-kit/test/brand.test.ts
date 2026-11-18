@@ -11,6 +11,7 @@ import {
   describeBrandCss,
   fallbackFamilyName,
   generateBrandCss,
+  NEUTRAL_BRAND_TOKENS,
   parseBrandTokens,
   resolveFontFile,
   resolveUsage,
@@ -298,5 +299,15 @@ describe("component registry", () => {
       defineComponent({ name: "Bad Name", description: "", css: () => "", example: () => "" }),
     ).toThrow();
     expect(ctx.logo?.path).toBe("logos/venta-wordmark-black.standin.png");
+  });
+});
+
+describe("neutral default", () => {
+  it("parses and generates brand.css with system fonts only", () => {
+    const tokens = parseBrandTokens(NEUTRAL_BRAND_TOKENS);
+    const { css } = generateBrandCss(tokens);
+    expect(css).toContain("--color-accent: #2F5D50");
+    expect(css).not.toContain("@font-face");
+    expect(brandFontFamilies(tokens)).toEqual(["Helvetica Neue"]);
   });
 });

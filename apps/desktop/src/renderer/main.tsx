@@ -19,7 +19,16 @@ if (window.location.hash === "#/gallery" || params.get("route") === "gallery") {
 }
 
 const container = document.getElementById("root");
-if (container) {
+if (container && params.get("demo") === "post-editor") {
+  // The canvas post editor on a demo post, no host needed (headless checks).
+  void import("./features/post-editor/demo/demo.tsx").then(({ PostEditorDemo }) =>
+    createRoot(container).render(
+      <StrictMode>
+        <PostEditorDemo />
+      </StrictMode>,
+    ),
+  );
+} else if (container) {
   createRoot(container).render(
     <StrictMode>
       <StudioProvider>

@@ -302,7 +302,7 @@ describe("opened post", () => {
     expect(screen.getByRole("button", { name: "Onayla" })).toBeDisabled();
   });
 
-  it("edits a text layer from the Düzenle tab", async () => {
+  it("edits a text layer in the canvas editor (Düzenle)", async () => {
     const { fake } = await openEditor(1);
     await userEvent.click(screen.getByRole("radio", { name: /^Düzenle/ }));
     const layers = screen.getByRole("listbox", { name: "Katmanlar" });
@@ -311,7 +311,8 @@ describe("opened post", () => {
     await userEvent.clear(text);
     await userEvent.type(text, "Kış geliyor");
     await userEvent.click(screen.getByRole("button", { name: "Metni uygula" }));
-    await waitFor(() => expect(fake.createdJobs).toHaveLength(1));
+    // The canvas editor applies at once and saves (one render job) after a short pause.
+    await waitFor(() => expect(fake.createdJobs).toHaveLength(1), { timeout: 5000 });
     expect(fake.createdJobs[0]?.payload.patches).toEqual([
       { slide: 0, op: "setText", layer: "headline", text: "Kış geliyor" },
     ]);

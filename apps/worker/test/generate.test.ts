@@ -173,6 +173,8 @@ function makeDeps(
     health: () => ({ state: "ok", message: "ok", checkedAt: NOW }),
     stateDir: mkdtempSync(path.join(tmpdir(), "worker-gen-")),
     renderer: () => renderer,
+    // The checks' model pass has its own tests (checks.test.ts).
+    checkModelCaller: null,
   };
 }
 
@@ -398,6 +400,10 @@ describe("content.generate handler (fake renderer)", () => {
       ],
     });
     expect(progress).toContain("Görseller yükleniyor");
+    // The generation checks ran on the stored version (no model in this test).
+    expect(progress).toContain("Kontroller çalışıyor");
+    expect(out).toMatchObject({ checks: { version: 1, fixedVersion: null } });
+    expect(state.checkRuns.map((r) => [r.version, r.trigger])).toEqual([[1, "generate"]]);
   });
 
   it("revises an existing version with the user's instruction in one call (ai_edit)", async () => {

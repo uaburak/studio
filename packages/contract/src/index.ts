@@ -13,6 +13,7 @@ export * from "./client.ts";
 export * from "./cloud-publisher.ts";
 export * from "./common.ts";
 export * from "./content.ts";
+export * from "./content-check.ts";
 export * from "./device.ts";
 export * from "./health.ts";
 export * from "./job.ts";

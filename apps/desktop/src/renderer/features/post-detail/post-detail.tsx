@@ -31,6 +31,8 @@ import { useAppStore } from "../../state/app-store.ts";
 import { startChat } from "../../state/chat-draft.ts";
 import { usePostOpener } from "../../state/post-opener.ts";
 import { useAccounts, useBrands, useJobs } from "../../state/studio.tsx";
+import { ChecksPanel, useApproveGuard } from "../checks/checks-panel.tsx";
+import { PostEditorWorkspace } from "../post-editor/workspace.tsx";
 import { usePostActions } from "../posts/actions.ts";
 import {
   cardState,
@@ -268,8 +270,11 @@ export function EditorView({ editor, snapshot }: { editor: PostEditor; snapshot:
   const viewingCurrent = isViewingCurrent(snapshot);
   const busy = changesVersion(snapshot.activity);
   const blocker = approveBlocker(snapshot);
+  const approveGuard = useApproveGuard(snapshot);
   const approved = hasApproval(content);
   const locked = isLocked(content);
+  // Düzenle opens the canvas editor over the window (reels keep the panel: they are edited in chat).
+  const canvasEditing = tab === "edit" && content.type !== "reel";
   const scheduleDate = useMemo(
     () => defaultScheduleDate({ schedule, planItem }),
     // Recomputed when the sheet opens.
@@ -346,7 +351,7 @@ export function EditorView({ editor, snapshot }: { editor: PostEditor; snapshot:
     }
     if (meta && event.key === "Enter") {
       event.preventDefault();
-      void editor.approve();
+      approveGuard.guard(() => void editor.approve());
       return;
     }
     if (event.metaKey || event.ctrlKey || event.altKey) return;
@@ -452,210 +457,247 @@ export function EditorView({ editor, snapshot }: { editor: PostEditor; snapshot:
           : null;
 
   return (
-    <div
-      ref={root}
-      role="dialog"
-      aria-label={`Açık post: ${content.title}`}
-      tabIndex={-1}
-      onKeyDown={onKeyDown}
-      className="absolute inset-0 z-30 flex bg-page outline-none animate-fade-in"
-    >
-      <div className="flex min-h-0 min-w-0 flex-1 gap-10 px-10 py-7">
-        <SlideStage
-          snapshot={snapshot}
-          editor={editor}
-          editing={tab === "edit"}
-          brandName={brand?.name}
-          onQuickLook={quickLook}
-        />
-        <div className="flex min-h-0 max-w-[560px] min-w-[320px] flex-1 flex-col">
-          <div className="flex shrink-0 items-start gap-2">
-            <nav
-              aria-label="Konum"
-              className="flex min-w-0 flex-1 items-center gap-1 pt-1.5 text-footnote text-fg-3"
-            >
-              <button type="button" className="hover:text-fg-2" onClick={close}>
-                Postlar
-              </button>
-              <IconChevronRight size={11} className="shrink-0" />
-              <span className="truncate">{brand?.name ?? "Marka"}</span>
-              {planItem?.pillar && (
-                <>
-                  <IconChevronRight size={11} className="shrink-0" />
-                  <span className="truncate">{planItem.pillar}</span>
-                </>
-              )}
-            </nav>
-            <MenuButton entries={more} placement="bottom-end" label="Post işlemleri" width={220}>
-              {({ ref, onClick, onKeyDown: key, open, ...aria }) => (
-                <IconButton
-                  ref={ref}
-                  icon={<IconEllipsis size={16} strokeWidth={1.5} />}
-                  label="Diğer işlemler"
-                  selected={open}
-                  onClick={onClick}
-                  onKeyDown={key}
-                  {...aria}
-                />
-              )}
-            </MenuButton>
-            <IconButton
-              icon={<IconClose size={16} strokeWidth={1.5} />}
-              label="Kapat"
-              shortcut="Esc"
-              onClick={close}
-            />
-          </div>
-          <h1 className="selectable mt-2 text-title font-semibold text-fg [overflow-wrap:anywhere]">
-            {content.title}
-          </h1>
-          <div className="mt-3 flex flex-wrap items-center gap-1.5">
-            <TagPill tone={STATE_TONE[state]}>{statusText}</TagPill>
-            {version && (
-              <TagPill tone={viewingCurrent ? "neutral" : "warning"}>
-                v{version.version}
-                {!viewingCurrent && " · eski sürüm"}
-              </TagPill>
-            )}
-            {snapshot.hashState === "mismatch" && !approved && (
-              <TagPill tone="danger">Sürüm doğrulanamadı</TagPill>
-            )}
-          </div>
-          <SegmentedControl<DetailTab>
-            className="mt-4 self-start"
-            label="Post bölümleri"
-            value={tab}
-            onChange={setTab}
-            options={TABS.map((t) =>
-              t.value === "versions" && snapshot.summaries.length > 0
-                ? { ...t, count: snapshot.summaries.length }
-                : t,
-            )}
+    <>
+      <div
+        ref={root}
+        role="dialog"
+        aria-label={`Açık post: ${content.title}`}
+        tabIndex={-1}
+        onKeyDown={onKeyDown}
+        className="absolute inset-0 z-30 flex bg-page outline-none animate-fade-in"
+      >
+        <div className="flex min-h-0 min-w-0 flex-1 gap-10 px-10 py-7">
+          <SlideStage
+            snapshot={snapshot}
+            editor={editor}
+            editing={tab === "edit" && !canvasEditing}
+            brandName={brand?.name}
+            onQuickLook={quickLook}
           />
-          <div className="scroll-area -mr-3 mt-4 min-h-0 flex-1 pr-3">
-            {tab === "post" && (
-              <div className="flex flex-col gap-4 pb-2">
-                <CaptionCard snapshot={snapshot} editor={editor} />
-                <MetaRows
-                  snapshot={snapshot}
-                  accounts={allAccounts}
-                  brand={brand}
-                  schedule={schedule}
-                  planDate={planItem?.date ? localDate(planItem.date) : null}
-                />
-                <PublishHistory
-                  schedules={schedules.data ?? []}
-                  accounts={allAccounts}
-                  mode={publishing.data?.mode ?? "local"}
+          <div className="flex min-h-0 max-w-[560px] min-w-[320px] flex-1 flex-col">
+            <div className="flex shrink-0 items-start gap-2">
+              <nav
+                aria-label="Konum"
+                className="flex min-w-0 flex-1 items-center gap-1 pt-1.5 text-footnote text-fg-3"
+              >
+                <button type="button" className="hover:text-fg-2" onClick={close}>
+                  Postlar
+                </button>
+                <IconChevronRight size={11} className="shrink-0" />
+                <span className="truncate">{brand?.name ?? "Marka"}</span>
+                {planItem?.pillar && (
+                  <>
+                    <IconChevronRight size={11} className="shrink-0" />
+                    <span className="truncate">{planItem.pillar}</span>
+                  </>
+                )}
+              </nav>
+              <MenuButton entries={more} placement="bottom-end" label="Post işlemleri" width={220}>
+                {({ ref, onClick, onKeyDown: key, open, ...aria }) => (
+                  <IconButton
+                    ref={ref}
+                    icon={<IconEllipsis size={16} strokeWidth={1.5} />}
+                    label="Diğer işlemler"
+                    selected={open}
+                    onClick={onClick}
+                    onKeyDown={key}
+                    {...aria}
+                  />
+                )}
+              </MenuButton>
+              <IconButton
+                icon={<IconClose size={16} strokeWidth={1.5} />}
+                label="Kapat"
+                shortcut="Esc"
+                onClick={close}
+              />
+            </div>
+            <h1 className="selectable mt-2 text-title font-semibold text-fg [overflow-wrap:anywhere]">
+              {content.title}
+            </h1>
+            <div className="mt-3 flex flex-wrap items-center gap-1.5">
+              <TagPill tone={STATE_TONE[state]}>{statusText}</TagPill>
+              {version && (
+                <TagPill tone={viewingCurrent ? "neutral" : "warning"}>
+                  v{version.version}
+                  {!viewingCurrent && " · eski sürüm"}
+                </TagPill>
+              )}
+              {snapshot.hashState === "mismatch" && !approved && (
+                <TagPill tone="danger">Sürüm doğrulanamadı</TagPill>
+              )}
+            </div>
+            <SegmentedControl<DetailTab>
+              className="mt-4 self-start"
+              label="Post bölümleri"
+              value={tab}
+              onChange={setTab}
+              options={TABS.map((t) =>
+                t.value === "versions" && snapshot.summaries.length > 0
+                  ? { ...t, count: snapshot.summaries.length }
+                  : t,
+              )}
+            />
+            <div className="scroll-area -mr-3 mt-4 min-h-0 flex-1 pr-3">
+              {tab === "post" && (
+                <div className="flex flex-col gap-4 pb-2">
+                  <CaptionCard snapshot={snapshot} editor={editor} />
+                  <ChecksPanel snapshot={snapshot} editor={editor} />
+                  <MetaRows
+                    snapshot={snapshot}
+                    accounts={allAccounts}
+                    brand={brand}
+                    schedule={schedule}
+                    planDate={planItem?.date ? localDate(planItem.date) : null}
+                  />
+                  <PublishHistory
+                    schedules={schedules.data ?? []}
+                    accounts={allAccounts}
+                    mode={publishing.data?.mode ?? "local"}
+                  />
+                </div>
+              )}
+              {tab === "edit" && !canvasEditing && (
+                <LayerEditor snapshot={snapshot} editor={editor} />
+              )}
+              {tab === "versions" && <VersionsList snapshot={snapshot} editor={editor} />}
+            </div>
+
+            {(snapshot.error || snapshot.notice) && (
+              <div
+                role={snapshot.error ? "alert" : "status"}
+                className={cn(
+                  "mt-3 flex shrink-0 items-start gap-2 rounded-[10px] px-3 py-2 text-body",
+                  snapshot.error ? "bg-danger/10 text-fg" : "bg-control text-fg-2",
+                )}
+              >
+                {snapshot.error && (
+                  <IconWarning size={14} className="mt-0.5 shrink-0 text-danger" />
+                )}
+                <span className="selectable min-w-0 flex-1">
+                  {snapshot.error ?? snapshot.notice}
+                </span>
+                <IconButton
+                  icon={<IconClose size={12} />}
+                  label="Kapat"
+                  size={24}
+                  tooltip={false}
+                  onClick={() => (snapshot.error ? editor.clearError() : editor.clearNotice())}
                 />
               </div>
             )}
-            {tab === "edit" && <LayerEditor snapshot={snapshot} editor={editor} />}
-            {tab === "versions" && <VersionsList snapshot={snapshot} editor={editor} />}
-          </div>
 
-          {(snapshot.error || snapshot.notice) && (
-            <div
-              role={snapshot.error ? "alert" : "status"}
-              className={cn(
-                "mt-3 flex shrink-0 items-start gap-2 rounded-[10px] px-3 py-2 text-body",
-                snapshot.error ? "bg-danger/10 text-fg" : "bg-control text-fg-2",
-              )}
-            >
-              {snapshot.error && <IconWarning size={14} className="mt-0.5 shrink-0 text-danger" />}
-              <span className="selectable min-w-0 flex-1">{snapshot.error ?? snapshot.notice}</span>
-              <IconButton
-                icon={<IconClose size={12} />}
-                label="Kapat"
-                size={24}
-                tooltip={false}
-                onClick={() => (snapshot.error ? editor.clearError() : editor.clearNotice())}
-              />
-            </div>
-          )}
-
-          <div className="mt-3 flex shrink-0 items-center gap-2">
-            <TextField
-              aria-label="AI'dan değişiklik iste"
-              className="min-w-0 flex-1"
-              placeholder={
-                snapshot.activity.kind === "revising"
-                  ? "AI düzenliyor…"
-                  : viewingCurrent
-                    ? "Neyi değiştireyim?"
-                    : "Eski sürüm: önce geri yükle"
-              }
-              disabled={snapshot.activity.kind === "revising" || locked}
-              value={instruction}
-              onChange={(e) => setInstruction(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.shiftKey) {
-                  e.preventDefault();
-                  if (e.metaKey) askInChat();
-                  else void sendInstruction();
+            <div className="mt-3 flex shrink-0 items-center gap-2">
+              <TextField
+                aria-label="AI'dan değişiklik iste"
+                className="min-w-0 flex-1"
+                placeholder={
+                  snapshot.activity.kind === "revising"
+                    ? "AI düzenliyor…"
+                    : viewingCurrent
+                      ? "Neyi değiştireyim?"
+                      : "Eski sürüm: önce geri yükle"
                 }
-              }}
-            />
-            <IconButton
-              icon={<IconSend size={14} strokeWidth={1.75} />}
-              label="AI ile düzenle (yeni sürüm)"
-              shortcut="↩"
-              disabled={!instruction.trim() || busy || !viewingCurrent || locked}
-              onClick={() => void sendInstruction()}
-            />
-            <Button variant="ghost" onClick={askInChat}>
-              Sohbette sor
-            </Button>
-          </div>
-
-          <div className="mt-3 flex shrink-0 flex-wrap items-center gap-2 pb-1">
-            <span title={scheduleDisabledReason ?? undefined}>
-              <Button
-                variant="primary"
-                disabled={!!scheduleDisabledReason}
-                onClick={() => setScheduleOpen(true)}
-              >
-                {scheduleLabel}
+                disabled={snapshot.activity.kind === "revising" || locked}
+                value={instruction}
+                onChange={(e) => setInstruction(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
+                    if (e.metaKey) askInChat();
+                    else void sendInstruction();
+                  }
+                }}
+              />
+              <IconButton
+                icon={<IconSend size={14} strokeWidth={1.75} />}
+                label="AI ile düzenle (yeni sürüm)"
+                shortcut="↩"
+                disabled={!instruction.trim() || busy || !viewingCurrent || locked}
+                onClick={() => void sendInstruction()}
+              />
+              <Button variant="ghost" onClick={askInChat}>
+                Sohbette sor
               </Button>
-            </span>
-            {approvalFirst && (
-              <span title={blocker ?? "Bu sürümü onayla (⌘↩)"}>
+            </div>
+
+            <div className="mt-3 flex shrink-0 flex-wrap items-center gap-2 pb-1">
+              <span title={scheduleDisabledReason ?? undefined}>
                 <Button
-                  variant="secondary"
-                  disabled={!canApprove(snapshot)}
-                  onClick={() => void editor.approve()}
+                  variant="primary"
+                  disabled={!!scheduleDisabledReason}
+                  onClick={() =>
+                    approvalFirst
+                      ? approveGuard.guard(() => setScheduleOpen(true))
+                      : setScheduleOpen(true)
+                  }
                 >
-                  {snapshot.approving ? "Onaylanıyor…" : "Onayla"}
+                  {scheduleLabel}
                 </Button>
               </span>
-            )}
-            {tab !== "edit" && content.type !== "reel" && !locked && (
-              <Button variant="secondary" onClick={() => setTab("edit")}>
-                Düzenle
+              {approvalFirst && (
+                <span title={blocker ?? "Bu sürümü onayla (⌘↩)"}>
+                  <Button
+                    variant="secondary"
+                    disabled={!canApprove(snapshot)}
+                    onClick={() => approveGuard.guard(() => void editor.approve())}
+                  >
+                    {snapshot.approving ? "Onaylanıyor…" : "Onayla"}
+                  </Button>
+                </span>
+              )}
+              {tab !== "edit" && content.type !== "reel" && !locked && (
+                <Button variant="secondary" onClick={() => setTab("edit")}>
+                  Düzenle
+                </Button>
+              )}
+              <Button variant="ghost" onClick={openInChat}>
+                Sohbette aç
               </Button>
-            )}
-            <Button variant="ghost" onClick={openInChat}>
-              Sohbette aç
-            </Button>
+            </div>
           </div>
         </div>
+        {approveGuard.dialog}
+        <ScheduleSheet
+          open={scheduleOpen}
+          content={content}
+          slideHtml={snapshot.current?.slides[0]?.html ?? null}
+          hash={snapshot.approvableHash}
+          accounts={allAccounts}
+          initialDate={scheduleDate}
+          onClose={() => {
+            setScheduleOpen(false);
+            root.current?.focus({ preventScroll: true });
+          }}
+          onDone={(fresh) => {
+            editor.replaceContent(fresh);
+            void schedules.refetch();
+          }}
+        />
       </div>
-      <ScheduleSheet
-        open={scheduleOpen}
-        content={content}
-        slideHtml={snapshot.current?.slides[0]?.html ?? null}
-        hash={snapshot.approvableHash}
-        accounts={allAccounts}
-        initialDate={scheduleDate}
-        onClose={() => {
-          setScheduleOpen(false);
-          root.current?.focus({ preventScroll: true });
-        }}
-        onDone={(fresh) => {
-          editor.replaceContent(fresh);
-          void schedules.refetch();
-        }}
-      />
-    </div>
+      {canvasEditing && (
+        <PostEditorWorkspace
+          editor={editor}
+          snapshot={snapshot}
+          brandName={brand?.name ?? null}
+          status={{ label: statusText, tone: STATE_TONE[state] }}
+          approvalFirst={approvalFirst}
+          schedule={{
+            label: scheduleLabel,
+            disabled: scheduleDisabledReason,
+            open: () =>
+              approvalFirst
+                ? approveGuard.guard(() => setScheduleOpen(true))
+                : setScheduleOpen(true),
+          }}
+          guardApproval={approveGuard.guard}
+          onClose={() => {
+            setTab("post");
+            root.current?.focus({ preventScroll: true });
+          }}
+          onPreview={quickLook}
+        />
+      )}
+    </>
   );
 }

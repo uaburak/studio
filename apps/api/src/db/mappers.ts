@@ -3,9 +3,14 @@ import {
   type Asset,
   assetContentPath,
   type Brand,
+  type BrandCheckSettings,
   type BrandProduct,
   type BrandProfile,
+  type CheckCategory,
+  type CheckSource,
+  type CheckStatus,
   type Content,
+  type ContentCheckRun,
   type ContentVersion,
   type ContentVersionSummary,
   type Conversation,
@@ -45,6 +50,8 @@ export type ConversationEventRow = typeof schema.conversationEvents.$inferSelect
 export type PlanRow = typeof schema.contentPlans.$inferSelect;
 export type PlanItemRow = typeof schema.planItems.$inferSelect;
 export type ConversationAliasRow = typeof schema.conversationAliases.$inferSelect;
+export type ContentCheckRunRow = typeof schema.contentCheckRuns.$inferSelect;
+export type BrandCheckSettingsRow = typeof schema.brandCheckSettings.$inferSelect;
 
 const iso = (d: Date) => d.toISOString();
 const isoOrNull = (d: Date | null) => (d ? d.toISOString() : null);
@@ -401,4 +408,42 @@ export function toConversationAlias(r: AliasRecord): ConversationAlias {
 
 export function toTurnAlias(r: AliasRecord): TurnAlias {
   return { ...toConversationAlias(r), objectKey: r.asset.objectKey };
+}
+
+export function toContentCheckRun(r: ContentCheckRunRow): ContentCheckRun {
+  return {
+    id: r.id,
+    contentId: r.contentId,
+    brandId: r.brandId,
+    version: r.version,
+    versionId: r.versionId,
+    trigger: r.trigger,
+    jobId: r.jobId,
+    strictness: r.strictness,
+    summary: r.summary,
+    blocking: r.blocking,
+    // Stored by this server from validated input; the casts only narrow the JSON column type.
+    results: r.results.map((x) => ({
+      ...x,
+      category: x.category as CheckCategory,
+      status: x.status as CheckStatus,
+      source: x.source as CheckSource,
+    })),
+    model: r.model,
+    fromVersion: r.fromVersion,
+    fixedVersion: r.fixedVersion,
+    note: r.note,
+    createdAt: iso(r.createdAt),
+  };
+}
+
+export function toBrandCheckSettings(r: BrandCheckSettingsRow): BrandCheckSettings {
+  return {
+    brandId: r.brandId,
+    disabledChecks: r.disabledChecks,
+    bannedWords: r.bannedWords,
+    strictness: r.strictness,
+    autoFix: r.autoFix,
+    updatedAt: iso(r.updatedAt),
+  };
 }

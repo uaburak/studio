@@ -98,6 +98,14 @@ import {
   type ContentVersionUpdate,
 } from "./content.ts";
 import {
+  BrandCheckSettings,
+  type BrandCheckSettingsPut,
+  ContentCheckRun,
+  type ContentCheckRunCreate,
+  ContentCheckRunList,
+  type ContentCheckRunListQuery,
+} from "./content-check.ts";
+import {
   Device,
   DeviceList,
   MacRoutes,
@@ -516,6 +524,18 @@ export function createApiClient(options: ApiClientOptions = {}) {
       },
     },
 
+    brandCheckSettings: {
+      /** The brand's check settings (defaults with `updatedAt: null` until saved once). */
+      get: (brandId: string, init?: RequestInit) =>
+        call(BrandCheckSettings, `/api/brands/${enc(brandId)}/check-settings`, { init }),
+      put: (brandId: string, input: BrandCheckSettingsPut, init?: RequestInit) =>
+        call(BrandCheckSettings, `/api/brands/${enc(brandId)}/check-settings`, {
+          method: "PUT",
+          json: input,
+          init,
+        }),
+    },
+
     brandProfiles: {
       list: (brandId: string, query?: BrandProfileListQuery, init?: RequestInit) =>
         call(BrandProfileList, `/api/brands/${enc(brandId)}/profiles`, { query: q(query), init }),
@@ -676,6 +696,21 @@ export function createApiClient(options: ApiClientOptions = {}) {
           init?: RequestInit,
         ) =>
           call(ContentVersion, `/api/contents/${enc(contentId)}/versions/${version}/restore`, {
+            method: "POST",
+            json: input,
+            init,
+          }),
+      },
+      checks: {
+        /** Check runs of the content (newest first); `version` narrows to one version. */
+        list: (contentId: string, query?: ContentCheckRunListQuery, init?: RequestInit) =>
+          call(ContentCheckRunList, `/api/contents/${enc(contentId)}/checks`, {
+            query: q(query),
+            init,
+          }),
+        /** Store a run (the worker does, after checking a version). */
+        create: (contentId: string, input: ContentCheckRunCreate, init?: RequestInit) =>
+          call(ContentCheckRun, `/api/contents/${enc(contentId)}/checks`, {
             method: "POST",
             json: input,
             init,

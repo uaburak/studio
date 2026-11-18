@@ -18,7 +18,8 @@
       "!**/migrations/meta",
       "!apps/apple",
       "!apps/ios",
-      "!agent/skills"
+      "!agent/skills",
+      "!apps/desktop/src/renderer/vendor"
     ]
   },
   "formatter": {

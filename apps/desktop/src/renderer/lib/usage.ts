@@ -117,6 +117,7 @@ const JOB_LABELS: Record<string, string> = {
   "content.render": "Görsel çıktısı",
   "brand.analyze": "Marka analizi",
   "brand.skill_draft": "Skill taslağı",
+  "content.check": "Kontroller",
   "image.generate": "AI görsel üretimi",
   "schedule.publish": "Zamanlı yayın",
   "chat.turn": "Sohbet yanıtı",

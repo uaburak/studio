@@ -77,6 +77,7 @@ export const JOB_TYPE_LABELS: Record<JobType, string> = {
   "content.render": "Render",
   "brand.analyze": "Marka analizi",
   "brand.skill_draft": "Skill taslağı",
+  "content.check": "Kontroller",
   "image.generate": "Görsel üretimi",
   "schedule.publish": "Zamanlı yayın",
   "demo.echo": "Deneme (echo)",

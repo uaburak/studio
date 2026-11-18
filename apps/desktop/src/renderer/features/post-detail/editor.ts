@@ -759,6 +759,62 @@ export class PostEditor {
     this.flushQueued();
   }
 
+  /** Resolves once nothing changes the version (a render, a revision, a restore, measuring). */
+  whenIdle(): Promise<void> {
+    if (this.s.activity.kind === "idle") return Promise.resolve();
+    return new Promise((resolve) => {
+      const off = this.subscribe(() => {
+        if (this.s.activity.kind !== "idle") return;
+        off();
+        resolve();
+      });
+    });
+  }
+
+  /**
+   * The canvas editor's save (post-editor/model/draft.ts): design-kit patch ops, each with its
+   * `slide`, as one `content.render` job on the shown version; the new version is adopted and
+   * becomes an undo step of the version history. Resolves with the new version's number (null:
+   * nothing changed); throws when the job fails or takes too long.
+   */
+  async commitPatches(
+    patches: readonly Record<string, unknown>[],
+    name: string,
+    note?: string,
+  ): Promise<number | null> {
+    await this.whenIdle();
+    const blocker = editBlocker(this.s);
+    if (blocker) throw new Error(blocker);
+    const base = activeVersion(this.s)?.version;
+    if (base === undefined) throw new Error("Henüz bir tasarım sürümü yok.");
+    this.set({ activity: { kind: "rendering", message: "Kaydediliyor" }, error: null });
+    try {
+      const job = await this.createJob({
+        type: "content.render",
+        contentId: this.s.content.id,
+        payload: {
+          format: "jpeg",
+          version: base,
+          patches: [...patches],
+          ...(note ? { note: note.slice(0, 2000) } : {}),
+        },
+      });
+      const done = await this.waitForJob(job.id, this.jobTimeoutMs, this.pollMs, (j) => {
+        if (this.s.activity.kind === "rendering" && j.progressMessage)
+          this.set({ activity: { kind: "rendering", message: j.progressMessage } });
+      });
+      const output = (done.output ?? {}) as { version?: unknown; unchanged?: unknown };
+      const number = typeof output.version === "number" ? output.version : null;
+      if (output.unchanged === true || number === null || number === base) return null;
+      await this.adopt(number);
+      this.set({ undo: [...this.s.undo, { before: base, after: number, name }], redo: [] });
+      return number;
+    } finally {
+      this.set({ activity: IDLE });
+      this.flushQueued();
+    }
+  }
+
   // --- undo / redo / restore ----------------------------------------------------------------
 
   async undo(): Promise<void> {

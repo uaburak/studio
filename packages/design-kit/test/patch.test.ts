@@ -242,6 +242,39 @@ describe("style", () => {
       ).toBe("invalid_value");
   });
 
+  it("setStyle takes an installed font family (quoted) and picture filters", () => {
+    const font = roundTrip(product, {
+      op: "setStyle",
+      layer: "headline",
+      set: { "font-family": '"Futura", "Avenir Next", sans-serif' },
+    });
+    expect(font.doc.layer("headline")?.style["font-family"]).toBe(
+      '"Futura", "Avenir Next", sans-serif',
+    );
+    expect(isSanitized(font.html)).toBe(true);
+    const filter = roundTrip(product, {
+      op: "setStyle",
+      layer: "product-photo",
+      set: { filter: "brightness(1.08) contrast(104%) saturate(0.9) hue-rotate(-6deg)" },
+    });
+    expect(filter.doc.layer("product-photo")?.style.filter).toBe(
+      "brightness(1.08) contrast(104%) saturate(0.9) hue-rotate(-6deg)",
+    );
+    for (const [p, v] of [
+      ["font-family", '"Futura"; color: red'],
+      ["font-family", '"Futura", "A", "B", serif'],
+      ["font-family", "'Fu\"tura'"],
+      ["filter", "url(#x)"],
+      ["filter", "brightness(9)"],
+      ["filter", "blur(80px)"],
+      ["filter", "drop-shadow(0 0 4px red)"],
+    ] as const)
+      expect(
+        code(() => applyPatch(product, { op: "setStyle", layer: "intro", set: { [p]: v } })),
+        `${p}: ${v}`,
+      ).toBe("invalid_value");
+  });
+
   it("is deterministic", () => {
     const op: PatchOpInput = {
       op: "transform",

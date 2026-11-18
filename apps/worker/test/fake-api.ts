@@ -9,19 +9,25 @@ import {
   ApiError,
   type Asset,
   type Brand,
+  type BrandCheckSettings,
+  BrandCheckSettingsPut,
   type BrandCreate,
   type BrandKit,
+  type BrandProduct,
   type BrandProfile,
   type BrandProfileCreate,
   type BrandSkill,
   BrandSkillCreate,
   type Content,
+  type ContentCheckRun,
+  ContentCheckRunCreate,
   type ContentStatus,
   type ContentVersion,
   type ContentVersionCreate,
   type ContentVersionUpdate,
   type Conversation,
   type ConversationAlias,
+  defaultCheckSettings,
   emptyBrandKit,
   type Job,
   type JobCreate,
@@ -35,6 +41,8 @@ import {
   type ScheduleCreate,
   type SocialAccount,
   slugify,
+  sortCheckResults,
+  summarizeCheckResults,
   type TurnContext,
   type TurnOp,
   type WorkerScheduleOutcome,
@@ -85,6 +93,11 @@ export interface FakeApiState {
   conversationUpdates: { id: string; input: Partial<Conversation> }[];
   aliases: Map<string, ConversationAlias[]>;
   assets: Map<string, { bytes: Uint8Array; contentType: string }>;
+  /** Generation checks (roadmap 13): stored runs (oldest first) and brand settings. */
+  checkRuns: ContentCheckRun[];
+  checkSettings: Map<string, BrandCheckSettings>;
+  /** Brand products (every brand). */
+  products: BrandProduct[];
   closed: boolean;
   /** Simulate the owner clicking Allow or Deny on a pending consent card. */
   decideConsent(consentId: string, allow: boolean): void;
@@ -180,6 +193,9 @@ export function createFakeApi(init: Partial<FakeApiState> = {}): {
     conversationUpdates: [],
     aliases: new Map(),
     assets: new Map(),
+    checkRuns: [],
+    checkSettings: new Map(),
+    products: [],
     closed: false,
     decideConsent(consentId: string, allow: boolean) {
       const idx = state.parts.findIndex((p) => p.type === "consent" && p.consentId === consentId);
@@ -419,6 +435,22 @@ export function createFakeApi(init: Partial<FakeApiState> = {}): {
         state.skills.push(created);
         return created;
       },
+    },
+    brandCheckSettings: {
+      get: async (brandId: string) =>
+        state.checkSettings.get(brandId) ?? defaultCheckSettings(brandId),
+      put: async (brandId: string, raw: unknown) => {
+        const input = BrandCheckSettingsPut.parse(raw);
+        const saved: BrandCheckSettings = { brandId, ...input, updatedAt: NOW };
+        state.checkSettings.set(brandId, saved);
+        return saved;
+      },
+    },
+    brandProducts: {
+      list: async (brandId: string) => ({
+        items: state.products.filter((p) => p.brandId === brandId),
+        nextCursor: null,
+      }),
     },
     brandKits: {
       get: async (brandId: string) => {
@@ -702,6 +734,46 @@ export function createFakeApi(init: Partial<FakeApiState> = {}): {
         };
         state.contents.set(id, updated);
         return updated;
+      },
+      checks: {
+        list: async (contentId: string, query?: { version?: number; limit?: number }) => {
+          const items = state.checkRuns
+            .filter(
+              (r) =>
+                r.contentId === contentId &&
+                (query?.version === undefined || r.version === query.version),
+            )
+            .reverse();
+          return { items: items.slice(0, query?.limit ?? 20), nextCursor: null };
+        },
+        create: async (contentId: string, raw: unknown) => {
+          const input = ContentCheckRunCreate.parse(raw);
+          const content = state.contents.get(contentId);
+          const version = state.versions.find(
+            (v) => v.contentId === contentId && v.version === input.version,
+          );
+          if (!content || !version) throw new ApiError("version not found", 404, "not_found");
+          const results = sortCheckResults(input.results);
+          const run: ContentCheckRun = {
+            id: `check_${state.checkRuns.length + 1}`,
+            contentId,
+            brandId: content.brandId,
+            version: input.version,
+            versionId: version.id,
+            trigger: input.trigger,
+            jobId: input.jobId ?? null,
+            strictness: input.strictness,
+            ...summarizeCheckResults(results, input.strictness),
+            results,
+            model: input.model ?? null,
+            fromVersion: input.fromVersion ?? null,
+            fixedVersion: input.fixedVersion ?? null,
+            note: input.note,
+            createdAt: NOW,
+          };
+          state.checkRuns.push(run);
+          return run;
+        },
       },
       versions: {
         list: async (contentId: string) => ({

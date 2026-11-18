@@ -10,6 +10,7 @@
 import path from "node:path";
 import {
   ApiError,
+  type ContentCheckBrief,
   ContentGeneratePayload,
   type ConversationAlias,
   parseContentGenerateJob,
@@ -24,6 +25,8 @@ import {
   loadEnabledBrandSkills,
   selectBrandSkills,
 } from "../brand/skills.ts";
+import type { ModelCaller } from "../checks/model.ts";
+import { failedBrief, runContentChecks, type SlideReport } from "../checks/pipeline.ts";
 import { describeClaudeError, formatClock, isClaudeError } from "../claude/errors.ts";
 import type { ParkInfo } from "../claude/gate.ts";
 import { describeGeminiError, isGeminiError } from "../gemini/errors.ts";
@@ -53,6 +56,8 @@ export interface ContentGenerateDeps extends AgentDeps {
   /** Shared Chromium renderer (lazily launched). */
   renderer: () => SlideRenderer;
   reelSeams?: ReelEngineTestSeams;
+  /** Test seam: the checks' model pass (default: Gemini Flash-Lite, else Claude Haiku). */
+  checkModelCaller?: ModelCaller | null;
 }
 
 /** Most user images a single design takes. */
@@ -138,7 +143,7 @@ async function runContentGenerate(
           media.audioAssetId,
       };
       const heroFile = media.files[0];
-      return await generateAndRenderReel({
+      const reelOut = await generateAndRenderReel({
         deps,
         renderer: deps.renderer(),
         ...(deps.reelSeams ? { seams: deps.reelSeams } : {}),
@@ -160,6 +165,14 @@ async function runContentGenerate(
         signal,
         progress: (v, m) => ctx.progress(v, m),
       });
+      const reelVersion = typeof reelOut.version === "number" ? reelOut.version : undefined;
+      const checks = await checkGenerated(deps, ctx, {
+        contentId,
+        version: reelVersion,
+        fix: false,
+        unresolvedAliases: media.unresolved,
+      });
+      return { ...reelOut, ...(checks ? { checks: checks.brief } : {}) };
     }
 
     if ((health.state === "unauthenticated" || health.state === "error") && !geminiReady) {
@@ -392,15 +405,35 @@ async function runContentGenerate(
         );
     }
 
+    // Generation checks (roadmap 13): the pipeline's reports, the brand's automatic fixes.
+    const reports = new Map<number, SlideReport>(
+      final.slides.map((s, i) => [
+        i,
+        { report: s.report, failure: s.failure, jpegBytes: s.jpeg?.byteLength ?? null },
+      ]),
+    );
+    const checked = await checkGenerated(deps, ctx, {
+      contentId,
+      version: version.version,
+      fix: "auto",
+      brand,
+      reports,
+      unresolvedAliases: media.unresolved,
+    });
+    const fixed = checked?.fixedVersion ?? null;
+
     ctx.progress(1, "Tamamlandı");
     const u = result.usage;
     return {
       contentId,
       ...(revision ? { baseVersion: revision.input.baseVersion, revised: true } : {}),
-      version: version.version,
-      versionId: version.id,
-      contentHash: version.contentHash,
-      renderedAssetIds,
+      // An automatic fix stored a newer version: that one is the result.
+      version: fixed?.version ?? version.version,
+      versionId: fixed?.id ?? version.id,
+      contentHash: fixed?.contentHash ?? version.contentHash,
+      ...(fixed ? { generatedVersion: version.version } : {}),
+      renderedAssetIds: fixed ? fixed.slides.map((s) => s.renderedAssetId) : renderedAssetIds,
+      checks: checked?.brief ?? null,
       slides: final.slides.length,
       preset: brief.preset.id,
       lintClean: final.errors === 0,
@@ -612,4 +645,47 @@ function slug(text: string): string {
       .replace(/^-+|-+$/g, "")
       .slice(0, 48) || "post"
   );
+}
+
+/**
+ * Runs the generation checks after a generation. Never fails the job: a check error becomes a
+ * brief with `error` (the design is stored either way).
+ */
+async function checkGenerated(
+  deps: ContentGenerateDeps,
+  ctx: JobContext,
+  input: {
+    contentId: string;
+    version: number | undefined;
+    fix: boolean | "auto";
+    brand?: Parameters<typeof runContentChecks>[0]["brand"];
+    reports?: ReadonlyMap<number, SlideReport>;
+    unresolvedAliases?: readonly string[];
+  },
+): Promise<{
+  brief: ContentCheckBrief;
+  fixedVersion: Awaited<ReturnType<typeof runContentChecks>>["fixedVersion"];
+} | null> {
+  if (input.version === undefined) return null;
+  ctx.progress(0.96, "Kontroller çalışıyor");
+  try {
+    const res = await runContentChecks({
+      deps,
+      jobId: ctx.jobId,
+      trigger: "generate",
+      contentId: input.contentId,
+      version: input.version,
+      fix: input.fix,
+      ...(input.brand ? { brand: input.brand } : {}),
+      ...(input.reports ? { reports: input.reports } : {}),
+      ...(input.unresolvedAliases ? { unresolvedAliases: input.unresolvedAliases } : {}),
+      signal: ctx.signal,
+      progress: (v, m) => ctx.progress(0.96 + v * 0.035, m),
+    });
+    return { brief: res.brief, fixedVersion: res.fixedVersion };
+  } catch (error) {
+    if (ctx.signal.aborted) throw ctx.signal.reason ?? error;
+    deps.logger.warn(`[job ${ctx.jobId}] checks failed: ${(error as Error).message}`);
+    return { brief: failedBrief(input.version, error), fixedVersion: null };
+  }
 }

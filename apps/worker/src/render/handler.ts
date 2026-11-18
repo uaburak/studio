@@ -37,6 +37,13 @@ import {
 import { STRICT_CSP, sanitizeSlideHtml } from "@studio/design-kit/sanitize";
 import sharp from "sharp";
 import type { AgentDeps } from "../agent.ts";
+import {
+  checkLintConfig,
+  failedBrief,
+  presetForVersion,
+  runContentChecks,
+  type SlideReport,
+} from "../checks/pipeline.ts";
 import { loadBrandContext } from "../generate/brand.ts";
 import { extensionForMime } from "../media.ts";
 import { defineHandler, type JobContext, RetryableError } from "../registry.ts";
@@ -428,12 +435,16 @@ async function renderSlideRaster(input: {
   formats: ("png" | "jpeg")[];
   /** Brand families that must be installed fonts (reported back when they are not). */
   systemFonts?: readonly string[];
+  /** Full lint configuration (the generation checks); replaces `systemFonts`. */
+  lint?: RenderAndLintRequest["lint"];
 }): Promise<{
   png?: Uint8Array;
   jpeg?: Uint8Array;
   layout: SlideLayout | null;
   /** System font families that are not installed on this Mac. */
   missingFonts: string[];
+  /** The lint report of the render (`null` when the renderer could not lint). */
+  report: RenderAndLintResult["report"] | null;
 }> {
   const request = {
     html: input.html,
@@ -446,15 +457,18 @@ async function renderSlideRaster(input: {
   };
   try {
     const res = await input.renderer.renderAndLint(
-      input.systemFonts?.length
-        ? { ...request, lint: { systemFonts: input.systemFonts } }
-        : request,
+      input.lint
+        ? { ...request, lint: input.lint }
+        : input.systemFonts?.length
+          ? { ...request, lint: { systemFonts: input.systemFonts } }
+          : request,
     );
     return {
       ...(res.png ? { png: res.png } : {}),
       ...(res.jpeg ? { jpeg: res.jpeg } : {}),
       layout: layoutFromReport(res.report),
       missingFonts: missingSystemFonts([res.report]),
+      report: res.report ?? null,
     };
   } catch (error) {
     input.signal.throwIfAborted();
@@ -465,6 +479,7 @@ async function renderSlideRaster(input: {
       ...(res.jpeg ? { jpeg: res.jpeg } : {}),
       layout: null,
       missingFonts: [],
+      report: null,
     };
   }
 }
@@ -478,12 +493,14 @@ async function renderSingleSlideJpeg(input: {
   resolver: AssetResolver;
   signal: AbortSignal;
   systemFonts?: readonly string[];
+  lint?: RenderAndLintRequest["lint"];
 }): Promise<{
   jpeg: Uint8Array;
   width: number;
   height: number;
   layout: SlideLayout | null;
   missingFonts: string[];
+  report: RenderAndLintResult["report"] | null;
 }> {
   const res = await renderSlideRaster({ ...input, formats: ["png", "jpeg"] });
   const pngBytes = res.png;
@@ -507,6 +524,7 @@ async function renderSingleSlideJpeg(input: {
       height: out.info.height,
       layout: res.layout,
       missingFonts: res.missingFonts,
+      report: res.report,
     };
   }
 
@@ -518,6 +536,7 @@ async function renderSingleSlideJpeg(input: {
       height: input.height,
       layout: res.layout,
       missingFonts: res.missingFonts,
+      report: res.report,
     };
   }
   return {
@@ -526,6 +545,7 @@ async function renderSingleSlideJpeg(input: {
     height: input.height,
     layout: res.layout,
     missingFonts: res.missingFonts,
+    report: res.report,
   };
 }
 
@@ -651,6 +671,7 @@ export async function executeContentRender(
   const hasPatches = payload.patches !== undefined && payload.patches.length > 0;
   const hasEdits = hasSlotAssignments || hasPatches;
 
+  const baseVersionNumber = targetVersion.version;
   // Renders and layouts carried over to the version that gets rendered.
   let renderedAssetIds: (string | null)[] = targetVersion.slides.map((s) => s.renderedAssetId);
   let layouts: (SlideLayout | null)[] = targetVersion.slides.map((s) => s.layers ?? null);
@@ -765,6 +786,16 @@ export async function executeContentRender(
   }[] = [];
 
   const missingFonts = new Set<string>();
+  // Edits are checked afterwards (roadmap 13): their renders lint with the checks' config.
+  const checkReports = new Map<number, SlideReport>();
+  const lint = hasEdits
+    ? checkLintConfig(
+        brand,
+        presetForVersion(content, targetVersion.slides[0]),
+        content.type,
+        targetVersion.slides.length,
+      )
+    : undefined;
   if (toRender.length > 0) {
     progress(0.45, "Slaytlar JPEG olarak render ediliyor");
     const clampInstagram = content.targetPlatforms.includes("instagram");
@@ -783,8 +814,12 @@ export async function executeContentRender(
         resolver,
         signal,
         systemFonts: brand.manifest.systemFontFamilies,
+        ...(lint ? { lint } : {}),
       });
       for (const family of rendered.missingFonts) missingFonts.add(family);
+      if (rendered.report) {
+        checkReports.set(i, { report: rendered.report, jpegBytes: rendered.jpeg.byteLength });
+      }
       renderedJpegPages[i] = {
         jpeg: rendered.jpeg,
         pixelWidth: rendered.width,
@@ -891,6 +926,53 @@ export async function executeContentRender(
     }
   }
 
+  // Checks of the edited version: deterministic only (no model call per edit); unchanged
+  // slides and the language results carry over from the base version's run. Without such a
+  // run only a version whose slides were all rendered now is checked (no extra renders).
+  let checks: Record<string, unknown> | undefined;
+  if (hasEdits && targetVersion.version !== baseVersionNumber) {
+    try {
+      const previous = (
+        await deps.api.client.contents.checks.list(
+          content.id,
+          { version: baseVersionNumber, limit: 1 },
+          init,
+        )
+      ).items[0];
+      const allFresh = targetVersion.slides.every((_, i) => checkReports.has(i));
+      if (!previous && !allFresh) throw new SkipChecks();
+      progress(0.95, "Kontroller güncelleniyor");
+      const res = await runContentChecks({
+        deps,
+        jobId: options.jobId ?? null,
+        trigger: "render",
+        contentId: content.id,
+        version: targetVersion.version,
+        brand,
+        reports: checkReports,
+        carryOver: previous
+          ? {
+              run: previous,
+              unchangedSlides: new Set(
+                changed.flatMap((c, i) => (c || checkReports.has(i) ? [] : [i])),
+              ),
+            }
+          : null,
+        lintMissing: false,
+        model: false,
+        fix: false,
+        signal,
+      });
+      checks = res.brief;
+    } catch (error) {
+      signal.throwIfAborted();
+      if (!(error instanceof SkipChecks)) {
+        deps.logger.warn(`checks after render failed: ${(error as Error).message}`);
+        checks = failedBrief(targetVersion.version, error);
+      }
+    }
+  }
+
   progress(1, "Tamamlandı");
   return {
     contentId: content.id,
@@ -901,8 +983,12 @@ export async function executeContentRender(
     ...(pngAssetIds ? { pngAssetIds } : {}),
     ...(pdfAssetId ? { pdfAssetId } : {}),
     ...(missingFonts.size > 0 ? { missingFonts: [...missingFonts] } : {}),
+    ...(checks ? { checks } : {}),
   };
 }
+
+/** The edited version is not checked now (no earlier run to carry unchanged slides from). */
+class SkipChecks extends Error {}
 
 export function createContentRenderHandler(deps: ContentRenderDeps) {
   return defineHandler({

@@ -47,6 +47,7 @@ import { FontPicker } from "../components/ui/font-picker.tsx";
 import { IconList, IconPlus, IconSearch, PlatformIcon } from "../components/ui/icons.tsx";
 import { Menu, type MenuEntry } from "../components/ui/menu.tsx";
 import tokens from "../design/tokens.json";
+import { ChecksGallery } from "../features/checks/checks-gallery.tsx";
 import { type AgentChoice, FALLBACK_CHOICE } from "../lib/models.ts";
 import { stepSummary } from "../lib/transcript.ts";
 import { useAppStore } from "../state/app-store.ts";
@@ -826,6 +827,9 @@ export default function Gallery() {
               />
             </PanelSection>
           </div>
+        </Section>
+        <Section title="Kontroller (post ayrıntısı · Marka Kiti)">
+          <ChecksGallery />
         </Section>
         <p className="pt-6 text-footnote text-fg-3">Varsayılan model: {FALLBACK_CHOICE.model}</p>
       </div>

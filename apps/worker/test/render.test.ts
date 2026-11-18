@@ -425,6 +425,58 @@ describe("content.render handler", () => {
     });
   });
 
+  it("checks an edited carousel: unchanged slides and language results carry over, no model call", async () => {
+    const { api, state } = createFakeApi({ brands: [fakeBrand()] });
+    const measured: SlideLayout = [
+      {
+        id: "eyebrow",
+        type: "text",
+        role: null,
+        parent: null,
+        x: 1,
+        y: 2,
+        w: 3,
+        h: 4,
+        visible: true,
+      },
+    ];
+    seedVersion(state, [
+      { html: typographicHtml, renderedAssetId: "asset_old_1", layers: measured },
+      { html: slotSlideHtml, renderedAssetId: "asset_old_2", layers: measured },
+    ]);
+    const finding = (slide: number, layer: string) => ({
+      checkId: "layout.overflow",
+      category: "layout" as const,
+      status: "fail" as const,
+      message: `${layer} taşıyor`,
+      refs: [{ slide, layer }],
+      evidence: { rule: "text-overflow-box" },
+      source: "deterministic" as const,
+      fixable: false,
+    });
+    const content = state.contents.get("cnt_1") as Content;
+    await api.client.contents.checks.create(content.id, {
+      version: 1,
+      trigger: "generate",
+      results: [finding(0, "eyebrow"), finding(1, "headline")],
+    });
+    const rendered: string[] = [];
+    const handler = createContentRenderHandler(makeDeps(api, measuringRenderer(rendered)));
+    const payload = {
+      format: "jpeg" as const,
+      version: 1,
+      patches: [{ slide: 1, op: "set_text", layer: "headline", text: "Kısa" }],
+    };
+    const out = await handler.run(payload, renderJobCtx("cnt_1", payload));
+    expect(rendered).toHaveLength(1);
+    expect(out).toMatchObject({ version: 2, checks: { version: 2 } });
+    const run = state.checkRuns.at(-1);
+    expect(run).toMatchObject({ version: 2, trigger: "render" });
+    const overflow = run?.results.filter((r) => r.checkId === "layout.overflow") ?? [];
+    expect(overflow.map((r) => r.refs[0])).toEqual([{ slide: 0, layer: "eyebrow" }]);
+    expect(run?.results.find((r) => r.checkId === "text.language")?.status).toBe("skipped");
+  });
+
   it("returns the base version unchanged when the edits change nothing", async () => {
     const { api, state } = createFakeApi({ brands: [fakeBrand()] });
     seedVersion(

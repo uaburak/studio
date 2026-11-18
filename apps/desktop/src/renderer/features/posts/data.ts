@@ -258,6 +258,8 @@ const CONTENT_JOBS = new Set<Job["type"]>([
   "content.generate",
   "content.render",
   "schedule.publish",
+  // "Düzelt" stores a fixed version / a shorter caption (roadmap 13).
+  "content.check",
 ]);
 
 /**

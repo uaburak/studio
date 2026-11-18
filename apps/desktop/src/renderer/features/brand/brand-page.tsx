@@ -27,6 +27,7 @@ import { describeError } from "../../lib/api.ts";
 import { percentText } from "../../lib/format.ts";
 import { type BrandTab, useAppStore } from "../../state/app-store.ts";
 import { useAccounts, useBrands } from "../../state/studio.tsx";
+import { ChecksSettingsSection } from "../checks/checks-settings.tsx";
 import { useBrandAssets } from "../media/media-data.ts";
 import { FieldLabel, PageHeader, TextLink } from "../pane-ui.tsx";
 import {
@@ -645,6 +646,8 @@ function KitTab({ brand }: { brand: Brand }) {
       </KitSection>
 
       <SkillsSection brand={brand} />
+
+      <ChecksSettingsSection brand={brand} />
     </div>
   );
 }

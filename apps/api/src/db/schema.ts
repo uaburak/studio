@@ -56,6 +56,9 @@ export const ENUMS = {
   devicePlatform: ["ios", "ipados", "macos", "other"],
   // --- brand skills ---
   brandSkillOrigin: ["manual", "ai_draft", "restore"],
+  // --- generation checks (roadmap 13) ---
+  checkTrigger: ["generate", "render", "manual", "fix"],
+  checkStrictness: ["relaxed", "standard", "strict"],
 } as const;
 
 /** `col in ('a', 'b')` for CHECK constraints (values are constants above, never input). */
@@ -447,6 +450,78 @@ export const contentVersionSlides = sqliteTable(
     primaryKey({ columns: [t.versionId, t.position] }),
     index("content_version_slides_asset_idx").on(t.renderedAssetId),
     check("content_version_slides_size_check", sql`${t.width} > 0 and ${t.height} > 0`),
+  ],
+);
+
+// --- generation checks (roadmap 13) ---------------------------------------------
+// One row per check run over one content version: the results are a JSON array (at most
+// 200 small entries, far below D1's row limit). Summary and blocking count are stored for
+// lists. Runs go with their content / version.
+
+/** Stored shape of `content_check_runs.results` (mirrors `ContentCheckResult`). */
+export type CheckResultJson = Array<{
+  checkId: string;
+  category: string;
+  status: string;
+  message: string;
+  refs: Array<{ slide: number | null; layer: string | null }>;
+  evidence: Record<string, unknown> | null;
+  source: string;
+  fixable: boolean;
+}>;
+
+export const contentCheckRuns = sqliteTable(
+  "content_check_runs",
+  {
+    id: text("id").primaryKey(),
+    contentId: text("content_id")
+      .notNull()
+      .references(() => contents.id, { onDelete: "cascade" }),
+    brandId: text("brand_id")
+      .notNull()
+      .references(() => brands.id),
+    version: integer("version").notNull(),
+    versionId: text("version_id").references(() => contentVersions.id, { onDelete: "cascade" }),
+    trigger: text("trigger", { enum: ENUMS.checkTrigger }).notNull(),
+    jobId: text("job_id"),
+    strictness: text("strictness", { enum: ENUMS.checkStrictness }).notNull().default("standard"),
+    summary: text("summary", { mode: "json" })
+      .$type<{ pass: number; warn: number; fail: number; fixed: number; skipped: number }>()
+      .notNull(),
+    blocking: integer("blocking").notNull().default(0),
+    results: text("results", { mode: "json" }).$type<CheckResultJson>().notNull(),
+    model: text("model"),
+    fromVersion: integer("from_version"),
+    fixedVersion: integer("fixed_version"),
+    note: text("note").notNull().default(""),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    index("content_check_runs_content_idx").on(t.contentId, t.version, t.id),
+    check("content_check_runs_trigger_check", oneOf(t.trigger, ENUMS.checkTrigger)),
+    check("content_check_runs_strictness_check", oneOf(t.strictness, ENUMS.checkStrictness)),
+    check("content_check_runs_version_positive", sql`${t.version} >= 1`),
+  ],
+);
+
+/** Per-brand check settings; a brand without a row uses the defaults. */
+export const brandCheckSettings = sqliteTable(
+  "brand_check_settings",
+  {
+    brandId: text("brand_id")
+      .primaryKey()
+      .references(() => brands.id),
+    disabledChecks: text("disabled_checks", { mode: "json" })
+      .$type<string[]>()
+      .notNull()
+      .default([]),
+    bannedWords: text("banned_words", { mode: "json" }).$type<string[]>().notNull().default([]),
+    strictness: text("strictness", { enum: ENUMS.checkStrictness }).notNull().default("standard"),
+    autoFix: integer("auto_fix", { mode: "boolean" }).notNull().default(true),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    check("brand_check_settings_strictness_check", oneOf(t.strictness, ENUMS.checkStrictness)),
   ],
 );
 

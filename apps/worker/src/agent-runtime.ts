@@ -4,7 +4,8 @@
  * background schedule sync poller.
  *
  * Readiness decides what the worker announces to the hub:
- * - `content.render` and `schedule.publish` are ALWAYS announced;
+ * - `content.render`, `schedule.publish` and `content.check` are ALWAYS announced (the checks'
+ *   model pass is skipped without Claude / Gemini);
  * - `chat.turn`, `content.generate`, `brand.analyze`, and `image.generate` are announced
  *   whenever `claudeAvailable() || geminiAvailable()`.
  */
@@ -19,6 +20,7 @@ import { createBrandAnalyzeHandler } from "./brand/handler.ts";
 import { createBrandSkillDraftHandler } from "./brand/skill-draft.ts";
 import { findSkillsDir, loadSkills } from "./chat/skills.ts";
 import { createChatTurnHandler } from "./chat/turn.ts";
+import { createContentCheckHandler } from "./checks/handler.ts";
 import { buildClaudeEnv } from "./claude/args.ts";
 import { ClaudeAuthController, type RawClaudeAuthInfo } from "./claude/auth.ts";
 import { ClaudeError, ClaudeUsageLimitError } from "./claude/errors.ts";
@@ -47,7 +49,7 @@ import { SchedulePoller } from "./publish/poller.ts";
 import type { JobRegistry } from "./registry.ts";
 import { createContentRenderHandler } from "./render/handler.ts";
 
-export const ALWAYS_JOB_TYPES = ["content.render", "schedule.publish"] as const;
+export const ALWAYS_JOB_TYPES = ["content.render", "schedule.publish", "content.check"] as const;
 export const AI_JOB_TYPES = [
   "chat.turn",
   "content.generate",
@@ -399,7 +401,8 @@ export class AgentRuntime {
       .register("content.generate", createContentGenerateHandler(this.deps))
       .register("brand.analyze", createBrandAnalyzeHandler(this.deps))
       .register("image.generate", createImageGenerateHandler(this.deps))
-      .register("brand.skill_draft", createBrandSkillDraftHandler(this.deps));
+      .register("brand.skill_draft", createBrandSkillDraftHandler(this.deps))
+      .register("content.check", createContentCheckHandler(this.deps));
   }
 
   /** Called when capabilities or health state change (the worker re-announces itself). */

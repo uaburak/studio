@@ -5,6 +5,7 @@ import type {
   Brand,
   Conversation,
   ConversationList,
+  Job,
   SocialAccount,
 } from "@studio/contract";
 import { QueryClient, QueryClientProvider, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -75,6 +76,20 @@ export function useJobs(): JobsSnapshot & { controller: JobsController } {
   const { jobs } = useLive();
   const snapshot = useSyncExternalStore(jobs.subscribe, jobs.getSnapshot);
   return { ...snapshot, controller: jobs };
+}
+
+const NO_JOBS: JobsSnapshot = { jobs: [], presence: null, status: "closed" };
+const noSubscribe = () => () => undefined;
+const noJobs = () => NO_JOBS;
+
+/**
+ * The live job list, or an empty one outside the app's providers (parts that are also rendered
+ * on their own, e.g. the post detail's Kontroller in component tests).
+ */
+export function useJobList(): readonly Job[] {
+  const live = useContext(LiveContext);
+  return useSyncExternalStore(live?.jobs.subscribe ?? noSubscribe, live?.jobs.getSnapshot ?? noJobs)
+    .jobs;
 }
 
 export function useConversationController(id: string): ConversationController {

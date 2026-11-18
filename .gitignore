@@ -28,3 +28,4 @@ apps/apple/**/build/
 
 # Reels e2e videos are large; keep only covers, frame strips and checks in git.
 apps/worker/docs/e2e/reels/*.mp4
+apps/desktop/src/renderer/vendor/wecra-engine/

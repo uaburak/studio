@@ -17,6 +17,7 @@
   "dependencies": {
     "@floating-ui/react": "0.27.20",
     "@studio/contract": "workspace:*",
+    "@studio/design-kit": "workspace:*",
     "@tanstack/react-query": "5.105.3",
     "lucide-react": "1.68.0",
     "marked": "18.2.1",

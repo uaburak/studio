@@ -14,6 +14,7 @@ import { brandProductRoutes } from "./routes/brand-products.ts";
 import { brandProfileRoutes } from "./routes/brand-profiles.ts";
 import { brandSkillRoutes } from "./routes/brand-skills.ts";
 import { brandRoutes } from "./routes/brands.ts";
+import { contentCheckRoutes } from "./routes/content-checks.ts";
 import { contentRoutes } from "./routes/contents.ts";
 import { conversationRoutes } from "./routes/conversations.ts";
 import { deviceRoutes } from "./routes/devices.ts";
@@ -81,6 +82,7 @@ app.route("/", brandSkillRoutes);
 app.route("/", socialAccountRoutes);
 app.route("/", assetRoutes);
 app.route("/", contentRoutes);
+app.route("/", contentCheckRoutes); // /api/contents/{id}/checks, /api/brands/{id}/check-settings (roadmap 13)
 app.route("/", jobRoutes);
 app.route("/", scheduleRoutes);
 app.route("/", publishingRoutes); // /api/publishing/*, /api/publish-logs, /api/worker/publishing/* (P3)

@@ -20,6 +20,16 @@ export default defineConfig({
         },
       },
       {
+        // Wecra's engine (the vendored Wasm build) driven headless in Node.
+        extends: true,
+        test: {
+          name: "engine",
+          environment: "node",
+          include: ["test/engine/**/*.test.ts"],
+          setupFiles: ["./test/engine/setup.ts"],
+        },
+      },
+      {
         extends: true,
         test: {
           name: "main",
