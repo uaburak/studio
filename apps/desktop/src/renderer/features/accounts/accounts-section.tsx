@@ -191,16 +191,25 @@ function tableRow(row: AccountsTableRow, flowRunning: boolean): TableRow {
       <span key="b" className="truncate text-fg-2">
         {row.brandName}
       </span>,
-      <span
-        key="s"
-        title={row.hint ?? undefined}
-        className={cn(
-          "flex min-w-0 items-center gap-1",
-          row.needsOwner ? "text-accent-text" : row.healthy ? "text-success" : "text-fg-3",
+      <span key="s" className="flex min-w-0 flex-col">
+        <span
+          title={row.hint ?? undefined}
+          className={cn(
+            "flex min-w-0 items-center gap-1",
+            row.needsOwner ? "text-accent-text" : row.healthy ? "text-success" : "text-fg-3",
+          )}
+        >
+          {row.healthy && <IconCheck size={13} className="shrink-0" />}
+          <span className="truncate">{row.status}</span>
+        </span>
+        {row.engagementHint && (
+          <span
+            className="truncate text-footnote text-accent-text"
+            title="Yayın çalışmaya devam eder; istatistikleri ve yorumları okumak için Meta'nın yeni izinleri gerekiyor."
+          >
+            {row.engagementHint}
+          </span>
         )}
-      >
-        {row.healthy && <IconCheck size={13} className="shrink-0" />}
-        <span className="truncate">{row.status}</span>
       </span>,
       <AccountActions key="a" row={row} flowRunning={flowRunning} />,
     ],
