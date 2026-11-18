@@ -97,27 +97,50 @@ public struct ActivityNoticeTracker: Sendable {
 
     /// Pending consents and unanswered questions in a conversation, each once.
     public mutating func waitingNotices(in state: ConversationState, brandId: EntityID? = nil) -> [ActivityNotice] {
+        deliver(Self.waitingNotices(conversation: state.conversation, messages: state.messages, brandId: brandId))
+    }
+
+    /// Pending consents and unanswered questions in these messages (any order): the background
+    /// check reads them from the latest page of an active conversation (M7).
+    public static func waitingNotices(conversation: Conversation, messages: [Message], brandId: EntityID? = nil) -> [ActivityNotice] {
         var found: [ActivityNotice] = []
-        let title = state.conversation.displayTitle
-        for message in state.messages where message.role == .assistant {
+        let title = conversation.displayTitle
+        for message in messages.sorted(by: { $0.createdAt < $1.createdAt }) where message.role == .assistant {
             for part in message.parts {
                 switch part {
                 case .consent(let consent) where consent.state == .pending:
                     found.append(ActivityNotice(
                         id: "consent:\(message.id):\(consent.consentId)", kind: .waitingOnYou,
                         title: "Onayın bekleniyor", body: "\(title): \(consent.title)",
-                        brandId: brandId ?? state.conversation.brandId, conversationId: state.conversation.id))
+                        brandId: brandId ?? conversation.brandId, conversationId: conversation.id))
                 case .question(let question) where question.answer == nil && message.status == .streaming:
                     found.append(ActivityNotice(
                         id: "question:\(message.id):\(question.questionId)", kind: .waitingOnYou,
                         title: "Bir sorusu var", body: "\(title): \(question.prompt)",
-                        brandId: brandId ?? state.conversation.brandId, conversationId: state.conversation.id))
+                        brandId: brandId ?? conversation.brandId, conversationId: conversation.id))
                 default:
                     continue
                 }
             }
         }
-        return deliver(found)
+        return found
+    }
+
+    /// "Claude sınırı doldu": once per limit window, while the owner's answer is needed.
+    public mutating func claudeLimitNotices(_ presence: WorkerPresence?) -> [ActivityNotice] {
+        guard let notice = Self.claudeLimitNotice(presence?.claude?.limit) else { return [] }
+        return deliver([notice])
+    }
+
+    /// Key prefix of the Claude-limit notice (the app opens the usage sheet for it).
+    public static let claudeLimitPrefix = "claude-limit:"
+
+    /// The notice for a Claude limit that waits for "Gemini ile devam et / Sınırı bekle" (nil otherwise).
+    public static func claudeLimitNotice(_ limit: ClaudeLimitState?) -> ActivityNotice? {
+        guard let limit, limit.needsDecision else { return nil }
+        let waiting = limit.waiting > 0 ? "\(limit.waiting) iş bekliyor. " : ""
+        let choice = limit.geminiReady ? "Gemini ile devam et ya da sınırı bekle." : "Sınırın dolmasını bekle ya da Gemini anahtarı ekle."
+        return ActivityNotice(id: limit.noticeKey, kind: .waitingOnYou, title: "Claude sınırı doldu", body: waiting + choice)
     }
 
     /// Mark keys as already shown (e.g. the user is looking at that conversation).
