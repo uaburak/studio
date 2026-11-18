@@ -39,12 +39,16 @@ module.exports = {
     buildResources: "build",
   },
   asar: true,
+  // The app's code is bundled (main, preload, renderer): no node_modules in the asar. Without
+  // this, electron-builder falls back to the desktop package's dependencies.
+  files: ["**/*", "!**/node_modules/**"],
   npmRebuild: false,
   nodeGypRebuild: false,
   buildDependenciesFromSource: false,
   // The host runs outside the asar: native binaries (workerd, esbuild, sharp) and node_modules
-  // must be real files.
-  extraResources: [{ from: "out/host", to: "host" }],
+  // must be real files. Copied from `out` with a filter: electron-builder always skips a
+  // `node_modules` at the root of a copied folder, but not one below it (host/node_modules).
+  extraResources: [{ from: "out", to: ".", filter: ["host/**/*"] }],
   artifactName: "Studio-${version}-${arch}.${ext}",
   mac: {
     target: targets,

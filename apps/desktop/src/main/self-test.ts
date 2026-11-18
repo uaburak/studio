@@ -154,6 +154,10 @@ export async function runSelfTest(ctx: SelfTestContext): Promise<number> {
     stateDir: ctx.stateDir,
     apiPort,
   };
+  if (layout) {
+    const runtime = await created.runtime(layout);
+    report.node = runtime ? { executable: runtime.executable, env: runtime.env } : null;
+  }
   if (layout?.mode === "packaged") {
     try {
       report.manifest = JSON.parse(readFileSync(join(layout.root, "manifest.json"), "utf8"));
