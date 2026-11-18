@@ -80,6 +80,8 @@ function item(over: Partial<PlanItem> = {}): PlanItem {
     title: "Kış bakımı",
     brief: "Toprak",
     pillar: null,
+    hook: null,
+    similar: [],
     imageSlot: "none",
     imageBrief: null,
     status: "accepted",
