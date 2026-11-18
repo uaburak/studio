@@ -50,6 +50,8 @@ export class AiPolicy {
   private decision: { choice: ClaudeLimitChoice; until: number } | null = null;
   private monthlyUsd: number | null = null;
   private stopAtBudget = false;
+  /** N12: describe new pictures with the AI (off by default). */
+  private captions = false;
   /** The API's figure at the last read, and the month it belongs to. */
   private baseSpentUsd = 0;
   private monthStart = 0;
@@ -82,6 +84,7 @@ export class AiPolicy {
       : null;
     this.monthlyUsd = settings.budget.monthlyUsd;
     this.stopAtBudget = settings.budget.stopAtBudget;
+    this.captions = settings.mediaCaptions ?? false;
     this.baseSpentUsd = settings.budget.spentUsd;
     this.monthStart = new Date(settings.budget.monthStart).getTime();
     this.localSpentUsd = pendingUsd;
@@ -152,7 +155,22 @@ export class AiPolicy {
       decision: this.decision,
       monthlyUsd: this.monthlyUsd,
       stopAtBudget: this.stopAtBudget,
+      captions: this.captions,
     };
+  }
+
+  /**
+   * N12: may a new picture get an AI caption now? Only when the owner turned it on and, as
+   * background spending, never past a set monthly budget (even without "bütçe dolunca dur").
+   */
+  mediaCaptionsAllowed(): boolean {
+    if (!this.captions) return false;
+    return this.monthlyUsd === null || this.spentUsd() < this.monthlyUsd;
+  }
+
+  /** The owner's switch itself (Ayarlar → Yapay zekâ). */
+  mediaCaptions(): boolean {
+    return this.captions;
   }
 
   /** A new month started since the last read: its spend starts at zero. */

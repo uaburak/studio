@@ -54,8 +54,22 @@ import { createSchedulePublishHandler, type SchedulePublishDeps } from "./publis
 import { SchedulePoller } from "./publish/poller.ts";
 import type { JobRegistry } from "./registry.ts";
 import { createContentRenderHandler } from "./render/handler.ts";
+import { createMediaAnalyzeHandler } from "./vision/analyze.ts";
+import {
+  createVisionHelper,
+  findVisionHelper,
+  missingVisionHelper,
+  VISION_HELPER_MISSING,
+  type VisionHelper,
+} from "./vision/helper.ts";
 
-export const ALWAYS_JOB_TYPES = ["content.render", "schedule.publish", "content.check"] as const;
+/** `media.analyze` runs without AI: Vision on the Mac (colours and shape even without it). */
+export const ALWAYS_JOB_TYPES = [
+  "content.render",
+  "schedule.publish",
+  "content.check",
+  "media.analyze",
+] as const;
 export const AI_JOB_TYPES = [
   "chat.turn",
   "content.generate",
@@ -93,6 +107,8 @@ export interface AgentRuntimeOptions {
   openaiFetch?: typeof globalThis.fetch;
   /** How often to read the stored AI keys again (default 5 min; 0 = only on command). */
   credentialsIntervalMs?: number;
+  /** Apple Vision helper (default: `studio-vision` found on disk; none in hermetic tests). */
+  vision?: VisionHelper;
 }
 
 export class AgentRuntime {
@@ -113,6 +129,8 @@ export class AgentRuntime {
   readonly aiUsage: AiUsageRecorder;
   /** The owner's Claude-limit choice and budget (S7), read from the API. */
   readonly aiPolicy: AiPolicy;
+  /** Apple Vision on this Mac (`studio-vision`): tagging (N12) and label preservation (U9). */
+  readonly vision: VisionHelper;
   private readonly claudeListeners = new Set<(account: ClaudeAccount) => void>();
   private lastLimit = "null";
 
@@ -283,6 +301,11 @@ export class AgentRuntime {
 
     this.aiUsage = new AiUsageRecorder({ api: this.api, logger, policy: this.aiPolicy });
     const hermetic = Boolean(options.selfTest);
+    this.vision =
+      options.vision ??
+      (hermetic
+        ? missingVisionHelper()
+        : createVisionHelper({ bin: findVisionHelper(settings.parentEnv), logger }));
     this.providers = new ProvidersController({
       settings,
       logger,
@@ -333,6 +356,7 @@ export class AgentRuntime {
       mcpServer: this.mcpServer,
       skills: () => loadSkills(skillsDir),
       stateDir: config.stateDir,
+      vision: this.vision,
       inFlightSchedules,
       ...(options.geminiFetch ? { geminiFetch: options.geminiFetch } : {}),
       ...(options.geminiCliSpawn ? { geminiCliSpawn: options.geminiCliSpawn } : {}),
@@ -449,7 +473,26 @@ export class AgentRuntime {
       .register("brand.analyze", createBrandAnalyzeHandler(this.deps))
       .register("image.generate", createImageGenerateHandler(this.deps))
       .register("brand.skill_draft", createBrandSkillDraftHandler(this.deps))
-      .register("content.check", createContentCheckHandler(this.deps));
+      .register("content.check", createContentCheckHandler(this.deps))
+      .register("media.analyze", createMediaAnalyzeHandler({ ...this.deps, vision: this.vision }));
+  }
+
+  /**
+   * N12: once per start, queue tagging of the pictures not read yet (and, with the Vision helper,
+   * redo the ones read without it). Best effort; the API keeps at most one waiting job.
+   */
+  async startMediaBackfill(): Promise<void> {
+    const { logger } = this.options;
+    try {
+      const helper = await this.vision.available();
+      if (!helper) logger.warn(`media tagging without Vision: ${VISION_HELPER_MISSING}`);
+      const res = await this.api.client.assets.backfillAnalysis({ includePartial: helper });
+      if (res.pending > 0) {
+        logger.info(`media: ${res.pending} picture(s) to tag (job ${res.jobId ?? "none"})`);
+      }
+    } catch (error) {
+      logger.debug(`media backfill not queued: ${(error as Error).message}`);
+    }
   }
 
   /** Called when capabilities or health state change (the worker re-announces itself). */
@@ -517,6 +560,7 @@ export class AgentRuntime {
     if (scheduleInterval > 0) {
       this.schedulePoller.start(scheduleInterval);
     }
+    if (this.options.recheckIntervalMs !== 0) void this.startMediaBackfill();
     return health;
   }
 

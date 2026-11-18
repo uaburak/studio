@@ -1,11 +1,13 @@
 /**
- * `image.generate` handler (Faz 2 & T5):
+ * `image.generate` handler (Faz 2 & T5, U9):
  * - Calls Gemini image generation (`generateContent` with `responseModalities: ["IMAGE"]`),
  * - Supports up to 10 `referenceAssetIds` passed as `inlineData`,
- * - Preserves 100% pixel-exact Turkish packaging labels when `preserveProductLabel: true`
- *   by generating the commercial scene and compositing the crisp original product cutout
- *   with a natural contact/drop shadow via `sharp` (`.claude/skills/product-reference-image/SKILL.md`),
- * - Automatically fills and renders `targetContentId` + `targetSlotId` when specified.
+ * - `preserveProductLabel: true` (U9): the label is read first, the model draws only the scene,
+ *   the real product is cut out (Apple Vision on this Mac), placed and composited pixel for pixel,
+ *   then the label is read again on the final picture and compared (`label-pipeline.ts`). A label
+ *   that reads differently or not at all is reported and the picture is not put into a post,
+ * - Fills and renders `targetContentId` + `targetSlotId` when specified,
+ * - Tags the new picture for the library (N12) right away.
  */
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -19,11 +21,44 @@ import { type GeminiUsageMetadata, sampleFromMetadata } from "../gemini/pricing.
 import { GEMINI_RATE_LIMIT_TRIES, rateLimitDelayMs } from "../gemini/retry.ts";
 import { defineHandler, type JobContext, RetryableError } from "../registry.ts";
 import { type ContentRenderDeps, executeContentRender } from "../render/handler.ts";
+import { analyzePicture } from "../vision/analyze.ts";
+import { missingVisionHelper } from "../vision/helper.ts";
+import {
+  buildLabelPreservingScenePrompt,
+  DEFAULT_PRODUCT_SCALE,
+  type PlacedPosition,
+  removeDir,
+} from "./compose.ts";
+import {
+  labelBlocksDelivery,
+  type PreparedProduct,
+  placeAndVerify,
+  placementSummary,
+  prepareProduct,
+} from "./label-pipeline.ts";
+
+export { buildLabelPreservingScenePrompt, extractProductCutout } from "./compose.ts";
 
 export interface ImageGenerateDeps extends ContentRenderDeps {
   imageFetch?: typeof globalThis.fetch;
   /** Test seam: the waits between 429 retries. */
   imageSleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
+}
+
+/** What the label-preserving steps reported (kept with the stored picture, U7). */
+interface LabelReport {
+  labelCheck: {
+    status: string;
+    message: string;
+    source: string;
+    expected: string[];
+    missing: string[];
+    found: string[];
+    score: number;
+  };
+  placement: Record<string, unknown>;
+  cutout: string;
+  notes: string[];
 }
 
 /**
@@ -40,6 +75,7 @@ interface StoredImage {
   file: string;
   /** Set once the upload went through. */
   assetId?: string;
+  label?: LabelReport;
 }
 
 function resultDir(stateDir: string, jobId: string): string {
@@ -73,250 +109,6 @@ function sanitizeSecret(text: string, secret: string): string {
   return text.split(secret).join("[REDACTED]");
 }
 
-function buildLabelPreservingScenePrompt(userPrompt: string, aspectRatio: string): string {
-  return [
-    "Create a professional commercial product photography background scene.",
-    `SCENE BRIEF: ${userPrompt}`,
-    "COMPOSITION FOR PRODUCT COMPOSITING:",
-    "- Use Reference Image 1 only to match the color harmony, lighting temperature, and scale.",
-    "- Leave a clean, unobstructed hero resting surface in the lower-center foreground where the physical product will be composited.",
-    "- Natural shallow depth of field (85mm f/2.8 commercial lens look), realistic ambient light.",
-    "- CRITICAL: Do NOT draw any product pouch, bottle, box, packaging, label, text, letters, numbers, logos, or watermarks anywhere in the scene.",
-    `Aspect ratio: ${aspectRatio}.`,
-  ].join("\n");
-}
-
-/**
- * Extract a clean RGBA cutout of a product reference photo:
- * - If the image already has transparent corners, trims empty transparent margins.
- * - If the image sits on a uniform studio background (e.g. white `#FFFFFF` studio packshot),
- *   runs a border-seeded flood-fill to remove the studio backdrop while keeping 100% of
- *   interior white packaging and every Turkish label pixel intact!
- */
-export async function extractProductCutout(
-  refBytes: Uint8Array,
-): Promise<{ png: Uint8Array; width: number; height: number }> {
-  const { data, info } = await sharp(refBytes, { animated: false })
-    .rotate()
-    .ensureAlpha()
-    .raw()
-    .toBuffer({ resolveWithObject: true });
-
-  const w = info.width;
-  const h = info.height;
-  const pixels = new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
-  const idxOf = (x: number, y: number) => (y * w + x) * 4;
-
-  const corners = [
-    idxOf(0, 0),
-    idxOf(Math.max(0, w - 1), 0),
-    idxOf(0, Math.max(0, h - 1)),
-    idxOf(Math.max(0, w - 1), Math.max(0, h - 1)),
-  ];
-
-  const alreadyTransparent = corners.some((c) => (pixels[c + 3] ?? 255) < 200);
-
-  if (!alreadyTransparent && w >= 8 && h >= 8) {
-    // Average corner RGB to check if corners form a uniform studio backdrop
-    let rSum = 0;
-    let gSum = 0;
-    let bSum = 0;
-    for (const c of corners) {
-      rSum += pixels[c] ?? 255;
-      gSum += pixels[c + 1] ?? 255;
-      bSum += pixels[c + 2] ?? 255;
-    }
-    const bgR = rSum / 4;
-    const bgG = gSum / 4;
-    const bgB = bSum / 4;
-
-    const colorDist = (offset: number) => {
-      const dr = (pixels[offset] ?? 0) - bgR;
-      const dg = (pixels[offset + 1] ?? 0) - bgG;
-      const db = (pixels[offset + 2] ?? 0) - bgB;
-      return Math.sqrt(dr * dr + dg * dg + db * db);
-    };
-
-    const cornersConsistent = corners.every((c) => colorDist(c) <= 32);
-
-    if (cornersConsistent) {
-      const visited = new Uint8Array(w * h);
-      const queue = new Int32Array(w * h);
-      let head = 0;
-      let tail = 0;
-      const threshold = 26;
-
-      const trySeed = (x: number, y: number) => {
-        const pIdx = y * w + x;
-        if (visited[pIdx]) return;
-        if (colorDist(pIdx * 4) <= threshold) {
-          visited[pIdx] = 1;
-          queue[tail++] = pIdx;
-        }
-      };
-
-      for (let x = 0; x < w; x++) {
-        trySeed(x, 0);
-        trySeed(x, h - 1);
-      }
-      for (let y = 0; y < h; y++) {
-        trySeed(0, y);
-        trySeed(w - 1, y);
-      }
-
-      while (head < tail) {
-        const cur = queue[head++] as number;
-        const rgbaIdx = cur * 4;
-        pixels[rgbaIdx + 3] = 0;
-        const cx = cur % w;
-        const cy = (cur - cx) / w;
-
-        if (cx > 0) trySeed(cx - 1, cy);
-        if (cx + 1 < w) trySeed(cx + 1, cy);
-        if (cy > 0) trySeed(cx, cy - 1);
-        if (cy + 1 < h) trySeed(cx, cy + 1);
-      }
-
-      // Soften 1px silhouette edge against background
-      for (let y = 1; y < h - 1; y++) {
-        for (let x = 1; x < w - 1; x++) {
-          const pIdx = y * w + x;
-          if (visited[pIdx]) continue;
-          const neighborsBg =
-            (visited[pIdx - 1] ?? 0) +
-            (visited[pIdx + 1] ?? 0) +
-            (visited[pIdx - w] ?? 0) +
-            (visited[pIdx + w] ?? 0);
-          if (neighborsBg > 0) {
-            const aIdx = pIdx * 4 + 3;
-            pixels[aIdx] = Math.round((pixels[aIdx] ?? 255) * (1 - neighborsBg * 0.12));
-          }
-        }
-      }
-    }
-  }
-
-  // Compute tight non-transparent bounding box so product occupies full hero height
-  let minX = w;
-  let minY = h;
-  let maxX = -1;
-  let maxY = -1;
-  for (let y = 0; y < h; y++) {
-    for (let x = 0; x < w; x++) {
-      if ((pixels[(y * w + x) * 4 + 3] ?? 0) > 12) {
-        if (x < minX) minX = x;
-        if (x > maxX) maxX = x;
-        if (y < minY) minY = y;
-        if (y > maxY) maxY = y;
-      }
-    }
-  }
-
-  if (maxX < minX || maxY < minY) {
-    // Fallback if flood-fill removed everything (e.g. blank white test fixture): keep original!
-    const orig = await sharp(refBytes, { animated: false })
-      .ensureAlpha()
-      .png()
-      .toBuffer({ resolveWithObject: true });
-    return {
-      png: new Uint8Array(orig.data.buffer, orig.data.byteOffset, orig.data.byteLength),
-      width: orig.info.width,
-      height: orig.info.height,
-    };
-  }
-
-  const cropW = maxX - minX + 1;
-  const cropH = maxY - minY + 1;
-  const cropped = await sharp(pixels, { raw: { width: w, height: h, channels: 4 } })
-    .extract({ left: minX, top: minY, width: cropW, height: cropH })
-    .png()
-    .toBuffer({ resolveWithObject: true });
-
-  return {
-    png: new Uint8Array(cropped.data.buffer, cropped.data.byteOffset, cropped.data.byteLength),
-    width: cropped.info.width,
-    height: cropped.info.height,
-  };
-}
-
-/**
- * Composite the crisp original product cutout + soft contact/drop shadow onto the
- * Gemini-generated background scene so packaging text is 100% pixel-exact.
- */
-export async function compositeProductOntoScene(
-  sceneBytes: Uint8Array,
-  productRefBytes: Uint8Array,
-): Promise<{ bytes: Uint8Array; mimeType: "image/png"; width: number; height: number }> {
-  const sceneMeta = await sharp(sceneBytes, { animated: false }).metadata();
-  const sceneW = sceneMeta.width ?? 1080;
-  const sceneH = sceneMeta.height ?? 1350;
-
-  const cutout = await extractProductCutout(productRefBytes);
-  const maxProdW = Math.max(64, Math.round(sceneW * 0.7));
-  const maxProdH = Math.max(64, Math.round(sceneH * 0.68));
-
-  const scaledProduct = await sharp(cutout.png)
-    .resize({
-      width: maxProdW,
-      height: maxProdH,
-      fit: "inside",
-      kernel: "lanczos3",
-    })
-    .ensureAlpha()
-    .raw()
-    .toBuffer({ resolveWithObject: true });
-
-  const prodW = scaledProduct.info.width;
-  const prodH = scaledProduct.info.height;
-  const prodPng = await sharp(scaledProduct.data, {
-    raw: { width: prodW, height: prodH, channels: 4 },
-  })
-    .png()
-    .toBuffer();
-
-  // Build soft dark drop shadow from the product's alpha silhouette
-  const shadowRaw = Buffer.alloc(prodW * prodH * 4);
-  for (let i = 0; i < prodW * prodH; i++) {
-    const a = scaledProduct.data[i * 4 + 3] ?? 0;
-    shadowRaw[i * 4] = 0;
-    shadowRaw[i * 4 + 1] = 0;
-    shadowRaw[i * 4 + 2] = 0;
-    shadowRaw[i * 4 + 3] = Math.round(a * 0.36);
-  }
-  const blurSigma = Math.max(1, Math.min(24, Math.round(Math.min(prodW, prodH) * 0.03)));
-  const shadowPng = await sharp(shadowRaw, {
-    raw: { width: prodW, height: prodH, channels: 4 },
-  })
-    .blur(blurSigma)
-    .png()
-    .toBuffer();
-
-  const left = Math.max(0, Math.round((sceneW - prodW) / 2));
-  const top = Math.max(0, Math.min(sceneH - prodH, Math.round(sceneH * 0.18)));
-  const shadowOffsetY = Math.min(sceneH - prodH - top, Math.max(2, Math.round(sceneH * 0.012)));
-
-  const composited = await sharp(sceneBytes, { animated: false })
-    .ensureAlpha()
-    .composite([
-      { input: shadowPng, left, top: top + shadowOffsetY },
-      { input: prodPng, left, top },
-    ])
-    .toColorspace("srgb")
-    .png({ compressionLevel: 8 })
-    .toBuffer({ resolveWithObject: true });
-
-  return {
-    bytes: new Uint8Array(
-      composited.data.buffer,
-      composited.data.byteOffset,
-      composited.data.byteLength,
-    ),
-    mimeType: "image/png",
-    width: composited.info.width,
-    height: composited.info.height,
-  };
-}
-
 async function normalizeReferenceForGemini(
   bytes: Uint8Array,
   contentType: string,
@@ -333,6 +125,9 @@ async function normalizeReferenceForGemini(
 }
 
 export function createImageGenerateHandler(deps: ImageGenerateDeps) {
+  const vision = deps.vision ?? missingVisionHelper();
+  const pipelineDeps = { vision, stateDir: deps.stateDir, logger: deps.logger };
+
   return defineHandler({
     payload: ImageGeneratePayload,
     run: async (payload, ctx: JobContext) => {
@@ -368,152 +163,201 @@ export function createImageGenerateHandler(deps: ImageGenerateDeps) {
         }
 
         const preserveLabel = payload.preserveProductLabel && refDownloads.length > 0;
-        const promptText = preserveLabel
-          ? buildLabelPreservingScenePrompt(payload.prompt, payload.aspectRatio)
-          : payload.prompt;
+        const requestedPosition: PlacedPosition | undefined =
+          payload.productPosition && payload.productPosition !== "auto"
+            ? payload.productPosition
+            : undefined;
+        let product: PreparedProduct | null = null;
+        try {
+          if (preserveLabel && refDownloads[0]) {
+            // U9 steps 1–2 before paying: read the label, cut the product out.
+            ctx.progress(0.14, "Ürün etiketi okunuyor ve ürün arka plandan ayrılıyor");
+            product = await prepareProduct(
+              pipelineDeps,
+              refDownloads[0].bytes,
+              payload.labelText,
+              signal,
+            );
+          }
+          const promptText =
+            preserveLabel && product
+              ? buildLabelPreservingScenePrompt(payload.prompt, payload.aspectRatio, {
+                  position: requestedPosition ?? "bottom-center",
+                  scale: payload.productScale ?? DEFAULT_PRODUCT_SCALE,
+                  labelLines: product.expected,
+                })
+              : payload.prompt;
 
-        const parts: Record<string, unknown>[] = [{ text: promptText }];
-        for (const ref of refDownloads) {
-          parts.push({
-            inlineData: {
-              mimeType: ref.mimeType,
-              data: Buffer.from(
-                ref.bytes.buffer,
-                ref.bytes.byteOffset,
-                ref.bytes.byteLength,
-              ).toString("base64"),
-            },
-          });
-        }
-
-        ctx.progress(0.25, `Gemini ile görsel üretiliyor (${model})`);
-        const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`;
-        const usageSink = geminiUsageSink(deps.aiUsage, { kind: "image", jobId: ctx.jobId });
-        let res: Response;
-        let rawBody: unknown;
-        for (let tries = 0; ; tries++) {
-          // "Bütçe dolunca dur": no paid call once the month's budget is used up (S7).
-          usageSink?.assertBudget?.();
-          res = await doFetch(url, {
-            method: "POST",
-            headers: {
-              "x-goog-api-key": apiKey,
-              "content-type": "application/json",
-            },
-            body: JSON.stringify({
-              contents: [{ role: "user", parts }],
-              generationConfig: {
-                responseModalities: ["IMAGE"],
-                imageConfig: {
-                  aspectRatio: payload.aspectRatio,
-                  imageSize: payload.imageSize,
-                },
+          const parts: Record<string, unknown>[] = [{ text: promptText }];
+          for (const ref of refDownloads) {
+            parts.push({
+              inlineData: {
+                mimeType: ref.mimeType,
+                data: Buffer.from(
+                  ref.bytes.buffer,
+                  ref.bytes.byteOffset,
+                  ref.bytes.byteLength,
+                ).toString("base64"),
               },
-            }),
-            signal,
-          });
-          const rawText = await res.text().catch(() => "");
-          try {
-            rawBody = JSON.parse(rawText);
-          } catch {
-            rawBody = {};
+            });
           }
-          if (res.status !== 429) break;
-          // A per-minute quota: wait as long as Google says and ask again (U4).
-          const delay = rateLimitDelayMs(res.headers, rawText, tries);
-          if (delay === null || tries + 1 >= GEMINI_RATE_LIMIT_TRIES) break;
-          await (deps.imageSleep ?? abortableSleep)(delay, signal);
-        }
-        if (!res.ok) {
-          const errObj = (rawBody as { error?: { message?: string; status?: string } }).error ?? {};
-          const msg = sanitizeSecret(String(errObj.message ?? `HTTP ${res.status}`), apiKey).slice(
-            0,
-            500,
-          );
-          deps.logger.warn(`[job ${ctx.jobId}] gemini image error ${res.status}: ${msg}`);
-          if (res.status >= 500 || res.status === 429) {
-            throw new RetryableError(
-              res.status === 429
-                ? "Gemini görsel kotası doldu (çok istek); biraz sonra yeniden denenecek."
-                : "Gemini görsel servisi şu an yanıt vermiyor; yeniden denenecek.",
-            );
+
+          ctx.progress(0.25, `Gemini ile görsel üretiliyor (${model})`);
+          const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`;
+          const usageSink = geminiUsageSink(deps.aiUsage, { kind: "image", jobId: ctx.jobId });
+          let res: Response;
+          let rawBody: unknown;
+          for (let tries = 0; ; tries++) {
+            // "Bütçe dolunca dur": no paid call once the month's budget is used up (S7).
+            usageSink?.assertBudget?.();
+            res = await doFetch(url, {
+              method: "POST",
+              headers: {
+                "x-goog-api-key": apiKey,
+                "content-type": "application/json",
+              },
+              body: JSON.stringify({
+                contents: [{ role: "user", parts }],
+                generationConfig: {
+                  responseModalities: ["IMAGE"],
+                  imageConfig: {
+                    aspectRatio: payload.aspectRatio,
+                    imageSize: payload.imageSize,
+                  },
+                },
+              }),
+              signal,
+            });
+            const rawText = await res.text().catch(() => "");
+            try {
+              rawBody = JSON.parse(rawText);
+            } catch {
+              rawBody = {};
+            }
+            if (res.status !== 429) break;
+            // A per-minute quota: wait as long as Google says and ask again (U4).
+            const delay = rateLimitDelayMs(res.headers, rawText, tries);
+            if (delay === null || tries + 1 >= GEMINI_RATE_LIMIT_TRIES) break;
+            await (deps.imageSleep ?? abortableSleep)(delay, signal);
           }
-          if (res.status === 401 || res.status === 403) {
+          if (!res.ok) {
+            const errObj =
+              (rawBody as { error?: { message?: string; status?: string } }).error ?? {};
+            const msg = sanitizeSecret(
+              String(errObj.message ?? `HTTP ${res.status}`),
+              apiKey,
+            ).slice(0, 500);
+            deps.logger.warn(`[job ${ctx.jobId}] gemini image error ${res.status}: ${msg}`);
+            if (res.status >= 500 || res.status === 429) {
+              throw new RetryableError(
+                res.status === 429
+                  ? "Gemini görsel kotası doldu (çok istek); biraz sonra yeniden denenecek."
+                  : "Gemini görsel servisi şu an yanıt vermiyor; yeniden denenecek.",
+              );
+            }
+            if (res.status === 401 || res.status === 403) {
+              throw new Error(
+                "Gemini anahtarı kabul edilmedi. Ayarlar → Yapay zekâ'dan anahtarı yeniden girin.",
+              );
+            }
             throw new Error(
-              "Gemini anahtarı kabul edilmedi. Ayarlar → Yapay zekâ'dan anahtarı yeniden girin.",
+              `Gemini görsel üretimi başarısız oldu (HTTP ${res.status}). Tarifi değiştirip yeniden deneyin.`,
             );
           }
-          throw new Error(
-            `Gemini görsel üretimi başarısız oldu (HTTP ${res.status}). Tarifi değiştirip yeniden deneyin.`,
-          );
-        }
 
-        const usage = (rawBody as { usageMetadata?: GeminiUsageMetadata; modelVersion?: string })
-          .usageMetadata;
-        if (usage) {
-          const version = (rawBody as { modelVersion?: string }).modelVersion;
-          usageSink?.(sampleFromMetadata(version ?? model, usage));
-        }
-
-        const candidate = (
-          rawBody as {
-            candidates?: {
-              finishReason?: string;
-              content?: { parts?: { inlineData?: { mimeType?: string; data?: string } }[] };
-            }[];
-            promptFeedback?: { blockReason?: string };
+          const usage = (rawBody as { usageMetadata?: GeminiUsageMetadata; modelVersion?: string })
+            .usageMetadata;
+          if (usage) {
+            const version = (rawBody as { modelVersion?: string }).modelVersion;
+            usageSink?.(sampleFromMetadata(version ?? model, usage));
           }
-        ).candidates?.[0];
-        const imagePart = (candidate?.content?.parts ?? []).find((p) => p.inlineData?.data);
-        if (!imagePart?.inlineData?.data) {
-          const reason =
-            candidate?.finishReason ??
-            (rawBody as { promptFeedback?: { blockReason?: string } }).promptFeedback
-              ?.blockReason ??
-            "yok";
-          deps.logger.warn(
-            `[job ${ctx.jobId}] gemini returned no picture (finishReason=${reason})`,
-          );
-          throw new Error(
-            reason === "SAFETY" || reason === "PROHIBITED_CONTENT" || reason === "IMAGE_SAFETY"
-              ? "Gemini bu tarifle görsel üretmedi (içerik kuralları). Tarifi değiştirip yeniden deneyin."
-              : "Gemini görsel döndürmedi. Tarifi değiştirip yeniden deneyin.",
-          );
-        }
 
-        const rawGeneratedBuf = Buffer.from(imagePart.inlineData.data, "base64");
-        let finalBytes: Uint8Array = new Uint8Array(
-          rawGeneratedBuf.buffer,
-          rawGeneratedBuf.byteOffset,
-          rawGeneratedBuf.byteLength,
-        );
-        let finalMimeType = imagePart.inlineData.mimeType ?? "image/png";
-        let finalWidth = 0;
-        let finalHeight = 0;
-
-        if (preserveLabel && refDownloads[0]) {
-          ctx.progress(0.62, "Ürün etiketi piksel hassasiyetiyle sahneye yerleştiriliyor");
-          const composited = await compositeProductOntoScene(finalBytes, refDownloads[0].bytes);
-          finalBytes = composited.bytes;
-          finalMimeType = composited.mimeType;
-          finalWidth = composited.width;
-          finalHeight = composited.height;
-        } else {
-          const meta = await sharp(finalBytes, { animated: false }).metadata();
-          finalWidth = meta.width ?? 1080;
-          finalHeight = meta.height ?? 1350;
-          if (!SUPPORTED_INLINE_MIMES.has(finalMimeType)) {
-            finalMimeType = meta.format === "jpeg" ? "image/jpeg" : "image/png";
+          const candidate = (
+            rawBody as {
+              candidates?: {
+                finishReason?: string;
+                content?: { parts?: { inlineData?: { mimeType?: string; data?: string } }[] };
+              }[];
+              promptFeedback?: { blockReason?: string };
+            }
+          ).candidates?.[0];
+          const imagePart = (candidate?.content?.parts ?? []).find((p) => p.inlineData?.data);
+          if (!imagePart?.inlineData?.data) {
+            const reason =
+              candidate?.finishReason ??
+              (rawBody as { promptFeedback?: { blockReason?: string } }).promptFeedback
+                ?.blockReason ??
+              "yok";
+            deps.logger.warn(
+              `[job ${ctx.jobId}] gemini returned no picture (finishReason=${reason})`,
+            );
+            throw new Error(
+              reason === "SAFETY" || reason === "PROHIBITED_CONTENT" || reason === "IMAGE_SAFETY"
+                ? "Gemini bu tarifle görsel üretmedi (içerik kuralları). Tarifi değiştirip yeniden deneyin."
+                : "Gemini görsel döndürmedi. Tarifi değiştirip yeniden deneyin.",
+            );
           }
-        }
 
-        return {
-          bytes: finalBytes,
-          mimeType: finalMimeType,
-          width: finalWidth,
-          height: finalHeight,
-          preserveLabel,
-        };
+          const rawGeneratedBuf = Buffer.from(imagePart.inlineData.data, "base64");
+          const generated = new Uint8Array(
+            rawGeneratedBuf.buffer,
+            rawGeneratedBuf.byteOffset,
+            rawGeneratedBuf.byteLength,
+          );
+
+          if (preserveLabel && product) {
+            // U9 steps 4–6: place the real product, composite, read the label back.
+            ctx.progress(0.62, "Gerçek ürün sahneye yerleştiriliyor ve etiket kontrol ediliyor");
+            const placed = await placeAndVerify(
+              pipelineDeps,
+              generated,
+              product,
+              { position: payload.productPosition, scale: payload.productScale },
+              signal,
+            );
+            const label: LabelReport = {
+              labelCheck: {
+                status: placed.labelCheck.status,
+                message: placed.labelCheck.message,
+                source: placed.labelCheck.source,
+                expected: placed.labelCheck.expected.slice(0, 40),
+                missing: placed.labelCheck.missing.slice(0, 40),
+                found: placed.labelCheck.found.slice(0, 60),
+                score: placed.labelCheck.score,
+              },
+              placement: {
+                ...placed.placement,
+                summary: placementSummary(placed.placement),
+                light: placed.light,
+              },
+              cutout: product.cutout.method,
+              notes: [...product.notes, ...placed.notes],
+            };
+            return {
+              bytes: placed.bytes,
+              mimeType: placed.mimeType as string,
+              width: placed.width,
+              height: placed.height,
+              preserveLabel,
+              label,
+            };
+          }
+          const meta = await sharp(generated, { animated: false }).metadata();
+          let mimeType = imagePart.inlineData.mimeType ?? "image/png";
+          if (!SUPPORTED_INLINE_MIMES.has(mimeType)) {
+            mimeType = meta.format === "jpeg" ? "image/jpeg" : "image/png";
+          }
+          return {
+            bytes: generated,
+            mimeType,
+            width: meta.width ?? 1080,
+            height: meta.height ?? 1350,
+            preserveLabel,
+            label: undefined,
+          };
+        } finally {
+          if (product) await removeDir(product.workDir);
+        }
       };
 
       const dir = resultDir(deps.stateDir, ctx.jobId);
@@ -525,6 +369,7 @@ export function createImageGenerateHandler(deps: ImageGenerateDeps) {
         let finalWidth: number;
         let finalHeight: number;
         let preserveLabel: boolean;
+        let label: LabelReport | undefined;
         let usedModel = model;
         let assetId: string | undefined;
         if (stored) {
@@ -537,6 +382,7 @@ export function createImageGenerateHandler(deps: ImageGenerateDeps) {
           finalWidth = stored.meta.width;
           finalHeight = stored.meta.height;
           preserveLabel = stored.meta.preserveProductLabel;
+          label = stored.meta.label;
           usedModel = stored.meta.model;
           assetId = stored.meta.assetId;
         } else {
@@ -546,6 +392,7 @@ export function createImageGenerateHandler(deps: ImageGenerateDeps) {
           finalWidth = generated.width;
           finalHeight = generated.height;
           preserveLabel = generated.preserveLabel;
+          label = generated.label;
           // Kept before the upload: a failed upload is retried without paying again.
           await saveStoredImage(
             dir,
@@ -556,6 +403,7 @@ export function createImageGenerateHandler(deps: ImageGenerateDeps) {
               model,
               preserveProductLabel: preserveLabel,
               file: "image.bin",
+              ...(label ? { label } : {}),
             },
             finalBytes,
           ).catch((error: unknown) =>
@@ -594,30 +442,58 @@ export function createImageGenerateHandler(deps: ImageGenerateDeps) {
             preserveProductLabel: preserveLabel,
             file: "image.bin",
             assetId: uploaded.id,
+            ...(label ? { label } : {}),
           }).catch(() => undefined);
+          // N12: tag the new picture for the library now (best effort; a backfill retries).
+          try {
+            const analysis = await analyzePicture({ ...deps, vision }, finalBytes, {
+              signal,
+              jobId: ctx.jobId,
+            });
+            await deps.api.client.workerAssets.putAnalysis(uploaded.id, analysis, { signal });
+          } catch (error) {
+            if (signal.aborted) throw error;
+            deps.logger.warn(
+              `[job ${ctx.jobId}] tagging the new picture failed: ${(error as Error).message}`,
+            );
+          }
         }
 
         let filledContentId: string | undefined;
         let filledVersion: number | undefined;
+        const blocked = label ? labelBlocksDelivery(label.labelCheck) : false;
+        const notes = [...(label?.notes ?? [])];
 
         if (payload.targetContentId && payload.targetSlotId) {
-          ctx.progress(0.88, "Hedef postun görsel yuvası doldurulup render ediliyor");
-          const rendered = await executeContentRender({
-            deps,
-            jobId: ctx.jobId,
-            brandId,
-            contentId: payload.targetContentId,
-            payload: {
-              format: "jpeg",
-              slotAssignments: { [payload.targetSlotId]: uploaded.id },
-            },
-            signal,
-          });
-          filledContentId = payload.targetContentId;
-          filledVersion = rendered.version;
+          if (blocked) {
+            // Never put a picture whose label reads differently into a post without the owner.
+            notes.push(
+              "Etiket doğrulanamadığı için görsel posta yerleştirilmedi; Medya'da duruyor. Kontrol edip uygunsa yuvaya elle yerleştirin.",
+            );
+          } else {
+            ctx.progress(0.88, "Hedef postun görsel yuvası doldurulup render ediliyor");
+            const rendered = await executeContentRender({
+              deps,
+              jobId: ctx.jobId,
+              brandId,
+              contentId: payload.targetContentId,
+              payload: {
+                format: "jpeg",
+                slotAssignments: { [payload.targetSlotId]: uploaded.id },
+              },
+              signal,
+            });
+            filledContentId = payload.targetContentId;
+            filledVersion = rendered.version;
+          }
         }
 
-        ctx.progress(1, "Tamamlandı");
+        ctx.progress(
+          1,
+          label && label.labelCheck.status !== "ok"
+            ? `Tamamlandı · ${label.labelCheck.status === "skipped" || label.labelCheck.status === "no_label" ? "etiket doğrulanamadı" : "etiket uyuşmuyor, kontrol edin"}`
+            : "Tamamlandı",
+        );
         await rm(dir, { recursive: true, force: true }).catch(() => undefined);
         return {
           assetId: uploaded.id,
@@ -627,6 +503,15 @@ export function createImageGenerateHandler(deps: ImageGenerateDeps) {
           model: usedModel,
           ...(stored ? { reusedGeneration: true } : {}),
           preserveProductLabel: preserveLabel,
+          ...(label
+            ? {
+                labelCheck: label.labelCheck,
+                placement: label.placement,
+                cutout: label.cutout,
+              }
+            : {}),
+          ...(notes.length > 0 ? { notes } : {}),
+          ...(blocked && payload.targetContentId ? { slotSkipped: true } : {}),
           ...(filledContentId !== undefined ? { filledContentId } : {}),
           ...(filledVersion !== undefined ? { filledVersion } : {}),
         };

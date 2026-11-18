@@ -411,7 +411,7 @@ export const aiRoutes = router
           spentUsd,
           monthStart: new Date(monthStart).toISOString(),
         },
-        mediaCaptions: prefs.mediaCaptions,
+        mediaCaptions: prefs.mediaCaptions ?? false,
       };
       return c.json(out, 200);
     },
