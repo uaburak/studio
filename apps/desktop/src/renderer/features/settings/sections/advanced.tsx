@@ -1,6 +1,6 @@
 // Ayarlar → Gelişmiş: the local host (API + LAN gateway + worker): run it here or attach, status
 // and ports, LAN access, repository folder; remote access (Cloudflare Tunnel: hostname, token,
-// switch); logs. Changing how the host runs restarts it, like the AppKit app.
+// switch); logs. Changing how the host runs restarts it.
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { OAUTH_PORT } from "../../../../shared/accounts-ipc.ts";
@@ -13,12 +13,15 @@ import { FormFooter, Pane, Row, Subheader, useConfirm } from "../parts.tsx";
 import { hostStatusText } from "../status-text.ts";
 import { SystemRows } from "./advanced-system.tsx";
 
-export const DEFAULT_REMOTE_HOSTNAME = "social.burakkoc.net";
+/** A placeholder only: there is no default address, the owner types theirs. */
+export const REMOTE_HOSTNAME_EXAMPLE = "studio.ornek.com";
 
+/** The tunnel's public hostname without scheme or trailing slash ("" when none is set). */
 export function normalizedHostname(raw: string): string {
-  let clean = raw.trim();
-  clean = clean.replace(/^https?:\/\//, "").replace(/\/+$/, "");
-  return clean.length === 0 ? DEFAULT_REMOTE_HOSTNAME : clean;
+  return raw
+    .trim()
+    .replace(/^https?:\/\//, "")
+    .replace(/\/+$/, "");
 }
 
 const tunnelKey = ["tunnel-token"] as const;
@@ -72,13 +75,17 @@ export function AdvancedSection() {
       ? `Durum: ${phase.kind === "running" ? "çalışıyor" : phase.kind === "failed" ? "durdu (hata)" : "bekliyor"}. `
       : "";
     if (host?.tunnelNote) remoteDetail = phaseText + host.tunnelNote;
+    else if (!cleanHost)
+      remoteDetail = `Önce tünelin adresini yaz (ör. ${REMOTE_HOSTNAME_EXAMPLE}) ve kaydet.`;
     else if (tokenSaved)
       remoteDetail = `${phaseText}Anahtar kayıtlı · eşleşmiş telefonlar ev dışından https://${cleanHost} ile bağlanır.`;
     else
       remoteDetail =
         "Kurulum: `brew install cloudflared`, sonra Cloudflare Zero Trust → Tunnels'tan aldığın CLOUDFLARE_TUNNEL_TOKEN'ı aşağıya kaydet.";
   } else {
-    remoteDetail = `Kapalı. Açınca ev dışındaki iPhone https://${cleanHost} üzerinden Cloudflare Tunnel ile bağlanır.`;
+    remoteDetail = cleanHost
+      ? `Kapalı. Açınca ev dışındaki iPhone https://${cleanHost} üzerinden Cloudflare Tunnel ile bağlanır.`
+      : "Kapalı. Açınca ev dışındaki iPhone, aşağıya yazacağın adres üzerinden Cloudflare Tunnel ile bağlanır.";
   }
 
   const saveTunnel = async () => {
@@ -215,7 +222,7 @@ export function AdvancedSection() {
                   <>
                     <TextField
                       aria-label="Tünel adresi"
-                      placeholder={DEFAULT_REMOTE_HOSTNAME}
+                      placeholder={`Tünel adresi (ör. ${REMOTE_HOSTNAME_EXAMPLE})`}
                       value={hostname}
                       onChange={(e) => setHostname(e.target.value)}
                     />

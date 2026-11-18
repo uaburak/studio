@@ -3,7 +3,7 @@
   "configurations": [
     {
       "name": "studio-api",
-      "runtimeExecutable": "/Users/burak/.local/bin/pnpm",
+      "runtimeExecutable": "pnpm",
       "runtimeArgs": [
         "--filter",
         "@studio/api",

@@ -231,7 +231,10 @@ function fakeApi(over: Partial<AccountsApi> = {}): AccountsApi & {
         account({ id: "a2", platform: "facebook", handle: "MTM Agro" }),
       ],
     }),
-    linkedInOAuth: record("linkedInOAuth", account({ platform: "linkedin", handle: "Burak Koç" })),
+    linkedInOAuth: record(
+      "linkedInOAuth",
+      account({ platform: "linkedin", handle: "Deniz Yılmaz" }),
+    ),
     checkAccount: record("checkAccount", account({ tokenHealth: "expiring_soon" })),
     disconnectAccount: record("disconnectAccount", account({ status: "disabled" })),
     ...over,
@@ -396,7 +399,7 @@ describe("AccountsService", () => {
     });
     expect(service.state().phase).toEqual({
       kind: "finished",
-      message: "LinkedIn bağlandı: Burak Koç. Anahtar 60 gün geçerli; bitmeden hatırlatılır.",
+      message: "LinkedIn bağlandı: Deniz Yılmaz. Anahtar 60 gün geçerli; bitmeden hatırlatılır.",
     });
   });
 
@@ -463,11 +466,11 @@ describe("secret and id storage", () => {
     decrypt: (data) => Buffer.from([...data].reverse()).toString(),
   };
 
-  it("keeps secrets encrypted in a 0600 file, falls back to the AppKit Keychain until removed", async () => {
-    const appKit = { has: vi.fn(async () => true), load: vi.fn(async () => "FROM-APPKIT") };
+  it("keeps secrets encrypted in a 0600 file", async () => {
     const file = join(dir, "desktop-secrets.json");
-    const store = new FileSecretStore(file, cipher, appKit);
-    expect(await store.load("meta-app-secret")).toBe("FROM-APPKIT");
+    const store = new FileSecretStore(file, cipher);
+    expect(await store.has("meta-app-secret")).toBe(false);
+    expect(await store.load("meta-app-secret")).toBeNull();
     await store.save("meta-app-secret", "OWN-SECRET");
     expect(readFileSync(file, "utf8")).not.toContain("OWN-SECRET");
     expect(statSync(file).mode & 0o777).toBe(0o600);
@@ -475,8 +478,7 @@ describe("secret and id storage", () => {
     await store.delete("meta-app-secret");
     expect(await store.has("meta-app-secret")).toBe(false);
     expect(await store.load("meta-app-secret")).toBeNull();
-    // Another name still reads the AppKit copy.
-    expect(await store.has("linkedin-client-secret")).toBe(true);
+    expect(await store.has("linkedin-client-secret")).toBe(false);
   });
 
   it("refuses to save when encryption is unavailable", async () => {
@@ -486,14 +488,12 @@ describe("secret and id storage", () => {
     );
   });
 
-  it("stores app ids and imports the AppKit defaults until saved", async () => {
-    const run = vi.fn(async (_file: string, args: string[]) =>
-      args[2] === "studio.meta.appId" ? { code: 0, stdout: "777\n" } : { code: 1, stdout: "" },
-    );
-    const store = new AppIdsStore(join(dir, "ids.json"), run);
-    expect(await store.get()).toEqual({ metaAppId: "777", linkedInClientId: "" });
+  it("stores app ids", async () => {
+    const store = new AppIdsStore(join(dir, "ids.json"));
+    expect(await store.get()).toEqual({ metaAppId: "", linkedInClientId: "" });
+    await store.set({ metaAppId: "777" });
     await store.set({ linkedInClientId: "abc" });
-    expect(await new AppIdsStore(join(dir, "ids.json"), null).get()).toEqual({
+    expect(await new AppIdsStore(join(dir, "ids.json")).get()).toEqual({
       metaAppId: "777",
       linkedInClientId: "abc",
     });

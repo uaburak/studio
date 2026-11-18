@@ -7,8 +7,9 @@
 #
 # Kullanım: apps/apple/scripts/install-ios-device.sh [--launch] [cihaz-udid]
 #   (udid verilmezse bağlı ilk iPhone kullanılır)
-#   Varsayılan: yalnızca kurar, uygulamayı AÇMAZ (Burak telefonu kullanırken araya girmesin).
-#   --launch yalnızca Burak açıkça istediğinde kullanılır.
+#   Varsayılan: yalnızca kurar, uygulamayı AÇMAZ (telefon kullanılırken araya girmesin).
+#   --launch yalnızca telefonun sahibi açıkça istediğinde kullanılır.
+#   Paket kimliği derlenen uygulamadan okunur (StudioIOS/Config: STUDIO_BUNDLE_ID).
 set -euo pipefail
 LAUNCH=0
 if [ "${1:-}" = "--launch" ]; then LAUNCH=1; shift; fi
@@ -31,16 +32,17 @@ xcodebuild -project StudioIOS.xcodeproj -scheme StudioIOS -configuration Debug \
   ENABLE_DEBUG_DYLIB=NO build -quiet
 APP=build/DeviceData/Build/Products/Debug-iphoneos/Studio.app
 cp "$PROFILE" "$APP/embedded.mobileprovision"
+BUNDLE_ID=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Info.plist")
 
 ENT=$(mktemp -t studio-ent).plist
 cat > "$ENT" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
-<key>application-identifier</key><string>$TEAM.net.burakkoc.studio.ios</string>
+<key>application-identifier</key><string>$TEAM.$BUNDLE_ID</string>
 <key>com.apple.developer.team-identifier</key><string>$TEAM</string>
 <key>get-task-allow</key><true/>
-<key>keychain-access-groups</key><array><string>$TEAM.net.burakkoc.studio.ios</string></array>
+<key>keychain-access-groups</key><array><string>$TEAM.$BUNDLE_ID</string></array>
 </dict></plist>
 EOF
 # Every nested binary must be signed too (frameworks, and any *.dylib next to the
@@ -55,8 +57,8 @@ rm -f "$ENT"
 codesign --verify --deep --strict "$APP"
 xcrun devicectl device install app --device "$DEVICE" "$APP"
 if [ "$LAUNCH" = 1 ]; then
-  xcrun devicectl device process launch --device "$DEVICE" --terminate-existing net.burakkoc.studio.ios >/dev/null
-  echo "Kuruldu ve açıldı: net.burakkoc.studio.ios → $DEVICE"
+  xcrun devicectl device process launch --device "$DEVICE" --terminate-existing "$BUNDLE_ID" >/dev/null
+  echo "Kuruldu ve açıldı: $BUNDLE_ID → $DEVICE"
 else
-  echo "Kuruldu (açılmadı): net.burakkoc.studio.ios → $DEVICE"
+  echo "Kuruldu (açılmadı): $BUNDLE_ID → $DEVICE"
 fi

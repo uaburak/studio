@@ -44,7 +44,7 @@ echo "Seeding $API"
 MTM=$(req POST /api/brands '{"name":"MTM Agro","slug":"mtm-agro"}' | jq -r .id)
 KOC=$(req POST /api/brands '{"name":"Koç Chords","slug":"koc-chords"}' | jq -r .id)
 FINVO=$(req POST /api/brands '{"name":"Finvo"}' | jq -r .id)
-BURAK=$(req POST /api/brands '{"name":"burakkoc.net","slug":"burakkoc-net"}' | jq -r .id)
+ORNEK=$(req POST /api/brands '{"name":"ornek.com","slug":"ornek-com"}' | jq -r .id)
 
 IG=$(req POST /api/social-accounts "{\"brandId\":\"$MTM\",\"platform\":\"instagram\",\"handle\":\"mtmagro\",\"externalId\":\"17841400000000001\",\"status\":\"connected\"}" | jq -r .id)
 req POST /api/social-accounts "{\"brandId\":\"$MTM\",\"platform\":\"facebook\",\"handle\":\"MTM Agro\",\"externalId\":\"102200000000001\",\"status\":\"connected\"}" >/dev/null
@@ -130,7 +130,7 @@ fi
 
 conversation "$KOC" "Konser duyurusu" >/dev/null
 conversation "$FINVO" "Ekim raporu" >/dev/null
-conversation "$BURAK" "Portfolyo güncellemesi" >/dev/null
+conversation "$ORNEK" "Portfolyo güncellemesi" >/dev/null
 
 LANSMAN=$(conversation "$MTM" "Venta Borinc lansmanı")
 RUN=$(user_message "$LANSMAN" "Venta Borinc lansmanı için üç post hazırlayalım.")
@@ -207,4 +207,4 @@ for JOB in $(req GET "/api/jobs?type=chat.turn&status=queued&limit=100" | jq -r 
   req POST "/api/jobs/$JOB/cancel" >/dev/null
 done
 
-echo "Done: brands MTM Agro ($MTM), Koç Chords, Finvo, burakkoc.net; 12 posts; 7 conversations."
+echo "Done: brands MTM Agro ($MTM), Koç Chords, Finvo, ornek.com; 12 posts; 7 conversations."

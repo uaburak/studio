@@ -242,7 +242,7 @@ describe("job stream frames", () => {
         type: "worker.claude",
         account: {
           status: "signed_in",
-          email: "burak@example.com",
+          email: "deniz@example.com",
           plan: "Claude Max",
           cliVersion: "2.1.0",
           loginUrl: null,

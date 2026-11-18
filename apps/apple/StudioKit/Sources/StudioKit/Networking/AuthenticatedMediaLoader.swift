@@ -15,7 +15,7 @@ public final class AuthenticatedMediaLoader: NSObject, AVAssetResourceLoaderDele
     private let source: URL
     private let headers: [String: String]
     private let session: URLSession
-    private let queue = DispatchQueue(label: "net.burakkoc.studio.media-loader")
+    private let queue = DispatchQueue(label: "studio.media-loader")
     private let lock = NSLock()
     private var tasks: [ObjectIdentifier: Task<Void, Never>] = [:]
     /// Bytes handed to AVPlayer per call.

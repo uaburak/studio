@@ -35,7 +35,7 @@ import { SchedulePoller } from "../src/publish/poller.ts";
 import type { JobContext } from "../src/registry.ts";
 import { createFakeApi, fakeBrand, NOW } from "./fake-api.ts";
 
-const AUTHOR = "urn:li:person:burak123";
+const AUTHOR = "urn:li:person:deniz123";
 type FakeState = ReturnType<typeof createFakeApi>["state"];
 
 function seedLinkedIn(state: FakeState, overrides: Partial<Schedule> = {}) {
@@ -77,7 +77,7 @@ function seedLinkedIn(state: FakeState, overrides: Partial<Schedule> = {}) {
     id: "acc_li",
     brandId: "brand_1",
     platform: "linkedin",
-    handle: "Burak",
+    handle: "Deniz",
     externalId: AUTHOR,
     status: "connected",
     createdAt: NOW,

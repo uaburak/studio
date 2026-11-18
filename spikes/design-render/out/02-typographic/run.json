@@ -13,7 +13,7 @@
         "subagentTokens": 142117,
         "toolUses": 4
       },
-      "requestPath": "/Users/burak/Desktop/Burak/Code/Studio/spikes/design-render/out/02-typographic/llm/01-generate.request.md",
+      "requestPath": "<repo>/spikes/design-render/out/02-typographic/llm/01-generate.request.md",
       "at": "2026-11-16T09:38:51.517Z"
     },
     "check-v1": {
@@ -39,7 +39,7 @@
         "subagentTokens": 135730,
         "toolUses": 5
       },
-      "requestPath": "/Users/burak/Desktop/Burak/Code/Studio/spikes/design-render/out/02-typographic/llm/02-revise.request.md",
+      "requestPath": "<repo>/spikes/design-render/out/02-typographic/llm/02-revise.request.md",
       "at": "2026-11-16T09:46:13.622Z"
     },
     "check-v2": {

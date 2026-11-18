@@ -409,7 +409,7 @@ describe("Mode B — Local Direct Publisher (@studio/publishers)", () => {
     seedApprovedSchedule({
       state,
       platform: "linkedin",
-      externalId: "urn:li:person:burak123",
+      externalId: "urn:li:person:deniz123",
       contentType: "carousel",
       slideBytes: [jpeg1, jpeg2],
     });

@@ -46,7 +46,7 @@ Henüz dağıtılmadı. Cloudflare'de hiçbir kaynak oluşturulmadı (bkz. "Kuru
 | `TOKEN_ENCRYPTION_KEY` | gizli (zorunlu)      | 32 rastgele baytın base64'ü (`openssl rand -base64 32`). Değişirse kayıtlı token'lar çözülemez; bekleyen siparişler yeniden gönderilmeli. |
 | `MEDIA_URL_SECRET`     | gizli (zorunlu)      | Medya URL imzası için HMAC anahtarı.                                                                                                      |
 | `META_APP_SECRET`      | gizli (isteğe bağlı) | Meta uygulamasında "Require App Secret" açıksa; her çağrıya `appsecret_proof` eklenir.                                                    |
-| `PUBLIC_BASE_URL`      | değişken             | Meta'nın medyayı indireceği adres (ör. `https://publish.burakkoc.net`). `wrangler.jsonc` içinde.                                          |
+| `PUBLIC_BASE_URL`      | değişken             | Meta'nın medyayı indireceği adres (ör. `https://publish.ornek.com`). `wrangler.jsonc` içinde.                                             |
 
 Yerelde: `.dev.vars.example` dosyasını `.dev.vars` olarak kopyalayın.
 
@@ -68,7 +68,7 @@ Access bu alan adının önüne konursa:
 - `/media/*`: **Bypass** politikası şart. Meta'nın sunucuları Access'ten geçemez; burayı imza korur.
 - `/health`: isteğe bağlı bypass.
 
-## Kurulum (tek seferlik, Burak yapacak; ajanlar dağıtmaz)
+## Kurulum (tek seferlik, sahibi yapar; ajanlar dağıtmaz)
 
 ```sh
 cd apps/cloud-publisher
@@ -86,7 +86,7 @@ openssl rand -hex 32 | pnpm exec wrangler secret put MEDIA_URL_SECRET
 # (Worker henüz yoksa wrangler oluşturmayı önerir: evet.)
 
 # 3) wrangler.jsonc: PUBLIC_BASE_URL'i gerçek adrese çevirin. Özel alan adı için:
-#    "routes": [{ "pattern": "publish.burakkoc.net", "custom_domain": true }]
+#    "routes": [{ "pattern": "publish.ornek.com", "custom_domain": true }]
 #    (ya da workers.dev adresi: https://studio-cloud-publisher.<hesap>.workers.dev)
 
 # 4) Dağıtım
@@ -94,8 +94,8 @@ pnpm run build                  # kuru çalıştırma, bir sorun var mı bakın
 pnpm exec wrangler deploy
 
 # 5) Kontrol
-curl https://publish.burakkoc.net/health
-curl -H "Authorization: Bearer <PUBLISHER_TOKEN>" https://publish.burakkoc.net/v1/orders
+curl https://publish.ornek.com/health
+curl -H "Authorization: Bearer <PUBLISHER_TOKEN>" https://publish.ornek.com/v1/orders
 ```
 
 Durable Object (SQLite), cron ve R2 Workers ücretsiz planında da var. Dağıtımda `Scheduler` nesnesi `wrangler.jsonc` içindeki `exports` ile otomatik oluşur.

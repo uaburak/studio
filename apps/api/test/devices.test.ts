@@ -58,7 +58,7 @@ async function newCode(): Promise<string> {
   return (await newOffer()).code;
 }
 
-async function pair(name = "Burak'ın iPhone'u", client = lan()): Promise<PairingResult> {
+async function pair(name = "Deniz'in iPhone'u", client = lan()): Promise<PairingResult> {
   const code = await newCode();
   const res = await call<PairingResult>("POST", "/api/pairing/claim", client, {
     code,
@@ -462,11 +462,11 @@ describe("QR pairing", () => {
 
 describe("routes", () => {
   const input = {
-    macName: "Burak's MacBook Pro",
+    macName: "Deniz's MacBook Pro",
     macId: "mac-1",
     lanAddresses: ["192.168.1.20", "10.0.0.5"],
     lanPort: 8791,
-    bonjourName: "Burak's MacBook Pro",
+    bonjourName: "Deniz's MacBook Pro",
     tunnelUrl: "https://social.example.net",
   };
 

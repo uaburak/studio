@@ -14,7 +14,7 @@
         "message": "<section id=\"s1\"> is a timeline element that contains nested <h1 id=\"headline\">. The timeline shows one row per top-level element, and the root composition is built only from sub-compositions.",
         "selector": "#s1",
         "dataAttributes": {},
-        "sourceFile": "/Users/burak/Desktop/Burak/Code/Studio/spikes/video-bakeoff/hyperframes/index.html",
+        "sourceFile": "<repo>/spikes/video-bakeoff/hyperframes/index.html",
         "bbox": {
           "x": 0,
           "y": 0,
@@ -30,7 +30,7 @@
         "message": "<section id=\"s2\"> is a timeline element that contains nested <div id=\"card\">. The timeline shows one row per top-level element, and the root composition is built only from sub-compositions.",
         "selector": "#s2",
         "dataAttributes": {},
-        "sourceFile": "/Users/burak/Desktop/Burak/Code/Studio/spikes/video-bakeoff/hyperframes/index.html",
+        "sourceFile": "<repo>/spikes/video-bakeoff/hyperframes/index.html",
         "bbox": {
           "x": 0,
           "y": 0,
@@ -46,7 +46,7 @@
         "message": "<section id=\"s3\"> is a timeline element that contains nested <h2 id=\"companyName\">. The timeline shows one row per top-level element, and the root composition is built only from sub-compositions.",
         "selector": "#s3",
         "dataAttributes": {},
-        "sourceFile": "/Users/burak/Desktop/Burak/Code/Studio/spikes/video-bakeoff/hyperframes/index.html",
+        "sourceFile": "<repo>/spikes/video-bakeoff/hyperframes/index.html",
         "bbox": {
           "x": 0,
           "y": 0,

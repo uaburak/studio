@@ -201,7 +201,7 @@ describe("mappers & worker schedule status transitions", () => {
       id: "acc-1",
       brandId: "b-1",
       platform: "linkedin" as const,
-      handle: "Burak",
+      handle: "Deniz",
       externalId: "urn:li:person:1",
       status: "connected" as const,
       createdAt: now,

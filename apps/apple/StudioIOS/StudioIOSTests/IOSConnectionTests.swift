@@ -5,11 +5,11 @@ import UIKit
 
 private let tunnel = URL(string: "https://social.example.net")!
 private let routes = MacRoutes(
-    macName: "Burak's MacBook Pro", macId: "mac-1", lanAddresses: ["192.168.1.20"], lanPort: 8791,
-    bonjourName: "Burak's MacBook Pro", tunnelUrl: tunnel)
+    macName: "Deniz's MacBook Pro", macId: "mac-1", lanAddresses: ["192.168.1.20"], lanPort: 8791,
+    bonjourName: "Deniz's MacBook Pro", tunnelUrl: tunnel)
 private let paired = DeviceCredential(
     token: "sdt_test", deviceId: "d-1", serverURL: URL(string: "http://192.168.1.20:8791")!,
-    serverName: "Burak's MacBook Pro", macId: "mac-1", routes: routes)
+    serverName: "Deniz's MacBook Pro", macId: "mac-1", routes: routes)
 
 /// A paired (or not) phone whose connection manager runs over in-memory services: the
 /// probe, Bonjour and the routes call are fakes, so nothing leaves the simulator.
@@ -103,7 +103,7 @@ struct IOSConnectionTests {
 
     @Test func pairingLinksOpenTheScanner() {
         let (app, _) = makeRemoteApp(credential: nil)
-        let invite = PairingInvite(macName: "Burak's MacBook Pro", secret: String(repeating: "x", count: 43), expiresAt: .now.addingTimeInterval(600), tunnelURL: tunnel)
+        let invite = PairingInvite(macName: "Deniz's MacBook Pro", secret: String(repeating: "x", count: 43), expiresAt: .now.addingTimeInterval(600), tunnelURL: tunnel)
         #expect(app.openLink(invite.url))
         #expect(app.pendingRoute == .pair)
         #expect(app.pendingInvite == invite)
@@ -113,9 +113,9 @@ struct IOSConnectionTests {
     @Test func greetsWithTheClaudeAccountName() async {
         let (app, _) = makeRemoteApp(answering: ["192.168.1.20": "mac-1"])
         await app.load()
-        // The sample worker reports the Claude account "Burak".
+        // The sample worker reports the Claude account "Deniz".
         for _ in 0..<50 where app.presence == nil { try? await Task.sleep(for: .milliseconds(20)) }
-        #expect(app.greetingName == "Burak")
+        #expect(app.greetingName == "Deniz")
         app.settings.ownerName = "Ayşe"
         #expect(app.greetingName == "Ayşe")
     }
@@ -131,7 +131,7 @@ struct IOSConnectionTests {
         await app.load()
         let settings = IOSSettingsViewController(app: app)
         settings.loadViewIfNeeded()
-        #expect(settings.macRowTitles.first == "Burak's MacBook Pro")
+        #expect(settings.macRowTitles.first == "Deniz's MacBook Pro")
         #expect(settings.macRowTitles.contains("Bağlantıyı kaldır"))
         // Technical words stay under Gelişmiş.
         let table = settings.tableView!

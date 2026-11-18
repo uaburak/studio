@@ -122,7 +122,7 @@ export function PublishingSection() {
                 )}
                 <TextField
                   aria-label="Bulut yayıncı adresi"
-                  placeholder="Adres (ör. https://publish.burakkoc.net)"
+                  placeholder="Adres (ör. https://publish.ornek.com)"
                   value={url}
                   onChange={(e) => setUrl(e.target.value)}
                 />

@@ -1,7 +1,7 @@
 // StudioIOSTests: unit tests hosted in Studio.app (iOS).
 
 PRODUCT_NAME = $(TARGET_NAME)
-PRODUCT_BUNDLE_IDENTIFIER = net.burakkoc.studio.ios.tests
+PRODUCT_BUNDLE_IDENTIFIER = $(STUDIO_BUNDLE_ID).tests
 GENERATE_INFOPLIST_FILE = YES
 TEST_HOST = $(BUILT_PRODUCTS_DIR)/Studio.app/Studio
 BUNDLE_LOADER = $(TEST_HOST)

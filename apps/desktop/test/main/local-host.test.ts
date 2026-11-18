@@ -126,7 +126,7 @@ function setup(overrides: Partial<HostDeps> = {}, conf: Partial<HostConfiguratio
     isPortFree: async () => true,
     freePort: async () => 50000,
     lanAddresses: () => ["192.168.1.20"],
-    computerName: () => "Burak's MacBook Pro",
+    computerName: () => "Deniz's MacBook Pro",
     checkRepoAccess: async () => ({ kind: "readable" }),
     readTunnelToken: async () => null,
     publishRoutes: async (_port, r) => {
@@ -277,7 +277,7 @@ describe("LocalHost start", () => {
     ]);
     expect(byName.worker?.cwd).toBe("/repo/apps/worker");
     expect(ctx.advertiser.starts[0]).toEqual({
-      name: "Burak's MacBook Pro",
+      name: "Deniz's MacBook Pro",
       port: 8791,
       macId: "inst-1",
       addresses: ["192.168.1.20"],
@@ -285,7 +285,7 @@ describe("LocalHost start", () => {
     expect(ctx.host.ownsChildren).toBe(true);
   });
 
-  it("moves the AppKit app's plain secrets into safeStorage once", async () => {
+  it("moves plain secrets (made without safeStorage) into safeStorage once", async () => {
     const ctx = setup();
     hosts.push(ctx.host);
     writeFileSync(join(ctx.stateDir, "worker-token"), "a".repeat(64));
@@ -330,11 +330,11 @@ describe("LocalHost start", () => {
     await ctx.host.start();
     await new Promise((r) => setTimeout(r, 0));
     expect(ctx.routes[0]).toEqual({
-      macName: "Burak's MacBook Pro",
+      macName: "Deniz's MacBook Pro",
       macId: "inst-1",
       lanAddresses: ["192.168.1.20"],
       lanPort: 8791,
-      bonjourName: "Burak's MacBook Pro",
+      bonjourName: "Deniz's MacBook Pro",
       tunnelUrl: null,
       // `/api/health` reads the tunnel's state from here (P9).
       tunnel: { state: "off", detail: "Kapalı." },

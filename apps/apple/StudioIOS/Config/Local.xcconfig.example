@@ -1,0 +1,13 @@
+// Per-developer settings for StudioIOS. Copy this file to Config/Local.xcconfig (gitignored)
+// and fill it in; Base.xcconfig includes it when it exists. Simulator builds need none of it.
+//
+//   cp apps/apple/StudioIOS/Config/Local.xcconfig.example apps/apple/StudioIOS/Config/Local.xcconfig
+
+// Your Apple Developer team id (Xcode → Settings → Accounts, or developer.apple.com → Membership).
+DEVELOPMENT_TEAM =
+
+// Sign for a device with your team (the committed default signs ad hoc, simulator only).
+// CODE_SIGN_IDENTITY = Apple Development
+
+// Your own bundle id, when the default one is not registered to your team.
+// STUDIO_BUNDLE_ID = com.example.studio.ios

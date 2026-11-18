@@ -1,5 +1,7 @@
 StudioKit/.build/
 StudioKit/.swiftpm/
-StudioMac/build/
+StudioIOS/build/
 *.xcuserstate
 xcuserdata/
+# Per-developer signing (Apple team id): see StudioIOS/Config/Local.xcconfig.example.
+Local.xcconfig

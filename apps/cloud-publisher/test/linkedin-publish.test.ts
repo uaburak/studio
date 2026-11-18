@@ -20,7 +20,7 @@ import {
   upload,
 } from "./helpers.ts";
 
-const AUTHOR = "urn:li:person:burak123";
+const AUTHOR = "urn:li:person:deniz123";
 const LI_TOKEN = `AQV${"L".repeat(40)}`;
 const CAPTION = "Hasat (2026) başladı! @mtm #tarım";
 

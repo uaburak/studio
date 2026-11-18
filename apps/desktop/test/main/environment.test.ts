@@ -53,14 +53,14 @@ describe("environment", () => {
   it("gives children only the basics", () => {
     const env = baseEnvironment(
       "/p",
-      { LANG: "tr_TR.UTF-8", USER: "burak", SECRET: "x", TMPDIR: "/t" },
+      { LANG: "tr_TR.UTF-8", USER: "deniz", SECRET: "x", TMPDIR: "/t" },
       "/h",
     );
     expect(env).toEqual({
       PATH: "/p",
       HOME: "/h",
       LANG: "tr_TR.UTF-8",
-      USER: "burak",
+      USER: "deniz",
       TMPDIR: "/t",
     });
   });
@@ -126,7 +126,7 @@ describe("environment", () => {
   });
 });
 
-describe("secrets and host.json (shared with the AppKit app)", () => {
+describe("secrets and host.json", () => {
   it("without safeStorage creates 0600 plain secrets once and reuses them", () => {
     const dir = mkdtempSync(join(tmpdir(), "state-"));
     const first = loadOrCreateHostSecrets(dir, null);
@@ -157,7 +157,7 @@ describe("secrets and host.json (shared with the AppKit app)", () => {
     removeHostFile(dir, 77); // no file: no error
   });
 
-  it("writes host.json like the AppKit app (lanPort left out when off)", () => {
+  it("writes host.json (lanPort left out when off)", () => {
     const dir = mkdtempSync(join(tmpdir(), "state-"));
     writeHostFile(dir, { apiPort: 8790, lanPort: null, pid: 12 });
     expect(JSON.parse(readFileSync(join(dir, "host.json"), "utf8"))).toEqual({
@@ -220,21 +220,23 @@ describe("guards", () => {
     ]);
     expect(tunnelEnvironment(" tok ")).toEqual({ TUNNEL_TOKEN: "tok" });
     expect(tunnelEnvironment(null)).toEqual({});
-    expect(tunnelArguments(null, "", "http://127.0.0.1:1")).toEqual([
+    expect(tunnelArguments(null, "studio.example.com/", "http://127.0.0.1:1")).toEqual([
       "tunnel",
       "--no-autoupdate",
       "run",
       "--url",
       "http://127.0.0.1:1",
-      "social.burakkoc.net",
+      "studio.example.com",
     ]);
+    // No default address: nothing to add when the owner has not typed one.
+    expect(normalizedHostname("  ")).toBe("");
   });
 
   it("finds the dns-sd and cloudflared a crashed app left behind (and nothing else)", () => {
     const ps = [
       "    1     0 /sbin/launchd",
-      "  501     1 /usr/bin/dns-sd -R Burak's Mac _studio._tcp local 8791 name=Burak api=1",
-      "  502  4242 /usr/bin/dns-sd -R Burak's Mac _studio._tcp local 8791 name=Burak api=1",
+      "  501     1 /usr/bin/dns-sd -R Deniz's Mac _studio._tcp local 8791 name=Deniz api=1",
+      "  502  4242 /usr/bin/dns-sd -R Deniz's Mac _studio._tcp local 8791 name=Deniz api=1",
       "  503     1 /usr/bin/dns-sd -B _airplay._tcp",
       "  504     1 /opt/homebrew/bin/cloudflared tunnel --no-autoupdate run --url http://127.0.0.1:8791",
       "  505   900 /opt/homebrew/bin/cloudflared tunnel --no-autoupdate run --url http://127.0.0.1:8791",
@@ -313,8 +315,8 @@ describe("settings", () => {
     const dir = mkdtempSync(join(tmpdir(), "settings-"));
     const file = join(dir, "desktop-settings.json");
     const store = new SettingsStore(file, defaultSettings("/repo"));
-    store.update({ ownerName: "Burak" });
-    expect(new SettingsStore(file, defaultSettings("/repo")).get().ownerName).toBe("Burak");
+    store.update({ ownerName: "Deniz" });
+    expect(new SettingsStore(file, defaultSettings("/repo")).get().ownerName).toBe("Deniz");
   });
 });
 

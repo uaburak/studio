@@ -4,8 +4,8 @@ This file is the exact input a headless `claude -p` call receives. SYSTEM is the
 USER is the user message.
 
 ## Response format (handoff)
-Write one file per slide to `/Users/burak/Desktop/Burak/Code/Studio/spikes/design-render/out/01-product-intro/llm/01-generate.response/` named `slide-1.html`,
-and `/Users/burak/Desktop/Burak/Code/Studio/spikes/design-render/out/01-product-intro/llm/01-generate.response/meta.json` = { "caption": string, "rationale": string, "critique": [ {"issue","severity","fix"} ], "changes": [string] }.
+Write one file per slide to `<repo>/spikes/design-render/out/01-product-intro/llm/01-generate.response/` named `slide-1.html`,
+and `<repo>/spikes/design-render/out/01-product-intro/llm/01-generate.response/meta.json` = { "caption": string, "rationale": string, "critique": [ {"issue","severity","fix"} ], "changes": [string] }.
 This mirrors the JSON schema used by the CLI transport:
 ```json
 {"type":"object","properties":{"slides":{"type":"array","minItems":1,"maxItems":1,"items":{"type":"object","properties":{"id":{"type":"string"},"html":{"type":"string"}},"required":["id","html"]}},"caption":{"type":"string"},"rationale":{"type":"string"},"critique":{"type":"array","items":{"type":"object","properties":{"issue":{"type":"string"},"severity":{"type":"string","enum":["high","medium","low"]},"fix":{"type":"string"}},"required":["issue","severity","fix"]}},"changes":{"type":"array","items":{"type":"string"}}},"required":["slides","caption","rationale"]}
@@ -188,7 +188,7 @@ Headless calls return structured JSON (CLI `--json-schema`):
 
 <brand_json>
 {
- "$comment": "PROVISIONAL stand-in profile for the F0-2 spike. Derived only from the Venta Borinc packaging photo (spikes/gemini-image/refs/venta-borinc.png). Not approved by Burak. Replace with values from real published posts / brand kit before production use.",
+ "$comment": "PROVISIONAL stand-in profile for the F0-2 spike. Derived only from the Venta Borinc packaging photo (spikes/gemini-image/refs/venta-borinc.png). Not approved by the owner. Replace with values from real published posts / brand kit before production use.",
  "id": "venta",
  "name": "Venta",
  "owner": "MTM Agro",
@@ -490,7 +490,7 @@ the shared slot placeholder look for `[data-type="slot"][data-slot-state="empty"
 # Venta — design rules (PROVISIONAL)
 
 > Status: provisional stand-in, v0.1. Derived only from the Venta Borinc packaging photo, because no
-> published Venta/MTM Agro posts or brand kit were available. Not approved by Burak. Every rule here
+> published Venta/MTM Agro posts or brand kit were available. Not approved by the owner. Every rule here
 > should be re-derived from real posts before production.
 
 ## 1. What the packaging tells us
@@ -577,7 +577,7 @@ Two families only.
 
 > Status: provisional stand-in, v0.1. There are no published Venta posts to learn from yet. This is
 > inferred from the tone of the packaging label only, and must be replaced by a voice derived from real
-> posts and Burak's corrections.
+> posts and Deniz's corrections.
 
 ## Audience (assumption)
 
@@ -629,7 +629,7 @@ leave it out and say so in the rationale.
 
 <facts_json>
 {
- "$comment": "PROVISIONAL. The only product/company facts a design may state. Built from the HIGH-CONFIDENCE parts of spikes/gemini-image/refs/venta-borinc.label.md (headings and paragraphs). The dose table, guaranteed-content table (% w/w), licence/registration numbers and the short company line under MTM AGRO are LOW confidence and deliberately excluded. Not yet approved by Burak.",
+ "$comment": "PROVISIONAL. The only product/company facts a design may state. Built from the HIGH-CONFIDENCE parts of spikes/gemini-image/refs/venta-borinc.label.md (headings and paragraphs). The dose table, guaranteed-content table (% w/w), licence/registration numbers and the short company line under MTM AGRO are LOW confidence and deliberately excluded. Not yet approved by Deniz.",
  "status": "provisional",
  "source": "spikes/gemini-image/refs/venta-borinc.label.md (2026-11-16 transcript)",
  "product": {

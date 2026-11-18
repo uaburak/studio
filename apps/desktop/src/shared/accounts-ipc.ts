@@ -144,7 +144,7 @@ export const ACCOUNTS_IPC = {
 
 // --- OAuth constants shared by main (flow) and renderer (setup guides) ---------------------------
 
-/** Fixed so the owner registers it once in the Meta / LinkedIn app (same as the AppKit app). */
+/** Fixed so the owner registers it once in the Meta / LinkedIn app. */
 export const OAUTH_PORT = 8793;
 export const OAUTH_HOST = "localhost";
 export const META_CALLBACK_PATH = "/meta/callback";
@@ -172,7 +172,7 @@ export const SETUP_GUIDE = {
   ],
   cloud: [
     "Terminalde apps/cloud-publisher klasöründe README'deki “Kurulum” adımlarını uygulayın (wrangler login, R2 kovası, gizli anahtarlar, wrangler deploy).",
-    "PUBLISHER_TOKEN için ürettiğiniz değeri ve Worker'ın adresini (ör. https://publish.burakkoc.net) aşağıya girin.",
+    "PUBLISHER_TOKEN için ürettiğiniz değeri ve Worker'ın adresini (ör. https://publish.ornek.com) aşağıya girin.",
     "Kaydedince Studio adresi ve anahtarı dener; onaylanan zamanlamalar buluta gönderilir ve Mac kapalıyken de paylaşılır.",
   ],
 } as const;

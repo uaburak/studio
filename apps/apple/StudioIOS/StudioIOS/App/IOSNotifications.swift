@@ -16,7 +16,8 @@ import UserNotifications
 final class IOSNotifier {
     enum Delivery { case system, silent }
 
-    nonisolated static let refreshTaskId = "net.burakkoc.studio.ios.refresh"
+    /// Listed in Info.plist as `$(PRODUCT_BUNDLE_IDENTIFIER).refresh`.
+    nonisolated static let refreshTaskId = "\(Bundle.main.bundleIdentifier ?? "studio.ios").refresh"
 
     let delivery: Delivery
     /// Everything handed to `post` (tests read it; the silent mode only records).

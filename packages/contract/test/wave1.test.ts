@@ -183,7 +183,7 @@ describe("social accounts & schedules: token vault + worker endpoints + client",
     id: "acc-1",
     brandId: "b-1",
     platform: "linkedin" as const,
-    handle: "Burak",
+    handle: "Deniz",
     externalId: "urn:li:person:123",
     status: "connected" as const,
     createdAt: now,
@@ -249,7 +249,7 @@ describe("social accounts & schedules: token vault + worker endpoints + client",
     expect(
       LinkedInConnectInput.parse({
         brandId: "b-1",
-        handle: "Burak",
+        handle: "Deniz",
         personUrn: "urn:li:person:123",
         accessToken: "AQV-token-12345",
       }),
@@ -403,7 +403,7 @@ describe("social accounts & schedules: token vault + worker endpoints + client",
     await client.socialAccounts.discoverMeta({ brandId: "b-1", userAccessToken: "12345678" });
     await client.socialAccounts.connectLinkedIn({
       brandId: "b-1",
-      handle: "Burak",
+      handle: "Deniz",
       personUrn: "urn:li:person:123",
       accessToken: "12345678",
     });

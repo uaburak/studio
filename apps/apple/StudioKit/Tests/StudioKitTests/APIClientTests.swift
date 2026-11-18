@@ -37,18 +37,14 @@ struct APIClientTests {
         #expect(StubURLProtocol.recorded(host: host).count == 2)
     }
 
-    @Test func sendsAccessServiceTokenFromTheStore() async throws {
-        let store = InMemoryCredentialStore(AccessServiceToken(clientId: "id.access", clientSecret: "s3cret"))
-        let (api, host) = client({ _, _ in .init(status: 200, body: try Fixture.data("presence")) }, auth: AccessServiceTokenAuth(store: store))
+    @Test func sendsTheAuthProvidersHeaders() async throws {
+        struct HeaderAuth: AuthProvider {
+            func headers() async throws -> [String: String] { ["Authorization": "Bearer s3cret"] }
+        }
+        let (api, host) = client({ _, _ in .init(status: 200, body: try Fixture.data("presence")) }, auth: HeaderAuth())
         _ = try await api.presence()
         let request = try #require(StubURLProtocol.recorded(host: host).first?.0)
-        #expect(request.value(forHTTPHeaderField: "CF-Access-Client-Id") == "id.access")
-        #expect(request.value(forHTTPHeaderField: "CF-Access-Client-Secret") == "s3cret")
-
-        try store.delete()
-        _ = try await api.presence()
-        let second = try #require(StubURLProtocol.recorded(host: host).last?.0)
-        #expect(second.value(forHTTPHeaderField: "CF-Access-Client-Id") == nil)
+        #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer s3cret")
     }
 
     @Test func approvePostsTheHash() async throws {
@@ -174,7 +170,7 @@ struct APIClientTests {
         let messageJSON = """
         {"message":{"id":"m1","conversationId":"c1","role":"assistant","status":"complete","runId":"r1","parts":[{"type":"consent","consentId":"con-1","tool":"schedule_post","title":"Postu zamanla","detail":null,"state":"allowed","decidedAt":"2026-11-16T14:00:00.000Z"}],"createdAt":"2026-11-16T14:00:00.000Z","updatedAt":"2026-11-16T14:00:00.000Z"}}
         """
-        let claudeJSON = #"{"account":{"status":"signed_in","email":"burak@burakkoc.net","plan":"Claude Max","cliVersion":"1.0.24","loginUrl":null,"detail":null,"checkedAt":"2026-11-16T14:00:00.000Z"},"online":true,"sent":1}"#
+        let claudeJSON = #"{"account":{"status":"signed_in","email":"deniz@ornek.com","plan":"Claude Max","cliVersion":"1.0.24","loginUrl":null,"detail":null,"checkedAt":"2026-11-16T14:00:00.000Z"},"online":true,"sent":1}"#
         let geminiJSON = #"{"account":{"status":"ready","mode":"api","apiKeyConfigured":true,"cliVersion":null,"defaultModel":"gemini-2.5-flash-lite","detail":"Hazır","checkedAt":"2026-11-16T14:00:00.000Z"},"online":true,"sent":0}"#
 
         let (api, host) = client { request, _ in

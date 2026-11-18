@@ -209,7 +209,7 @@ describe("LinkedIn OAuth", () => {
         });
       }
       if (url.host === "api.linkedin.com" && url.pathname === "/v2/userinfo") {
-        return Response.json({ sub: "abc123", name: "Burak Koç" });
+        return Response.json({ sub: "abc123", name: "Deniz Yılmaz" });
       }
       return realFetch(input, init);
     }) as typeof fetch;
@@ -227,7 +227,7 @@ describe("LinkedIn OAuth", () => {
     expect(account).toMatchObject({
       platform: "linkedin",
       externalId: "urn:li:person:abc123",
-      handle: "Burak Koç",
+      handle: "Deniz Yılmaz",
       hasToken: true,
       tokenScopes: ["openid", "profile", "w_member_social"],
     });

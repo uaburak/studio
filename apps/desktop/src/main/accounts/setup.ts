@@ -6,7 +6,7 @@ import { createAccountsApi } from "./api.ts";
 import { AppIdsStore } from "./apps-store.ts";
 import { registerAccountsIpc } from "./ipc.ts";
 import { waitForCallback } from "./loopback.ts";
-import { AppKitKeychain, type Cipher, FileSecretStore, type SecretStore } from "./secrets.ts";
+import { type Cipher, FileSecretStore, type SecretStore } from "./secrets.ts";
 import { AccountsService } from "./service.ts";
 
 /** Electron's safeStorage (its key lives in the macOS Keychain). */
@@ -18,11 +18,7 @@ export const safeStorageCipher: Cipher = {
 
 /** The secret store of this app (also the host's tunnel token source). */
 export function createSecretStore(stateDir: string): SecretStore {
-  return new FileSecretStore(
-    join(stateDir, "desktop-secrets.json"),
-    safeStorageCipher,
-    new AppKitKeychain(),
-  );
+  return new FileSecretStore(join(stateDir, "desktop-secrets.json"), safeStorageCipher);
 }
 
 export function setupAccounts(input: {

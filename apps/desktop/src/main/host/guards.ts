@@ -1,4 +1,4 @@
-// Startup guards (port of StudioMac/Host/StartupGuards.swift and LocalHost's helpers).
+// Startup guards and helpers of the local host.
 import { execFile, spawn } from "node:child_process";
 import { open } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -265,14 +265,13 @@ export async function stopLeftovers(targets: LeftoverTargets, stateDir: string):
 
 // --- Remote Control ---------------------------------------------------------------------------
 
-export const DEFAULT_REMOTE_HOSTNAME = "social.burakkoc.net";
-
+/** The tunnel's public hostname without scheme or trailing slash ("" when none is set). */
 export function normalizedHostname(raw: string): string {
   let clean = raw.trim();
   if (clean.startsWith("https://")) clean = clean.slice("https://".length);
   if (clean.startsWith("http://")) clean = clean.slice("http://".length);
   while (clean.endsWith("/")) clean = clean.slice(0, -1);
-  return clean.length === 0 ? DEFAULT_REMOTE_HOSTNAME : clean;
+  return clean;
 }
 
 /**
@@ -288,32 +287,12 @@ export function tunnelArguments(
   if (token?.trim()) {
     return ["tunnel", "--no-autoupdate", "run", "--url", localTargetURL];
   }
-  return [
-    "tunnel",
-    "--no-autoupdate",
-    "run",
-    "--url",
-    localTargetURL,
-    normalizedHostname(hostname),
-  ];
+  const host = normalizedHostname(hostname);
+  return ["tunnel", "--no-autoupdate", "run", "--url", localTargetURL, ...(host ? [host] : [])];
 }
 
 /** The environment that carries the tunnel token (`cloudflared tunnel run` reads TUNNEL_TOKEN). */
 export function tunnelEnvironment(token: string | null): Record<string, string> {
   const trimmed = token?.trim();
   return trimmed ? { TUNNEL_TOKEN: trimmed } : {};
-}
-
-/** The tunnel token the AppKit app keeps in the Keychain (read only when Remote Control is on). */
-export async function readTunnelToken(): Promise<string | null> {
-  const text = await output("/usr/bin/security", [
-    "find-generic-password",
-    "-s",
-    "net.burakkoc.studio",
-    "-a",
-    "cloudflare-tunnel-token",
-    "-w",
-  ]);
-  const token = text.trim();
-  return token.length > 0 ? token : null;
 }

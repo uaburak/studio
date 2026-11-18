@@ -34,7 +34,7 @@ export function fallbackSettings(): DesktopSettings {
     lanEnabled: true,
     repoPath: "",
     remoteControlEnabled: false,
-    remoteHostname: "social.burakkoc.net",
+    remoteHostname: "",
     ownerName: "",
     appearance: "system",
     notificationsEnabled: true,

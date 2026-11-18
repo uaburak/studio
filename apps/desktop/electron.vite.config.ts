@@ -18,8 +18,8 @@ if (!wecraVendored())
 /**
  * Dev only: the renderer (Vite on localhost) reaches the local API through this proxy,
  * same origin, so no CORS. The API port is whatever the running host wrote to
- * `~/Library/Application Support/Studio/host.json` (this app's supervisor or the AppKit
- * app it attached to); 8790 when there is none yet. The packaged app does the same through
+ * `~/Library/Application Support/Studio/host.json` (this app's supervisor or the copy it
+ * attached to); 8790 when there is none yet. The packaged app does the same through
  * its `studio://` protocol handler (src/main/protocol.ts).
  *
  * The proxy holds no secret (G1): the Electron main process adds the owner secret

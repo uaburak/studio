@@ -119,7 +119,7 @@ final class IOSAdvancedConnectionViewController: UITableViewController {
             }),
             Row(title: "Adres", detail: settings.remoteURLString.isEmpty ? "—" : settings.remoteURLString, action: { [weak self] in
                 guard let self else { return }
-                self.prompt("Ek uzak adres", message: "Ör. Mac'teki Uzaktan erişim adresi (https://…).", text: self.app.settings.remoteURLString, placeholder: IOSAppSettings.defaultRemoteURLString, keyboard: .URL) { text in
+                self.prompt("Ek uzak adres", message: "Ör. Mac'teki Uzaktan erişim adresi (https://…).", text: self.app.settings.remoteURLString, placeholder: IOSAppSettings.remoteURLExample, keyboard: .URL) { text in
                     self.app.settings.remoteURLString = text.trimmingCharacters(in: .whitespacesAndNewlines)
                     if !text.isEmpty, self.app.settings.remoteURL == nil { self.presentError("Geçerli bir https:// adresi gir.") }
                     if self.app.settings.useRemoteControlURL { self.app.retryConnection() }

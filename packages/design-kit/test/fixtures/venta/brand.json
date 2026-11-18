@@ -1,5 +1,5 @@
 {
-  "$comment": "PROVISIONAL stand-in profile for the F0-2 spike. Derived only from the Venta Borinc packaging photo (spikes/gemini-image/refs/venta-borinc.png). Not approved by Burak. Replace with values from real published posts / brand kit before production use.",
+  "$comment": "PROVISIONAL stand-in profile for the F0-2 spike. Derived only from the Venta Borinc packaging photo (spikes/gemini-image/refs/venta-borinc.png). Not approved by the owner. Replace with values from real published posts / brand kit before production use.",
   "id": "venta",
   "name": "Venta",
   "owner": "MTM Agro",

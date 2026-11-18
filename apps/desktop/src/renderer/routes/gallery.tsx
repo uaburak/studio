@@ -413,7 +413,7 @@ export default function Gallery() {
 
         <Section title="Tipografi">
           <div className="flex flex-col gap-2">
-            <span className="text-display font-semibold">Bugün ne üretelim, Burak?</span>
+            <span className="text-display font-semibold">Bugün ne üretelim, Deniz?</span>
             <span className="text-title font-semibold">Kasım kampanya postları</span>
             <span className="text-prose font-semibold">Kasım planı hazır</span>
             <span className="text-prose">

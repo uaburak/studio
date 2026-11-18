@@ -15,7 +15,7 @@
 
   "vars": {
     // Origin Meta downloads media from (signed URLs). Set to the deployed
-    // hostname, e.g. https://publisher.burakkoc.net or the workers.dev URL.
+    // hostname, e.g. https://publisher.ornek.com or the workers.dev URL.
     "PUBLIC_BASE_URL": "http://127.0.0.1:8788"
   },
 

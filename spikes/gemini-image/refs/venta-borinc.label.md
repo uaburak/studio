@@ -1,7 +1,7 @@
 # Venta Borinc — etiket metni dökümü
 
 Kaynak: `venta-borinc.png` (1200×1200). Döküm tarihi: 2026-11-16.
-Durum: Burak tarafından henüz onaylanmadı.
+Durum: sahibi tarafından henüz onaylanmadı.
 
 Okuma güveni: başlıklar ve paragraflar net okundu. Doz tablosunun hücreleri ve
 en küçük satırlar kaynak görselde yaklaşık 6 piksel yüksekliğinde; bunlar

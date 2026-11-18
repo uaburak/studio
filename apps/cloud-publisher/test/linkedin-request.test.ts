@@ -2,7 +2,7 @@ import { validateRequest } from "@studio/publishers";
 import { describe, expect, it } from "vitest";
 import { buildRequest } from "../src/build-request.ts";
 
-const URN = "urn:li:person:burak123";
+const URN = "urn:li:person:deniz123";
 const urlOf = (id: string) => `https://publisher.test/media/o-1/999/sig/${id}`;
 
 describe("cloud-publisher buildRequest: LinkedIn orders", () => {

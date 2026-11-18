@@ -1,8 +1,0 @@
-// StudioMacTests: unit tests and the screenshot renderer, hosted in Studio.app.
-
-PRODUCT_NAME = $(TARGET_NAME)
-PRODUCT_BUNDLE_IDENTIFIER = net.burakkoc.studio.mac.tests
-GENERATE_INFOPLIST_FILE = YES
-TEST_HOST = $(BUILT_PRODUCTS_DIR)/Studio.app/Contents/MacOS/Studio
-BUNDLE_LOADER = $(TEST_HOST)
-LD_RUNPATH_SEARCH_PATHS = $(inherited) @executable_path/../Frameworks @loader_path/../Frameworks

@@ -338,7 +338,7 @@ describe("accounts table", () => {
       accounts: [
         account(),
         account({ id: "a2", platform: "facebook", handle: "MTM", status: "needs_reauth" }),
-        account({ id: "a3", platform: "linkedin", handle: "Burak", status: "disabled" }),
+        account({ id: "a3", platform: "linkedin", handle: "Deniz", status: "disabled" }),
       ],
       apps: APPS,
       busyIds: ["a1"],
@@ -375,7 +375,7 @@ describe("accounts table", () => {
         account({
           id: "a3",
           platform: "linkedin",
-          handle: "Burak",
+          handle: "Deniz",
           tokenExpiresAt: "2026-11-19T09:00:00.000Z",
         }),
         account({ id: "a4", status: "disabled", tokenHealth: "invalid" }),
@@ -392,7 +392,7 @@ describe("accounts table", () => {
       {
         id: "token:a3:expiring:20774",
         title: "Hesap bağlantısı yakında doluyor",
-        body: "LinkedIn · Burak: 2 gün içinde yeniden bağlanmalı.",
+        body: "LinkedIn · Deniz: 2 gün içinde yeniden bağlanmalı.",
         route: "settings:accounts",
       },
     ]);

@@ -47,7 +47,7 @@ public struct SampleData: Sendable {
             Brand(id: mtm, name: "MTM Agro", slug: "mtm-agro", createdAt: created, updatedAt: created),
             Brand(id: "b-koc", name: "Koç Chords", slug: "koc-chords", createdAt: created, updatedAt: created),
             Brand(id: "b-finvo", name: "Finvo", slug: "finvo", createdAt: created, updatedAt: created),
-            Brand(id: "b-burakkoc", name: "burakkoc.net", slug: "burakkoc-net", createdAt: created, updatedAt: created),
+            Brand(id: "b-ornek", name: "ornek.com", slug: "ornek-com", createdAt: created, updatedAt: created),
         ]
 
         accounts = [
@@ -138,7 +138,7 @@ public struct SampleData: Sendable {
             conversation("c-koc-1", "b-koc", "Konser duyurusu", minutesAgo: 60 * 30),
             conversation("c-koc-2", "b-koc", "Yeni single", minutesAgo: 60 * 80),
             conversation("c-finvo-1", "b-finvo", "Ekim raporu", minutesAgo: 60 * 75),
-            conversation("c-burak-1", "b-burakkoc", "Portfolyo güncellemesi", minutesAgo: 60 * 120),
+            conversation("c-ornek-1", "b-ornek", "Portfolyo güncellemesi", minutesAgo: 60 * 120),
         ]
 
         // MARK: Plans
@@ -247,8 +247,8 @@ public struct SampleData: Sendable {
         ]
         presence = WorkerPresence(
             online: true, lastSeenAt: ago(0.2),
-            workers: [ConnectedWorker(workerId: "burak-mbp", workerVersion: "0.1.0", capabilities: ["demo.echo", "content.generate"], connectedAt: ago(90), lastSeenAt: ago(0.2))],
-            currentJobs: [PresenceJob(id: "job-bayi", type: .contentGenerate, brandId: mtm, workerId: "burak-mbp", progress: 0.4, progressMessage: "Tasarım denetleniyor", startedAt: ago(2))],
+            workers: [ConnectedWorker(workerId: "deniz-mbp", workerVersion: "0.1.0", capabilities: ["demo.echo", "content.generate"], connectedAt: ago(90), lastSeenAt: ago(0.2))],
+            currentJobs: [PresenceJob(id: "job-bayi", type: .contentGenerate, brandId: mtm, workerId: "deniz-mbp", progress: 0.4, progressMessage: "Tasarım denetleniyor", startedAt: ago(2))],
             queueLength: 1,
             usage: WorkerUsage(
                 windows: [
@@ -260,11 +260,11 @@ public struct SampleData: Sendable {
             ),
             claude: ClaudeAccount(
                 status: .signedIn,
-                email: "burak@burakkoc.net",
+                email: "deniz@ornek.com",
                 plan: "Claude Max",
                 cliVersion: "1.0.24",
                 detail: "Giriş yapıldı · Claude Max",
-                displayName: "Burak",
+                displayName: "Deniz",
                 checkedAt: ago(1)
             ),
             gemini: GeminiAccount(

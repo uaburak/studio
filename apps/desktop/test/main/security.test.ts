@@ -120,16 +120,12 @@ describe("sealed host secrets (G10)", () => {
     expect(loadOrCreateHostSecrets(dir, cipher).vaultKey).toBe("b".repeat(44));
   });
 
-  it("keeps the sealed key when the AppKit app made a new plain one, and moves that aside", () => {
+  it("keeps the sealed key and drops a stray plain copy", () => {
     const dir = mkdtempSync(join(tmpdir(), "sealed-"));
     const original = loadOrCreateHostSecrets(dir, cipher);
     writeFileSync(join(dir, "vault-key"), "c".repeat(44));
-    const now = new Date("2026-11-18T10:00:00.000Z");
-    expect(loadOrCreateHostSecrets(dir, cipher, () => now).vaultKey).toBe(original.vaultKey);
-    expect(readdirSync(dir).sort()).toEqual([
-      "host-secrets.json",
-      "vault-key.appkit-2026-11-18T10-00-00-000Z",
-    ]);
+    expect(loadOrCreateHostSecrets(dir, cipher).vaultKey).toBe(original.vaultKey);
+    expect(readdirSync(dir)).toEqual(["host-secrets.json"]);
   });
 
   it("never replaces a sealed key it cannot open", () => {

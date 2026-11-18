@@ -14,7 +14,7 @@
         "toolUses": 4,
         "note": "subagentTokens = total tokens processed by the subagent incl. its own Claude Code system prompt and tool round-trips; not directly comparable to a single claude -p call"
       },
-      "requestPath": "/Users/burak/Desktop/Burak/Code/Studio/spikes/design-render/out/01-product-intro/llm/01-generate.request.md",
+      "requestPath": "<repo>/spikes/design-render/out/01-product-intro/llm/01-generate.request.md",
       "at": "2026-11-16T09:20:12.072Z"
     },
     "check-v1": {
@@ -42,7 +42,7 @@
         "subagentTokens": 144664,
         "toolUses": 5
       },
-      "requestPath": "/Users/burak/Desktop/Burak/Code/Studio/spikes/design-render/out/01-product-intro/llm/02-revise.request.md",
+      "requestPath": "<repo>/spikes/design-render/out/01-product-intro/llm/02-revise.request.md",
       "at": "2026-11-16T09:28:59.950Z"
     },
     "check-v2": {

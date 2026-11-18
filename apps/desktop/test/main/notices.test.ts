@@ -237,7 +237,7 @@ describe("ActivityNotices (main-process notifications)", () => {
               {
                 id: "a2",
                 platform: "linkedin",
-                handle: "Burak",
+                handle: "Deniz",
                 status: "needs_reauth",
                 hasToken: true,
               },
@@ -282,7 +282,7 @@ describe("ActivityNotices (main-process notifications)", () => {
       {
         id: "token:a2:invalid:20775",
         title: "Hesap yeniden bağlanmalı",
-        body: "LinkedIn · Burak: erişim anahtarı geçersiz. Ayarlar → Hesaplar'dan yeniden bağlayın.",
+        body: "LinkedIn · Deniz: erişim anahtarı geçersiz. Ayarlar → Hesaplar'dan yeniden bağlayın.",
         route: "settings:accounts",
       },
     ]);
