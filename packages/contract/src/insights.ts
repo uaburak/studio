@@ -23,6 +23,25 @@ export const COMMENTS_MAX_AGE_DAYS = 30;
 /** How often the comment inbox is refreshed while the Mac is on (minutes). */
 export const COMMENTS_SYNC_MINUTES = 15;
 
+/**
+ * Meta permissions statistics and comments need (asked for at login since N15 / N16). An account
+ * connected without them keeps publishing; its statistics and comments ask for a reconnect.
+ */
+export const ENGAGEMENT_SCOPES = {
+  instagram: ["instagram_manage_insights", "instagram_manage_comments"],
+  facebook: ["read_insights", "pages_read_user_content", "pages_manage_engagement"],
+  linkedin: [],
+} as const satisfies Record<"instagram" | "facebook" | "linkedin", readonly string[]>;
+
+/** Engagement permissions a token's scopes lack (empty for LinkedIn). */
+export function missingEngagementScopes(
+  platform: "instagram" | "facebook" | "linkedin",
+  scopes: readonly string[] | null | undefined,
+): string[] {
+  const have = new Set(scopes ?? []);
+  return ENGAGEMENT_SCOPES[platform].filter((s) => !have.has(s));
+}
+
 /** Studio's time zone for weekdays, hours and days (Türkiye, UTC+3 all year). */
 export const STUDIO_UTC_OFFSET_HOURS = 3;
 

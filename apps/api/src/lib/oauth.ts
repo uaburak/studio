@@ -21,6 +21,20 @@ export const META_INSTAGRAM_SCOPES = [
   "pages_read_engagement",
 ] as const;
 
+/**
+ * Statistics and comments (N15, N16). Asked for at login but not required for publishing: an
+ * account connected before them keeps publishing; its statistics and comments ask for a reconnect.
+ */
+export const META_FACEBOOK_ENGAGEMENT_SCOPES = [
+  "read_insights",
+  "pages_read_user_content",
+  "pages_manage_engagement",
+] as const;
+export const META_INSTAGRAM_ENGAGEMENT_SCOPES = [
+  "instagram_manage_insights",
+  "instagram_manage_comments",
+] as const;
+
 /** Meta / LinkedIn calls from the API give up after this long (the owner is waiting). */
 export const OAUTH_FETCH_TIMEOUT_MS = 30_000;
 
@@ -200,7 +214,13 @@ export function linkedInApiBase(env: OAuthEnv): string {
 
 /** Scopes the Mac asks for in Facebook Login (Pages + Instagram publishing). */
 export const META_LOGIN_SCOPES = [
-  ...new Set([...META_FACEBOOK_SCOPES, ...META_INSTAGRAM_SCOPES, "business_management"]),
+  ...new Set([
+    ...META_FACEBOOK_SCOPES,
+    ...META_INSTAGRAM_SCOPES,
+    ...META_FACEBOOK_ENGAGEMENT_SCOPES,
+    ...META_INSTAGRAM_ENGAGEMENT_SCOPES,
+    "business_management",
+  ]),
 ];
 
 // --- Meta: authorization code -> user token ----------------------------------------

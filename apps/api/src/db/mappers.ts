@@ -23,6 +23,7 @@ import {
   type MessagePart,
   type Plan,
   type PlanItem,
+  PublishDetails,
   type PublishLog,
   type RunUsage,
   type Schedule,
@@ -187,7 +188,15 @@ export function toContent(r: ContentRow, current: CurrentVersionRef | null): Con
       r.sourceContentId && r.sourceVersion !== null && r.sourceKind
         ? { contentId: r.sourceContentId, version: r.sourceVersion, kind: r.sourceKind }
         : null,
+    ...publishDetailsOf(r.publishDetails),
   };
+}
+
+/** Stored publish details (N13) when there are any; a row this server cannot read is left out. */
+function publishDetailsOf(raw: unknown): { publishDetails?: PublishDetails } {
+  if (!raw) return {};
+  const parsed = PublishDetails.safeParse(raw);
+  return parsed.success ? { publishDetails: parsed.data } : {};
 }
 
 export function toVersionSummary(r: ContentVersionRow): ContentVersionSummary {
@@ -268,6 +277,10 @@ export function toSchedule(r: ScheduleRow): Schedule {
     delivery: r.delivery ?? null,
     cloudSyncedAt: isoOrNull(r.cloudSyncedAt),
     lastError: r.lastError ?? null,
+    ...(r.externalPostId ? { externalPostId: r.externalPostId } : {}),
+    ...(r.publishedAt ? { publishedAt: iso(r.publishedAt) } : {}),
+    ...(r.publishWarnings?.length ? { warnings: r.publishWarnings } : {}),
+    ...(r.detailsRev ? { detailsRevision: r.detailsRev } : {}),
     cancelledAt: isoOrNull(r.cancelledAt),
     createdAt: iso(r.createdAt),
     updatedAt: iso(r.updatedAt),

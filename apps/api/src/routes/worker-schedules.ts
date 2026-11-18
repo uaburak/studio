@@ -31,6 +31,7 @@ import {
 } from "../db/schema.ts";
 import { ApiProblem, conflict, invalidTransition, notFound } from "../lib/errors.ts";
 import { newId } from "../lib/ids.ts";
+import { insightRowFor } from "../lib/insights.ts";
 import { loadPublishingSettings, maxLatenessMinutes } from "../lib/publishing.ts";
 import { createRouter, errors, IdParams, json, jsonBody } from "../lib/router.ts";
 import { requireWorkerToken } from "../middleware/worker-auth.ts";
@@ -144,6 +145,7 @@ async function outcomeSideEffects(
     permalink?: string | null | undefined;
     error?: string | null | undefined;
     accountNeedsReauth?: boolean | undefined;
+    warnings?: { code: string; message: string }[] | undefined;
   },
   now: Date,
 ): Promise<BatchItem<"sqlite">[]> {
@@ -206,6 +208,27 @@ async function outcomeSideEffects(
     );
   }
 
+  // N15: a published Instagram / Facebook post gets its statistics row (first read an hour later).
+  const externalPostId = input.externalPostId ?? schedule.externalPostId;
+  if (
+    input.status === "published" &&
+    externalPostId &&
+    (schedule.platform === "instagram" || schedule.platform === "facebook")
+  ) {
+    stmts.push(
+      insightRowFor(db, {
+        scheduleId: schedule.id,
+        brandId: schedule.brandId,
+        contentId: schedule.contentId,
+        socialAccountId: schedule.socialAccountId,
+        platform: schedule.platform,
+        externalPostId,
+        publishedAt: schedule.publishedAt ?? now,
+        now,
+      }),
+    );
+  }
+
   if (input.accountNeedsReauth) {
     stmts.push(
       db
@@ -246,7 +269,14 @@ async function applyOutcome(
       ...(input.status === "failed"
         ? { lastError: input.error ?? "Yayın başarısız oldu.", claimedAt: null }
         : input.status === "published"
-          ? { lastError: null, publishState: null, claimedAt: null }
+          ? {
+              lastError: null,
+              publishState: null,
+              claimedAt: null,
+              externalPostId: input.externalPostId ?? schedule.externalPostId ?? null,
+              publishedAt: schedule.publishedAt ?? now,
+              publishWarnings: input.warnings?.length ? input.warnings : null,
+            }
           : {}),
       ...extra,
       updatedAt: now,

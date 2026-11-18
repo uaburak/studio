@@ -33,7 +33,9 @@ import {
   LINKEDIN_DEFAULT_SCOPES,
   linkedInApiBase,
   linkedInOAuthBase,
+  META_FACEBOOK_ENGAGEMENT_SCOPES,
   META_FACEBOOK_SCOPES,
+  META_INSTAGRAM_ENGAGEMENT_SCOPES,
   META_INSTAGRAM_SCOPES,
   META_LOGIN_SCOPES,
   metaGraphBase,
@@ -416,7 +418,7 @@ export const socialAccountRoutes = router
               handle: page.pageName,
               accessToken: page.pageAccessToken,
               expiresAt: pageExpiresAt,
-              scopes: [...META_FACEBOOK_SCOPES],
+              scopes: [...META_FACEBOOK_SCOPES, ...META_FACEBOOK_ENGAGEMENT_SCOPES],
               skipForeignBrand: true,
             });
             if (fbAccount) connectedAccounts.push(fbAccount);
@@ -437,7 +439,7 @@ export const socialAccountRoutes = router
               // expires only when that Page token does, not with the user token.
               accessToken: page.pageAccessToken,
               expiresAt: pageExpiresAt,
-              scopes: [...META_INSTAGRAM_SCOPES],
+              scopes: [...META_INSTAGRAM_SCOPES, ...META_INSTAGRAM_ENGAGEMENT_SCOPES],
               skipForeignBrand: true,
             });
             if (igAccount) connectedAccounts.push(igAccount);
