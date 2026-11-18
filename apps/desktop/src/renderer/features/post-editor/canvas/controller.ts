@@ -95,6 +95,9 @@ export interface ComputedLayerStyle {
   backgroundColor: string;
   opacity: number;
   borderRadius: number;
+  /** The top border (the contract has no stroke of its own: a border the design already has). */
+  borderWidth: number;
+  borderColor: string;
   mixBlendMode: string;
   filter: string;
   objectFit: string | null;
@@ -364,7 +367,8 @@ export class PostCanvas {
       resized: (w, h) => {
         this.view = { ...this.view, width: w, height: h };
         this.emitView();
-        if (!this.fitted && this.rects.length) this.fit();
+        // Still where the last fit put it (nobody panned or zoomed): fit the new size.
+        if ((!this.fitted || this.atFit()) && this.rects.length) this.fit();
       },
     });
     this.cleanups.push(this.host.attach());
@@ -932,20 +936,48 @@ export class PostCanvas {
     if (r) this.zoomToRect(r);
   }
 
+  /**
+   * Room kept free around fitted slides: the slide titles above them, the floating layers list
+   * on the left, the dock at the bottom.
+   */
+  private insets = { top: 48, right: 40, bottom: 84, left: 40 };
+
+  /** The camera the last fit asked for (to tell whether the user moved it since). */
+  private lastFit: Camera | null = null;
+
+  setInsets(next: Partial<{ top: number; right: number; bottom: number; left: number }>): void {
+    const before = JSON.stringify(this.insets);
+    this.insets = { ...this.insets, ...next };
+    if (before === JSON.stringify(this.insets)) return;
+    if (this.atFit()) this.fit();
+  }
+
+  /** The camera is still the last fit's. */
+  private atFit(): boolean {
+    const f = this.lastFit;
+    const c = this.view.camera;
+    return (
+      !!f &&
+      Math.abs(f.x - c.x) < 0.5 &&
+      Math.abs(f.y - c.y) < 0.5 &&
+      Math.abs(f.zoom - c.zoom) < 1e-4
+    );
+  }
+
   private zoomToRect(r: Rect): void {
     const engine = this.engine;
     if (!engine) return;
-    const top = 56 + 28;
-    const bottom = 92 + 16;
-    const side = 40;
-    const w = Math.max(1, this.view.width - side * 2);
+    const { top, right, bottom, left } = this.insets;
+    const w = Math.max(1, this.view.width - left - right);
     const h = Math.max(1, this.view.height - top - bottom);
     const zoom = Math.min(w / r.w, h / r.h, 4);
-    engine.setCamera({
-      x: side + (w - r.w * zoom) / 2 - r.x * zoom,
+    const camera = {
+      x: left + (w - r.w * zoom) / 2 - r.x * zoom,
       y: top + (h - r.h * zoom) / 2 - r.y * zoom,
       zoom,
-    });
+    };
+    this.lastFit = camera;
+    engine.setCamera(camera);
   }
 
   /** Pans (no zoom change) so a slide is in view. */
@@ -968,8 +1000,17 @@ export class PostCanvas {
     const box = layer.getBoundingClientRect();
     const last = this.rects[this.rects.length - 1] as Rect;
     const total = { w: last.x + last.w, h: Math.max(...this.rects.map((r) => r.h)) };
-    const zoom = Math.min((box.width - 80) / total.w, (box.height - 200) / total.h, 1);
-    this.onCamera({ x: (box.width - total.w * zoom) / 2, y: 84, zoom: Math.max(0.05, zoom) });
+    const { top, right, bottom, left } = this.insets;
+    const zoom = Math.min(
+      (box.width - left - right) / total.w,
+      (box.height - top - bottom) / total.h,
+      1,
+    );
+    this.onCamera({
+      x: left + (box.width - left - right - total.w * zoom) / 2,
+      y: top,
+      zoom: Math.max(0.05, zoom),
+    });
     this.view = { ...this.view, width: box.width, height: box.height };
   }
 
@@ -1365,6 +1406,8 @@ export class PostCanvas {
       backgroundColor: cs.backgroundColor,
       opacity: Number(cs.opacity),
       borderRadius: px(cs.borderTopLeftRadius),
+      borderWidth: cs.borderTopStyle === "none" ? 0 : px(cs.borderTopWidth),
+      borderColor: cs.borderTopColor,
       mixBlendMode: cs.mixBlendMode,
       filter: (ics ?? cs).filter,
       objectFit: ics?.objectFit ?? null,

@@ -1,9 +1,12 @@
 // The unified top bar (Wecra "Top bar"): window controls (sidebar, back, forward) when the
 // sidebar is hidden, the title with its menu (double-click renames inline), the right panel's
 // tool icons (they only switch the right panel) and the panel header above the panel. Chats
-// and posts are switched from the sidebar.
+// and posts are switched from the sidebar. While a post is open on the canvas, its title area
+// and its panel's header are slots the post workspace renders into (features/post-editor/slots).
 import { useEffect, useRef, useState } from "react";
 import { isPageRoute, PageTitle } from "../../features/page-title.tsx";
+import { WorkspaceSlot } from "../../features/post-editor/slots.tsx";
+import { useWorkspaceStore } from "../../features/post-editor/workspace-store.ts";
 import { PostsTitleButton } from "../../features/posts/posts-title.tsx";
 import {
   PANEL_WIDTH_EXPANDED,
@@ -25,6 +28,7 @@ import {
   IconMaximize,
   IconMinimize,
   IconPhone,
+  IconSliders,
   IconTag,
 } from "../ui/icons.tsx";
 import { MenuButton, type MenuEntry } from "../ui/menu.tsx";
@@ -42,9 +46,13 @@ const TOOLS: { pane: PanelPane; icon: React.ReactNode; shortcut?: string }[] = [
   { pane: "phone", icon: <IconPhone size={16} strokeWidth={1.5} /> },
 ];
 
+/** The open post's panel (Düzenle / Sohbet): its icon comes first while a post is open. */
+const POST_TOOL = { pane: "post" as const, icon: <IconSliders size={16} strokeWidth={1.5} /> };
+
 export function PanelTools() {
   const panelPresented = useAppStore((s) => s.panelPresented);
   const panelPane = useAppStore((s) => s.panelPane);
+  const postOpen = useWorkspaceStore((s) => s.active !== null);
   const togglePanel = useAppStore((s) => s.togglePanel);
   const setSearchOpen = useAppStore((s) => s.setSearchOpen);
   const setSettingsOpen = useAppStore((s) => s.setSettingsOpen);
@@ -56,12 +64,12 @@ export function PanelTools() {
   ];
   return (
     <div className="flex items-center gap-1" role="toolbar" aria-label="Sağ panel">
-      {TOOLS.map((tool) => (
+      {(postOpen ? [POST_TOOL, ...TOOLS] : TOOLS).map((tool) => (
         <IconButton
           key={tool.pane}
           icon={tool.icon}
           label={panelTitle(tool.pane)}
-          shortcut={tool.shortcut}
+          shortcut={"shortcut" in tool ? tool.shortcut : undefined}
           selected={panelPresented && panelPane === tool.pane}
           onClick={() => togglePanel(tool.pane)}
         />
@@ -85,12 +93,23 @@ export function PanelTools() {
 
 export function PanelHeader() {
   const pane = useAppStore((s) => s.panelPane);
+  const postOpen = useWorkspaceStore((s) => s.active !== null);
   const expanded = useAppStore((s) => panelWidthOf(s) >= PANEL_WIDTH_EXPANDED);
   const toggleExpanded = useAppStore((s) => s.togglePanelExpanded);
   const close = useAppStore((s) => s.closePanel);
   return (
     <div className="flex h-full items-center gap-0.5 pr-2 pl-4">
-      <h2 className="min-w-0 flex-1 truncate text-body font-medium text-fg">{panelTitle(pane)}</h2>
+      {pane === "post" && postOpen ? (
+        // The open post's panel brings its own title (Düzenle's tabs, Sohbet's actions).
+        <WorkspaceSlot
+          name="panel-header"
+          className="flex h-full min-w-0 flex-1 items-center gap-1"
+        />
+      ) : (
+        <h2 className="min-w-0 flex-1 truncate text-body font-medium text-fg">
+          {panelTitle(pane)}
+        </h2>
+      )}
       <IconButton
         icon={
           expanded ? (
@@ -229,6 +248,7 @@ function TitleButton() {
 export function TopBar({ panelWidth }: { panelWidth: number | null }) {
   const sidebarPresented = useAppStore((s) => s.sidebarPresented);
   const fullScreen = useAppStore((s) => s.window.fullScreen);
+  const postOpen = useWorkspaceStore((s) => s.active !== null);
   return (
     <header
       className="drag flex shrink-0 border-b border-hairline"
@@ -236,8 +256,18 @@ export function TopBar({ panelWidth }: { panelWidth: number | null }) {
     >
       <div className="flex min-w-0 flex-1 items-center gap-2.5 pr-2">
         {!sidebarPresented ? <WindowControls inset={!fullScreen} /> : <span className="w-1" />}
-        <TitleButton />
-        <div className="flex-1" />
+        {postOpen ? (
+          // The open post's title, state, versions and its approve / schedule actions.
+          <WorkspaceSlot
+            name="title"
+            className="@container flex h-full min-w-0 flex-1 items-center gap-2 overflow-hidden"
+          />
+        ) : (
+          <>
+            <TitleButton />
+            <div className="flex-1" />
+          </>
+        )}
         <PanelTools />
       </div>
       {panelWidth !== null && (

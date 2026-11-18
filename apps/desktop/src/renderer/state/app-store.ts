@@ -57,9 +57,14 @@ export function clampWidth(width: number, min: number, max: number): number {
   return Math.round(Math.min(max, Math.max(min, width)));
 }
 
-export type PanelPane = "details" | "jobs" | "calendar" | "media" | "brand" | "phone";
+/**
+ * The right panel's panes. `post` is the open post's own panel (Düzenle / Sohbet): it exists
+ * while a post is open on the canvas and is never saved as the session's pane.
+ */
+export type PanelPane = "details" | "jobs" | "calendar" | "media" | "brand" | "phone" | "post";
 
-export const PANEL_PANES: { id: PanelPane; title: string }[] = [
+/** The panes the top bar's tool icons switch to (the post pane comes with the open post). */
+export const PANEL_PANES: { id: Exclude<PanelPane, "post">; title: string }[] = [
   { id: "details", title: "Ayrıntılar" },
   { id: "jobs", title: "Arka plan işleri" },
   { id: "calendar", title: "Takvim" },
@@ -69,6 +74,7 @@ export const PANEL_PANES: { id: PanelPane; title: string }[] = [
 ];
 
 export function panelTitle(pane: PanelPane): string {
+  if (pane === "post") return "Post paneli";
   return PANEL_PANES.find((p) => p.id === pane)?.title ?? "";
 }
 
@@ -151,6 +157,8 @@ interface AppState {
   panelExpanded: boolean;
   /** The panel's own width (the expanded panel is at least PANEL_WIDTH_EXPANDED). */
   panelWidth: number;
+  /** What the panel showed before the open post took it over (back to it when the post closes). */
+  panelReturn: { presented: boolean; pane: Exclude<PanelPane, "post"> } | null;
   currentBrandId: string | null;
   collapsedGroups: string[];
   searchOpen: boolean;
@@ -179,6 +187,10 @@ interface AppState {
   togglePanel(pane?: PanelPane): void;
   closePanel(): void;
   togglePanelExpanded(): void;
+  /** The open post takes the panel over (its Düzenle / Sohbet panel), remembering what it showed. */
+  showPostPanel(): void;
+  /** The post closed: the panel shows what it showed before (unless another pane was picked). */
+  releasePostPanel(): void;
   setCurrentBrand(id: string | null): void;
   toggleGroup(id: string): void;
   setSearchOpen(open: boolean): void;
@@ -206,6 +218,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   panelPane: "details",
   panelExpanded: false,
   panelWidth: PANEL_WIDTH,
+  panelReturn: null,
   currentBrandId: null,
   collapsedGroups: [],
   searchOpen: false,
@@ -324,6 +337,31 @@ export const useAppStore = create<AppState>((set, get) => ({
       ...(state.panelWidth >= PANEL_WIDTH_EXPANDED ? { panelWidth: PANEL_WIDTH } : {}),
     });
   },
+  showPostPanel() {
+    const s = get();
+    if (s.panelPresented && s.panelPane === "post") return;
+    set({
+      panelReturn: s.panelReturn ?? {
+        presented: s.panelPresented,
+        pane: s.panelPane === "post" ? "details" : s.panelPane,
+      },
+      panelPresented: true,
+      panelPane: "post",
+    });
+  },
+  releasePostPanel() {
+    const s = get();
+    const back = s.panelReturn;
+    if (s.panelPane !== "post") {
+      if (back) set({ panelReturn: null });
+      return;
+    }
+    set({
+      panelReturn: null,
+      panelPresented: back?.presented ?? false,
+      panelPane: back?.pane ?? "details",
+    });
+  },
   setCurrentBrand(id) {
     set({ currentBrandId: id });
   },
@@ -386,11 +424,13 @@ export const useAppStore = create<AppState>((set, get) => ({
 }));
 
 export function sessionOf(state: AppState): SessionState {
+  // The post's panel is not a place to come back to: save what it took over.
+  const post = state.panelPane === "post";
   return {
     sidebarPresented: state.sidebarPresented,
     sidebarWidth: state.sidebarWidth,
-    panelPresented: state.panelPresented,
-    panelPane: state.panelPane,
+    panelPresented: post ? (state.panelReturn?.presented ?? false) : state.panelPresented,
+    panelPane: post ? (state.panelReturn?.pane ?? "details") : state.panelPane,
     panelExpanded: state.panelExpanded,
     panelWidth: state.panelWidth,
     route: state.route.kind === "gallery" ? "new" : routeKey(state.route),

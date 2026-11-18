@@ -1,18 +1,13 @@
-// The editor's top bar: back to the post, title and state, the version chip (versions popover:
-// save a named version, show / restore an older one), save state, undo / redo, zoom, Önizle,
-// Onayla, Zamanla.
+// The open post in the app's top bar (its title area): back to where the post was opened from,
+// the title with the post's menu, its state, the version chip (versions popover: save a named
+// version, show / restore an older one), the save state, and at the right Onayla and Zamanla.
 import { useState } from "react";
-import {
-  Button,
-  cn,
-  IconButton,
-  Spinner,
-  TagPill,
-  type TagTone,
-} from "../../../components/ui/controls.tsx";
-import { IconChevronLeft, IconClock, IconRedo, IconUndo } from "../../../components/ui/icons.tsx";
+import { Button, cn, Spinner, TagPill, type TagTone } from "../../../components/ui/controls.tsx";
+import { IconChevronDown, IconChevronLeft, IconClock } from "../../../components/ui/icons.tsx";
+import { MenuButton, type MenuEntry } from "../../../components/ui/menu.tsx";
 import { Popover } from "../../../components/ui/popover.tsx";
 import { formatAgo } from "../../../lib/format.ts";
+import { type Route, useAppStore } from "../../../state/app-store.ts";
 import {
   activeVersion,
   type EditorSnapshot,
@@ -20,8 +15,6 @@ import {
   type PostEditor,
 } from "../../post-detail/editor.ts";
 import type { EditorSession } from "../session.ts";
-import { useCanvasView } from "./canvas-view.tsx";
-import { IconMinus, IconPlus } from "./glyphs.tsx";
 
 const ORIGIN: Record<string, string> = {
   generated: "AI ilk taslak",
@@ -29,13 +22,24 @@ const ORIGIN: Record<string, string> = {
   manual_edit: "Düzenleme",
 };
 
-export function TopBar({
+/** Where back goes, and how to say it (Turkish case endings by hand). */
+const BACK: Partial<Record<Route["kind"], { label: string; action: string }>> = {
+  posts: { label: "Postlar", action: "Postlara dön" },
+  calendar: { label: "Takvim", action: "Takvime dön" },
+  media: { label: "Medya", action: "Medyaya dön" },
+  conversation: { label: "Sohbet", action: "Sohbete dön" },
+  new: { label: "Sohbet", action: "Sohbete dön" },
+  brand: { label: "Marka", action: "Markaya dön" },
+  brands: { label: "Markalar", action: "Markalara dön" },
+};
+
+export function TitleBar({
   session,
   editor,
   snapshot,
   status,
+  menu,
   onBack,
-  onPreview,
   onApprove,
   onSchedule,
   approve,
@@ -47,8 +51,8 @@ export function TopBar({
   editor: PostEditor;
   snapshot: EditorSnapshot;
   status: { label: string; tone: TagTone };
+  menu: MenuEntry[];
   onBack(): void;
-  onPreview(): void;
   onApprove(): void;
   onSchedule(): void;
   approve: { visible: boolean; disabled: string | null; busy: boolean };
@@ -56,13 +60,11 @@ export function TopBar({
   versionsOpen: boolean;
   setVersionsOpen(open: boolean): void;
 }) {
-  const { draft, draftState: d, canvas } = session;
+  const { draft, draftState: d } = session;
   const [chip, setChip] = useState<HTMLElement | null>(null);
+  const routeKind = useAppStore((s) => s.route.kind);
   const version = activeVersion(snapshot);
-  const view = useCanvasView(canvas);
   const viewingCurrent = isViewingCurrent(snapshot);
-  const lastUndo = d.undo.at(-1);
-  const lastRedo = d.redo.at(-1);
   const saveLabel = d.saving
     ? "Kaydediliyor…"
     : d.saveError
@@ -72,19 +74,64 @@ export function TopBar({
         : d.lastSavedAt
           ? "Kaydedildi"
           : "";
+  const back = BACK[routeKind] ?? { label: "Geri", action: "Geri dön" };
 
   return (
-    <header className="drag flex h-11 shrink-0 items-center gap-2 border-b border-hairline bg-sidebar pr-2 pl-[84px]">
-      <IconButton
-        icon={<IconChevronLeft size={16} />}
-        label="Posta dön"
-        shortcut="Esc"
+    <>
+      <button
+        type="button"
         onClick={onBack}
-      />
-      <h1 className="min-w-0 max-w-[260px] truncate text-body font-semibold text-fg">
-        {snapshot.content.title}
-      </h1>
-      <TagPill tone={status.tone}>{status.label}</TagPill>
+        title={`${back.action} (⌘[)`}
+        aria-label={back.action}
+        className="no-drag hidden h-7 shrink-0 items-center gap-0.5 rounded-full pr-2 pl-1 text-body-lg text-fg-2 transition-colors hover:bg-control hover:text-fg @[340px]:flex"
+      >
+        <IconChevronLeft size={16} strokeWidth={1.5} />
+        <span className="hidden @[620px]:inline">{back.label}</span>
+      </button>
+      <span className="hidden text-fg-3 @[620px]:inline" aria-hidden="true">
+        /
+      </span>
+      <MenuButton
+        entries={() =>
+          approve.visible
+            ? [
+                {
+                  id: "approve",
+                  label: approve.busy ? "Onaylanıyor…" : "Onayla",
+                  shortcut: "⌘↩",
+                  disabled: !!approve.disabled,
+                  ...(approve.disabled ? { detail: approve.disabled } : {}),
+                  onSelect: onApprove,
+                },
+                { type: "separator" },
+                ...menu,
+              ]
+            : menu
+        }
+        placement="bottom-start"
+        label="Post işlemleri"
+        width={232}
+      >
+        {({ ref, onClick, onKeyDown, open, ...aria }) => (
+          <button
+            ref={ref}
+            type="button"
+            {...aria}
+            onClick={onClick}
+            onKeyDown={onKeyDown}
+            className={cn(
+              "no-drag flex h-7 min-w-10 shrink items-center gap-1.5 rounded-full px-2.5 text-body-lg text-fg transition-colors hover:bg-control",
+              open && "bg-control",
+            )}
+          >
+            <span className="truncate">{snapshot.content.title}</span>
+            <IconChevronDown size={12} strokeWidth={1.75} className="shrink-0 text-fg-2" />
+          </button>
+        )}
+      </MenuButton>
+      <span className="hidden shrink-0 @[600px]:inline-flex">
+        <TagPill tone={status.tone}>{status.label}</TagPill>
+      </span>
       <button
         ref={setChip}
         type="button"
@@ -92,7 +139,7 @@ export function TopBar({
         aria-expanded={versionsOpen}
         onClick={() => setVersionsOpen(!versionsOpen)}
         className={cn(
-          "no-drag flex h-7 items-center gap-1.5 rounded-full px-2.5 text-body",
+          "no-drag flex h-7 shrink-0 items-center gap-1.5 rounded-full px-2.5 text-body",
           versionsOpen ? "bg-control-hover text-fg" : "bg-control text-fg hover:bg-control-hover",
           !viewingCurrent && "text-warning",
         )}
@@ -100,18 +147,21 @@ export function TopBar({
       >
         <IconClock size={13} />
         {version ? `v${version.version}` : "Sürüm yok"}
-        {version && <span className="text-fg-3">· {formatAgo(version.createdAt)}</span>}
+        {version && (
+          <span className="hidden text-fg-3 @[760px]:inline">· {formatAgo(version.createdAt)}</span>
+        )}
         {!viewingCurrent && <span>· eski</span>}
       </button>
       {saveLabel && (
         <span
+          role="status"
           className={cn(
-            "flex items-center gap-1.5 text-footnote",
+            "flex shrink-0 items-center gap-1.5 text-footnote",
             d.saveError ? "text-danger" : "text-fg-3",
           )}
         >
           {d.saving && <Spinner size={11} />}
-          {saveLabel}
+          <span className={cn(!d.saveError && "hidden @[700px]:inline")}>{saveLabel}</span>
           {d.saveError && (
             <button type="button" className="no-drag underline" onClick={() => void draft.retry()}>
               Yeniden dene
@@ -119,60 +169,33 @@ export function TopBar({
           )}
         </span>
       )}
-      <div className="flex-1" />
-      <IconButton
-        icon={<IconUndo size={15} strokeWidth={1.5} />}
-        label={lastUndo ? `Geri al: ${lastUndo.name}` : "Geri al"}
-        shortcut="⌘Z"
-        disabled={!lastUndo}
-        onClick={() => draft.undo()}
-      />
-      <IconButton
-        icon={<IconRedo size={15} strokeWidth={1.5} />}
-        label={lastRedo ? `Yinele: ${lastRedo.name}` : "Yinele"}
-        shortcut="⇧⌘Z"
-        disabled={!lastRedo}
-        onClick={() => draft.redo()}
-      />
-      <div className="no-drag flex h-7 items-center rounded-full bg-control">
-        <IconButton
-          size={28}
-          icon={<IconMinus size={13} />}
-          label="Uzaklaştır"
-          shortcut="⌘−"
-          onClick={() => canvas.command("ZOOM_OUT")}
-        />
-        <button
-          type="button"
-          className="w-12 text-center text-footnote text-fg tabular-nums"
-          title="Tüm kareleri sığdır (⇧1)"
-          onClick={() => canvas.command("ZOOM_TO_FIT")}
-        >
-          %{Math.round(view.camera.zoom * 100)}
-        </button>
-        <IconButton
-          size={28}
-          icon={<IconPlus size={13} />}
-          label="Yakınlaştır"
-          shortcut="⌘+"
-          onClick={() => canvas.command("ZOOM_IN")}
-        />
-      </div>
-      <Button variant="secondary" onClick={onPreview}>
-        Önizle
-      </Button>
+      <div className="min-w-2 flex-1" />
       {approve.visible && (
-        <span title={approve.disabled ?? "Bu sürümü onayla (⌘↩)"}>
+        // Narrow: Onayla moves into the title's menu (⌘↩ works everywhere).
+        <span
+          title={approve.disabled ?? "Bu sürümü onayla (⌘↩)"}
+          className="hidden shrink-0 @[480px]:inline-flex"
+        >
           <Button variant="secondary" disabled={!!approve.disabled} onClick={onApprove}>
             {approve.busy ? "Onaylanıyor…" : "Onayla"}
           </Button>
         </span>
       )}
-      <span title={schedule.disabled ?? "⇧⌘↩"}>
-        <Button variant="primary" disabled={!!schedule.disabled} onClick={onSchedule}>
-          {schedule.label}
+      <span title={schedule.disabled ?? "⇧⌘↩"} className="shrink-0">
+        <Button
+          variant="primary"
+          aria-label={schedule.label}
+          disabled={!!schedule.disabled}
+          onClick={onSchedule}
+        >
+          <span className="hidden @[720px]:inline">{schedule.label}</span>
+          <span className="@[720px]:hidden">Zamanla</span>
         </Button>
       </span>
+      <span
+        aria-hidden="true"
+        className="mx-1 hidden h-5 w-px shrink-0 bg-hairline @[340px]:block"
+      />
       <VersionsPopover
         anchor={chip}
         open={versionsOpen}
@@ -181,7 +204,7 @@ export function TopBar({
         editor={editor}
         snapshot={snapshot}
       />
-    </header>
+    </>
   );
 }
 
@@ -250,7 +273,7 @@ function VersionsPopover({
                   setNaming(false);
                 }
               }}
-              className="h-7 min-w-0 flex-1 rounded-[8px] bg-field px-2 text-body text-fg outline-none"
+              className="h-7 min-w-0 flex-1 rounded-full bg-field px-3 text-body text-fg outline-none"
             />
             <Button size="sm" variant="primary" onClick={() => void save()}>
               Kaydet
@@ -263,7 +286,7 @@ function VersionsPopover({
           className="scroll-area flex max-h-[320px] flex-col gap-0.5 px-1.5 pb-1.5"
         >
           {d.pending.length > 0 || d.inflight ? (
-            <div className="flex h-12 items-center gap-2.5 rounded-[10px] bg-control px-2">
+            <div className="flex h-12 items-center gap-2.5 rounded-[14px] bg-control px-2.5">
               <span className="min-w-0 flex-1">
                 <span className="block text-body text-fg">
                   Taslak · kaydedilmemiş değişiklikler
@@ -280,7 +303,7 @@ function VersionsPopover({
             const isCurrent = v.version === current;
             const isShown = v.version === shown;
             return (
-              // biome-ignore lint/a11y/useKeyWithClickEvents: the list is also reachable from the Sürümler tab
+              // biome-ignore lint/a11y/useKeyWithClickEvents: the popover's list is pointer-driven
               <div
                 key={v.id}
                 role="option"
@@ -291,7 +314,7 @@ function VersionsPopover({
                   void editor.selectVersion(v.version);
                 }}
                 className={cn(
-                  "group flex h-12 cursor-default items-center gap-2.5 rounded-[10px] px-2",
+                  "group flex h-12 cursor-default items-center gap-2.5 rounded-[14px] px-2.5",
                   isShown ? "bg-control" : "hover:bg-control",
                 )}
               >
@@ -323,7 +346,7 @@ function VersionsPopover({
             );
           })}
           {snapshot.summaries.length === 0 && (
-            <p className="px-2 py-3 text-body text-fg-3">Sürümler yükleniyor…</p>
+            <p className="px-2.5 py-3 text-body text-fg-3">Sürümler yükleniyor…</p>
           )}
         </div>
         <div className="border-t border-hairline px-3 py-2 text-footnote text-fg-3">

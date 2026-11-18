@@ -57,6 +57,11 @@ export function useSettings(): SettingsValue {
   return value;
 }
 
+/** The settings, or null outside the app's providers (the editor demo, component tests). */
+export function useOptionalSettings(): SettingsValue | null {
+  return useContext(SettingsContext);
+}
+
 // --- live controllers ---------------------------------------------------------------------------
 
 interface LiveValue {
@@ -90,6 +95,20 @@ export function useJobList(): readonly Job[] {
   const live = useContext(LiveContext);
   return useSyncExternalStore(live?.jobs.subscribe ?? noSubscribe, live?.jobs.getSnapshot ?? noJobs)
     .jobs;
+}
+
+/** The live jobs and the Mac's presence, or an empty feed outside the app's providers. */
+export function useJobsSnapshot(): JobsSnapshot {
+  const live = useContext(LiveContext);
+  return useSyncExternalStore(
+    live?.jobs.subscribe ?? noSubscribe,
+    live?.jobs.getSnapshot ?? noJobs,
+  );
+}
+
+/** The app's open conversations, or null outside its providers (they make their own). */
+export function useConversationCache(): ConversationCache | null {
+  return useContext(LiveContext)?.conversations ?? null;
 }
 
 export function useConversationController(id: string): ConversationController {

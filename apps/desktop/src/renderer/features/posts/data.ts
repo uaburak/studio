@@ -14,7 +14,7 @@ import {
 import { type QueryClient, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef } from "react";
 import { useApi } from "../../lib/api.ts";
-import { isHostUp, useHost, useJobs } from "../../state/studio.tsx";
+import { isHostUp, useHost, useJobs, useJobsSnapshot } from "../../state/studio.tsx";
 import { buildBoard, type PostCard } from "./board.ts";
 
 export const postKeys = {
@@ -268,7 +268,7 @@ const CONTENT_JOBS = new Set<Job["type"]>([
  */
 export function useFinishedContentJobs(onFinished?: (contentId: string, job: Job) => void): void {
   const queryClient = useQueryClient();
-  const { jobs } = useJobs();
+  const { jobs } = useJobsSnapshot();
   const seen = useRef(new Map<string, Job["status"]>());
   const callback = useRef(onFinished);
   callback.current = onFinished;

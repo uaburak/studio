@@ -11,6 +11,7 @@ export {
   AlignStartVertical as IconAlignLeft,
   ArrowUp as IconArrowUp,
   AtSign as IconAt,
+  Blend as IconBlend,
   BringToFront as IconBringFront,
   ChevronDown as IconChevronDown,
   ChevronRight as IconChevronRight,

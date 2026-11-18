@@ -1,10 +1,64 @@
 # Post editor (canvas)
 
-The post's **Düzenle** tab opens a full-window editor (`src/renderer/features/post-editor/`):
-slides as artboards on an infinite canvas, the layer tree, an inspector, the caption panel, the
-AI prompt bar, versions. It follows Wecra's "Post Editor" draft (file *Studio*, page *Claude
-Code*, section *Post Editor*), not pixel for pixel: where the draft and the design contract
-disagree, the contract wins (see "What the contract allows" below).
+Opening a post (a card on Postlar, click or ↩; a chat card; the calendar) opens it straight into
+the canvas, **inside the app's layout** (`src/renderer/features/post-editor/workspace.tsx`): the
+sidebar stays the app's, the top bar stays the app's top bar, and
+
+- **the centre column becomes the canvas**: slides as artboards on an infinite canvas, the
+  floating layers list docked on its left edge, one floating dock at its bottom;
+- **the right panel becomes the post's panel** (same container as Ayrıntılar & co.: same width,
+  resizable, expandable, its header in the top bar's panel segment; a first tool icon switches
+  back to it when another pane was picked);
+- **the top bar's title area shows the post**: back (to where it was opened from), the title with
+  the post's menu (quick look, copy caption, open in chat, duplicate, delete), its state, the
+  version chip (versions popover), the save state, Onayla and Zamanla.
+
+Back (the title area's ‹, the window's back, ⌘[ or a swipe) returns to the board. Reels keep the
+post detail over the centre (they have no slides to edit; they are edited in chat).
+
+### Sohbet / Düzenle
+
+The dock is one object (Wecra's bottom toolbar): its content, a full-height line, and the mode
+switch **Sohbet / Düzenle** at its right. On Düzenle it holds the edit tools (Seç ▾ / El / Ölçekle,
+Metin, Şekil, Görsel, undo / redo, Güvenli alan, Görünüm ▾ (all slides / focus, layers list,
+snapping, rulers, preview format), zoom ▾) and the right panel is the edit panel. On Sohbet the same
+capsule morphs (`motion` layout animation: width, height and content) into the post's message box
+and the right panel shows the post's conversation. The mode is remembered per post on this Mac
+(`workspace-store.ts`); a tool key (V, H, K, T, R) goes to Düzenle, ⌘K to Sohbet.
+
+The **edit panel** is Wecra's properties panel in Studio's controls (`ui/edit-panel.tsx`,
+`ui/fields.tsx`: 40 px section headers, a two-column grid with a 24 px action column, capsule
+fields). Tabs in its header: **Tasarım** and **Açıklama** (the caption editor). Tasarım, by
+selection: the header (what is selected, its "…" menu), Konum (alignment, X / Y, lock, rotation),
+Boyut, Görünüm (visibility, blend mode, opacity, corner radius), Metin (Studio: the text),
+Tipografi (FontPicker with the Mac's fonts and the brand's pinned, weight, size, leading,
+tracking, alignment, case, the brand's font roles), Dolgu (colour and alpha, brand swatches),
+Kenarlık (a border the design already has: its colour), Görsel (Studio: replace, AI, fit, crop,
+adjustments), Efektler (layer blur), AI ile düzenle. Nothing selected: the slide's header, Biçim
+(preview format, safe area on / off, the insets), Uyarılar (safe-area collisions), Kontroller (the
+checks list), AI ile düzenle, Dışa aktar (each slide's rendered PNG; unsaved edits are saved first).
+
+**Layers** float on the canvas's left edge (`ui/layers-dock.tsx`), not in the right panel: the
+right panel switches between Düzenle and Sohbet, while the layers are needed in both (picking what
+to talk about is picking layers); it keeps Figma's / Wecra's arrangement (layers left of the
+canvas, properties right); and the properties keep the panel's full height. Slides are its
+top-level rows (as Figma's frames) with their layers inside; it folds into a "Katmanlar" pill
+(remembered), and fitted slides keep clear of it.
+
+The **Sohbet** is a conversation bound to the post (`chat.ts`): this Mac remembers which
+conversation belongs to which post. The first message creates it (in the post's brand, named
+after the post) and starts with the post's reference (`“Başlık” postu (id: …, vN) için:`); `@`
+layer chips (or the canvas selection) become the scope line (`Kapsam: Kare 1 › headline …`).
+The draft is saved before each message. The panel shows the app's own transcript (messages,
+steps, cards, working line, queue); ↩ sends (queues while a reply runs), the empty send button
+stops the reply. When a reply ends the post is re-read, and finished jobs of the post do the same
+(post-detail.tsx), so versions the agent made land on the canvas. "Sohbette tam ekran aç" opens
+the conversation in the chat; "Bu post için yeni sohbet" starts over. The edit panel's AI chips and
+the selection toolbar's "Sohbette düzenle" go to the Sohbet.
+
+The canvas follows Wecra's "Post Editor" draft (file *Studio*, page *Claude Code*, section *Post
+Editor*), not pixel for pixel: where the draft and the design contract disagree, the contract
+wins (see "What the contract allows" below).
 
 ## Decision: Wecra's engine for interaction, the slide's own HTML for pixels
 
@@ -104,33 +158,29 @@ existing flow: pending ops go out as **one `content.render` job** with `patches`
 (`PostEditor.commitPatches`), the worker stores a `manual_edit` version and renders it; the editor
 adopts it and re-applies anything edited meanwhile. It saves on its own after a 1.8 s pause (never
 during a gesture or text editing), on ⌘S / "Sürüm kaydet" (with a name = the version note), and
-before approve, schedule, an AI revision, switching versions and closing. A failed save keeps the
+before approve, schedule, a Sohbet message, switching versions and closing. A failed save keeps the
 edits (an offline worker) with "Yeniden dene"; unsaved edits survive a closed window (localStorage,
 per post and base version). Undo/redo are local and instant; the inverses go to the server as
 edits. Approve still checks the hash recomputed from the shown version (unchanged code path).
 
 ## Features
 
-- Canvas: all slides / focus (Tümü / Odak), zoom ⌘+ ⌘− ⌘0 ⇧1 ⇧2, pinch, space-drag, trackpad
-  pan, multi-select, marquee, handles (move / resize / rotate), smart guides, spacing, snapping
+- Canvas: all slides / focus, zoom ⌘+ ⌘− ⌘0 ⇧1 ⇧2, pinch, space-drag, trackpad pan,
+  multi-select, marquee, handles (move / resize / rotate), smart guides, spacing, snapping
   (⌘; toggles), nudge (⇧ ×10), ⌥-drag copies, the scale tool (K), rectangle tool (R → a shape
   layer), text tool (T → a text layer, editing at once), image placement (⇧⌘K, uploads),
   in-place text editing (double click / ↩; ⌘↩ applies, Esc cancels) in the slide's own fonts,
   image crop (focal point by dragging; double click or Kırp), rulers (⇧R, in artboard px),
-  safe areas (⌘′) with the platform's bands, labels and collision chips.
-- Layers: tree per slide (top first), select / shift-select, hover highlights on canvas, hide,
+  safe areas (⌘′) with the platform's bands, labels and collision chips. Fitted slides keep
+  clear of the layers list and the dock and follow the canvas's size until you pan or zoom.
+- Layers: the floating list (above), select / shift-select, hover highlights on canvas, hide,
   lock, drag to reorder within a container.
-- Inspector: position / size / rotation, align to slide (one layer) or to the selection;
-  text: content, installed fonts + brand fonts (FontPicker), weight, size, leading, tracking,
-  alignment, uppercase; brand swatches and brand font roles; fill / opacity; picture: replace,
-  fit (Doldur / Sığdır / Kırp / Orijinal), adjustments (exposure, contrast, saturation, warmth;
-  presets) as a CSS filter; effects: blend mode, corner radius, opacity; the safe-area warning
-  with "Güvenli alana taşı"; quick AI edits.
-- AI: the prompt bar with `@` layer chips (or the selection) → an AI revision
-  (`content.generate`) whose instruction names the scope.
-- Versions popover: the list, show / restore, "Sürüm kaydet" with a name.
-- Caption: platform tabs with limits, the feed's preview cut, hashtag chips with the platform's
-  limit, save.
+- Edit panel: above. Stacking is ⌥⌘] / ⌥⌘[ (⌘[ / ⌘] are the app's back / forward).
+- Sohbet: above.
+- Versions popover (the title area's chip, ⇧⌘V): the list, show / restore, "Sürüm kaydet" with
+  a name.
+- Caption (Açıklama tab, ⌘E): platform tabs with limits, the feed's preview cut, hashtag chips
+  with the platform's limit, save.
 - Shortcuts: `model/shortcuts.ts` (the draft's table of 32 plus K and ⌘A).
 
 ## What the contract allows (and where the draft goes further)
@@ -148,11 +198,18 @@ Not done (gaps):
 - Grouping (⌘G), renaming layers (the contract's ids are stable semantic ids), copy / paste.
 - First comment and per-slide alt text: the content model has no fields for them (the publishers
   support alt text); the fields are shown disabled.
-- Hashtag suggestions, caption AI buttons, image generation from the canvas (routes to the prompt).
+- Hashtag suggestions, caption AI buttons, image generation from the canvas (routes to Sohbet).
+- Stroke width / style and shadows: the contract's style allow-list has `border-color` and
+  `filter` (blur) only; Kenarlık recolours an existing border, Efektler is the layer blur.
+- The Sohbet sends text only (no image attachments from the dock); the conversation ↔ post link
+  lives on this Mac (localStorage), not on the server; a conversation deleted elsewhere needs
+  "Bu post için yeni sohbet".
+- The workspace has no own back/forward inside the post (versions are the history).
 - Moving a layer to another slide (a drag across artboards is kept on its slide).
 - Dark overlay pixels lose opacity in the alpha pass (none of the editor's overlays use them);
   engine rulers are not used (they are dark and opaque) — the editor draws its own.
-- The canvas was checked headless (Chromium + SwiftShader WebGL2, `?demo=post-editor`); the real
+- The canvas and the in-layout workspace were checked headless (Chromium + SwiftShader WebGL2,
+  `?demo=post-editor`, which now shows the app's top bar and right panel around it); the real
   look and feel in the app is for Burak to judge.
 
 ## Files
@@ -160,7 +217,14 @@ Not done (gaps):
 ```
 scripts/vendor-engine.mjs           vendor / check the engine
 src/renderer/vendor/wecra-engine/   the vendored engine (do not edit)
+features/post-detail/post-detail.tsx  the opened post: canvas workspace (or the reel detail)
+features/post-detail/post-facts.ts    state line, approve / schedule rules, the post's menu
 features/post-editor/
+  workspace.tsx                     the post workspace (canvas, dock, portals into the shell)
+  workspace-store.ts                mode per post, edit tab, layers list, post → conversation
+  slots.tsx                         the shell's slots (title area, panel header, panel)
+  chat.ts                           the post's Sohbet (conversation binding, message text)
+  session.ts                        draft + canvas + toasts of one open post
   engine/studio-engine.ts           facade over the C ABI (events, frames, input, camera …)
   engine/alpha-pass.ts              transparent canvas + accent selection colour
   engine/canvas-host.ts             DOM input → engine (after Wecra's CanvasController)
@@ -175,8 +239,17 @@ features/post-editor/
   model/brand-kit.ts                brand.css / patch context as the worker builds them
   model/safe-areas.ts               presets, bands, collisions
   model/shortcuts.ts, style-values.ts
-  session.ts, workspace.tsx, ui/*   the editor's UI
-  demo/                             `?demo=post-editor[&format=story]` (in-memory API)
+  ui/title-bar.tsx                  the top bar's title area, versions popover
+  ui/mode-dock.tsx                  the dock: morph, mode switch, edit tools, message box
+  ui/layers-dock.tsx                the floating layers list
+  ui/edit-panel.tsx, ui/fields.tsx  the edit panel (Wecra's properties panel, Studio controls)
+  ui/caption-panel.tsx              the Açıklama tab
+  ui/chat-panel.tsx                 the Sohbet panel (the app's transcript in panel form)
+  ui/canvas-view.tsx                canvas, chrome (titles, safe areas, crop, rulers)
+  demo/                             `?demo=post-editor[&format=story]` (in-memory API and chat,
+                                    inside a stand-in of the app's layout)
 test/engine/adapter.test.ts         the real engine: round trip, drag + snapping, resize, ⌥-drag, turn, reorder
 test/renderer/post-canvas-model.test.ts
+test/renderer/post-workspace.test.tsx  open → canvas, back → board, mode memory, the dock's
+                                    morph, panel switching, the Sohbet bound to the post
 ```

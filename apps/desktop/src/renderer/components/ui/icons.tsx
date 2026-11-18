@@ -53,6 +53,7 @@ export {
   Search as IconSearch,
   Send as IconSend,
   Settings as IconSettings,
+  SlidersHorizontal as IconSliders,
   Smartphone as IconPhone,
   Sparkles as IconSparkles,
   Square as IconSquare,

@@ -1,14 +1,13 @@
 // The canvas area: the slides' frames, the engine's canvas over them, and the editor's chrome
 // on top (artboard titles, safe-area labels, collision chips, the selection's toolbar, the crop
-// overlay, rulers), with the view toolbar above and the tools + AI prompt bar below.
+// overlay, rulers), the floating layers list and toasts (`overlay`) and the dock at the bottom.
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { cn, IconButton, Spinner } from "../../../components/ui/controls.tsx";
+import { cn, Spinner } from "../../../components/ui/controls.tsx";
 import { IconWarning } from "../../../components/ui/icons.tsx";
 import type { PostCanvas, CanvasView as View } from "../canvas/controller.ts";
 import { layerLabel, slideLabel } from "../model/document.ts";
 import { aabb, type OBox } from "../model/geometry.ts";
 import type { EditorSession } from "../session.ts";
-import { IconMagnet, IconPhoneFrame, IconRuler } from "./glyphs.tsx";
 
 export function useCanvasView(canvas: PostCanvas): View {
   const ref = useRef<View>(canvas.getView());
@@ -36,15 +35,34 @@ function screenBox(view: View, rect: { x: number; y: number }, box: OBox) {
 export function CanvasArea({
   session,
   bottom,
+  overlay,
   selectionToolbar,
+  coveredLeft = 0,
 }: {
   session: EditorSession;
   bottom: React.ReactNode;
+  /** Floating parts over the canvas (the layers list, toasts). */
+  overlay?: React.ReactNode;
   selectionToolbar: React.ReactNode;
+  /** Width the floating parts cover at the left (the selection's toolbar keeps clear of it). */
+  coveredLeft?: number;
 }) {
   const { canvas, canvasState } = session;
+  const rootRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const framesRef = useRef<HTMLDivElement | null>(null);
+  const bottomRef = useRef<HTMLDivElement | null>(null);
+  // The dock's height (it grows in Sohbet) as `--dock-h`: floating lists end above it.
+  useEffect(() => {
+    const el = bottomRef.current;
+    const root = rootRef.current;
+    if (!el || !root) return;
+    const update = () => root.style.setProperty("--dock-h", `${el.offsetHeight || 48}px`);
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
   useEffect(() => {
     const c = canvasRef.current;
     const f = framesRef.current;
@@ -54,7 +72,11 @@ export function CanvasArea({
   }, [canvas]);
 
   return (
-    <div className="relative min-w-0 flex-1 overflow-hidden bg-page" data-testid="post-canvas">
+    <div
+      ref={rootRef}
+      className="relative min-w-0 flex-1 overflow-hidden bg-page"
+      data-testid="post-canvas"
+    >
       <div ref={framesRef} className="absolute inset-0 overflow-hidden" aria-hidden="true" />
       <canvas
         ref={canvasRef}
@@ -64,84 +86,31 @@ export function CanvasArea({
           canvasState.engine !== "ready" && "pointer-events-none",
         )}
       />
-      <Chrome session={session} selectionToolbar={selectionToolbar} />
-      <ViewToolbar session={session} />
+      <Chrome session={session} selectionToolbar={selectionToolbar} coveredLeft={coveredLeft} />
+      {overlay}
       {canvasState.engine === "loading" && (
-        <div className="glass pointer-events-none absolute top-16 left-1/2 flex h-8 -translate-x-1/2 items-center gap-2 rounded-full px-3 text-footnote text-fg-2">
+        <div className="glass pointer-events-none absolute top-3 left-1/2 flex h-8 -translate-x-1/2 items-center gap-2 rounded-full px-3 text-footnote text-fg-2">
           <Spinner size={12} /> Tuval hazırlanıyor
         </div>
       )}
       {canvasState.engine === "unavailable" && (
         <div
           role="status"
-          className="glass absolute top-16 left-1/2 flex max-w-[460px] -translate-x-1/2 items-start gap-2 rounded-[12px] px-3 py-2 text-footnote text-fg-2"
+          className="glass absolute top-3 left-1/2 z-10 flex max-w-[420px] -translate-x-1/2 items-start gap-2 rounded-[16px] px-3 py-2 text-footnote text-fg-2"
           title={canvasState.engineError ?? undefined}
         >
           <IconWarning size={13} className="mt-0.5 shrink-0 text-warning" />
           <span>
-            Tasarım motoru başlatılamadı (WebGL2). Kareler gösteriliyor; katmanları soldaki listeden
-            seçip sağdan düzenleyebilirsin.
+            Tasarım motoru başlatılamadı (WebGL2). Kareler gösteriliyor; katmanları Katmanlar
+            listesinden seçip sağdaki panelden düzenleyebilirsin.
           </span>
         </div>
       )}
-      <div className="pointer-events-none absolute inset-x-0 bottom-4 flex justify-center px-4">
-        <div className="pointer-events-auto flex max-w-full items-end gap-2">{bottom}</div>
+      <div className="@container pointer-events-none absolute inset-x-0 bottom-3 z-20 flex justify-center px-4">
+        <div ref={bottomRef} className="flex max-w-full">
+          {bottom}
+        </div>
       </div>
-    </div>
-  );
-}
-
-function ViewToolbar({ session }: { session: EditorSession }) {
-  const { canvas, canvasState: s } = session;
-  const focus = s.focus !== null;
-  return (
-    <div className="glass absolute top-3 left-1/2 z-10 flex h-9 -translate-x-1/2 items-center gap-0.5 rounded-full p-1">
-      <div role="radiogroup" aria-label="Görünüm" className="flex rounded-full bg-control p-0.5">
-        {[
-          { value: false, label: "Tümü" },
-          { value: true, label: "Odak" },
-        ].map((o) => (
-          // biome-ignore lint/a11y/useSemanticElements: a two-way segmented switch, as SegmentedControl
-          <button
-            key={o.label}
-            type="button"
-            role="radio"
-            aria-checked={focus === o.value}
-            onClick={() => canvas.setFocus(o.value ? s.activeSlide : null)}
-            className={cn(
-              "h-6 rounded-full px-2.5 text-footnote font-medium",
-              focus === o.value ? "bg-surface-1 text-fg shadow-sm" : "text-fg-2 hover:text-fg",
-            )}
-          >
-            {o.label}
-          </button>
-        ))}
-      </div>
-      <span className="mx-1 h-4 w-px bg-hairline" />
-      <IconButton
-        size={28}
-        icon={<IconPhoneFrame size={15} />}
-        label="Güvenli alan"
-        shortcut="⌘'"
-        selected={s.safeArea}
-        onClick={() => canvas.setSafeArea(!s.safeArea)}
-      />
-      <IconButton
-        size={28}
-        icon={<IconMagnet size={15} />}
-        label="Yapışma"
-        shortcut="⌘;"
-        selected={s.snapping}
-        onClick={() => canvas.setSnapping(!s.snapping)}
-      />
-      <IconButton
-        size={28}
-        icon={<IconRuler size={15} />}
-        label="Cetveller"
-        shortcut="⇧R"
-        selected={s.rulers}
-        onClick={() => canvas.setRulers(!s.rulers)}
-      />
     </div>
   );
 }
@@ -149,9 +118,11 @@ function ViewToolbar({ session }: { session: EditorSession }) {
 function Chrome({
   session,
   selectionToolbar,
+  coveredLeft,
 }: {
   session: EditorSession;
   selectionToolbar: React.ReactNode;
+  coveredLeft: number;
 }) {
   const { canvas, canvasState: s } = session;
   const view = useCanvasView(canvas);
@@ -264,7 +235,10 @@ function Chrome({
         <div
           className="pointer-events-auto absolute z-10 -translate-x-1/2"
           style={{
-            left: Math.min(Math.max(union.left + union.width / 2, 180), view.width - 180),
+            left: Math.min(
+              Math.max(union.left + union.width / 2, coveredLeft + 190),
+              view.width - 180,
+            ),
             // Above the selection (with room for a warning chip), else under it.
             top: union.top - 84 > 56 ? union.top - 84 : union.top + union.height + 34,
           }}

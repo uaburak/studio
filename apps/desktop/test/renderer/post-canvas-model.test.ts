@@ -3,6 +3,7 @@
 // (brand.css inlined, URLs mapped, morphing), inspector values and the brand kit.
 import { applyPatch } from "@studio/design-kit/patch";
 import { describe, expect, it, vi } from "vitest";
+import { scopedInstruction } from "../../src/renderer/features/post-editor/chat.ts";
 import {
   DEMO_PROFILE,
   DEMO_SLIDES,
@@ -61,7 +62,6 @@ import {
   parseFilter,
   primaryFamily,
 } from "../../src/renderer/features/post-editor/model/style-values.ts";
-import { scopedInstruction } from "../../src/renderer/features/post-editor/ui/prompt-bar.tsx";
 
 const HTML = `<!doctype html><html lang="tr"><head><meta charset="utf-8"><meta name="studio:contract" content="v1"><meta name="studio:format" content="1080x1350"><link rel="stylesheet" href="/brand/brand.css"></head><body><main data-artboard style="width:1080px;height:1350px">
 <div data-layer="bg" data-type="shape" data-role="background" style="position:absolute;left:0;top:0;width:1080px;height:1350px"></div>
@@ -496,12 +496,16 @@ describe("shortcuts", () => {
       [key("Enter", "Enter", { meta: true, shift: true }), "schedule"],
       [key("Backspace", "Backspace"), "layer.delete"],
       [key("Delete", "Delete"), "layer.delete"],
-      [key("BracketRight", "]", { meta: true }), "layer.forward"],
+      [key("BracketRight", "‘", { meta: true, alt: true }), "layer.forward"],
+      [key("BracketLeft", "“", { meta: true, alt: true }), "layer.backward"],
       [key("Escape", "Escape"), "escape"],
     ];
     for (const [e, command] of cases) expect(matchShortcut(e)?.command, `${e.code}`).toBe(command);
     expect(matchShortcut(key("KeyQ", "q"))).toBeNull();
     expect(matchShortcut(key("KeyV", "v", { alt: true }))).toBeNull();
+    // ⌘[ / ⌘] are the app's back / forward (back to the board), never the editor's.
+    expect(matchShortcut(key("BracketLeft", "[", { meta: true }))).toBeNull();
+    expect(matchShortcut(key("BracketRight", "]", { meta: true }))).toBeNull();
     // Every command in the table is reachable.
     expect(new Set(SHORTCUTS.map((s) => s.command)).size).toBe(SHORTCUTS.length);
   });

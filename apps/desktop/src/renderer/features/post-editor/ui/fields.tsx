@@ -1,29 +1,102 @@
-// Small inspector controls: number fields that commit on ↩ / blur (↑ ↓ step, ⇧ ×10), sections,
-// a slider, a colour field.
-import { type ReactNode, useEffect, useRef, useState } from "react";
+// The edit panel's building blocks, laid out as Wecra's properties panel (its PanelSection and
+// PropertyGrid: a 40 px section header with the title 16 in and the actions 8 from the right,
+// rows of two field columns and a 24 px action column, a line under each section) with Studio's
+// capsule controls: number fields that commit on ↩ / blur (↑ ↓ step, ⇧ ×10), a colour field,
+// a select, a slider, button groups and chips.
+import { Children, type ReactNode, useEffect, useRef, useState } from "react";
 import { cn } from "../../../components/ui/controls.tsx";
+import { IconChevronDown } from "./glyphs.tsx";
 
 export function Section({
   title,
   action,
   children,
+  empty,
   className,
 }: {
   title: string;
+  /** Icon buttons at the header's right. */
   action?: ReactNode;
-  children: ReactNode;
+  children?: ReactNode;
+  /** Nothing set (no stroke, no effect): the title in the secondary colour, no body. */
+  empty?: boolean;
   className?: string;
 }) {
+  const hasBody = Children.toArray(children).length > 0;
   return (
-    <section className={cn("border-b border-hairline px-4 py-3", className)} aria-label={title}>
-      <div className="mb-2 flex h-5 items-center justify-between">
-        <h3 className="text-footnote font-semibold text-fg">{title}</h3>
-        {action}
+    <section
+      className={cn("border-b border-hairline", hasBody && "pb-3", className)}
+      aria-label={title}
+    >
+      <div className="flex h-10 items-center gap-1 pr-2 pl-4">
+        <h3
+          className={cn(
+            "min-w-0 flex-1 truncate text-footnote font-semibold",
+            empty ? "text-fg-2" : "text-fg",
+          )}
+        >
+          {title}
+        </h3>
+        {action && <div className="flex shrink-0 items-center gap-0.5">{action}</div>}
       </div>
       {children}
     </section>
   );
 }
+
+/**
+ * One row of the grid: one cell per field column (two by default, `span` 2 for one wide
+ * field) and the 24 px action column at the right.
+ */
+export function Row({
+  children,
+  action,
+  span = 1,
+  label,
+  className,
+}: {
+  children: ReactNode;
+  action?: ReactNode;
+  span?: 1 | 2;
+  /** A small label above the row (Wecra's "additional labels"). */
+  label?: string;
+  className?: string;
+}) {
+  const cells = Children.toArray(children);
+  return (
+    <>
+      {label && (
+        <div className="pt-1 pr-2 pl-4 text-caption text-fg-3 select-none" aria-hidden="true">
+          {label}
+        </div>
+      )}
+      <div
+        className={cn(
+          "grid min-h-8 grid-cols-[minmax(0,1fr)_minmax(0,1fr)_24px] items-center gap-x-2 py-0.5 pr-2 pl-4",
+          className,
+        )}
+      >
+        {span === 2 ? (
+          <div className="col-span-2 flex min-w-0 *:min-w-0 *:flex-1">{children}</div>
+        ) : (
+          cells.map((cell, i) => (
+            <div key={i} className="flex min-w-0 *:min-w-0 *:flex-1">
+              {cell}
+            </div>
+          ))
+        )}
+        <div className="col-start-3 flex size-6 items-center justify-center">{action}</div>
+      </div>
+    </>
+  );
+}
+
+/** Free content inside a section, on the grid's insets. */
+export function Body({ children, className }: { children: ReactNode; className?: string }) {
+  return <div className={cn("pr-2 pl-4", className)}>{children}</div>;
+}
+
+const FIELD = "flex h-7 min-w-0 items-center rounded-full bg-field text-body";
 
 export function NumberField({
   label,
@@ -69,13 +142,15 @@ export function NumberField({
   };
   return (
     <label
+      title={label}
       className={cn(
-        "flex h-7 min-w-0 items-center gap-1.5 rounded-[8px] bg-field px-2 text-body focus-within:ring-2 focus-within:ring-focus/60",
+        FIELD,
+        "gap-1.5 px-2.5 focus-within:ring-2 focus-within:ring-focus/60",
         disabled && "opacity-50",
         className,
       )}
     >
-      <span className="shrink-0 text-footnote text-fg-3">{prefix}</span>
+      <span className="flex shrink-0 items-center text-footnote text-fg-3">{prefix}</span>
       <input
         aria-label={label}
         disabled={disabled}
@@ -110,6 +185,68 @@ export function NumberField({
   );
 }
 
+export function SelectField<T extends string | number>({
+  label,
+  value,
+  options,
+  onChange,
+  prefix,
+  className,
+}: {
+  label: string;
+  value: T;
+  options: readonly { value: T; label: string }[];
+  onChange(value: T): void;
+  prefix?: ReactNode;
+  className?: string;
+}) {
+  return (
+    <label
+      title={label}
+      className={cn(
+        FIELD,
+        "relative gap-1.5 pr-7 pl-2.5 focus-within:ring-2 focus-within:ring-focus/60",
+        className,
+      )}
+    >
+      {prefix && <span className="shrink-0 text-footnote text-fg-3">{prefix}</span>}
+      <select
+        aria-label={label}
+        value={String(value)}
+        onChange={(e) => {
+          const raw = e.target.value;
+          const picked = options.find((o) => String(o.value) === raw);
+          if (picked) onChange(picked.value);
+        }}
+        className="min-w-0 flex-1 appearance-none bg-transparent text-fg outline-none"
+      >
+        {options.map((o) => (
+          <option key={String(o.value)} value={String(o.value)}>
+            {o.label}
+          </option>
+        ))}
+      </select>
+      <IconChevronDown
+        size={12}
+        className="pointer-events-none absolute right-2.5 text-fg-3"
+        aria-hidden="true"
+      />
+    </label>
+  );
+}
+
+/** A capsule of icon buttons (alignment, text alignment). */
+export function ButtonGroup({ children, label }: { children: ReactNode; label: string }) {
+  return (
+    <fieldset
+      aria-label={label}
+      className="flex h-7 min-w-0 items-center justify-around rounded-full bg-field px-0.5"
+    >
+      {children}
+    </fieldset>
+  );
+}
+
 export function Slider({
   label,
   value,
@@ -117,6 +254,7 @@ export function Slider({
   max = 100,
   onPreview,
   onCommit,
+  format = (v) => (v > 0 && min < 0 ? `+${v}` : String(v)),
 }: {
   label: string;
   value: number;
@@ -124,11 +262,12 @@ export function Slider({
   max?: number;
   onPreview(value: number): void;
   onCommit(value: number): void;
+  format?: (value: number) => string;
 }) {
   const [v, setV] = useState(value);
   useEffect(() => setV(value), [value]);
   return (
-    <label className="flex h-7 items-center gap-3 text-body">
+    <label className="flex h-8 items-center gap-3 pr-2 pl-4 text-body">
       <span className="w-[76px] shrink-0 text-fg-2">{label}</span>
       <input
         type="range"
@@ -146,7 +285,7 @@ export function Slider({
         className="min-w-0 flex-1 accent-[var(--accent-default)]"
       />
       <span className="w-9 shrink-0 text-right text-footnote text-fg-2 tabular-nums">
-        {v > 0 ? `+${v}` : v}
+        {format(v)}
       </span>
     </label>
   );
@@ -156,10 +295,13 @@ export function ColorField({
   label,
   value,
   onCommit,
+  trailing,
 }: {
   label: string;
   value: string | null;
   onCommit(hex: string): void;
+  /** Inside the capsule after the hex (the opacity). */
+  trailing?: ReactNode;
 }) {
   const [text, setText] = useState(value?.replace("#", "") ?? "");
   useEffect(() => setText(value?.replace("#", "") ?? ""), [value]);
@@ -170,9 +312,9 @@ export function ColorField({
     } else setText(value?.replace("#", "") ?? "");
   };
   return (
-    <div className="flex h-7 min-w-0 flex-1 items-center gap-2 rounded-[8px] bg-field px-2">
+    <div className={cn(FIELD, "gap-2 pr-2.5 pl-1.5")}>
       <label
-        className="relative size-4 shrink-0 cursor-pointer overflow-hidden rounded-full shadow-[inset_0_0_0_1px_rgba(0,0,0,.2)]"
+        className="relative size-5 shrink-0 cursor-pointer overflow-hidden rounded-full shadow-[inset_0_0_0_1px_rgba(0,0,0,.2)]"
         style={{ background: value ?? "transparent" }}
       >
         <input
@@ -193,6 +335,7 @@ export function ColorField({
         }}
         className="min-w-0 flex-1 bg-transparent text-body text-fg uppercase tabular-nums outline-none"
       />
+      {trailing}
     </div>
   );
 }

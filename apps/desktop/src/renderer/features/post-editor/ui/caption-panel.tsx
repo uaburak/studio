@@ -1,4 +1,4 @@
-// The Açıklama tab: the caption per platform (one text, each platform's limit and its feed
+// The edit panel's Açıklama tab: the caption per platform (one text, each platform's limit and its feed
 // preview cut), hashtags as chips with the platform's limit, first comment and alt text.
 import type { Platform } from "@studio/contract";
 import { useEffect, useMemo, useState } from "react";
@@ -13,7 +13,7 @@ import {
   splitCaption,
 } from "../../post-detail/caption.ts";
 import { type EditorSnapshot, isLocked, type PostEditor } from "../../post-detail/editor.ts";
-import { Section } from "./fields.tsx";
+import { Body, Section } from "./fields.tsx";
 
 const PLATFORM_LABEL: Record<Platform, string> = {
   instagram: "Instagram",
@@ -100,27 +100,28 @@ export function CaptionPanel({
             {count.toLocaleString("tr-TR")} / {limit.toLocaleString("tr-TR")}
           </span>
         }
-        className="border-b-0"
       >
-        <div className="rounded-[12px] bg-field p-2 focus-within:ring-2 focus-within:ring-accent/70">
-          <textarea
-            aria-label="Açıklama"
-            value={body}
-            disabled={locked}
-            rows={9}
-            onChange={(e) => {
-              setBody(e.target.value);
-              setDirty(true);
-            }}
-            className="w-full resize-none bg-transparent text-body text-fg outline-none"
-          />
-          {cutAt !== null && (
-            <div className="mt-1 flex items-center gap-2 text-caption text-fg-3">
-              <span className="h-px flex-1 bg-hairline" />
-              ilk {preview} karakter akışta görünür
-            </div>
-          )}
-        </div>
+        <Body>
+          <div className="rounded-[14px] bg-field px-3 py-2 focus-within:ring-2 focus-within:ring-accent/70">
+            <textarea
+              aria-label="Açıklama"
+              value={body}
+              disabled={locked}
+              rows={9}
+              onChange={(e) => {
+                setBody(e.target.value);
+                setDirty(true);
+              }}
+              className="w-full resize-none bg-transparent text-body text-fg outline-none"
+            />
+            {cutAt !== null && (
+              <div className="mt-1 flex items-center gap-2 text-caption text-fg-3">
+                <span className="h-px flex-1 bg-hairline" />
+                ilk {preview} karakter akışta görünür
+              </div>
+            )}
+          </div>
+        </Body>
       </Section>
       <Section
         title="Hashtag'ler"
@@ -136,7 +137,7 @@ export function CaptionPanel({
           </span>
         }
       >
-        <div className="flex flex-wrap gap-1.5">
+        <Body className="flex flex-wrap gap-1.5">
           {tags.map((t) => (
             <span
               key={t}
@@ -178,27 +179,31 @@ export function CaptionPanel({
               className="h-6 w-24 rounded-full bg-transparent px-2 text-footnote text-fg outline-none placeholder:text-fg-3 focus:bg-field"
             />
           )}
-        </div>
+        </Body>
       </Section>
       <Section title="İlk yorum">
-        <input
-          aria-label="İlk yorum"
-          disabled
-          placeholder="Yayın hattı ilk yorumu henüz göndermiyor"
-          className="h-8 w-full rounded-[8px] bg-field px-2.5 text-body text-fg-3 outline-none"
-        />
+        <Body>
+          <input
+            aria-label="İlk yorum"
+            disabled
+            placeholder="Yayın hattı ilk yorumu henüz göndermiyor"
+            className="h-7 w-full rounded-full bg-field px-3 text-body text-fg-3 outline-none"
+          />
+        </Body>
       </Section>
       <Section title="Alternatif metin">
-        <textarea
-          aria-label="Alternatif metin"
-          disabled
-          rows={2}
-          placeholder="Kare başına alternatif metin: yayıncılar destekliyor, içerik modeli henüz saklamıyor"
-          className="w-full resize-none rounded-[8px] bg-field px-2.5 py-1.5 text-body text-fg-3 outline-none"
-        />
+        <Body>
+          <textarea
+            aria-label="Alternatif metin"
+            disabled
+            rows={2}
+            placeholder="Kare başına alternatif metin: yayıncılar destekliyor, içerik modeli henüz saklamıyor"
+            className="w-full resize-none rounded-[14px] bg-field px-3 py-1.5 text-body text-fg-3 outline-none"
+          />
+        </Body>
       </Section>
       {dirty && !locked && (
-        <div className="sticky bottom-0 flex justify-end gap-2 border-t border-hairline bg-sidebar px-4 py-2.5">
+        <div className="sticky bottom-0 flex justify-end gap-2 border-t border-hairline bg-page px-4 py-2.5">
           <Button
             variant="ghost"
             onClick={() => {

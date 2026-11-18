@@ -8,6 +8,7 @@ import { BrandPane } from "../../features/brand/brand-pane.tsx";
 import { CalendarPane } from "../../features/calendar/calendar-pane.tsx";
 import { PhonePane } from "../../features/devices/phone-pane.tsx";
 import { MediaPane } from "../../features/media/media-pane.tsx";
+import { WorkspaceSlot } from "../../features/post-editor/slots.tsx";
 import { openSettings } from "../../features/settings/store.ts";
 import { useApi } from "../../lib/api.ts";
 import { compactNumber, formatAgo, formatDuration, percentText } from "../../lib/format.ts";
@@ -54,6 +55,19 @@ export { PANEL_WIDTH, PANEL_WIDTH_EXPANDED };
 
 export function RightPanel({ width }: { width: number }) {
   const pane = useAppStore((s) => s.panelPane);
+  if (pane === "post") {
+    // The open post's Düzenle / Sohbet panel: the post workspace renders into it (and scrolls
+    // its own parts: the edit panel's sections, the chat's transcript).
+    return (
+      <aside
+        aria-label="Post paneli"
+        className="flex h-full shrink-0 flex-col border-l border-hairline bg-page"
+        style={{ width }}
+      >
+        <WorkspaceSlot name="panel" className="flex min-h-0 flex-1 flex-col" />
+      </aside>
+    );
+  }
   return (
     <aside
       aria-label={panelTitle(pane)}
@@ -81,6 +95,8 @@ function PaneContent({ pane }: { pane: PanelPane }) {
       return <BrandPane />;
     case "phone":
       return <PhonePane />;
+    case "post":
+      return null;
   }
 }
 
