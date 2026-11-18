@@ -11,6 +11,8 @@ import type {
 } from "@studio/contract";
 import { useEffect, useState } from "react";
 import { CONTENT_TYPE_LABEL } from "../../features/posts/board.ts";
+import { EstimateDialog, needsEstimate } from "../../features/posts/estimate.tsx";
+import { imageSlotsOf } from "../../features/posts/plan-model.ts";
 import { openPlanPage } from "../../features/posts/store.ts";
 import { formatDuration, shortDate } from "../../lib/format.ts";
 import { type StepGroup, type WorkingItem, workingLabel } from "../../lib/transcript.ts";
@@ -225,6 +227,8 @@ export function PlanProposalCard({
   generateError?: string | null;
 }) {
   const [expanded, setExpanded] = useState(false);
+  // More than a few posts: the time and cost first (N4), then the generation.
+  const [estimating, setEstimating] = useState(false);
   if (!plan) {
     return (
       <div className="my-3.5 rounded-[12px] border border-hairline px-4 py-3 text-body text-fg-2">
@@ -284,7 +288,11 @@ export function PlanProposalCard({
               <Button
                 variant="primary"
                 disabled={busy}
-                onClick={() => void controller.acceptAndGenerate(plan)}
+                onClick={() =>
+                  needsEstimate(items.length)
+                    ? setEstimating(true)
+                    : void controller.acceptAndGenerate(plan)
+                }
               >
                 {busy ? "Gönderiliyor…" : "Onayla ve üret"}
               </Button>
@@ -332,6 +340,20 @@ export function PlanProposalCard({
             </span>
           )}
         </div>
+      )}
+      {/* Mounted only when asked: the card also renders without the API (tests, previews). */}
+      {estimating && (
+        <EstimateDialog
+          query={{ count: items.length, brandId: plan.brandId, imageSlots: imageSlotsOf(items) }}
+          title="Üretim başlasın mı?"
+          what={`${items.length} post üretilecek.`}
+          confirmLabel="Onayla ve üret"
+          onClose={() => setEstimating(false)}
+          onConfirm={async () => {
+            setEstimating(false);
+            await controller.acceptAndGenerate(plan);
+          }}
+        />
       )}
     </div>
   );
