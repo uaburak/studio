@@ -58,8 +58,8 @@ import { BrandMark, LanguageSelect } from "./brand-views.tsx";
 import { AddSystemFontButton, KitFontList } from "./kit-fonts.tsx";
 import { ProductsTab } from "./products-tab.tsx";
 import { SkillsSection } from "./skills-section.tsx";
-import { TemplatesTab } from "./templates-tab.tsx";
 import { SpecialDaysSection } from "./special-days-section.tsx";
+import { TemplatesTab } from "./templates-tab.tsx";
 
 export const BRAND_TAB_OPTIONS: { value: BrandTab; label: string }[] = [
   { value: "general", label: "Genel" },

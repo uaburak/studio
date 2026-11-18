@@ -95,8 +95,8 @@ import {
 } from "../db/schema.ts";
 import { ApiProblem, badRequest, conflict, invalidTransition, notFound } from "../lib/errors.ts";
 import { newId } from "../lib/ids.ts";
-import { assertPlanTemplates } from "../lib/templates.ts";
 import { marksChanged, similarityMarks, storedMarks } from "../lib/planning.ts";
+import { assertPlanTemplates } from "../lib/templates.ts";
 import {
   activeRunOf,
   assistantMessageOf,
