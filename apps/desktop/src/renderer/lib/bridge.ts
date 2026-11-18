@@ -1,5 +1,6 @@
 // `window.studio` from the preload. Outside Electron (the gallery in a browser, headless render
 // checks, tests) a small in-memory stand-in keeps the UI working.
+import type { Draft, DraftsBridge } from "../../shared/drafts.ts";
 import type {
   DesktopSettings,
   HostSnapshot,
@@ -41,6 +42,29 @@ export function fallbackSettings(): DesktopSettings {
     session: { ...defaultSession },
     settingsSection: "",
     onboarding: { completed: false, skipped: false, step: "welcome" },
+  };
+}
+
+/** Drafts kept in this page's memory (the browser stand-in, tests). */
+export function memoryDrafts(): DraftsBridge & { items: Map<string, Draft> } {
+  const items = new Map<string, Draft>();
+  const copy = (d: Draft): Draft => ({ ...d, bundle: d.bundle.slice() });
+  return {
+    items,
+    save: async (draft) => {
+      items.set(draft.contentId, copy(draft));
+    },
+    saveSync: (draft) => {
+      items.set(draft.contentId, copy(draft));
+      return true;
+    },
+    load: async (contentId) => {
+      const d = items.get(contentId);
+      return d ? copy(d) : null;
+    },
+    remove: async (contentId) => {
+      items.delete(contentId);
+    },
   };
 }
 
@@ -93,6 +117,7 @@ export function createFallbackBridge(apiPort = 8790): StudioBridge {
     },
     onMenuCommand: (_listener: (c: MenuCommand) => void) => () => undefined,
     onWindowState: (_listener: (s: WindowState) => void) => () => undefined,
+    drafts: memoryDrafts(),
   };
 }
 

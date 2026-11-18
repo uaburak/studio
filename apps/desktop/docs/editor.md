@@ -137,42 +137,137 @@ layers (`wecra/scope.ts`: "Kare 2 › headline").
   is left out (the import goes on, a toast says so). Not carried over: `text-wrap: balance`,
   `object-position` (pictures are centred), filters on pictures, blend modes.
 
-### Saving
+### Drafts and versions (S5)
 
-⌘S, "Sürüm kaydet" (with a name = the note), 6 s after the last edit (not during a gesture), and
-before approve, schedule, a Sohbet message and leaving the post (the closing save reads everything
-from the editor at once, before it goes):
+An edit on the canvas only marks it **unsaved**; a moment later (0.8 s, not during a gesture) the
+document is written to the post's **one draft on this Mac** — no API call, no version, approval and
+schedules untouched. The main process keeps it (`src/main/drafts.ts`: `<state>/drafts/<post>.draft`,
+0600, written atomically: temporary file, fsync, rename) through `window.studio.drafts`
+(`src/shared/drafts.ts`). "Unsaved" is the document's hash against the version's
+(`wecra/hash.ts`: the engine's kiwi snapshot with the editor session cleared), so undoing back to
+the saved state is clean again and the draft goes. The title area says it quietly: Kaydedilmedi /
+Kaydedildi (a warning icon when the frames can't be saved, see below).
 
-1. the slides are the page's top-level frames in reading order (Wecra's `pageFrames`); their count
-   must fit the post type (`SLIDE_LIMITS`: frames can be added, duplicated and deleted on the
-   canvas now) and their size 1–4096 px;
+A **version** is created only on ⌘S, "Sürüm kaydet" (with a name = the note), Onayla, Zamanla, a
+Sohbet message and **closing the post with changes**:
+
+1. the slides are the page's top-level frames in reading order (Wecra's `pageFrames`); they must
+   fit the post (`wecra/frames.ts`, E15): no hidden frame (it would drop its slide), every frame
+   the post's format (the size its version was made in — 1080×1350 or 1080×1080; a story
+   1080×1920), the count of its type (a carousel 2–20: add, duplicate, delete freely; a single
+   post or a story one — a post's type can't change, so a second frame there is explained). A
+   canvas that doesn't fit is not saved; the draft keeps it and the reason is shown;
 2. **each frame is exported by Wecra's engine** (its exporter, PNG 1x, sRGB);
-3. the document is bundled (`wecra/bundle.ts`, a zip by Wecra's own writer): `meta.json`
-   (format, Wecra's version and commit, the slides, the images, the HTML version it came from),
-   `document.kiwi` (the engine's own kiwi snapshot: lossless) and `images/<sha1>`;
-4. renders and bundle are uploaded as the brand's assets (the bundle as
-   `application/vnd.wecra.document+zip`, kind `document`) and a new `manual_edit` version is
-   created: its slides are the renders (`wecra/slide-html.ts`: the render as the artboard's one
-   image layer, **its SHA-256 in the HTML**, the slide's texts as alt), `renderedAssetIds` are the
-   renders, `layouts` that one layer (measured: no measuring render replaces the engine's PNG),
-   `editorDocument` the bundle;
-5. a `content.check` job (no model pass) checks the new version; the post re-reads its versions
-   and the new one is shown — the document on the canvas is the one just saved (no reload).
+3. the document's **pictures become the brand's assets**, each once (`wecra/assets.ts`, E13): one
+   whose bytes (SHA-256) are a known asset — the opened bundle's references, a picture the import
+   read from the brand's media, an earlier upload — is linked to it, any other is uploaded
+   (`tuval-gorseli.*`, kind image); a file that can't be an asset stays inside the bundle;
+4. the document is bundled (`wecra/bundle.ts`, format 2, a zip by Wecra's own writer):
+   `meta.json` (format, Wecra's version and commit, the slides, the images, **the asset each image
+   is**, the HTML version it came from), `document.kiwi` (the engine's own kiwi snapshot:
+   lossless) and `images/<sha1>` only for pictures that are no asset. Format 1 bundles (every
+   picture inside) still open;
+5. renders and bundle are uploaded and a new `manual_edit` version is created: its slides are the
+   renders (`wecra/slide-html.ts`), `renderedAssetIds` the renders, `editorDocument` the bundle;
+6. a `content.check` job (no model pass) checks the new version; the post re-reads its versions
+   and the new one is shown — the document on the canvas is the one just saved (no reload). Only
+   now does the API take an approval away (a new version always does).
 
-So the **content hash — what approval is bound to — covers the renders' pixels**; approving
-recomputes it from the shown version as before (unchanged code path), scheduling and publishing
-use the version's renders, previews and the board show them. Restoring and duplicating a version
-carry its document.
+A version that can't be made (the frames, a failure) keeps the draft and says why. Closing the
+post writes the draft first, then makes the version; when that fails the toast says the changes
+wait as a draft (E14).
+
+**Opening a post with a draft**: a draft made on the version that opens is put back on the canvas
+silently ("Kaydedilmemiş değişiklikler geri yüklendi" · Vazgeç); one made on an older version, or
+for a post that is locked now, is offered — "Taslağı aç / Sil" — and the canvas waits read only
+until it is answered (it is never overwritten meanwhile). Looking at an older version keeps the
+draft for the current one.
+
+**A new version arriving** (the AI, a job) while the canvas has unsaved edits never replaces them
+(E4): the canvas stays, the draft is written, and the user picks — "Benimkini kaydet" (the canvas
+becomes a version on top; the arrived one stays in the history) or "Yeni sürümü aç" (it opens, the
+edits stay a draft, offered). Onayla / Zamanla / Sohbet wait for the answer. (Versions carry no
+"based on": asking is the one behaviour that is always safe.)
+
+**Close, ⌘Q, reload** (E14): before the window closes or the app quits the main process asks the
+page to write its drafts (`lifecycle:flush-request`, `src/main/flush.ts`: at most 2 s, then it
+goes on); a reload writes it on `beforeunload` with a blocking IPC (`drafts:save-sync`).
+
+### Read only (E3)
+
+`edit-lock.ts`: the canvas opens in Wecra's own viewer mode (`Engine.setViewerMode`: no handles,
+drags move nothing, edits and commands refused; the dock shows "Salt okunur") when the post is
+
+- **approved or scheduled**: "Düzenle" first says what it costs — once a version is made the
+  approval goes and the schedules (listed by account) are cancelled — and then unlocks;
+- **publishing** or **published**: never unlocked; a published post offers "Kopyasını oluştur"
+  (`POST /api/contents/{id}/duplicate`);
+- an **older version** is shown: "Bu sürüme dön" (restore, explicit) or "Güncel sürüm" (E19);
+- an **AI run** may make a version: the Sohbet answering, a `content.generate` job or a render
+  with edits for the post.
+
+### Keys and gestures (E8)
+
+The canvas column is `data-no-swipe`: a two-finger sideways pan there moves the canvas, never the
+app's history (also a wheel something already used, and the window's three-finger swipe over it).
+⌘[ / ⌘] on the canvas and Wecra's layers are Wecra's (send backward / bring forward), even with
+nothing selected: the workspace marks the key used after Wecra's handler, so the menu's Geri /
+İleri (which carry the same keys) skip it; with the focus anywhere else — the page itself
+included (`wecra/embed.ts ownsEvent`) — they go back and forward.
+
+### A document this Wecra can't read (E19)
+
+After re-vendoring, a bundle that no longer decodes falls back to importing the HTML version it
+came from (`studio:source-version`), saying the canvas's hand edits are not in it; without one the
+version's renders are shown read only with the reason.
 
 ### The AI
 
 AI revisions still produce HTML versions; such a version has no editor document, so the canvas
-**imports it anew** when it is shown (the simple path). A canvas-saved version's HTML is one image
-per slide: the Sohbet's first message tells the agent (`chat.ts postReference`) that the version
+**imports it anew** when it is shown (the simple path). A canvas-saved version's HTML is the render
+with its layers described above it (see below): the Sohbet's first message tells the agent (`chat.ts postReference`) that the version
 was edited on the canvas and which HTML version the canvas started from (`studio:source-version`),
 to make text and layer changes from there. **Gap**: the agent's new version does not carry the
 canvas's hand edits made after that import (a Wecra-aware agent tool — editing the Wecra document
 through Wecra's own MCP tools — is the next step).
+
+### What a canvas version says (canvas facts: E1, E5, E11)
+
+The Wecra document stays the truth (S1) and the PNG is what gets published; the slide HTML of a
+canvas version **describes** that PNG so checks, the AI, alt text and the iPhone can read it
+(`@studio/design-kit/canvas`):
+
+- **Facts** (`wecra/facts.ts`, read at the save from Wecra's engine, at once with the export):
+  every layer of the frame in paint order — Wecra id, name, kind (text / image / shape / group /
+  frame), box in slide px (axis-aligned, rotation given), opacity, visibility, the clip of
+  enclosing frames, fills and strokes (pictures by Wecra's image key, fit, pixel size); texts with
+  characters, font family / style / weight / size, line height, letter spacing, alignment,
+  colours (runs too), **the lines Wecra's text engine laid out**, and Wecra's own overflow (layout
+  taller / wider than a fixed box), truncation and missing-font flags; the frame's size and
+  background; the fonts used and which Wecra did not have. Schema: `CanvasFacts`
+  (`packages/design-kit/src/canvas/facts.ts`).
+- **Contract meaning survives the canvas**: the import keeps each `data-layer`'s type, role, slot
+  attributes and picture file on its Wecra layer as plugin data (`studio` / `layer`,
+  `import.ts markLayers`), with the picture's image key as imported — so an image slot is still a
+  slot, a logo still the brand's file (until its picture is replaced), a headline still a headline.
+- **The slide HTML** (`canvasSlideHtml`): contract-valid (brand.css linked, lint-clean): the render
+  as `<img data-layer="canvas">` at the bottom; above it one invisible (`opacity: 0`) `data-layer`
+  per text (its real text; colours and fonts as `data-color`, `data-font` …), image slot
+  (`data-slot-*`, filled or empty from the document), logo and picture, at their boxes; the facts
+  as JSON in `<meta name="studio:canvas">` (a `<script>` would be removed by the sanitiser); a short
+  `alt` from the most prominent texts. Chromium renders it to exactly the PNG (tested pixel for
+  pixel). `layouts` of the version are these boxes.
+- **Checks** (`apps/worker/src/checks/pipeline.ts` → `lintCanvasSlide`): no Chromium layout for a
+  canvas slide; overflow, truncation, slide edge and clipping, safe area (the preset's), font sizes,
+  fonts outside the brand kit or missing on the canvas, overlaps, text under an opaque layer, logo
+  clear space / overlap / safe area, upscaled pictures from the facts; **contrast from the PNG's
+  pixels** under each text's lines (its own ink told apart by colour and left out); numbers,
+  banned words and the model pass on the real texts; empty slots; a logo the source design had
+  but the canvas lost. Canvas slides are never auto-fixed (they are fixed on the canvas).
+- **No vacuous passes**: a check that could not read every slide is `skipped` with the reason
+  (`skipReasons` + `withPasses`), not `pass`. Versions saved before the facts (one `<img>`, no
+  facts) still open (the bundle is the truth); their slide checks say "Eski tuval kaydı … yeniden
+  kaydedin". When the facts can't be read at a save, the slide is the render alone (same skip).
 
 ## API (migration `0016_editor_documents`)
 
@@ -198,9 +293,16 @@ files under their role's family. WOFF / WOFF2 files are not read by the engine: 
   colour option; making it Studio's orange needs a change in Wecra.
 - Safe-area bands and collision chips (the old editor's) are not on Wecra's canvas yet (Wecra's
   Social mode has its own safe areas: a candidate to switch on).
-- Unsaved edits live only in memory until the save 6 s later (no localStorage draft of the
-  document).
-- First comment and per-slide alt text fields: as before, not in the content model.
+- First comment and per-slide alt text fields: as before, not in the content model (a canvas
+  slide's short alt is in its HTML, on the render's `<img>`).
+- Canvas facts: a picture added on the canvas has no file of its own in the HTML (its layer points
+  at the render; the facts keep its Wecra image key); logos added on the canvas are not recognised
+  as the brand's logo (only imported ones); colours are taken as sRGB (a Display P3 document's
+  colours are not converted); rotated texts are checked by their axis-aligned boxes.
+- The frame size is checked when a version is made (and shown as a warning while editing), not
+  held by the engine: a frame can still be resized on the canvas.
+- The E19 fallback covers bundles that no longer decode; a document that decodes but that Wecra's
+  engine then refuses to load still shows Wecra's own "could not be opened" message.
 - Checked headless (Chromium + SwiftShader, `?demo=post-editor`; WebGPU is off there, the engine
   runs on WebGL2): opening, the import, selection, the Design panel, ⌘S → a version with renders
   and the bundle. The look and feel in the app is for Burak to judge.
@@ -220,10 +322,15 @@ features/post-editor/
   wecra/embed.ts                    what the embedding patches read (places, store, keys)
   wecra/host.tsx                    EditorApp, Design panel, Layers, toolbar, zoom menu in Studio
   wecra/wecra.css                   Wecra's base rules in its places, Studio's colours and radii
-  wecra/session.ts                  open (bundle or import), dirty, save (engine export → version)
+  wecra/session.ts                  open (bundle, import, draft), unsaved, draft, version, read only
+  wecra/frames.ts                   slide frames and whether they fit the post (E15)
+  wecra/assets.ts                   pictures as the brand's assets, uploaded once (E13)
+  wecra/hash.ts                     the document's hash (unsaved = differs from the version)
+  edit-lock.ts                      when the canvas is read only, Düzenle's warning (E3)
   wecra/import.ts                   HTML slides → Wecra layers (Wecra's walker + converter)
   wecra/bundle.ts                   the Wecra document bundle
-  wecra/slide-html.ts               a canvas-saved slide's HTML (render, hash, alt)
+  wecra/slide-html.ts               a canvas-saved slide's HTML (render, hash, facts, alt)
+  wecra/facts.ts                    a slide frame's canvas facts, read from Wecra's engine
   wecra/fonts.ts                    Wecra's font source in Studio
   wecra/scope.ts                    the Sohbet's layers (selection, @)
   wecra/vendored.ts                 is Wecra vendored here, what to do when not
@@ -235,6 +342,10 @@ features/post-editor/
   ui/caption-panel.tsx, ui/chat-panel.tsx
   demo/                             `?demo=post-editor[&format=story]` (in-memory API and chat)
 test/engine/wecra-post.test.ts      the real engine: import, bundle round trip, export, save, fonts
+test/engine/wecra-facts.test.ts     the real engine (Inter loaded): marks, facts, overflow, HTML + checks
+test/engine/wecra-save-model.test.ts  drafts vs versions, undo to clean, read only, incoming, close,
+                                    picture dedupe, old bundles, frames, fallbacks
+test/main/drafts.test.ts            the draft store (0600, atomic) and the close / quit flush
 test/renderer/post-workspace.test.tsx  layout, single back, panels, sidebar layers, mode, Sohbet
 test/renderer/post-editor-model.test.ts  slide documents, saved slide HTML / hash, keys, AI note
 apps/api/test/contents-editor.test.ts  editor documents on versions

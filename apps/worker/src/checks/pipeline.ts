@@ -35,13 +35,24 @@ import {
   summarizeCheckResults,
 } from "@studio/contract";
 import { brandPatchContext, colorValue } from "@studio/design-kit/brand";
+import { type CanvasSlideKind, lintCanvasSlide, readCanvas } from "@studio/design-kit/canvas";
 import { parseSlide } from "@studio/design-kit/document";
-import { findUnverifiedNumbers, type LintReport, lintCarousel } from "@studio/design-kit/lint";
+import {
+  findUnverifiedNumbers,
+  type LintReport,
+  lintCarousel,
+  type Raster,
+} from "@studio/design-kit/lint";
 import { applyPatch, type PatchContext, PatchOp } from "@studio/design-kit/patch";
 import { type PlatformPreset, presetsForSize } from "@studio/design-kit/presets";
-import type { RenderAndLintRequest, RenderAndLintResult } from "@studio/design-kit/render";
+import type {
+  AssetResolver,
+  RenderAndLintRequest,
+  RenderAndLintResult,
+} from "@studio/design-kit/render";
 import { combineResolvers } from "@studio/design-kit/render";
 import { sanitizeSlideHtml } from "@studio/design-kit/sanitize";
+import sharp from "sharp";
 import type { AgentDeps } from "../agent.ts";
 import { designSkillsBlock, loadEnabledBrandSkills, selectBrandSkills } from "../brand/skills.ts";
 import { type BrandContext, loadBrandContext } from "../generate/brand.ts";
@@ -56,6 +67,7 @@ import {
   SLIDE_CHECKS,
   type SlideText,
   skipped,
+  skipReasons,
   withPasses,
 } from "./deterministic.ts";
 import { type FixContext, mergeSlideFixes, type SlideFix, slideFixFor } from "./fixes.ts";
@@ -126,6 +138,40 @@ interface SlideState extends CheckedSlide {
    * `unmeasured`: not judged (a Reel cover, or no report and nothing to carry over).
    */
   mode: "fresh" | "carried" | "unmeasured";
+  /** Saved from the canvas: with its facts, or an older save (one picture, nothing to read). */
+  canvas: CanvasSlideKind["kind"];
+}
+
+/**
+ * A canvas slide's render (the version's rendered PNG, else the canvas layer's file) as RGB
+ * pixels, transparent parts on white; `null` when it cannot be read.
+ */
+async function canvasRaster(
+  resolver: AssetResolver,
+  html: string,
+  renderedAssetId: string | null,
+): Promise<Raster | null> {
+  const path = renderedAssetId
+    ? `/media/${encodeURIComponent(renderedAssetId)}.png`
+    : (/<img[^>]*data-layer="canvas"[^>]*\ssrc="([^"]+)"/.exec(html)?.[1] ?? null);
+  if (!path) return null;
+  try {
+    const file = await resolver.resolve(path);
+    if (!file) return null;
+    const { data, info } = await sharp(file.body)
+      .flatten({ background: "#ffffff" })
+      .toColourspace("srgb")
+      .raw()
+      .toBuffer({ resolveWithObject: true });
+    return {
+      width: info.width,
+      height: info.height,
+      channels: info.channels,
+      data: new Uint8Array(data.buffer, data.byteOffset, data.byteLength),
+    };
+  } catch {
+    return null;
+  }
 }
 
 /** The brand's settings (defaults when they cannot be read). */
@@ -345,6 +391,7 @@ export async function runContentChecks(o: RunChecksOptions): Promise<RunChecksRe
   const count = version.slides.length;
   const slides: SlideState[] = [];
   for (const [index, s] of version.slides.entries()) {
+    const canvas = readCanvas(s.html);
     const state: SlideState = {
       index,
       width: s.width,
@@ -359,8 +406,32 @@ export async function runContentChecks(o: RunChecksOptions): Promise<RunChecksRe
       texts: slideTexts(s.html),
       // Reels: the cover is not judged as a slide.
       mode: "unmeasured",
+      canvas: canvas.kind,
     };
-    if (!isReel) {
+    if (!isReel && canvas.kind === "legacy") {
+      // An older canvas save: one picture, nothing to read (its checks are skipped).
+    } else if (!isReel && canvas.kind === "facts") {
+      // Saved from the canvas: the facts and the render's pixels (no Chromium layout to measure).
+      signal.throwIfAborted();
+      const raster = await canvasRaster(resolver, s.html, s.renderedAssetId);
+      const report = lintCanvasSlide(
+        { html: s.html, facts: canvas.facts, raster },
+        {
+          ...checkLintConfig(brand, preset, content.type, count),
+          width: s.width,
+          height: s.height,
+        },
+      );
+      if (!raster)
+        report.issues.push({
+          rule: "image-broken",
+          severity: "error",
+          layer: "canvas",
+          message: "The canvas render could not be read.",
+        });
+      state.mode = "fresh";
+      state.report = report;
+    } else if (!isReel) {
       const given = o.reports?.get(index);
       if (given) {
         state.mode = "fresh";
@@ -379,6 +450,47 @@ export async function runContentChecks(o: RunChecksOptions): Promise<RunChecksRe
       }
     }
     slides.push(state);
+  }
+
+  // --- logo presence (canvas): the design the canvas started from showed the brand's logo ---
+  const logoRows: ContentCheckResult[] = [];
+  if (
+    !isReel &&
+    slides.length > 0 &&
+    slides.every((s) => s.canvas === "facts") &&
+    isCheckEnabled(settings, "brand.logo") &&
+    !slides.some((s) => s.report?.layers.some((l) => l.type === "logo" && l.visible))
+  ) {
+    const first = readCanvas(version.slides[0]?.html);
+    const source = first.kind === "facts" ? first.sourceVersion : null;
+    let expected = brand.logos.length > 0;
+    if (source)
+      try {
+        const from = await api.contents.versions.get(content.id, source, init);
+        expected = from.slides.some((sl) => {
+          try {
+            return parseSlide(sl.html).model.layers.some((l) => l.type === "logo" && !l.hidden);
+          } catch {
+            return false;
+          }
+        });
+      } catch (error) {
+        signal.throwIfAborted();
+        deps.logger.debug(`checks: source v${source} unreadable: ${(error as Error).message}`);
+      }
+    if (expected)
+      logoRows.push({
+        checkId: "brand.logo",
+        category: CHECK_CATALOG["brand.logo"].category,
+        status: "warn",
+        message: source
+          ? `Postta marka logosu görünmüyor; v${source} tasarımında vardı (tuvalde kaldırılmış ya da başka bir görselle değiştirilmiş).`
+          : "Postta marka logosu görünmüyor.",
+        refs: [],
+        evidence: { rule: "logo-missing", ...(source ? { sourceVersion: source } : {}) },
+        source: "deterministic",
+        fixable: false,
+      });
   }
 
   // --- 2. deterministic ---
@@ -415,14 +527,15 @@ export async function runContentChecks(o: RunChecksOptions): Promise<RunChecksRe
         r.refs.length > 0 &&
         r.refs.every((ref) => ref.slide !== null && states[ref.slide]?.mode === "carried"),
     );
-    return [...found, ...carried];
+    return [...found, ...carried, ...logoRows];
   };
   const canFix = (r: ContentCheckResult, states: readonly SlideState[]): boolean => {
     if (r.checkId === "text.caption-length") return r.evidence?.rule === "caption-length";
     if (r.checkId === "text.hashtags") return true;
     const slide = r.refs[0]?.slide;
     const state = slide !== null && slide !== undefined ? states[slide] : undefined;
-    if (!state?.report) return false;
+    // A canvas slide is the canvas's render: it is fixed on the canvas, not by patching HTML.
+    if (!state?.report || state.canvas !== "none") return false;
     return slideFixFor(r, fixContext(state)) !== null;
   };
   const fixContext = (s: SlideState): FixContext => ({
@@ -540,11 +653,16 @@ export async function runContentChecks(o: RunChecksOptions): Promise<RunChecksRe
           skipped(id, "Reels'te slayt yerleşimi denetlenmez; videoyu önizlemede kontrol edin."),
         )
     : [];
-  const assemble = (det: readonly ContentCheckResult[], extra: readonly ContentCheckResult[]) =>
+  const assemble = (
+    det: readonly ContentCheckResult[],
+    extra: readonly ContentCheckResult[],
+    states: readonly SlideState[],
+  ) =>
     sortCheckResults(
       withPasses(
         [...det, ...extra, ...stamp(modelRows), ...reelRows],
         [...ranDeterministic, ...ranModel],
+        skipReasons(states, isReel),
       ).map((r) =>
         r.status === "pass" && r.source === "model"
           ? { ...r, evidence: { ...(r.evidence ?? {}), textHash: hash } }
@@ -737,7 +855,11 @@ export async function runContentChecks(o: RunChecksOptions): Promise<RunChecksRe
   }
 
   progress(0.95, "Kontrol sonuçları kaydediliyor");
-  const baseResults = assemble(fixedVersion ? original : current, fixedVersion ? [] : fixedRows);
+  const baseResults = assemble(
+    fixedVersion ? original : current,
+    fixedVersion ? [] : fixedRows,
+    fixedVersion ? slides : states,
+  );
   const baseRun = await api.contents.checks.create(
     content.id,
     {
@@ -760,7 +882,7 @@ export async function runContentChecks(o: RunChecksOptions): Promise<RunChecksRe
       captionFixed,
     };
   }
-  const fixedResults = assemble(current, fixedRows);
+  const fixedResults = assemble(current, fixedRows, states);
   const fixedRun = await api.contents.checks.create(
     content.id,
     {

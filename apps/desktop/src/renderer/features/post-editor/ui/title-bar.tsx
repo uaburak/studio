@@ -4,7 +4,7 @@
 // ⌘[, a swipe): the title area has no back button of its own.
 import { useState } from "react";
 import { Button, cn, Spinner, TagPill, type TagTone } from "../../../components/ui/controls.tsx";
-import { IconChevronDown, IconClock } from "../../../components/ui/icons.tsx";
+import { IconChevronDown, IconClock, IconWarning } from "../../../components/ui/icons.tsx";
 import { MenuButton, type MenuEntry } from "../../../components/ui/menu.tsx";
 import { Popover } from "../../../components/ui/popover.tsx";
 import { formatAgo } from "../../../lib/format.ts";
@@ -17,13 +17,21 @@ import {
 
 /** The canvas's saving, as the title area shows and drives it. */
 export interface SaveControl {
+  /** The canvas differs from its version (kept as this Mac's draft meanwhile). */
   dirty: boolean;
+  /** A version is being created. */
   saving: boolean;
   error: string | null;
   lastSavedAt: number | null;
-  /** Saves now (a version; `note` names it). */
+  /** When the draft was last written on this Mac. */
+  draftSavedAt?: number | null;
+  /** The canvas is up and editable (the save state means something). */
+  ready?: boolean;
+  /** Why the canvas can't become a version as it is (frames), or null. */
+  blocker?: string | null;
+  /** Creates a version now (`note` names it). */
   save(note?: string): Promise<boolean>;
-  /** Saves unsaved edits (true also when there are none). */
+  /** Unsaved edits made a version (true also when there are none). */
   flush(): Promise<boolean>;
   notify(message: string): void;
 }
@@ -62,15 +70,22 @@ export function TitleBar({
   const [chip, setChip] = useState<HTMLElement | null>(null);
   const version = activeVersion(snapshot);
   const viewingCurrent = isViewingCurrent(snapshot);
+  // Quiet: unsaved edits are this Mac's draft until a version is made (⌘S, Onayla, …).
   const saveLabel = save.saving
     ? "Kaydediliyor…"
     : save.error
       ? "Kaydedilemedi"
       : save.dirty
         ? "Kaydedilmedi"
-        : save.lastSavedAt
+        : save.lastSavedAt || save.ready
           ? "Kaydedildi"
           : "";
+  const saveTitle =
+    save.error ??
+    (save.dirty
+      ? (save.blocker ??
+        "Değişiklikler bu Mac'te taslak olarak saklanıyor. ⌘S sürüm kaydeder; Onayla, Zamanla, sohbet mesajı ve postu kapatmak da kaydeder.")
+      : undefined);
 
   return (
     <>
@@ -142,9 +157,12 @@ export function TitleBar({
             "flex shrink-0 items-center gap-1.5 text-footnote",
             save.error ? "text-danger" : "text-fg-3",
           )}
-          title={save.error ?? undefined}
+          title={saveTitle}
         >
           {save.saving && <Spinner size={11} />}
+          {!save.saving && !save.error && save.dirty && save.blocker && (
+            <IconWarning size={11} className="text-warning" aria-label={save.blocker} />
+          )}
           <span className={cn(!save.error && "hidden @[700px]:inline")}>{saveLabel}</span>
           {save.error && (
             <button type="button" className="no-drag underline" onClick={() => void save.save()}>
@@ -277,7 +295,7 @@ function VersionsPopover({
                   Taslak · kaydedilmemiş değişiklikler
                 </span>
                 <span className="block text-footnote text-fg-3">
-                  {control.saving ? "Kaydediliyor…" : "Birazdan kendiliğinden kaydedilir"}
+                  {control.saving ? "Kaydediliyor…" : "Bu Mac'te saklanıyor · ⌘S ile sürüm kaydet"}
                 </span>
               </span>
             </div>
@@ -292,10 +310,8 @@ function VersionsPopover({
                 role="option"
                 tabIndex={-1}
                 aria-selected={isShown}
-                onClick={async () => {
-                  if (control.dirty) await control.flush();
-                  void editor.selectVersion(v.version);
-                }}
+                // Unsaved edits stay this Mac's draft (written as the canvas switches).
+                onClick={() => void editor.selectVersion(v.version)}
                 className={cn(
                   "group flex h-12 cursor-default items-center gap-2.5 rounded-[14px] px-2.5",
                   isShown ? "bg-control" : "hover:bg-control",
@@ -318,7 +334,7 @@ function VersionsPopover({
                       void editor.restoreDisplayed();
                     }}
                   >
-                    Geri yükle
+                    Bu sürüme dön
                   </Button>
                 ) : (
                   <span className="text-footnote text-fg-3 opacity-0 group-hover:opacity-100">
@@ -333,7 +349,7 @@ function VersionsPopover({
           )}
         </div>
         <div className="border-t border-hairline px-3 py-2 text-footnote text-fg-3">
-          AI değişikliğinden önce taslak kendiliğinden kaydedilir.
+          Sürüm; ⌘S, Onayla, Zamanla, sohbet mesajı ve değişiklikle postu kapatınca kaydedilir.
         </div>
       </div>
     </Popover>

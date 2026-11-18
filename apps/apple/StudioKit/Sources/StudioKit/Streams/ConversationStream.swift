@@ -13,7 +13,9 @@ public enum ConversationFeedEvent: Sendable, Equatable {
 /// Applies frames with the `ConversationState` reducer. Reconnects with
 /// backoff and resumes from the last applied seq (`?after=`), so no event is
 /// lost or applied twice. A seq gap (should not happen) drops the socket and
-/// resumes from the last good seq.
+/// resumes from the last good seq. A frame this build cannot decode is not a gap:
+/// it arrives as `.unreadable` with its seq and is stepped past (else every resume
+/// would replay it and reconnect again, forever).
 public struct ConversationStream: Sendable {
     public var deps: StreamDependencies
     private let target: @Sendable (_ after: Int?) async throws -> (URL, [String: String])
@@ -51,6 +53,7 @@ public struct ConversationStream: Sendable {
             },
             onState: { emit(.state($0)) },
             onFrame: { text in
+                // Only text that is not a JSON frame at all fails here (it has no seq to step past).
                 guard let frame = try? ConversationStreamMessage.decode(text) else { return .keepReading }
                 let (changed, next) = state.withLock { current -> (Bool, ConversationState?) in
                     let next = ConversationState.apply(current, frame)

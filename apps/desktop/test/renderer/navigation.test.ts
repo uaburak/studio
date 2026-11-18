@@ -7,6 +7,9 @@ import {
 import { usePostsStore } from "../../src/renderer/features/posts/store.ts";
 import {
   mouseButtonDirection,
+  navKeyTakenByCanvas,
+  noSwipeAt,
+  noteCanvasNavKey,
   SWIPE_DISTANCE,
   SWIPE_GESTURE_GAP,
   SwipeDetector,
@@ -247,5 +250,25 @@ describe("gestures", () => {
     runMenuCommand("forward");
     expect(app().route).toEqual({ kind: "calendar" });
     expect(MIN_CENTER_WIDTH).toBeGreaterThan(0);
+  });
+
+  it("never goes back for a key or a swipe the post canvas kept (E8)", () => {
+    document.body.innerHTML = `<div data-no-swipe><canvas id="canvas"></canvas></div><button id="b">x</button>`;
+    expect(noSwipeAt(document.getElementById("canvas"))).toBe(true);
+    expect(noSwipeAt(document.getElementById("b"))).toBe(false);
+    app().navigate({ kind: "posts" });
+    app().navigate({ kind: "calendar" });
+    // ⌘[ used on the canvas (Wecra's send backward): the menu's Geri that carries it does nothing.
+    const used = new KeyboardEvent("keydown", { key: "[", metaKey: true, cancelable: true });
+    used.preventDefault();
+    noteCanvasNavKey(used);
+    expect(navKeyTakenByCanvas()).toBe(true);
+    runMenuCommand("back");
+    expect(app().route).toEqual({ kind: "calendar" });
+    // A while later (or a key nobody used) Geri goes back again.
+    expect(navKeyTakenByCanvas(performance.now() + 1_000)).toBe(false);
+    noteCanvasNavKey(new KeyboardEvent("keydown", { key: "[", metaKey: true }));
+    runMenuCommand("back");
+    expect(app().route).toEqual({ kind: "posts" });
   });
 });

@@ -22,6 +22,7 @@ Mac worker, web editörü ve üretim promptları aynı kodu kullanır.
 | `@studio/design-kit/sanitize`              | `src/sanitize` | Temizleyici, CSP, korumalı önizleme `srcdoc`'u                                           |
 | `@studio/design-kit/brand`                 | `src/brand`    | Marka belirteçleri şeması, `brand.css` üreteci, marka bileşenleri ve kayıt defteri       |
 | `@studio/design-kit/lint`                  | `src/lint`     | Kural kaydı, statik denetim, sayfa içi betik, piksel kontrastı, boşluk/carousel denetimi |
+| `@studio/design-kit/canvas`                | `src/canvas`   | Tuvalde (Wecra) kaydedilen karelerin bilgisi (`CanvasFacts`), kare HTML'i ve denetimleri |
 | `@studio/design-kit/presets`               | `src/presets`  | Platform ön ayarları (boyut, güvenli alan, dışa aktarım sınırları) ve doğrulayıcı        |
 | `@studio/design-kit/render`                | `src/render`   | **Yalnızca Node.** Renderer, varlık çözücüler, PNG → sRGB JPEG, PDF                      |
 | `@studio/design-kit/DESIGN_CONTRACT.v1.md` | `contract/`    | Sözleşmenin sürümlü Markdown metni                                                       |

@@ -83,6 +83,8 @@ final class BrandProfileViewController: UIViewController {
     private let stack = UIStackView.v([], spacing: 14)
     private var profiles: [BrandProfile] = []
     private var kit: BrandKit?
+    /// The kit could not be read (shown instead of silently treating it as empty).
+    private var kitError: String?
     private var isLoading = true
     private var isBusy = false
     private var loadError: String?
@@ -133,7 +135,12 @@ final class BrandProfileViewController: UIViewController {
             async let loadedProfiles = app.dataService.brandProfiles(brandId: brandId)
             async let loadedKit = app.dataService.brandKit(brandId: brandId)
             profiles = try await loadedProfiles.sorted { $0.version > $1.version }
-            kit = try? await loadedKit
+            do {
+                kit = try await loadedKit
+                kitError = nil
+            } catch {
+                kitError = "Marka kiti okunamadı: \(IOSAppModel.describe(error))"
+            }
             loadError = nil
         } catch {
             loadError = IOSAppModel.describe(error)
@@ -174,7 +181,7 @@ final class BrandProfileViewController: UIViewController {
         let accountsCard = IOSCardView(padding: 16, spacing: 8)
         accountsCard.stack.addArrangedSubview(sectionTitle("Hesaplar"))
         if accounts.isEmpty {
-            accountsCard.stack.addArrangedSubview(UILabel.studio("Bağlı hesap yok. Hesaplar Mac'te bağlanır.", size: 14, color: IOSTheme.textSecondary, lines: 0, style: .subheadline))
+            accountsCard.stack.addArrangedSubview(UILabel.studio("Bağlı hesap yok. Hesaplar Mac'te Ayarlar → Hesaplar'da bağlanır.", size: 14, color: IOSTheme.textSecondary, lines: 0, style: .subheadline))
         }
         for account in accounts {
             let health = account.tokenHealth.map { " · \($0.rawValue)" } ?? ""
@@ -214,7 +221,12 @@ final class BrandProfileViewController: UIViewController {
         }
 
         // Palette and kit
-        if let kit, kit.updatedAt != nil || !kit.palette.isEmpty {
+        if let kitError {
+            let card = IOSCardView(padding: 16, spacing: 8)
+            card.stack.addArrangedSubview(sectionTitle("Marka kiti"))
+            card.stack.addArrangedSubview(UILabel.studio(kitError, size: 14, color: IOSTheme.accent, lines: 0, style: .subheadline))
+            stack.addArrangedSubview(card)
+        } else if let kit, kit.updatedAt != nil || !kit.palette.isEmpty {
             let card = IOSCardView(padding: 16, spacing: 10)
             card.stack.addArrangedSubview(sectionTitle("Marka kiti"))
             if !kit.palette.isEmpty {
@@ -235,7 +247,8 @@ final class BrandProfileViewController: UIViewController {
             let summary = "\(kit.samples.count) örnek post · \(kit.logos.count) logo · \(kit.fonts.count) font"
             card.stack.addArrangedSubview(UILabel.studio(summary, size: 14, color: IOSTheme.textSecondary, style: .subheadline))
             if !kit.fonts.isEmpty {
-                card.stack.addArrangedSubview(UILabel.studio(kit.fonts.map(\.family).joined(separator: ", "), size: 14, lines: 0, style: .subheadline))
+                let names = kit.fonts.map { $0.isSystem ? "\($0.family) (Mac'te yüklü)" : $0.family }
+                card.stack.addArrangedSubview(UILabel.studio(names.joined(separator: ", "), size: 14, lines: 0, style: .subheadline))
             }
             stack.addArrangedSubview(card)
         }
@@ -253,9 +266,9 @@ final class BrandProfileViewController: UIViewController {
         } else if draft == nil {
             let card = IOSCardView(padding: 16, spacing: 8)
             card.stack.addArrangedSubview(sectionTitle("Profil yok"))
-            card.stack.addArrangedSubview(UILabel.studio("Mac'te Marka ayarları → Marka kiti'ne 3–12 örnek post ekleyip “Profili çıkar”a bas; taslak burada onaya düşer.", size: 14, color: IOSTheme.textSecondary, lines: 0, style: .subheadline))
+            card.stack.addArrangedSubview(UILabel.studio("Mac'te Markalar → \(brand.name) → Marka Kiti'ne 3–12 örnek post ekleyip “AI ile analiz et”e bas; taslak burada onaya düşer.", size: 14, color: IOSTheme.textSecondary, lines: 0, style: .subheadline))
             let analyze = UIButton.studioPill(title: "Profili çıkar", kind: .secondary, image: "wand.and.stars") { [weak self] in self?.analyze() }
-            analyze.isEnabled = (kit?.samples.count ?? 0) >= BrandKit.minSamples && !isBusy
+            analyze.isEnabled = kitError == nil && (kit?.samples.count ?? 0) >= BrandKit.minSamples && !isBusy
             card.stack.addArrangedSubview(UIStackView.h([analyze, UIView.spacer()], spacing: 0))
             stack.addArrangedSubview(card)
         }

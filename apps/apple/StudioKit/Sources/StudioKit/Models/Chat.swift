@@ -314,6 +314,40 @@ public struct Message: Codable, Sendable, Hashable, Identifiable {
     public var plainText: String {
         parts.compactMap { if case .text(let text) = $0 { text } else { nil } }.joined(separator: "\n")
     }
+
+    private enum CodingKeys: String, CodingKey { case id, conversationId, role, status, runId, parts, mentions, createdAt, updatedAt }
+
+    /// A part that does not decode (a newer server, a bug) becomes `MessagePart.unreadable`
+    /// in place, so the message, its part indexes and the rest of the conversation still read.
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(EntityID.self, forKey: .id)
+        conversationId = try c.decode(EntityID.self, forKey: .conversationId)
+        role = try c.decode(MessageRole.self, forKey: .role)
+        status = try c.decodeIfPresent(MessageStatus.self, forKey: .status) ?? .complete
+        runId = try c.decodeIfPresent(EntityID.self, forKey: .runId)
+        parts = try c.decode([LossyPart].self, forKey: .parts).map(\.part)
+        mentions = try? c.decodeIfPresent([MessageMention].self, forKey: .mentions)
+        createdAt = try c.decode(Date.self, forKey: .createdAt)
+        updatedAt = try c.decodeIfPresent(Date.self, forKey: .updatedAt) ?? createdAt
+    }
+
+    private struct LossyPart: Decodable {
+        var part: MessagePart
+        init(from decoder: any Decoder) throws {
+            part = (try? MessagePart(from: decoder)) ?? .unreadable
+        }
+    }
+}
+
+extension MessagePart {
+    /// `unknown` type of a part (or a whole message) this build could not read.
+    public static let unreadableType = "studio.unreadable"
+    /// Shown as "Bu mesaj bu sürümde gösterilemiyor".
+    public static var unreadable: MessagePart { .unknown(type: unreadableType) }
+    public var isUnreadable: Bool { self == .unreadable }
+    /// What the apps show for an unreadable part or message.
+    public static let unreadableText = "Bu mesaj bu sürümde gösterilemiyor."
 }
 
 public enum AgentRunStatus: String, OpenEnum {

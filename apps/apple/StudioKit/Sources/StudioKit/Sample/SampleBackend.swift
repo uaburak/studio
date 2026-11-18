@@ -17,6 +17,8 @@ public actor SampleBackend: ConversationService, StudioDataService {
     private var jobObservers: [UUID: AsyncStream<JobFeedEvent>.Continuation] = [:]
     private var seqs: [EntityID: Int] = [:]
     private var kits: [EntityID: BrandKit] = [:]
+    /// Check runs per content id, newest first.
+    private var checkRuns: [EntityID: [ContentCheckRun]] = [:]
     private var counter = 0
     /// Simulated upload duration per image (0 in tests).
     private let uploadDelay: Duration
@@ -508,7 +510,7 @@ public actor SampleBackend: ConversationService, StudioDataService {
             throw StudioAPIError.server(status: 404, code: .notFound, message: "brand not found", issues: [])
         }
         let own = Set(data.assets.values.filter { $0.brandId == brandId }.map(\.id))
-        let refs = input.logos.map(\.assetId) + input.fonts.map(\.assetId) + input.samples.map(\.assetId)
+        let refs = input.logos.map(\.assetId) + input.fonts.compactMap(\.assetId) + input.samples.map(\.assetId)
         if let bad = refs.first(where: { !own.contains($0) }) {
             throw StudioAPIError.server(
                 status: 400, code: .validationError, message: "the kit references unusable files",
@@ -1106,9 +1108,12 @@ public actor SampleBackend: ConversationService, StudioDataService {
         return job
     }
 
-    public func requestRevision(of content: Content, baseVersion: Int, instructions: String) async throws -> Job {
+    public func requestRevision(of content: Content, baseVersion requestedBase: Int?, instructions: String) async throws -> Job {
         guard let index = data.contents.firstIndex(where: { $0.id == content.id }) else {
             throw StudioAPIError.server(status: 404, code: .notFound, message: "content not found", issues: [])
+        }
+        guard let baseVersion = requestedBase ?? data.contents[index].currentVersion?.version else {
+            throw StudioAPIError.server(status: 409, code: .conflict, message: "content has no version", issues: [])
         }
         let base = try await version(contentId: content.id, version: baseVersion)
         var slides = base.slides
@@ -1120,10 +1125,45 @@ public actor SampleBackend: ConversationService, StudioDataService {
         let created = storeNewVersion(contentIndex: index, slides: slides, origin: .aiEdit, note: "AI düzenleme (v\(baseVersion) üzerine): \(instructions)")
         let job = Job(
             id: nextId("job"), type: .contentGenerate, status: .succeeded,
-            payload: ["title": .string(content.title), "instructions": .string(instructions), "baseVersion": .number(Double(baseVersion))],
+            payload: requestedBase.map { ["title": .string(content.title), "instructions": .string(instructions), "baseVersion": .number(Double($0))] }
+                ?? ["title": .string(content.title), "instructions": .string(instructions)],
             brandId: content.brandId, contentId: content.id, createdAt: now, updatedAt: now,
             startedAt: now, finishedAt: now, progress: 1,
             output: ["version": .number(Double(created.version)), "versionId": .string(created.id), "revised": .bool(true)])
+        data.jobs.insert(job, at: 0)
+        broadcastJobs()
+        return job
+    }
+
+    /// Adds a version as if the Mac had saved one (a canvas save in tests and previews).
+    @discardableResult
+    public func storeVersion(contentId: EntityID, slides: [Slide], origin: ContentVersionOrigin = .manualEdit, note: String? = nil) throws -> ContentVersion {
+        guard let index = data.contents.firstIndex(where: { $0.id == contentId }) else {
+            throw StudioAPIError.server(status: 404, code: .notFound, message: "content not found", issues: [])
+        }
+        return storeNewVersion(contentIndex: index, slides: slides, origin: origin, note: note)
+    }
+
+    // MARK: - Production checks
+
+    public func latestCheckRun(contentId: EntityID, version: Int) async throws -> ContentCheckRun? {
+        checkRuns[contentId]?.first { $0.version == version }
+    }
+
+    /// Stores a run as if the worker had checked the version (tests, previews).
+    public func storeCheckRun(_ run: ContentCheckRun) {
+        checkRuns[run.contentId, default: []].insert(run, at: 0)
+    }
+
+    /// The sample has no worker: the checks "run" at once and pass.
+    public func runChecks(contentId: EntityID, brandId: EntityID, version: Int) async throws -> Job {
+        let results = ["brief.completeness", "layout.overflow", "layout.contrast", "text.caption-length"].map { id in
+            ContentCheckResult(checkId: id, category: CheckCategory(rawValue: String(id.prefix { $0 != "." })) ?? .unknown, status: .pass, message: "")
+        }
+        let job = Job(
+            id: nextId("job"), type: .contentCheck, status: .succeeded, payload: ["version": .number(Double(version))],
+            brandId: brandId, contentId: contentId, createdAt: now, updatedAt: now, startedAt: now, finishedAt: now, progress: 1)
+        storeCheckRun(ContentCheckRun(id: nextId("check"), contentId: contentId, brandId: brandId, version: version, jobId: job.id, results: results, createdAt: now))
         data.jobs.insert(job, at: 0)
         broadcastJobs()
         return job

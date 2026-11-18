@@ -10,14 +10,18 @@
 // top-bar edge, ⌘[): the post has no back button of its own.
 //
 // The document is Wecra's (wecra/session.ts): a version saved from the canvas opens its saved
-// document; any other version (the AI's) is imported from its HTML once. Saving exports the
-// slides through Wecra's engine as the new version's renders. Approving, scheduling, a chat
-// message and leaving save first.
+// document; any other version (the AI's) is imported from its HTML once. An edit is kept as the
+// post's draft on this Mac (no version, approval untouched); ⌘S, Onayla, Zamanla, a chat message
+// and leaving the post with changes create a version (the slides exported by Wecra's engine).
+// The canvas opens read only when editing would cost something or can't be done (edit-lock.ts):
+// approved / scheduled (Düzenle warns first), publishing, published, an older version, an AI run.
+// A new version arriving while the canvas has unsaved edits asks first (E4).
 import type { Content } from "@studio/contract";
 import {
   type ReactNode,
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   useSyncExternalStore,
@@ -25,16 +29,22 @@ import {
 import type { EditorController } from "@/editor/controller";
 import { useTool } from "@/engine/hooks";
 import {
+  Button,
   cn,
   IconButton,
   SegmentedControl,
   Spinner,
   type TagTone,
 } from "../../components/ui/controls.tsx";
+import { ConfirmDialog } from "../../components/ui/dialog.tsx";
 import { IconClose, IconWarning } from "../../components/ui/icons.tsx";
 import type { MenuEntry } from "../../components/ui/menu.tsx";
 import { useApi } from "../../lib/api.ts";
+import { registerAppFlush } from "../../lib/app-flush.ts";
+import { bridge } from "../../lib/bridge.ts";
+import { noteCanvasNavKey } from "../../lib/nav-gestures.ts";
 import { useAppStore } from "../../state/app-store.ts";
+import { useJobsSnapshot } from "../../state/studio.tsx";
 import {
   activeVersion,
   approveBlocker,
@@ -45,6 +55,7 @@ import {
 } from "../post-detail/editor.ts";
 import { usePostChat } from "./chat.ts";
 import { useRenderKit } from "./data.ts";
+import { type EditLock, editLock, unlockWarning, versionJobRunning } from "./edit-lock.ts";
 import { InSlot } from "./slots.tsx";
 import { CaptionPanel } from "./ui/caption-panel.tsx";
 import { ChatHeader, ChatPanel } from "./ui/chat-panel.tsx";
@@ -60,7 +71,7 @@ import {
   WecraZoomMenu,
 } from "./wecra/host.tsx";
 import { type ChatLayers, describeNode, NO_LAYERS, useChatLayers } from "./wecra/scope.ts";
-import { WecraPostSession, type WecraSessionState } from "./wecra/session.ts";
+import { type DraftNotice, WecraPostSession, type WecraSessionState } from "./wecra/session.ts";
 import { type EditTab, modeOf, useWorkspaceStore, type WorkspaceMode } from "./workspace-store.ts";
 
 export interface WorkspaceProps {
@@ -79,8 +90,12 @@ export interface WorkspaceProps {
   guardApproval?: (approve: () => void) => void;
   /** The approve guard's question and the schedule sheet. */
   dialogs?: ReactNode;
-  /** Pause before saving on its own (tests; 0: never). */
-  autosaveMs?: number;
+  /** The post's pending schedules ("Instagram @hesap · 18 Kas 10:00"), for Düzenle's warning. */
+  scheduledTargets?: readonly string[];
+  /** "Kopyasını oluştur" for a published post (null: not offered). */
+  onDuplicate?: (() => void) | null;
+  /** Pause after an edit before the draft is written (tests; 0: only when asked). */
+  draftMs?: number;
 }
 
 interface Toast {
@@ -101,6 +116,17 @@ const inWorkspace = (target: EventTarget | null) =>
   target === document.body ||
   (target instanceof Element &&
     !!target.closest("[data-post-workspace],[data-workspace-slot],[data-wecra-region]"));
+
+/** The canvas or Wecra's layers: where ⌘[ / ⌘] are Wecra's (send backward / bring forward). */
+export const inCanvas = (target: EventTarget | null) =>
+  target instanceof Element &&
+  !!target.closest('[data-wecra-region="canvas"],[data-wecra-region="layers"]');
+
+const isNavKey = (e: KeyboardEvent) =>
+  e.metaKey &&
+  !e.ctrlKey &&
+  !e.altKey &&
+  (e.code === "BracketLeft" || e.code === "BracketRight" || e.key === "[" || e.key === "]");
 
 /** The dock's height and margin: zoom to fit keeps the slides above it. */
 const DOCK_INSET = 68;
@@ -137,7 +163,9 @@ export function PostWorkspace(props: WorkspaceProps) {
         content: () => latest.current.content,
         kit: () => latest.current.kit,
         refresh: () => latest.current.editor.refresh(),
-        ...(props.autosaveMs !== undefined ? { autosaveMs: props.autosaveMs } : {}),
+        drafts: bridge().drafts ?? null,
+        report: (message) => useAppStore.getState().showToast({ message, tone: "danger" }),
+        ...(props.draftMs !== undefined ? { draftMs: props.draftMs } : {}),
       }),
   );
   const ws = useSyncExternalStore(session.subscribe, session.getState);
@@ -145,22 +173,28 @@ export function PostWorkspace(props: WorkspaceProps) {
   useEffect(() => {
     session.activate();
     return () => {
-      // Leaving the post (the app's back, the sidebar): unsaved edits are saved — read from the
-      // editor now, before it goes.
-      void session.flush({ closing: true });
+      // Leaving the post (the app's back, the sidebar): the draft is written and unsaved edits
+      // become a version — read from the editor now, before it goes (E14).
+      void session.close();
       session.dispose();
     };
   }, [session]);
+  // The window closing, ⌘Q (asked by the main process) and a reload write the draft first.
+  useEffect(
+    () =>
+      registerAppFlush({
+        flush: () => session.writeDraft(),
+        flushSync: () => session.saveDraftSync(),
+      }),
+    [session],
+  );
   // The brand's fonts for Wecra's text engine, before a document opens.
   const fontsFor = useRef<object | null>(null);
   if (fontsFor.current !== kit) {
     fontsFor.current = kit;
     installStudioFonts(kit);
   }
-  // The version shown is the document on the canvas (an older one too: saving makes it current).
-  useEffect(() => {
-    if (version) void session.open(version);
-  }, [session, version]);
+
   useEffect(() => {
     if (ws.saveError) notify(ws.saveError, "error");
   }, [ws.saveError, notify]);
@@ -216,11 +250,45 @@ export function PostWorkspace(props: WorkspaceProps) {
     onReplyEnd: () => void editor.refresh(),
   });
 
+  // Read only (E3): approved / scheduled until Düzenle is confirmed, publishing, published, an
+  // older version, an AI run (the Sohbet answering, a revision job) that may make a version.
+  const approvalKey = `${content.status}:${content.approval?.approvedAt ?? ""}`;
+  const [unlockedFor, setUnlockedFor] = useState<string | null>(null);
+  const [unlockAsk, setUnlockAsk] = useState<{ openDraft: boolean } | null>(null);
+  const { jobs } = useJobsSnapshot();
+  const jobRunning = useMemo(() => versionJobRunning(jobs, content.id), [jobs, content.id]);
+  const lock = editLock(snapshot, {
+    chatWorking: chat.working,
+    jobRunning,
+    unlocked: unlockedFor === approvalKey,
+  });
+  const readOnly = lock !== null;
+  // Before the version opens (the session decides about the post's draft with it).
+  useEffect(() => {
+    session.setReadOnly(readOnly);
+  }, [session, readOnly]);
+  // The version shown is the document on the canvas (an older one read only: E19).
+  useEffect(() => {
+    if (version) void session.open(version);
+  }, [session, version]);
+  const unlock = useCallback(
+    (openDraft: boolean) => {
+      setUnlockedFor(approvalKey);
+      setUnlockAsk(null);
+      session.setReadOnly(false);
+      if (openDraft) void session.openDraft();
+    },
+    [approvalKey, session],
+  );
+
   const save: SaveControl = {
     dirty: ws.dirty,
     saving: ws.saving,
     error: ws.saveError,
     lastSavedAt: ws.lastSavedAt,
+    draftSavedAt: ws.draftSavedAt,
+    ready: ws.phase === "ready" && !!ws.editor && !ws.readOnly,
+    blocker: ws.blocker,
     save: (note) => session.save(note),
     flush: () => session.flush(),
     notify,
@@ -251,8 +319,15 @@ export function PostWorkspace(props: WorkspaceProps) {
         e.preventDefault();
         e.stopPropagation();
         void (async () => {
-          if (!ws.dirty) return notify("Kaydedilecek değişiklik yok.");
-          if (await session.save()) notify("Sürüm kaydedildi.");
+          const s = session.getState();
+          if (!s.dirty) return notify("Kaydedilecek değişiklik yok.");
+          const before = s.lastSavedAt;
+          if (await session.save())
+            notify(
+              session.getState().lastSavedAt !== before
+                ? "Sürüm kaydedildi."
+                : "Kaydedilecek değişiklik yok.",
+            );
         })();
       } else if (e.key === "Enter" && !box && !(isTyping(e.target) && !e.shiftKey)) {
         e.preventDefault();
@@ -263,10 +338,32 @@ export function PostWorkspace(props: WorkspaceProps) {
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
-  }, [session, ws.dirty, approve, openSchedule, notify]);
+  }, [session, approve, openSchedule, notify]);
+
+  // ⌘[ / ⌘] on the canvas (or Wecra's layers) are Wecra's — send backward / bring forward —
+  // never the app's back / forward, even when Wecra had nothing to move (E8). After Wecra's own
+  // handler (the window's, bubbling) the key is marked used, so the menu's Geri / İleri skip it.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!isNavKey(e) || !inCanvas(e.target)) return;
+      const after = (ev: KeyboardEvent) => {
+        window.removeEventListener("keydown", after);
+        if (ev !== e) return;
+        if (!ev.defaultPrevented) ev.preventDefault();
+        noteCanvasNavKey(ev);
+      };
+      window.addEventListener("keydown", after);
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, []);
 
   // Unsaved edits are saved first: approving waits for that save, then checks the hash.
-  const approveDisabled = ws.dirty && !ws.saving ? null : approveBlocker(snapshot);
+  const approveDisabled = ws.incoming
+    ? "Önce yeni gelen sürüm için seç."
+    : ws.dirty && !ws.saving && !ws.readOnly
+      ? ws.blocker
+      : approveBlocker(snapshot);
   const chatDisabled =
     changesVersion(snapshot.activity) && snapshot.activity.kind !== "rendering" ? "Bekle…" : null;
 
@@ -276,7 +373,11 @@ export function PostWorkspace(props: WorkspaceProps) {
         mode={mode}
         onMode={(m) => setMode(m)}
         edit={
-          ed ? <WecraToolbar /> : <span className="flex h-8 items-center px-3 text-fg-3">…</span>
+          ed && !ws.readOnly ? (
+            <WecraToolbar />
+          ) : (
+            <span className="flex h-8 items-center px-3 text-fg-3">{ed ? "Salt okunur" : "…"}</span>
+          )
         }
         chat={
           <ChatInput
@@ -301,10 +402,35 @@ export function PostWorkspace(props: WorkspaceProps) {
       data-mode={mode}
       className="absolute inset-0 z-30 flex bg-page outline-none animate-fade-in"
     >
-      <div className="@container relative min-w-0 flex-1 overflow-hidden" data-canvas-column="">
+      <div
+        className="@container relative min-w-0 flex-1 overflow-hidden"
+        data-canvas-column=""
+        // A two-finger sideways pan here moves the canvas, never the app's history (E8).
+        data-no-swipe=""
+        data-read-only={ws.readOnly ? "" : undefined}
+      >
         {session.source && (
           <WecraEditor source={session.source} onReady={session.attach} insets={CANVAS_INSETS} />
         )}
+        {ws.fallback && <FallbackView fallback={ws.fallback} />}
+        <CanvasNotices
+          lock={lock}
+          draft={ws.draft}
+          incoming={ws.incoming}
+          saving={ws.saving}
+          canDuplicate={!!props.onDuplicate}
+          onUnlock={() => setUnlockAsk({ openDraft: false })}
+          onRestoreShown={() => void editor.restoreDisplayed()}
+          onShowCurrent={() => void editor.showCurrent()}
+          onDuplicate={() => props.onDuplicate?.()}
+          onDiscardDraft={() => void session.discardDraft()}
+          onDismissDraft={() => session.dismissDraftNotice()}
+          onOpenDraft={() =>
+            lock?.kind === "approval" ? setUnlockAsk({ openDraft: true }) : void session.openDraft()
+          }
+          onDeleteDraft={() => void session.deleteDraft()}
+          onIncoming={(choice) => void session.resolveIncoming(choice)}
+        />
         {ed ? (
           <WecraScope ed={ed}>
             <ToolFollower ed={ed} onEdit={() => mode !== "edit" && setMode("edit")} />
@@ -314,6 +440,18 @@ export function PostWorkspace(props: WorkspaceProps) {
           dock(NO_LAYERS)
         )}
         <Status state={ws} onRetry={() => version && void session.reopen(version)} />
+        <ConfirmDialog
+          open={unlockAsk !== null && lock?.kind === "approval"}
+          title="Düzenlemeye açılsın mı?"
+          message={
+            lock?.kind === "approval"
+              ? unlockWarning(lock.status, props.scheduledTargets ?? [])
+              : ""
+          }
+          confirmLabel="Düzenle"
+          onClose={() => setUnlockAsk(null)}
+          onConfirm={() => unlock(unlockAsk?.openDraft === true)}
+        />
         <Toasts
           toasts={toasts}
           snapshot={snapshot}
@@ -425,7 +563,7 @@ function WithChatLayers({
 
 /** Opening, importing, or why the document could not be opened. */
 function Status({ state, onRetry }: { state: WecraSessionState; onRetry(): void }) {
-  if (state.phase === "ready" && state.editor) return null;
+  if ((state.phase === "ready" && state.editor) || state.phase === "fallback") return null;
   const text =
     state.phase === "error"
       ? state.error
@@ -449,6 +587,208 @@ function Status({ state, onRetry }: { state: WecraSessionState; onRetry(): void 
             Yeniden dene
           </button>
         )}
+      </div>
+    </div>
+  );
+}
+
+const formatTime = (ms: number) =>
+  new Date(ms).toLocaleString("tr-TR", {
+    day: "numeric",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+
+/** One line over the canvas: what it says, and its buttons. */
+function Notice({
+  children,
+  actions,
+  tone = "notice",
+  label,
+}: {
+  children: ReactNode;
+  actions?: ReactNode;
+  tone?: "notice" | "warning";
+  label: string;
+}) {
+  return (
+    <div
+      role="status"
+      aria-label={label}
+      className="glass pointer-events-auto flex max-w-[560px] items-center gap-2 rounded-full py-1.5 pr-1.5 pl-4 text-body text-fg-2"
+    >
+      {tone === "warning" && <IconWarning size={14} className="shrink-0 text-warning" />}
+      <span className="min-w-0 flex-1 [overflow-wrap:anywhere]">{children}</span>
+      {actions && <span className="flex shrink-0 items-center gap-1">{actions}</span>}
+    </div>
+  );
+}
+
+/**
+ * Over the canvas: why it is read only (and what unlocks it), the post's draft (restored, or
+ * offered), a new version that arrived while the canvas had unsaved edits.
+ */
+function CanvasNotices({
+  lock,
+  draft,
+  incoming,
+  saving,
+  canDuplicate,
+  onUnlock,
+  onRestoreShown,
+  onShowCurrent,
+  onDuplicate,
+  onDiscardDraft,
+  onDismissDraft,
+  onOpenDraft,
+  onDeleteDraft,
+  onIncoming,
+}: {
+  lock: EditLock | null;
+  draft: DraftNotice | null;
+  incoming: { version: number } | null;
+  saving: boolean;
+  canDuplicate: boolean;
+  onUnlock(): void;
+  onRestoreShown(): void;
+  onShowCurrent(): void;
+  onDuplicate(): void;
+  onDiscardDraft(): void;
+  onDismissDraft(): void;
+  onOpenDraft(): void;
+  onDeleteDraft(): void;
+  onIncoming(choice: "mine" | "theirs"): void;
+}) {
+  // The restored note fades on its own (Vazgeç stays a while).
+  const dismiss = useRef(onDismissDraft);
+  dismiss.current = onDismissDraft;
+  useEffect(() => {
+    if (draft?.kind !== "restored") return;
+    const t = setTimeout(() => dismiss.current(), 12_000);
+    return () => clearTimeout(t);
+  }, [draft]);
+  const lockActions =
+    lock?.kind === "approval" ? (
+      <Button size="sm" variant="secondary" onClick={onUnlock}>
+        Düzenle
+      </Button>
+    ) : lock?.kind === "old-version" ? (
+      <>
+        <Button size="sm" variant="secondary" onClick={onRestoreShown}>
+          Bu sürüme dön
+        </Button>
+        {lock.current !== null && (
+          <Button size="sm" variant="ghost" onClick={onShowCurrent}>
+            Güncel sürüm
+          </Button>
+        )}
+      </>
+    ) : lock?.kind === "published" && canDuplicate ? (
+      <Button size="sm" variant="secondary" onClick={onDuplicate}>
+        Kopyasını oluştur
+      </Button>
+    ) : null;
+  // A draft can be opened once nothing but the approval locks the canvas.
+  const draftOpenable = !lock || lock.kind === "approval";
+  if (!lock && !draft && !incoming) return null;
+  return (
+    <div
+      data-canvas-notices=""
+      className="pointer-events-none absolute inset-x-3 top-3 z-20 flex flex-col items-center gap-2"
+    >
+      {incoming && (
+        <Notice
+          label="Yeni sürüm geldi"
+          tone="warning"
+          actions={
+            <>
+              <Button
+                size="sm"
+                variant="secondary"
+                disabled={saving}
+                onClick={() => onIncoming("mine")}
+              >
+                Benimkini kaydet
+              </Button>
+              <Button size="sm" variant="ghost" onClick={() => onIncoming("theirs")}>
+                Yeni sürümü aç
+              </Button>
+            </>
+          }
+        >
+          Yeni sürüm geldi (v{incoming.version}); tuvaldeki değişikliklerin henüz sürüm değil.
+        </Notice>
+      )}
+      {lock && (
+        <Notice label="Salt okunur" actions={lockActions}>
+          {lock.message}
+        </Notice>
+      )}
+      {draft?.kind === "restored" && (
+        <Notice
+          label="Taslak"
+          actions={
+            <Button size="sm" variant="ghost" onClick={onDiscardDraft}>
+              Vazgeç
+            </Button>
+          }
+        >
+          Kaydedilmemiş değişiklikler geri yüklendi.
+        </Notice>
+      )}
+      {draft?.kind === "offer" && (
+        <Notice
+          label="Taslak"
+          tone="warning"
+          actions={
+            <>
+              {lock?.kind !== "published" && (
+                <span title={draftOpenable ? undefined : (lock?.message ?? undefined)}>
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    disabled={!draftOpenable}
+                    onClick={onOpenDraft}
+                  >
+                    Taslağı aç
+                  </Button>
+                </span>
+              )}
+              <Button size="sm" variant="ghost" onClick={onDeleteDraft}>
+                Sil
+              </Button>
+            </>
+          }
+        >
+          {draft.reason === "older"
+            ? `v${draft.baseVersion} üzerinde kaydedilmemiş değişikliklerin var (${formatTime(draft.savedAt)}).`
+            : `Bu postta kaydedilmemiş değişikliklerin var (${formatTime(draft.savedAt)}).`}
+        </Notice>
+      )}
+    </div>
+  );
+}
+
+/** The version's renders, read only, when its Wecra document can't be opened (E19). */
+function FallbackView({ fallback }: { fallback: NonNullable<WecraSessionState["fallback"]> }) {
+  return (
+    <div className="absolute inset-0 flex flex-col items-center gap-4 overflow-auto px-6 pt-16 pb-24">
+      <p role="alert" className="max-w-[560px] text-center text-body text-fg-2">
+        <IconWarning size={14} className="mr-1.5 inline text-warning" />
+        {fallback.message}
+      </p>
+      <div className="flex flex-wrap justify-center gap-4">
+        {fallback.images.map((img, i) => (
+          <img
+            key={img.src}
+            src={img.src}
+            alt={`Kare ${i + 1}`}
+            width={img.width}
+            height={img.height}
+            className="h-auto max-h-[70vh] w-auto max-w-[min(420px,80vw)] rounded-[10px] shadow-sm"
+          />
+        ))}
       </div>
     </div>
   );

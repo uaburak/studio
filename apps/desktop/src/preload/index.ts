@@ -2,6 +2,7 @@
 // (`window.studio`). No Node APIs reach the page.
 import { contextBridge, type IpcRendererEvent, ipcRenderer } from "electron";
 import { ACCOUNTS_IPC as A } from "../shared/accounts-ipc.ts";
+import { DRAFTS_IPC } from "../shared/drafts.ts";
 import { FONTS_IPC } from "../shared/fonts.ts";
 import { IPC, type StudioBridge } from "../shared/ipc.ts";
 
@@ -46,6 +47,16 @@ const bridge: StudioBridge = {
   fonts: {
     list: (options) => ipcRenderer.invoke(FONTS_IPC.list, options),
     read: (postscriptName) => ipcRenderer.invoke(FONTS_IPC.read, postscriptName),
+  },
+  drafts: {
+    save: (draft) => ipcRenderer.invoke(DRAFTS_IPC.save, draft),
+    saveSync: (draft) => ipcRenderer.sendSync(DRAFTS_IPC.saveSync, draft) === true,
+    load: (contentId) => ipcRenderer.invoke(DRAFTS_IPC.load, contentId),
+    remove: (contentId) => ipcRenderer.invoke(DRAFTS_IPC.remove, contentId),
+  },
+  lifecycle: {
+    onFlushRequest: (listener) => subscribe(DRAFTS_IPC.flushRequest, listener),
+    flushDone: (id) => ipcRenderer.send(DRAFTS_IPC.flushDone, id),
   },
   system: {
     info: () => ipcRenderer.invoke(A.systemInfo),

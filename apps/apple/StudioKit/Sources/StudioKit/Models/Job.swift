@@ -26,6 +26,8 @@ public struct JobType: RawRepresentable, Codable, Hashable, Sendable, Expressibl
     public static let imageGenerate: JobType = "image.generate"
     public static let schedulePublish: JobType = "schedule.publish"
     public static let chatTurn: JobType = "chat.turn"
+    public static let contentCheck: JobType = "content.check"
+    public static let brandSkillDraft: JobType = "brand.skill_draft"
 
     /// Short Turkish label for job lists.
     public var label: String {
@@ -36,6 +38,8 @@ public struct JobType: RawRepresentable, Codable, Hashable, Sendable, Expressibl
         case .imageGenerate: "AI görsel üretimi"
         case .schedulePublish: "Zamanlı yayın"
         case .chatTurn: "Sohbet yanıtı"
+        case .contentCheck: "Kontroller"
+        case .brandSkillDraft: "Skill taslağı"
         case .demoEcho: "Deneme işi"
         default: rawValue
         }

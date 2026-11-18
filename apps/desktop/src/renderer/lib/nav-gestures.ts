@@ -93,3 +93,24 @@ export function swipeBlockedAt(target: EventTarget | null): boolean {
   }
   return false;
 }
+
+/** Marked `data-no-swipe` (the post canvas): a swipe there pans, it never navigates. */
+export function noSwipeAt(target: EventTarget | null): boolean {
+  return target instanceof Element && !!target.closest("[data-no-swipe]");
+}
+
+// ⌘[ / ⌘] used on the canvas (Wecra's send backward / bring forward). The menu's Geri / İleri
+// carry the same keys: a menu command arriving right after such a key is that key, not a back.
+let canvasNavKey: { event: KeyboardEvent; at: number } | null = null;
+const NAV_KEY_WINDOW_MS = 600;
+
+/** The post canvas kept ⌘[ / ⌘] (post-editor/workspace.tsx). */
+export function noteCanvasNavKey(event: KeyboardEvent, now = performance.now()): void {
+  canvasNavKey = { event, at: now };
+}
+
+/** A menu Geri / İleri now is the canvas's ⌘[ / ⌘] (ignore it). */
+export function navKeyTakenByCanvas(now = performance.now()): boolean {
+  const k = canvasNavKey;
+  return !!k && k.event.defaultPrevented && now - k.at < NAV_KEY_WINDOW_MS;
+}

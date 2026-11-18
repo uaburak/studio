@@ -327,7 +327,8 @@ final class BrandSettingsModel {
     }
 
     func removeLogo(_ assetId: EntityID) { kit.logos.removeAll { $0.assetId == assetId }; scheduleKitSave(immediately: true) }
-    func removeFont(_ assetId: EntityID) { kit.fonts.removeAll { $0.assetId == assetId }; scheduleKitSave(immediately: true) }
+    /// Fonts are keyed by `BrandKitFont.key` (a system font has no file).
+    func removeFont(_ key: String) { kit.fonts.removeAll { $0.key == key }; scheduleKitSave(immediately: true) }
     func removeSample(_ assetId: EntityID) { kit.samples.removeAll { $0.assetId == assetId }; scheduleKitSave(immediately: true) }
 
     func setLogoBackground(_ assetId: EntityID, _ background: BrandKitLogoBackground) {
@@ -336,20 +337,20 @@ final class BrandSettingsModel {
         scheduleKitSave(immediately: true)
     }
 
-    func setFontFamily(_ assetId: EntityID, _ family: String) {
-        guard let index = kit.fonts.firstIndex(where: { $0.assetId == assetId }) else { return }
+    func setFontFamily(_ key: String, _ family: String) {
+        guard let index = kit.fonts.firstIndex(where: { $0.key == key }) else { return }
         kit.fonts[index].family = family
         scheduleKitSave()
     }
 
-    func setFontRole(_ assetId: EntityID, _ role: BrandKitFontRole) {
-        guard let index = kit.fonts.firstIndex(where: { $0.assetId == assetId }) else { return }
+    func setFontRole(_ key: String, _ role: BrandKitFontRole) {
+        guard let index = kit.fonts.firstIndex(where: { $0.key == key }) else { return }
         kit.fonts[index].role = role
         scheduleKitSave(immediately: true)
     }
 
-    func setFontLicense(_ assetId: EntityID, _ note: String) {
-        guard let index = kit.fonts.firstIndex(where: { $0.assetId == assetId }) else { return }
+    func setFontLicense(_ key: String, _ note: String) {
+        guard let index = kit.fonts.firstIndex(where: { $0.key == key }) else { return }
         kit.fonts[index].licenseNote = note
         scheduleKitSave()
     }

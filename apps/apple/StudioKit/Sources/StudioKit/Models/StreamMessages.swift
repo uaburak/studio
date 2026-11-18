@@ -50,6 +50,9 @@ public enum ConversationStreamMessage: Sendable, Equatable {
     case presence(WorkerPresence)
     case pong(ts: Double)
     case unknown(type: String, seq: Int?)
+    /// A frame of a known type this build could not decode (a newer server, a bug). It still
+    /// carries its seq, so the reducer steps past it instead of resuming before it forever.
+    case unreadable(UnreadableFrame)
 
     public var seq: Int? {
         switch self {
@@ -57,12 +60,21 @@ public enum ConversationStreamMessage: Sendable, Equatable {
         case .resumed(let seq, _, _): seq
         case .event(let seq, _): seq
         case .unknown(_, let seq): seq
+        case .unreadable(let frame): frame.seq
         case .presence, .pong: nil
         }
     }
 
+    /// Throws only for text that is not a JSON frame at all.
     public static func decode(_ text: String) throws -> ConversationStreamMessage {
-        try StudioJSON.decoder().decode(Wire.self, from: Data(text.utf8)).message
+        let data = Data(text.utf8)
+        let decoder = StudioJSON.decoder()
+        do {
+            return try decoder.decode(Wire.self, from: data).message
+        } catch {
+            guard let probe = try? decoder.decode(UnreadableFrame.self, from: data), probe.type != nil || probe.seq != nil else { throw error }
+            return .unreadable(probe)
+        }
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -79,14 +91,15 @@ public enum ConversationStreamMessage: Sendable, Equatable {
             func seq() throws -> Int { try c.decode(Int.self, forKey: .seq) }
             switch type {
             case "conversation.snapshot":
+                let conversation = try c.decode(Conversation.self, forKey: .conversation)
                 message = .snapshot(ConversationSnapshot(
                     seq: try seq(),
-                    conversation: try c.decode(Conversation.self, forKey: .conversation),
-                    messages: try c.decode([Message].self, forKey: .messages),
-                    hasMoreMessages: try c.decode(Bool.self, forKey: .hasMoreMessages),
-                    activeRun: try c.decodeIfPresent(AgentRun.self, forKey: .activeRun),
-                    plans: try c.decode([Plan].self, forKey: .plans),
-                    aliases: try c.decodeIfPresent([ConversationAlias].self, forKey: .aliases) ?? [],
+                    conversation: conversation,
+                    messages: Lossy<Message>.messages(try c.decode([Lossy<Message>].self, forKey: .messages), conversationId: conversation.id),
+                    hasMoreMessages: try c.decodeIfPresent(Bool.self, forKey: .hasMoreMessages) ?? false,
+                    activeRun: try? c.decodeIfPresent(AgentRun.self, forKey: .activeRun),
+                    plans: ((try? c.decodeIfPresent([Lossy<Plan>].self, forKey: .plans)) ?? []).compactMap(\.value),
+                    aliases: ((try? c.decodeIfPresent([Lossy<ConversationAlias>].self, forKey: .aliases)) ?? []).compactMap(\.value),
                     presence: try c.decode(WorkerPresence.self, forKey: .presence)))
             case "conversation.resumed":
                 message = .resumed(seq: try seq(), replayed: try c.decode(Int.self, forKey: .replayed), presence: try c.decode(WorkerPresence.self, forKey: .presence))
@@ -117,6 +130,41 @@ public enum ConversationStreamMessage: Sendable, Equatable {
     }
 }
 
+/// What can still be read of a frame that did not decode.
+public struct UnreadableFrame: Sendable, Equatable, Decodable {
+    public var type: String?
+    public var seq: Int?
+    /// `messageId` of part / delta frames, or `message.id`.
+    public var messageId: EntityID?
+    /// Part index of part / delta frames.
+    public var index: Int?
+    public var role: MessageRole?
+    public var createdAt: Date?
+
+    public init(type: String?, seq: Int?, messageId: EntityID? = nil, index: Int? = nil, role: MessageRole? = nil, createdAt: Date? = nil) {
+        self.type = type
+        self.seq = seq
+        self.messageId = messageId
+        self.index = index
+        self.role = role
+        self.createdAt = createdAt
+    }
+
+    private enum CodingKeys: String, CodingKey { case type, seq, messageId, index, message }
+    private enum MessageKeys: String, CodingKey { case id, role, createdAt }
+
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        type = try? c.decodeIfPresent(String.self, forKey: .type)
+        seq = try? c.decodeIfPresent(Int.self, forKey: .seq)
+        index = try? c.decodeIfPresent(Int.self, forKey: .index)
+        let message = try? c.nestedContainer(keyedBy: MessageKeys.self, forKey: .message)
+        messageId = (try? c.decodeIfPresent(String.self, forKey: .messageId)) ?? (try? message?.decodeIfPresent(String.self, forKey: .id)) ?? nil
+        role = (try? message?.decodeIfPresent(MessageRole.self, forKey: .role)) ?? nil
+        createdAt = (try? message?.decodeIfPresent(Date.self, forKey: .createdAt)) ?? nil
+    }
+}
+
 public struct ConversationSnapshot: Sendable, Equatable {
     public var seq: Int
     public var conversation: Conversation
@@ -139,6 +187,60 @@ public struct ConversationSnapshot: Sendable, Equatable {
         self.plans = plans
         self.aliases = aliases
         self.presence = presence
+    }
+}
+
+/// One element of a list that is read even when some elements do not decode.
+struct Lossy<Value: Decodable>: Decodable {
+    var value: Value?
+    var probe: UnreadableFrame.MessageProbe?
+
+    init(from decoder: any Decoder) throws {
+        do {
+            value = try Value(from: decoder)
+        } catch {
+            value = nil
+            probe = try? UnreadableFrame.MessageProbe(from: decoder)
+        }
+    }
+
+    /// A message that did not decode, kept in place as an unreadable one (dated like the one before it
+    /// when its own date does not read).
+    func unreadableMessage(conversationId: EntityID, after previous: Date?) -> Message {
+        let date = probe?.createdAt ?? previous ?? Date(timeIntervalSince1970: 0)
+        return Message(
+            id: probe?.id ?? "unreadable-\(UUID().uuidString)", conversationId: probe?.conversationId ?? conversationId,
+            role: probe?.role ?? .assistant, parts: [.unreadable], createdAt: date, updatedAt: date)
+    }
+}
+
+extension Lossy where Value == Message {
+    static func messages(_ list: [Lossy<Message>], conversationId: EntityID) -> [Message] {
+        var out: [Message] = []
+        for item in list {
+            out.append(item.value ?? item.unreadableMessage(conversationId: conversationId, after: out.last?.createdAt))
+        }
+        return out
+    }
+}
+
+extension UnreadableFrame {
+    /// The fields of a message that are read even when the message as a whole is not.
+    struct MessageProbe: Decodable {
+        var id: EntityID?
+        var conversationId: EntityID?
+        var role: MessageRole?
+        var createdAt: Date?
+
+        private enum Keys: String, CodingKey { case id, conversationId, role, createdAt }
+
+        init(from decoder: any Decoder) throws {
+            let c = try decoder.container(keyedBy: Keys.self)
+            id = try? c.decodeIfPresent(String.self, forKey: .id)
+            conversationId = try? c.decodeIfPresent(String.self, forKey: .conversationId)
+            role = try? c.decodeIfPresent(MessageRole.self, forKey: .role)
+            createdAt = try? c.decodeIfPresent(Date.self, forKey: .createdAt)
+        }
     }
 }
 

@@ -12,34 +12,42 @@ import { useEffect, useState } from "react";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 // Wecra's components in Studio's places, stood in for (jsdom has no WebGL): the canvas is up at
-// once on the session's document, the import has nothing to read.
-vi.mock("../../src/renderer/features/post-editor/wecra/host.tsx", () => ({
-  WecraEditor: ({ source, onReady }: { source: unknown; onReady?: (ed: unknown) => void }) => {
-    useEffect(() => {
-      onReady?.({
-        source,
-        store: { page: "0:1" },
-        engine: {
-          destroyed: false,
-          command: () => 0,
-          readNode: () => null,
-          readNodes: () => [],
-          setSelection: () => 0,
-        },
-        withRealType: (n: unknown) => n,
-        focusCanvas: () => {},
-      });
-    }, [source, onReady]);
-    return <div data-testid="wecra-canvas" data-wecra-region="canvas" />;
-  },
-  WecraScope: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-  WecraDesignPanel: () => <section aria-label="Wecra Tasarım paneli" />,
-  WecraLayers: ({ sidebar }: { sidebar?: boolean }) => (
-    <div role="tree" aria-label="Wecra katmanları" data-sidebar={sidebar ? "" : undefined} />
-  ),
-  WecraToolbar: () => <div role="toolbar" aria-label="Wecra araçları" />,
-  WecraZoomMenu: () => <button type="button">100%</button>,
-}));
+// once on the session's document, the import has nothing to read. `viewerMode` records Wecra's
+// read only switch (Engine.setViewerMode).
+const viewerMode: boolean[] = [];
+vi.mock("../../src/renderer/features/post-editor/wecra/host.tsx", async () => {
+  const { encodeMessage, newDocumentMessage } = await import("@shared/schema/codec");
+  const kiwi = encodeMessage(newDocumentMessage());
+  return {
+    WecraEditor: ({ source, onReady }: { source: unknown; onReady?: (ed: unknown) => void }) => {
+      useEffect(() => {
+        onReady?.({
+          source,
+          store: { page: "0:1" },
+          engine: {
+            destroyed: false,
+            command: () => 0,
+            readNode: () => null,
+            readNodes: () => [],
+            setSelection: () => 0,
+            encodeDocumentKiwi: () => kiwi,
+            setViewerMode: (on: boolean) => viewerMode.push(on),
+          },
+          withRealType: (n: unknown) => n,
+          focusCanvas: () => {},
+        });
+      }, [source, onReady]);
+      return <div data-testid="wecra-canvas" data-wecra-region="canvas" tabIndex={-1} />;
+    },
+    WecraScope: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+    WecraDesignPanel: () => <section aria-label="Wecra Tasarım paneli" />,
+    WecraLayers: ({ sidebar }: { sidebar?: boolean }) => (
+      <div role="tree" aria-label="Wecra katmanları" data-sidebar={sidebar ? "" : undefined} />
+    ),
+    WecraToolbar: () => <div role="toolbar" aria-label="Wecra araçları" />,
+    WecraZoomMenu: () => <button type="button">100%</button>,
+  };
+});
 vi.mock("../../src/renderer/features/post-editor/wecra/import.ts", () => ({
   captureSlides: async () => [],
   importSlides: async () => [],
@@ -53,12 +61,19 @@ vi.mock("@/engine/hooks", () => ({
 }));
 
 import { RightPanel } from "../../src/renderer/components/panels/right-panel.tsx";
+import { runMenuCommand } from "../../src/renderer/components/shell/app-shell.tsx";
 import { PostEditor } from "../../src/renderer/features/post-detail/editor.ts";
 import { PostDetailLayer } from "../../src/renderer/features/post-detail/post-detail.tsx";
 import { postChatText, scopedInstruction } from "../../src/renderer/features/post-editor/chat.ts";
 import { DemoChat } from "../../src/renderer/features/post-editor/demo/chat-fixtures.ts";
+import { editLock, unlockWarning } from "../../src/renderer/features/post-editor/edit-lock.ts";
 import { WorkspaceSlot } from "../../src/renderer/features/post-editor/slots.tsx";
 import { ModeDock } from "../../src/renderer/features/post-editor/ui/mode-dock.tsx";
+import {
+  BundleImages,
+  encodeBundle,
+} from "../../src/renderer/features/post-editor/wecra/bundle.ts";
+import { ownsEvent } from "../../src/renderer/features/post-editor/wecra/embed.ts";
 import {
   DEFAULT_MODE,
   modeOf,
@@ -69,8 +84,11 @@ import {
 import { postKeys } from "../../src/renderer/features/posts/data.ts";
 import { usePostsStore } from "../../src/renderer/features/posts/store.ts";
 import { ApiContext } from "../../src/renderer/lib/api.ts";
+import { flushApp, installAppFlush, registerAppFlush } from "../../src/renderer/lib/app-flush.ts";
+import { bridge } from "../../src/renderer/lib/bridge.ts";
+import { navKeyTakenByCanvas, swipeBlockedAt } from "../../src/renderer/lib/nav-gestures.ts";
 import { sessionOf, useAppStore } from "../../src/renderer/state/app-store.ts";
-import { contentFor, FakeContentApi, hashedVersion } from "./post-fixtures.ts";
+import { contentFor, FakeContentApi, hashedVersion, T } from "./post-fixtures.ts";
 
 const TITLE = "Hasat sonrası toprak bakımı";
 
@@ -233,10 +251,19 @@ describe("mode dock", () => {
 
 // --- the open post ---------------------------------------------------------------------------
 
-async function setup(options: { type?: Content["type"] } = {}) {
+async function setup(options: { type?: Content["type"]; status?: Content["status"] } = {}) {
   const fake = new FakeContentApi();
   const v1 = await hashedVersion("p1", 1);
-  const c = contentFor(v1, { targetPlatforms: ["instagram"], type: options.type ?? "post" });
+  const c = contentFor(v1, {
+    targetPlatforms: ["instagram"],
+    type: options.type ?? "post",
+    ...(options.status
+      ? {
+          status: options.status,
+          approval: { versionId: v1.id, contentHash: v1.contentHash, approvedAt: T },
+        }
+      : {}),
+  });
   fake.add(c, [v1]);
   const chat = new DemoChat();
   chat.replyMs = 30;
@@ -447,5 +474,200 @@ describe("the post's Sohbet", () => {
     await waitFor(() => expect(chat.sent).toHaveLength(2));
     expect(chat.created).toHaveLength(1);
     expect(chat.sent[1]).toEqual({ conversationId, text: "Biraz daha" });
+  });
+});
+
+// --- read only, keys, gestures, flush ----------------------------------------------------------
+
+describe("the canvas read only (E3)", () => {
+  it("opens an approved post locked; Düzenle says what it costs, then unlocks", async () => {
+    await setup({ status: "approved" });
+    await openPost();
+    await screen.findByTestId("wecra-canvas");
+    const notice = await screen.findByRole("status", { name: "Salt okunur" });
+    expect(notice).toHaveTextContent("Onaylı post; tuval kilitli.");
+    // Wecra's viewer mode is on; the dock has no tools.
+    await waitFor(() => expect(viewerMode.at(-1)).toBe(true));
+    expect(screen.queryByRole("toolbar", { name: "Wecra araçları" })).toBeNull();
+    expect(within(screen.getByTestId("mode-dock")).getByText("Salt okunur")).toBeInTheDocument();
+
+    await userEvent.click(within(notice).getByRole("button", { name: "Düzenle" }));
+    const dialog = await screen.findByRole("dialog", { name: "Düzenlemeye açılsın mı?" });
+    expect(dialog).toHaveTextContent(/onay kalkar/);
+    await userEvent.click(within(dialog).getByRole("button", { name: "Düzenle" }));
+    await waitFor(() => expect(screen.queryByRole("status", { name: "Salt okunur" })).toBeNull());
+    expect(viewerMode.at(-1)).toBe(false);
+    expect(screen.getByRole("toolbar", { name: "Wecra araçları" })).toBeInTheDocument();
+  });
+
+  it("never unlocks a published post; it offers a copy instead", async () => {
+    await setup({ status: "published" });
+    await openPost();
+    const notice = await screen.findByRole("status", { name: "Salt okunur" });
+    expect(notice).toHaveTextContent(/Yayınlandı/);
+    expect(within(notice).queryByRole("button", { name: "Düzenle" })).toBeNull();
+    expect(within(notice).getByRole("button", { name: "Kopyasını oluştur" })).toBeInTheDocument();
+  });
+
+  it("knows why the canvas is locked and what unlocks it", async () => {
+    const v1 = await hashedVersion("p1", 1);
+    const v2 = await hashedVersion("p1", 2);
+    const base = new PostEditor({} as never, contentFor(v2), v2).getSnapshot();
+    expect(editLock(base)).toBeNull();
+    const approved = { ...base, content: { ...base.content, status: "approved" as const } };
+    expect(editLock(approved)).toMatchObject({ kind: "approval", status: "approved" });
+    expect(editLock(approved, { unlocked: true })).toBeNull();
+    expect(
+      editLock({ ...base, content: { ...base.content, status: "scheduled" as const } }),
+    ).toMatchObject({ kind: "approval", status: "scheduled" });
+    expect(
+      editLock(
+        { ...base, content: { ...base.content, status: "publishing" as const } },
+        {
+          unlocked: true,
+        },
+      ),
+    ).toMatchObject({ kind: "publishing" });
+    // An older version is looked at ("Bu sürüme dön" makes it current).
+    expect(editLock({ ...base, displayed: v1 })).toMatchObject({
+      kind: "old-version",
+      shown: 1,
+      current: 2,
+    });
+    // An AI run that may make a version: the canvas waits.
+    expect(editLock(base, { chatWorking: true })).toMatchObject({ kind: "busy" });
+    expect(editLock(base, { jobRunning: true })).toMatchObject({ kind: "busy" });
+    expect(editLock({ ...base, activity: { kind: "revising", message: "" } })).toMatchObject({
+      kind: "busy",
+    });
+    // Düzenle's warning names the schedules it cancels.
+    expect(unlockWarning("approved", [])).toMatch(/onay kalkar/);
+    expect(unlockWarning("scheduled", ["Instagram @mtmagro · 18 Kas 10:00"])).toMatch(
+      /iptal edilir: Instagram @mtmagro · 18 Kas 10:00/,
+    );
+  });
+});
+
+describe("keys and gestures on the canvas (E8)", () => {
+  it("keeps ⌘[ / ⌘] on the canvas for Wecra; elsewhere they go back", async () => {
+    await setup();
+    await openPost();
+    const canvas = await screen.findByTestId("wecra-canvas");
+    // Wecra's own key handler takes them only on the canvas and its layers.
+    const bracket = (target: EventTarget) =>
+      Object.defineProperty(
+        new KeyboardEvent("keydown", { key: "[", code: "BracketLeft", metaKey: true }),
+        "target",
+        { value: target },
+      );
+    expect(ownsEvent(bracket(canvas))).toBe(true);
+    expect(ownsEvent(bracket(document.body))).toBe(false);
+
+    // On the canvas: used (the menu's Geri that carries the key does nothing).
+    expect(fireEvent.keyDown(canvas, { key: "[", code: "BracketLeft", metaKey: true })).toBe(false);
+    expect(navKeyTakenByCanvas()).toBe(true);
+    act(() => runMenuCommand("back"));
+    expect(workspace()).toBeInTheDocument();
+
+    // On a Studio control the key is the app's: back.
+    const title = within(slot("title")).getByRole("button", { name: new RegExp(TITLE) });
+    await new Promise((r) => setTimeout(r, 650));
+    expect(fireEvent.keyDown(title, { key: "[", code: "BracketLeft", metaKey: true })).toBe(true);
+    act(() => runMenuCommand("back"));
+    await waitFor(() => expect(workspace()).toBeNull());
+  });
+
+  it("treats a sideways two-finger pan over the canvas as the canvas's, not back", async () => {
+    await setup();
+    await openPost();
+    const canvas = await screen.findByTestId("wecra-canvas");
+    expect(swipeBlockedAt(canvas)).toBe(true);
+    // The rest of the window still swipes.
+    expect(swipeBlockedAt(within(slot("title")).getAllByRole("button")[0] ?? null)).toBe(false);
+  });
+});
+
+describe("close / quit flush (E14)", () => {
+  it("answers the main process once every open post wrote its draft", async () => {
+    const order: string[] = [];
+    const off = registerAppFlush({
+      flush: async () => {
+        await new Promise((r) => setTimeout(r, 5));
+        order.push("draft");
+      },
+      flushSync: () => order.push("sync"),
+    });
+    let request: ((id: number) => void) | null = null;
+    const flushDone = vi.fn((id: number) => order.push(`done ${id}`));
+    const uninstall = installAppFlush({
+      onFlushRequest: (l) => {
+        request = l;
+        return () => {
+          request = null;
+        };
+      },
+      flushDone,
+    });
+    (request as ((id: number) => void) | null)?.(7);
+    await waitFor(() => expect(flushDone).toHaveBeenCalledWith(7));
+    expect(order).toEqual(["draft", "done 7"]);
+    // A reload: written without waiting.
+    window.dispatchEvent(new Event("beforeunload"));
+    expect(order.at(-1)).toBe("sync");
+    uninstall();
+    off();
+    await flushApp();
+  });
+
+  it("registers the open post's draft writer while it is open", async () => {
+    await setup();
+    await openPost();
+    await screen.findByTestId("wecra-canvas");
+    // Nothing unsaved: the flush finishes at once.
+    await expect(flushApp()).resolves.toBeUndefined();
+  });
+});
+
+describe("the post's draft on this Mac (S5)", () => {
+  /** A draft of p1 made on `baseVersion` (its document differs from the version's). */
+  async function putDraft(baseVersion: number) {
+    const { encodeMessage, newDocumentMessage } = await import("@shared/schema/codec");
+    await bridge().drafts?.save({
+      contentId: "p1",
+      baseVersion,
+      baseVersionId: `p1-v${baseVersion}`,
+      savedAt: Date.parse(T),
+      baseHash: "0".repeat(64),
+      docHash: "1".repeat(64),
+      bundle: encodeBundle(encodeMessage(newDocumentMessage()), new BundleImages(), []),
+    });
+  }
+
+  it("puts a draft of the version back quietly; Vazgeç drops it", async () => {
+    await putDraft(1);
+    await setup();
+    await openPost();
+    const note = await screen.findByRole("status", { name: "Taslak" });
+    expect(note).toHaveTextContent("Kaydedilmemiş değişiklikler geri yüklendi.");
+    expect(within(slot("title")).getByText("Kaydedilmedi")).toBeInTheDocument();
+    await userEvent.click(within(note).getByRole("button", { name: "Vazgeç" }));
+    await waitFor(() => expect(screen.queryByRole("status", { name: "Taslak" })).toBeNull());
+    expect(await bridge().drafts?.load("p1")).toBeNull();
+  });
+
+  it("offers a draft on a locked post: Taslağı aç goes through Düzenle's warning", async () => {
+    await putDraft(1);
+    await setup({ status: "approved" });
+    await openPost();
+    const offer = await screen.findByRole("status", { name: "Taslak" });
+    expect(offer).toHaveTextContent("Bu postta kaydedilmemiş değişikliklerin var");
+    await userEvent.click(within(offer).getByRole("button", { name: "Taslağı aç" }));
+    const dialog = await screen.findByRole("dialog", { name: "Düzenlemeye açılsın mı?" });
+    await userEvent.click(within(dialog).getByRole("button", { name: "Düzenle" }));
+    await waitFor(() => expect(screen.queryByRole("status", { name: "Salt okunur" })).toBeNull());
+    // The draft is on the canvas now, editable, no question left.
+    await waitFor(() => expect(screen.queryByRole("status", { name: "Taslak" })).toBeNull());
+    expect(await screen.findByRole("toolbar", { name: "Wecra araçları" })).toBeInTheDocument();
+    await bridge().drafts?.remove("p1");
   });
 });

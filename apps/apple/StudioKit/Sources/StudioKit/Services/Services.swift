@@ -95,7 +95,13 @@ public protocol StudioDataService: Sendable {
     /// Queue `content.render` (edits as design-kit patches, PNG/PDF exports, layer measuring).
     func render(contentId: EntityID, _ request: ContentRenderRequest) async throws -> Job
     /// "Neyi değiştireyim?": revise `baseVersion` with the user's words (`content.generate`).
-    func requestRevision(of content: Content, baseVersion: Int, instructions: String) async throws -> Job
+    func requestRevision(of content: Content, baseVersion: Int?, instructions: String) async throws -> Job
+
+    // Production checks
+    /// The latest check run of `version` (nil: never checked).
+    func latestCheckRun(contentId: EntityID, version: Int) async throws -> ContentCheckRun?
+    /// Queue a `content.check` job over `version`.
+    func runChecks(contentId: EntityID, brandId: EntityID, version: Int) async throws -> Job
 
     // Assets & AI image generation
     func assets(brandId: EntityID?, kind: AssetKind?) async throws -> [Asset]
@@ -194,6 +200,10 @@ extension StudioDataService {
     }
     public func analyzeBrand(brandId: EntityID, notes: String?, model: AgentModel?) async throws -> Job {
         try await analyzeBrand(brandId: brandId, notes: notes)
+    }
+    public func latestCheckRun(contentId: EntityID, version: Int) async throws -> ContentCheckRun? { nil }
+    public func runChecks(contentId: EntityID, brandId: EntityID, version: Int) async throws -> Job {
+        throw StudioAPIError.invalidConfiguration("Kontroller bu bağlantıda çalıştırılamıyor.")
     }
 }
 
@@ -425,8 +435,16 @@ public struct RemoteStudioDataService: StudioDataService {
         try await client.renderContent(contentId: contentId, request)
     }
 
-    public func requestRevision(of content: Content, baseVersion: Int, instructions: String) async throws -> Job {
+    public func requestRevision(of content: Content, baseVersion: Int?, instructions: String) async throws -> Job {
         try await client.requestRevision(of: content, baseVersion: baseVersion, instructions: instructions)
+    }
+
+    public func latestCheckRun(contentId: EntityID, version: Int) async throws -> ContentCheckRun? {
+        try await client.latestCheckRun(contentId: contentId, version: version)
+    }
+
+    public func runChecks(contentId: EntityID, brandId: EntityID, version: Int) async throws -> Job {
+        try await client.runChecks(contentId: contentId, brandId: brandId, version: version)
     }
 
     public func assets(brandId: EntityID?, kind: AssetKind?) async throws -> [Asset] {

@@ -144,7 +144,7 @@ final class BrandKitTabView: NSView {
             if kit.logos.isEmpty { return [self.emptyRow("Logo eklenmedi. İsteğe bağlı ama tasarımlarda logo kullanmak için gerekli.")] }
             return kit.logos.map { self.logoRow($0) }
         }
-        rebuild("fonts", signature: kit.fonts.map { "\($0.assetId):\($0.role.rawValue)" }.joined(separator: ",") + "|\(model.isArchived)", list: fontsList) {
+        rebuild("fonts", signature: kit.fonts.map { "\($0.key):\($0.role.rawValue)" }.joined(separator: ",") + "|\(model.isArchived)", list: fontsList) {
             if kit.fonts.isEmpty { return [self.emptyRow("Font eklenmedi. Eklenmezse profil sistem fontuyla başlar.")] }
             return kit.fonts.map { self.fontRow($0) }
         }
@@ -316,9 +316,9 @@ final class BrandKitTabView: NSView {
     }
 
     private func fontRow(_ font: BrandKitFont) -> NSView {
-        let id = font.assetId
+        let id = font.key
         let (card, stack) = BrandUI.card(spacing: 8, padding: 12)
-        let file = NSTextField.styledLabel(filename(id), font: Theme.smallFont, color: Theme.textSecondary)
+        let file = NSTextField.styledLabel(font.assetId.map { filename($0) } ?? "Mac'te yüklü", font: Theme.smallFont, color: Theme.textSecondary)
         let family = BrandUI.field("Font ailesi (ör. Archivo)", text: font.family)
         family.widthAnchor.constraint(equalToConstant: 200).isActive = true
         let familyHandler = FieldHandler(onChange: { [weak model] in model?.setFontFamily(id, $0) })

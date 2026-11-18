@@ -9,7 +9,8 @@
 //
 //   slide i         → a top-level frame "Kare i" (the slide's size, clipped), 120 px apart
 //   [data-layer]    → its layer, named after the design's layer id (a text too, when it is
-//                     its layer's only text: "headline", "cta" — the names the AI uses)
+//                     its layer's only text: "headline", "cta" — the names the AI uses), its
+//                     type, role, slot and picture file kept on it as plugin data (markLayers)
 //   <img>, url()    → an image fill (object-fit cover → FILL, contain → FIT, fill → CROP)
 //   inline <svg>    → vector layers (Wecra's SVG import)
 //
@@ -24,6 +25,7 @@ import {
   toSpec,
   type WNode,
 } from "@shared/agents/web/convert";
+import type { CanvasMark } from "@studio/design-kit/canvas";
 import { runTool, type ToolEnv } from "@/editor/agents/mcpTools";
 import type { EditorController } from "@/editor/controller";
 import { pageFrames } from "@/editor/exporting";
@@ -31,6 +33,7 @@ import { fontOf } from "../../../vendor/wecra-editor/src/main/agents/reach/webSp
 import { installWalker } from "../../../vendor/wecra-editor/studio/walker.mjs";
 import { slideDocument } from "../html/slide-document.ts";
 import type { RenderKit } from "../model/brand-kit.ts";
+import { LAYER_KEY, STUDIO_PLUGIN } from "./facts.ts";
 
 export interface SlideSource {
   html: string;
@@ -52,6 +55,112 @@ export interface CapturedSlide {
   fonts: string[];
   /** Pictures that could not be read (left as plain rectangles). */
   missing: string[];
+  /** The slide's contract layers (kept on their Wecra layers: slots, logos, roles survive). */
+  marks?: LayerMark[];
+}
+
+/**
+ * A contract layer of a slide (`data-layer` with its type, role, picture file and slot
+ * attributes), kept on its Wecra layer as plugin data (`studio` / `layer`), so a canvas save
+ * still knows it (`facts.ts`): Wecra's layers have no image slots, logos or roles of their own.
+ * The picture's Wecra image key is added when it is kept (`image`: still that file?).
+ */
+export type LayerMark = Omit<CanvasMark, "image">;
+
+/** The contract layers of a slide's HTML, in document order. */
+export function layerMarks(html: string): LayerMark[] {
+  const doc = new DOMParser().parseFromString(html, "text/html");
+  return Array.from(doc.querySelectorAll("[data-layer]")).flatMap((el): LayerMark[] => {
+    const layer = el.getAttribute("data-layer") ?? "";
+    if (!layer) return [];
+    const type = el.getAttribute("data-type") ?? "";
+    const img = el.tagName === "IMG" ? el : el.querySelector("img[data-slot-image]");
+    const attr = (name: string, max: number) => el.getAttribute(name)?.slice(0, max) ?? null;
+    return [
+      {
+        layer: layer.slice(0, 64),
+        type: type.slice(0, 16),
+        role: attr("data-role", 32),
+        src: img?.getAttribute("src")?.slice(0, 500) ?? null,
+        allowOverlap: el.hasAttribute("data-allow-overlap"),
+        slot:
+          type === "slot"
+            ? {
+                ratio: attr("data-slot-ratio", 16),
+                label: attr("data-slot-label", 200),
+                fit: attr("data-slot-fit", 16),
+              }
+            : null,
+      },
+    ];
+  });
+}
+
+type MarkedNode = {
+  guid: string;
+  name?: string;
+  type?: string;
+  fillPaints?: { type?: string; visible?: boolean; image?: { hash?: ArrayLike<number> } }[];
+  pluginData?: { pluginID?: string; key?: string; value?: string }[];
+  childIds?: string[];
+};
+
+const imageKeyOf = (n: MarkedNode | undefined): string | null => {
+  const p = [...(n?.fillPaints ?? [])]
+    .reverse()
+    .find((x) => x.type === "IMAGE" && x.visible !== false);
+  const h = p?.image?.hash;
+  return h && h.length === 20
+    ? Array.from(h, (b) => (b & 0xff).toString(16).padStart(2, "0")).join("")
+    : null;
+};
+
+/**
+ * Keeps each mark on the Wecra layer the import named after it (a text mark on the text, any
+ * other on the box), with the picture's image key as imported. Outside the undo history.
+ */
+export function markLayers(ed: EditorController, frame: string, marks: readonly LayerMark[]): void {
+  if (!marks.length) return;
+  const nodes = ed.engine.readNodes([frame], {
+    subtree: true,
+    childIds: true,
+    fields: ["name", "type", "fillPaints", "pluginData"],
+  }) as unknown as MarkedNode[];
+  const byId = new Map(nodes.map((n) => [n.guid, n]));
+  const firstImage = (id: string): string | null => {
+    const n = byId.get(id);
+    const own = imageKeyOf(n);
+    if (own) return own;
+    for (const c of n?.childIds ?? []) {
+      const k = firstImage(c);
+      if (k) return k;
+    }
+    return null;
+  };
+  const taken = new Set<string>();
+  ed.engine.ignoringUndo(() => {
+    for (const mark of marks) {
+      const named = nodes.filter(
+        (n) => n.guid !== frame && n.name === mark.layer && !taken.has(n.guid),
+      );
+      const node =
+        mark.type === "text"
+          ? (named.find((n) => n.type === "TEXT") ?? named[0])
+          : (named.find((n) => n.type !== "TEXT") ?? named[0]);
+      if (!node) continue;
+      taken.add(node.guid);
+      const value: CanvasMark = { ...mark, image: firstImage(node.guid) };
+      const others = (node.pluginData ?? []).filter(
+        (e) => !(e.pluginID === STUDIO_PLUGIN && e.key === LAYER_KEY),
+      );
+      ed.engine.setProps([node.guid], {
+        pluginData: [
+          ...others,
+          { pluginID: STUDIO_PLUGIN, key: LAYER_KEY, value: JSON.stringify(value) },
+        ],
+      } as never);
+    }
+  });
 }
 
 const SCALE: Record<string, "FILL" | "FIT" | "CROP"> = {
@@ -95,20 +204,26 @@ async function pictureArg(
   url: string,
   box: { w: number; h: number },
   fit: string | undefined,
+  onPicture?: PictureListener,
 ): Promise<{ data: string; scaleMode: string } | null> {
   try {
     const res = await fetch(url);
     if (!res.ok) return null;
     let bytes: Uint8Array = new Uint8Array(await res.arrayBuffer());
     const type = res.headers.get("content-type") ?? "";
+    let drawn = false;
     if (
       type.includes("svg") ||
       /^\s*(<\?xml|<svg)/.test(new TextDecoder().decode(bytes.subarray(0, 64)))
-    )
+    ) {
       bytes = await rasterizeSvg(bytes, box.w, box.h);
+      drawn = true;
+    }
     // A file the browser can't decode would stop Wecra's create_nodes: left out here instead.
     if (typeof createImageBitmap === "function")
       (await createImageBitmap(new Blob([bytes as BlobPart]))).close();
+    // The file as it is (not an SVG drawn here): the session knows which asset it is.
+    if (!drawn) onPicture?.(url, bytes);
     return { data: base64(bytes), scaleMode: SCALE[fit ?? "cover"] ?? "FILL" };
   } catch {
     return null;
@@ -197,12 +312,18 @@ export function slideSpec(
   return { spec, fonts: [...fonts], pictures };
 }
 
+/** A picture's bytes as read for the import (its URL, the file's bytes). */
+export type PictureListener = (url: string, bytes: Uint8Array) => void;
+
 /** Reads the pictures' bytes into their specs; returns the ones that could not be read. */
-export async function loadPictures(pictures: readonly SlidePicture[]): Promise<string[]> {
+export async function loadPictures(
+  pictures: readonly SlidePicture[],
+  onPicture?: PictureListener,
+): Promise<string[]> {
   const missing: string[] = [];
   await Promise.all(
     pictures.map(async (p) => {
-      const image = await pictureArg(p.url, p.box, p.fit);
+      const image = await pictureArg(p.url, p.box, p.fit, onPicture);
       if (image) p.spec.image = image;
       else missing.push(p.url);
     }),
@@ -233,6 +354,7 @@ export async function captureSlide(
   slide: SlideSource,
   index: number,
   kit: Pick<RenderKit, "css" | "files">,
+  onPicture?: PictureListener,
 ): Promise<CapturedSlide> {
   const frame = document.createElement("iframe");
   frame.setAttribute("sandbox", "allow-same-origin");
@@ -270,8 +392,15 @@ export async function captureSlide(
       index,
     );
     for (const p of pictures) p.url = new URL(p.url, doc.baseURI).href;
-    const missing = await loadPictures(pictures);
-    return { index, ...size, spec: finishSlide(spec, index, size), fonts, missing };
+    const missing = await loadPictures(pictures, onPicture);
+    return {
+      index,
+      ...size,
+      spec: finishSlide(spec, index, size),
+      fonts,
+      missing,
+      marks: layerMarks(slide.html),
+    };
   } finally {
     frame.remove();
   }
@@ -283,13 +412,14 @@ const withoutImages = (s: Spec): Spec => {
   return { ...rest, ...(children ? { children: children.map(withoutImages) } : {}) } as Spec;
 };
 
-/** Every slide, in order. */
+/** Every slide, in order (`onPicture`: each picture file read, for the save's dedupe). */
 export async function captureSlides(
   slides: readonly SlideSource[],
   kit: Pick<RenderKit, "css" | "files">,
+  options: { onPicture?: PictureListener } = {},
 ): Promise<CapturedSlide[]> {
   const out: CapturedSlide[] = [];
-  for (const [i, s] of slides.entries()) out.push(await captureSlide(s, i, kit));
+  for (const [i, s] of slides.entries()) out.push(await captureSlide(s, i, kit, options.onPicture));
   return out;
 }
 
@@ -320,5 +450,11 @@ export async function importSlides(
       .join("\n");
     throw new Error(`Wecra katmanları oluşturamadı: ${text.slice(0, 300)}`);
   }
-  return pageFrames(ed);
+  const frames = pageFrames(ed);
+  // The contract's meaning of each layer (slots, logos, roles) stays on its Wecra layer.
+  for (const c of captured) {
+    const frame = frames[c.index];
+    if (frame && c.marks?.length) markLayers(ed, frame.ref, c.marks);
+  }
+  return frames;
 }

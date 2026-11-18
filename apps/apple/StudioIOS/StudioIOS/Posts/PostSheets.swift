@@ -200,7 +200,7 @@ final class ScheduleSheetViewController: UIViewController {
         selected = existing.isEmpty ? Set(accounts.filter { $0.status == .connected }.map(\.id)) : existing
         let accountsCard = IOSCardView(padding: 8, spacing: 0)
         if accounts.isEmpty {
-            accountsCard.stack.addArrangedSubview(UILabel.studio("Bu markanın hedef platformlarda bağlı hesabı yok. Hesaplar Mac'te bağlanır (Ayarlar → Hesaplar).", size: 14, color: IOSTheme.textSecondary, lines: 0, style: .subheadline))
+            accountsCard.stack.addArrangedSubview(UILabel.studio("Bu markanın hedef platformlarda bağlı hesabı yok. Hesaplar Mac'te Ayarlar → Hesaplar'da bağlanır.", size: 14, color: IOSTheme.textSecondary, lines: 0, style: .subheadline))
         }
         for account in accounts {
             let toggle = UISwitch()

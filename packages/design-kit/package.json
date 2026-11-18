@@ -11,6 +11,7 @@
     "./patch": "./src/patch/index.ts",
     "./sanitize": "./src/sanitize/index.ts",
     "./brand": "./src/brand/index.ts",
+    "./canvas": "./src/canvas/index.ts",
     "./lint": "./src/lint/index.ts",
     "./presets": "./src/presets/index.ts",
     "./render": "./src/render/index.ts",

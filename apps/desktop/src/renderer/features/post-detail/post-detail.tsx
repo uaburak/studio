@@ -306,6 +306,11 @@ function PostCanvas({ editor, snapshot }: { editor: PostEditor; snapshot: Editor
               : setScheduleOpen(true),
         }}
         guardApproval={approveGuard.guard}
+        scheduledTargets={cancelFlow.targets.map((t) => t.label)}
+        onDuplicate={async () => {
+          const copy = await actions.duplicate(content);
+          if (copy) usePostsStore.getState().open(copy.id);
+        }}
         menu={postMenu({
           content,
           version,

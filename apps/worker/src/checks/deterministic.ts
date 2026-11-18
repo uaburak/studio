@@ -145,6 +145,70 @@ export const MODEL_CHECKS: readonly CheckId[] = [
   "accuracy.claims",
 ];
 
+/** Checks that read what is on the slides (not only the caption). */
+export const CONTENT_CHECKS: ReadonlySet<CheckId> = new Set<CheckId>([
+  ...SLIDE_CHECKS,
+  ...MODEL_CHECKS,
+  "text.banned-words",
+  "brief.completeness",
+]);
+
+/** A slide saved from the canvas before the facts (one picture): nothing in it can be read. */
+export const LEGACY_CANVAS_REASON =
+  "Eski tuval kaydı: karenin içi okunamıyor. Postu tuvalde açıp yeniden kaydedin.";
+
+/** What the coverage of the checks needs to know about a slide. */
+export interface CoverageSlide {
+  index: number;
+  /** `carried`: judged in an earlier run; `unmeasured`: not judged now. */
+  mode: "fresh" | "carried" | "unmeasured";
+  report: LintReport | null;
+  failure: string | null;
+  /** `legacy`: an older canvas save (one picture); `facts`: a canvas save with its facts. */
+  canvas: "none" | "legacy" | "facts";
+}
+
+/**
+ * The checks that could not judge every slide, with the reason (Turkish): such a check is
+ * `skipped`, never `pass`, when it found nothing (`withPasses`). Reels are handled apart.
+ */
+export function skipReasons(
+  slides: readonly CoverageSlide[],
+  isReel: boolean,
+): Map<CheckId, string> {
+  const out = new Map<CheckId, string>();
+  if (isReel) return out;
+  const set = (ids: Iterable<CheckId>, reason: string) => {
+    for (const id of ids) if (!out.has(id)) out.set(id, reason);
+  };
+  const layoutChecks = [...SLIDE_CHECKS].filter((id) => id !== "visual.resolution");
+  for (const s of slides) {
+    const n = s.index + 1;
+    if (s.canvas === "legacy") {
+      set(CONTENT_CHECKS, LEGACY_CANVAS_REASON);
+      continue;
+    }
+    if (s.mode === "carried") continue;
+    if (s.mode === "unmeasured") {
+      set(SLIDE_CHECKS, `Slayt ${n} ölçülmedi; kontrolleri yeniden çalıştırın.`);
+      continue;
+    }
+    if (s.failure || !s.report) {
+      set(layoutChecks, `Slayt ${n} render edilemedi; kontrolleri yeniden çalıştırın.`);
+      continue;
+    }
+    if (!s.report.stages.layout) set(layoutChecks, `Slayt ${n} ölçülemedi.`);
+    else if (!s.report.stages.pixel)
+      set(
+        ["layout.contrast"],
+        s.canvas === "facts"
+          ? `Kare ${n} görseli okunamadı; kontrast ölçülemedi.`
+          : `Slayt ${n}'de kontrast ölçülemedi.`,
+      );
+  }
+  return out;
+}
+
 const num = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) ? v : null);
 const str = (v: unknown): string | null => (typeof v === "string" ? v : null);
 
@@ -227,7 +291,9 @@ export function lintMessage(issue: LintIssue, safeHint: string): string {
       return `${L} görseli piksel boyutunun ${scale !== null ? `%${Math.round(scale * 100)}'ü ile ` : "üstünde "}gösteriliyor; bulanık görünebilir.`;
     }
     case "image-broken":
-      return `${L} görseli yüklenemedi.`;
+      return issue.layer === "canvas"
+        ? "Karenin tuvalden kaydedilen görseli okunamadı; postu tuvalde yeniden kaydedin."
+        : `${L} görseli yüklenemedi.`;
     case "artboard-size":
       return "Slayt hedef boyutta render edilmedi.";
     case "network-request":
@@ -561,17 +627,24 @@ export function findingKey(r: Pick<ContentCheckResult, "checkId" | "refs" | "evi
 
 /**
  * Adds one `pass` row for every enabled check in `ran` that has no other row, so the list
- * shows what was checked.
+ * shows what was checked — or a `skipped` row with the reason when the check could not judge
+ * everything (`skip`, from `skipReasons`): nothing found where nothing could be read is not a pass.
  */
 export function withPasses(
   results: readonly ContentCheckResult[],
   ran: Iterable<CheckId>,
+  skip: ReadonlyMap<CheckId, string> = new Map(),
 ): ContentCheckResult[] {
   const seen = new Set(results.map((r) => r.checkId));
   const out = [...results];
   for (const id of ran) {
     if (seen.has(id)) continue;
     seen.add(id);
+    const reason = skip.get(id);
+    if (reason) {
+      out.push(skipped(id, reason));
+      continue;
+    }
     out.push({
       checkId: id,
       category: CHECK_CATALOG[id].category,

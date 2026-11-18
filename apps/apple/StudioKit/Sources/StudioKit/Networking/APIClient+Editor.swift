@@ -134,14 +134,36 @@ extension APIClient {
     }
 
     /// "Neyi değiştireyim?": a `content.generate` job that revises `baseVersion` with `instructions`.
-    public func requestRevision(of content: Content, baseVersion: Int, instructions: String) async throws(StudioAPIError) -> Job {
-        let payload: JSONObject = [
+    /// Without `baseVersion` the worker makes a new design with the instructions (a canvas
+    /// version without an HTML source: see `CanvasOrigin.revisionRequest`).
+    public func requestRevision(of content: Content, baseVersion: Int?, instructions: String) async throws(StudioAPIError) -> Job {
+        var payload: JSONObject = [
             "brief": .string(content.brief.isEmpty ? content.title : content.brief),
             "title": .string(content.title),
             "type": .string(content.type.rawValue),
             "instructions": .string(String(instructions.prefix(4000))),
-            "baseVersion": .number(Double(baseVersion)),
         ]
+        if let baseVersion { payload["baseVersion"] = .number(Double(baseVersion)) }
         return try await createJob(JobCreate(type: .contentGenerate, payload: payload, brandId: content.brandId, contentId: content.id))
+    }
+
+    // MARK: Production checks (content-check.ts)
+
+    /// `GET /api/contents/{id}/checks`: check runs, newest first (`version` narrows to one version).
+    public func contentCheckRuns(contentId: EntityID, version: Int? = nil, limit: Int = 20) async throws(StudioAPIError) -> Page<ContentCheckRun> {
+        try await get(Page<ContentCheckRun>.self, "/api/contents/\(Self.enc(contentId))/checks", query: [
+            "version": version.map(String.init),
+            "limit": String(limit),
+        ])
+    }
+
+    /// The latest check run of `version` (nil: never checked).
+    public func latestCheckRun(contentId: EntityID, version: Int) async throws(StudioAPIError) -> ContentCheckRun? {
+        try await contentCheckRuns(contentId: contentId, version: version, limit: 1).items.first
+    }
+
+    /// "Yeniden kontrol et": a `content.check` job over `version` (with the model pass).
+    public func runChecks(contentId: EntityID, brandId: EntityID, version: Int) async throws(StudioAPIError) -> Job {
+        try await createJob(JobCreate(type: .contentCheck, payload: ["version": .number(Double(version))], brandId: brandId, contentId: contentId))
     }
 }

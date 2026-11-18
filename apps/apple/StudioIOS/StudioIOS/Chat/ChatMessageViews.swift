@@ -279,7 +279,15 @@ enum ChatViews {
             bubble.widthAnchor.constraint(lessThanOrEqualTo: wrapper.widthAnchor, multiplier: 0.82).isActive = true
             bubble.accessibilityLabel = "Sen: \(text)"
         }
+        if message.parts.contains(where: \.isUnreadable) {
+            column.addArrangedSubview(unreadableLabel())
+        }
         return wrapper
+    }
+
+    /// A message (or part) this build could not read.
+    static func unreadableLabel() -> UILabel {
+        UILabel.studio(MessagePart.unreadableText, size: 13, color: IOSTheme.textTertiary, lines: 0, style: .footnote)
     }
 
     static func assistantParts(_ message: Message, context: ChatCellContext) -> [UIView] {
@@ -383,6 +391,7 @@ enum ChatViews {
             card.stack.addArrangedSubview(UIStackView.h([icon("exclamationmark.triangle", IOSTheme.textPrimary), UILabel.studio(error.message, size: 14, lines: 0, style: .subheadline)], spacing: 8, alignment: .top))
             return card
         case .unknown(let type):
+            if type == MessagePart.unreadableType { return unreadableLabel() }
             return UILabel.studio("Bu sürümün gösteremediği bir içerik (\(type)).", size: 13, color: IOSTheme.textTertiary, lines: 0, style: .footnote)
         }
     }

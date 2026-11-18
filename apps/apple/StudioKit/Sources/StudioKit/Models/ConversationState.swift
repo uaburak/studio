@@ -21,6 +21,8 @@ public struct ConversationState: Sendable, Equatable {
     public var presence: WorkerPresence?
     /// Set when a seq gap was seen.
     public var stale: Bool
+    /// Sequenced frames this build could not read and stepped past (unreadable or unknown).
+    public var skippedFrames: Int
 
     public init(snapshot: ConversationSnapshot) {
         seq = snapshot.seq
@@ -32,6 +34,7 @@ public struct ConversationState: Sendable, Equatable {
         aliases = snapshot.aliases
         presence = snapshot.presence
         stale = false
+        skippedFrames = 0
     }
 
     /// Apply one frame. Returns the new state (nil only while no snapshot arrived).
@@ -44,8 +47,15 @@ public struct ConversationState: Sendable, Equatable {
         case .presence(let presence):
             next.presence = presence
             return next
-        case .pong, .unknown:
+        case .pong:
             return next
+        case .unknown(_, let seq):
+            // A sequenced event type this build does not know: step past it (never resume before it).
+            guard let seq else { return next }
+            return advance(next, to: seq) { $0.skippedFrames += 1 }
+        case .unreadable(let frame):
+            guard let seq = frame.seq, frame.type != "conversation.snapshot", frame.type != "conversation.resumed" else { return next }
+            return advance(next, to: seq) { $0.recordUnreadable(frame, seq: seq) }
         case .resumed(let seq, _, let presence):
             next.presence = presence
             next.stale = next.stale || seq != next.seq
@@ -59,6 +69,42 @@ public struct ConversationState: Sendable, Equatable {
             next.seq = seq
             next.apply(event)
             return next
+        }
+    }
+
+    /// Apply a frame that has `seq`: duplicates are ignored, a gap marks the state stale.
+    private static func advance(_ state: ConversationState, to seq: Int, _ change: (inout ConversationState) -> Void) -> ConversationState {
+        var next = state
+        if seq <= next.seq { return next }
+        if seq != next.seq + 1 {
+            next.stale = true
+            return next
+        }
+        next.seq = seq
+        change(&next)
+        return next
+    }
+
+    /// Keep what can be kept of a frame that did not decode: a message (or part) shows as
+    /// "Bu mesaj bu sürümde gösterilemiyor"; other changes are skipped.
+    private mutating func recordUnreadable(_ frame: UnreadableFrame, seq: Int) {
+        skippedFrames += 1
+        switch frame.type {
+        case "message.created", "message.updated":
+            let id = frame.messageId ?? "unreadable-\(seq)"
+            if let index = messages.firstIndex(where: { $0.id == id }) {
+                messages[index].parts = [.unreadable]
+            } else {
+                let date = frame.createdAt ?? messages.last?.createdAt ?? Date()
+                messages.append(Message(
+                    id: id, conversationId: conversation.id, role: frame.role ?? .assistant,
+                    parts: [.unreadable], createdAt: date, updatedAt: date))
+            }
+        case "part.added", "part.updated":
+            guard let messageId = frame.messageId, let index = frame.index else { return }
+            mapMessage(messageId) { $0.setPart(.unreadable, at: index) }
+        default:
+            break
         }
     }
 

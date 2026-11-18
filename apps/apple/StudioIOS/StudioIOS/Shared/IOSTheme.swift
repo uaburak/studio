@@ -484,41 +484,73 @@ enum IOSImageImport {
     /// Longest side sent to the Mac (keeps uploads fast on cellular; renders use 1080–2160 px).
     static let maxPixel: CGFloat = 3072
 
+    /// A picture as it goes to the Mac: a picture with transparency (a PNG product shot on a
+    /// clear background) stays PNG with its alpha; anything else (camera, HEIC, JPEG) becomes JPEG.
     static func from(image: UIImage, filename: String = "fotograf.jpg") throws -> Imported {
-        let prepared = downscaled(image)
+        let base = (filename as NSString).deletingPathExtension
+        let name = base.isEmpty ? "fotograf" : base
+        if hasAlpha(image) {
+            // PNG is lossless and larger: step the size down until it fits the upload limit.
+            for side in [maxPixel, 2048, 1536] {
+                let prepared = downscaled(image, maxPixel: side, opaque: false)
+                guard let png = prepared.pngData() else { break }
+                if png.count <= AssetMimeRules.imageMaxBytes {
+                    return imported(prepared, data: png, filename: "\(name).png", mimeType: "image/png")
+                }
+            }
+            throw StudioAPIError.invalidConfiguration("Saydam fotoğraf 20 MB sınırına sığmıyor.")
+        }
+        let prepared = downscaled(image, maxPixel: maxPixel, opaque: true)
         guard let jpeg = prepared.jpegData(compressionQuality: 0.88) else {
             throw StudioAPIError.invalidConfiguration("Fotoğraf kodlanamadı.")
         }
         guard jpeg.count <= AssetMimeRules.imageMaxBytes else {
             throw StudioAPIError.invalidConfiguration("Fotoğraf 20 MB sınırını aşıyor.")
         }
+        return imported(prepared, data: jpeg, filename: "\(name).jpg", mimeType: "image/jpeg")
+    }
+
+    private static func imported(_ prepared: UIImage, data: Data, filename: String, mimeType: String) -> Imported {
         let width = Int(prepared.size.width * prepared.scale)
         let height = Int(prepared.size.height * prepared.scale)
-        let base = (filename as NSString).deletingPathExtension
-        let cleanName = "\(base.isEmpty ? "fotograf" : base).jpg"
         let upload = UploadFile(
-            filename: cleanName, mimeType: "image/jpeg", data: jpeg,
+            filename: filename, mimeType: mimeType, data: data,
             width: width > 0 ? width : nil, height: height > 0 ? height : nil)
         return Imported(file: upload, thumbnail: thumbnail(prepared))
     }
 
-    static func downscaled(_ image: UIImage) -> UIImage {
+    /// The picture carries an alpha channel (PNG, some HEIC); camera photos and JPEGs do not.
+    static func hasAlpha(_ image: UIImage) -> Bool {
+        guard let cg = image.cgImage else { return false }
+        return hasAlpha(cg.alphaInfo)
+    }
+
+    static func hasAlpha(_ info: CGImageAlphaInfo) -> Bool {
+        switch info {
+        case .none, .noneSkipFirst, .noneSkipLast: false
+        default: true
+        }
+    }
+
+    static func downscaled(_ image: UIImage, maxPixel: CGFloat = maxPixel, opaque: Bool = true) -> UIImage {
         let pixelW = image.size.width * image.scale
         let pixelH = image.size.height * image.scale
         let longest = max(pixelW, pixelH)
-        guard longest > maxPixel, longest > 0 else { return normalized(image) }
+        guard longest > maxPixel, longest > 0 else { return normalized(image, opaque: opaque) }
         let factor = maxPixel / longest
         let size = CGSize(width: (pixelW * factor).rounded(), height: (pixelH * factor).rounded())
         let format = UIGraphicsImageRendererFormat.default()
         format.scale = 1
+        format.opaque = opaque
         return UIGraphicsImageRenderer(size: size, format: format).image { _ in image.draw(in: CGRect(origin: .zero, size: size)) }
     }
 
-    /// Camera photos carry an orientation flag; draw them upright.
-    static func normalized(_ image: UIImage) -> UIImage {
+    /// Camera photos carry an orientation flag; draw them upright (keeping alpha unless `opaque`).
+    static func normalized(_ image: UIImage, opaque: Bool = true) -> UIImage {
         guard image.imageOrientation != .up else { return image }
         let format = UIGraphicsImageRendererFormat.default()
         format.scale = image.scale
+        format.opaque = opaque
         return UIGraphicsImageRenderer(size: image.size, format: format).image { _ in image.draw(in: CGRect(origin: .zero, size: image.size)) }
     }
 

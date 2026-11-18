@@ -8,10 +8,13 @@ import { OnboardingSheet } from "../../features/onboarding/onboarding-sheet.tsx"
 import { PostDetailLayer } from "../../features/post-detail/post-detail.tsx";
 import { PostsPage } from "../../features/posts/posts-page.tsx";
 import { SettingsSheet } from "../../features/settings/settings-sheet.tsx";
+import { installAppFlush } from "../../lib/app-flush.ts";
 import { bridge, isElectron } from "../../lib/bridge.ts";
 import {
   mouseButtonDirection,
   type NavDirection,
+  navKeyTakenByCanvas,
+  noSwipeAt,
   SwipeDetector,
   swipeBlockedAt,
 } from "../../lib/nav-gestures.ts";
@@ -51,6 +54,8 @@ export const MIN_CENTER_WIDTH = 420;
 // wheel events and as the window's "swipe" event).
 let lastGestureAt = Number.NEGATIVE_INFINITY;
 const GESTURE_DEDUPE_MS = 700;
+/** Where the pointer last was: the window's three-finger swipe has no target of its own. */
+let pointerTarget: EventTarget | null = null;
 
 /** Back / forward from a gesture (mouse button, swipe); repeated within 0.7 s → ignored. */
 export function navigateByGesture(direction: NavDirection, now = performance.now()): boolean {
@@ -82,10 +87,11 @@ export function runMenuCommand(command: MenuCommand): void {
       s.togglePanel();
       break;
     case "back":
-      s.goBack();
+      // ⌘[ on the post canvas is Wecra's send backward (the menu may still see the key).
+      if (!navKeyTakenByCanvas()) s.goBack();
       break;
     case "forward":
-      s.goForward();
+      if (!navKeyTakenByCanvas()) s.goForward();
       break;
     case "rename":
       s.requestRename();
@@ -93,11 +99,12 @@ export function runMenuCommand(command: MenuCommand): void {
     case "gallery":
       s.navigate({ kind: "gallery" });
       break;
+    // The window's (three-finger) swipe: over the post canvas it pans there, never navigates.
     case "swipe-back":
-      navigateByGesture("back");
+      if (!noSwipeAt(pointerTarget)) navigateByGesture("back");
       break;
     case "swipe-forward":
-      navigateByGesture("forward");
+      if (!noSwipeAt(pointerTarget)) navigateByGesture("forward");
       break;
   }
 }
@@ -135,7 +142,8 @@ function useCommands() {
       useAppStore.getState().navigate(parseRoute(route)),
     );
     const onKey = (event: KeyboardEvent) => {
-      if (isElectron()) return;
+      // A key the page used (the post canvas's ⌘[ / ⌘]) is not a shortcut of the app's.
+      if (isElectron() || event.defaultPrevented) return;
       const command = shortcutCommand(event);
       if (command) {
         event.preventDefault();
@@ -156,18 +164,31 @@ function useCommands() {
     // Two-finger sideways swipe (not over things that scroll sideways or the lightbox).
     const swipe = new SwipeDetector();
     const onWheel = (event: WheelEvent) => {
+      pointerTarget = event.target;
+      // Not over the lightbox, a sideways scroller, the post canvas (`data-no-swipe`), nor a
+      // wheel something already used (Wecra's canvas pans with it).
       const blocked =
-        useAppStore.getState().lightbox !== null || swipeBlockedAt(event.target as Element);
+        event.defaultPrevented ||
+        useAppStore.getState().lightbox !== null ||
+        swipeBlockedAt(event.target as Element);
       const direction = swipe.wheel(event, blocked);
       if (direction) navigateByGesture(direction, event.timeStamp);
+    };
+    const onPointer = (event: PointerEvent) => {
+      pointerTarget = event.target;
     };
     window.addEventListener("keydown", onKey);
     window.addEventListener("mouseup", onMouseUp);
     window.addEventListener("mousedown", onMouseDown);
     window.addEventListener("wheel", onWheel, { passive: true });
+    window.addEventListener("pointermove", onPointer, { passive: true, capture: true });
+    // Close / quit / reload: the open post's draft is written first (E14).
+    const offFlush = installAppFlush(b.lifecycle ?? null);
     return () => {
       offMenu();
       offNotice();
+      offFlush();
+      window.removeEventListener("pointermove", onPointer, { capture: true });
       window.removeEventListener("keydown", onKey);
       window.removeEventListener("mouseup", onMouseUp);
       window.removeEventListener("mousedown", onMouseDown);

@@ -1,9 +1,10 @@
 // The post's Sohbet: a conversation bound to the post (this Mac remembers which one, per post).
 // The first message creates it in the post's brand, named after the post, and tells the agent
 // which post (id and version) it is about; later messages continue it. `@` layer chips (or the
-// canvas selection) become the scope line in front of the request. The draft is saved first, so
-// the agent works on what the canvas shows; when a reply ends the post is re-read, and versions
-// the agent made land on the canvas (finished jobs of the post do the same, post-detail.tsx).
+// canvas selection) become the scope line in front of the request. Unsaved canvas edits become a
+// version first (S5), so the agent works on what the canvas shows; when a reply ends the post is
+// re-read, and versions the agent made land on the canvas (finished jobs of the post do the same,
+// post-detail.tsx). While a reply runs the canvas is read only (edit-lock.ts).
 import type { Content, ContentVersion } from "@studio/contract";
 import { useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from "react";
 import { describeError, useApi } from "../../lib/api.ts";
@@ -38,7 +39,7 @@ export function scopedInstruction(
 
 /**
  * What the conversation's first message says about the post it is bound to. A version saved
- * from the canvas has its slides as Wecra's renders (one image each): the AI is pointed at the
+ * from the canvas has its slides as Wecra's renders (described layers above them): the AI is pointed at the
  * HTML version the canvas started from; the version it makes opens on the canvas, imported anew.
  */
 export function postReference(
@@ -48,7 +49,7 @@ export function postReference(
   const head = `“${content.title}” postu (id: ${content.id}${version ? `, v${version.version}` : ""}) için:`;
   const origin = canvasOrigin(version?.slides?.[0]?.html);
   if (!origin.canvas) return head;
-  return `${head}\n(v${version?.version} tuvalde, Wecra ile düzenlendi: kareleri Wecra'nın render'ı, HTML'de her kare tek görsel katman.${origin.sourceVersion ? ` Metin ve katman değişikliklerini v${origin.sourceVersion} HTML'si üzerinden yap;` : " Değişikliği yeni bir HTML sürümüyle yap;"} yeni sürüm tuvale yeniden aktarılır.)`;
+  return `${head}\n(v${version?.version} tuvalde, Wecra ile düzenlendi: kareleri Wecra'nın render'ı; HTML'de render en altta, metinler, görsel yuvaları ve logolar üstünde görünmez katmanlar, tüm katmanlar studio:canvas bilgisinde.${origin.sourceVersion ? ` Metin ve katman değişikliklerini v${origin.sourceVersion} HTML'si üzerinden yap;` : " Değişikliği yeni bir HTML sürümüyle yap;"} yeni sürüm tuvale yeniden aktarılır.)`;
 }
 
 /** The text sent for a request: the post's reference on the first one, the scope, the request. */
@@ -155,7 +156,10 @@ export function usePostChat(options: {
       const trimmed = text.trim();
       if (!trimmed) return false;
       if (!(await o.flush())) {
-        o.notify("Taslak kaydedilemedi; mesajdan önce kaydedilmeli.", "error");
+        o.notify(
+          "Tuvaldeki değişiklikler sürüm olarak kaydedilemedi; mesaj gönderilmedi.",
+          "error",
+        );
         return false;
       }
       let id = useWorkspaceStore.getState().chats[o.content.id] ?? null;

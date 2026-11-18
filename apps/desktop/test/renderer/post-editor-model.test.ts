@@ -3,6 +3,7 @@
 // as the one image layer, its hash in the HTML), the brand kit, the AI scope line, and which keys
 // and clipboard events are Wecra's (its places) and which are Studio's.
 import { computeContentHash } from "@studio/contract";
+import type { CanvasFacts } from "@studio/design-kit/canvas";
 import { parseSlide } from "@studio/design-kit/document";
 import { describe, expect, it } from "vitest";
 import { postReference, scopedInstruction } from "../../src/renderer/features/post-editor/chat.ts";
@@ -16,6 +17,7 @@ import { ownsEvent, WECRA_REGION } from "../../src/renderer/features/post-editor
 import {
   canvasOrigin,
   canvasSlideHtml,
+  canvasSlideLayout,
   sha256Hex,
 } from "../../src/renderer/features/post-editor/wecra/slide-html.ts";
 
@@ -43,21 +45,133 @@ describe("slide documents (what the import renders)", () => {
   });
 });
 
+/** A slide's canvas facts as the extractor writes them: a headline and an empty image slot. */
+const FACTS: CanvasFacts = {
+  v: 1,
+  editor: "wecra",
+  frame: {
+    id: "7:1",
+    name: "Kare 1",
+    width: 1080,
+    height: 1350,
+    background: "#F4EFE4",
+    fills: [{ type: "solid", color: "#F4EFE4", opacity: 1 }],
+  },
+  nodes: [
+    {
+      id: "7:2",
+      name: "headline",
+      type: "text",
+      wecraType: "TEXT",
+      parent: null,
+      bounds: { x: 80, y: 200, w: 600, h: 96 },
+      rotation: 0,
+      opacity: 1,
+      effectiveOpacity: 1,
+      visible: true,
+      clips: false,
+      clip: null,
+      fills: [],
+      strokes: [],
+      strokeWeight: 0,
+      mark: {
+        layer: "headline",
+        type: "text",
+        role: "headline",
+        src: null,
+        image: null,
+        allowOverlap: false,
+        slot: null,
+      },
+      text: {
+        characters: 'Hasat "bitti" <hemen>',
+        family: "Archivo",
+        style: "Bold",
+        weight: 700,
+        italic: false,
+        size: 80,
+        lineHeight: 96,
+        letterSpacing: 0,
+        align: "left",
+        verticalAlign: "top",
+        autoResize: "height",
+        color: "#1D2A1B",
+        colors: ["#1D2A1B"],
+        fills: [{ type: "solid", color: "#1D2A1B", opacity: 1 }],
+        runs: [],
+        lines: [{ x: 80, y: 200, w: 520, h: 96, from: 0, to: 21 }],
+        overflow: false,
+        truncated: false,
+        missingFont: false,
+      },
+    },
+    {
+      id: "7:3",
+      name: "field-photo",
+      type: "frame",
+      wecraType: "FRAME",
+      parent: null,
+      bounds: { x: 560, y: 400, w: 400, h: 500 },
+      rotation: 0,
+      opacity: 1,
+      effectiveOpacity: 1,
+      visible: true,
+      clips: true,
+      clip: null,
+      fills: [{ type: "solid", color: "#E0D9C8", opacity: 1 }],
+      strokes: [],
+      strokeWeight: 0,
+      mark: {
+        layer: "field-photo",
+        type: "slot",
+        role: null,
+        src: null,
+        image: null,
+        allowOverlap: false,
+        slot: { ratio: "4:5", label: "Saha fotoğrafı", fit: "cover" },
+      },
+    },
+  ],
+  fonts: [{ family: "Archivo", style: "Bold", uses: 1, missing: false }],
+};
+
 describe("a slide saved from the canvas", () => {
-  it("is the engine's render as the artboard's one image layer, with its texts as alt", async () => {
+  it("is the engine's render under its described layers, with the facts and a short alt", async () => {
     const sha256 = await sha256Hex(new Uint8Array([1, 2, 3]));
     const html = canvasSlideHtml({
       src: "/media/r1.png",
       sha256,
       width: 1080,
       height: 1350,
-      text: 'Hasat "bitti" <hemen>',
+      facts: FACTS,
     });
     expect(html).toContain('<meta name="studio:format" content="1080x1350">');
     expect(html).toContain(`<meta name="studio:render" content="sha256:${sha256}">`);
-    expect(html).toContain('alt="Hasat &quot;bitti&quot; &lt;hemen&gt;"');
+    expect(html).toContain('<meta name="studio:canvas" content="');
+    expect(html).toContain('<link rel="stylesheet" href="/brand/brand.css">');
+    expect(html).toContain('alt="Hasat &quot;bitti&quot; &lt;hemen&gt;."');
     const slide = parseSlide(html);
-    expect([...slide.entries.values()].map((l) => [l.id, l.type])).toEqual([["canvas", "image"]]);
+    expect([...slide.entries.values()].map((l) => [l.id, l.type])).toEqual([
+      ["canvas", "image"],
+      ["headline", "text"],
+      ["field-photo", "slot"],
+    ]);
+    expect(slide.layer("headline")).toMatchObject({ text: 'Hasat "bitti" <hemen>' });
+    expect(canvasSlideLayout(FACTS, 1080, 1350).map((b) => b.id)).toEqual([
+      "canvas",
+      "headline",
+      "field-photo",
+    ]);
+    // Facts that could not be read: the render alone (its checks ask for a new save).
+    const bare = canvasSlideHtml({
+      src: "/media/r1.png",
+      sha256,
+      width: 1080,
+      height: 1350,
+      facts: null,
+    });
+    expect([...parseSlide(bare).entries.keys()]).toEqual(["canvas"]);
+    expect(canvasSlideLayout(null, 1080, 1350)).toHaveLength(1);
   });
 
   it("changes the content hash with every pixel (the render's SHA-256 is in the HTML)", async () => {
@@ -67,7 +181,7 @@ describe("a slide saved from the canvas", () => {
         sha256: await sha256Hex(new Uint8Array(bytes)),
         width: 1080,
         height: 1350,
-        text: "",
+        facts: FACTS,
       }),
       width: 1080,
       height: 1350,
@@ -86,7 +200,7 @@ describe("the AI on a version saved from the canvas", () => {
       sha256: "a".repeat(64),
       width: 1080,
       height: 1350,
-      text: "",
+      facts: FACTS,
       sourceVersion: 3,
     });
     expect(canvasOrigin(html)).toEqual({ canvas: true, sourceVersion: 3 });

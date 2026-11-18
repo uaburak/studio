@@ -15,6 +15,7 @@ import {
   shell,
 } from "electron";
 import { ACCOUNTS_IPC } from "../shared/accounts-ipc.ts";
+import { DRAFTS_IPC } from "../shared/drafts.ts";
 import { FONTS_IPC } from "../shared/fonts.ts";
 import {
   type DesktopSettings,
@@ -25,6 +26,8 @@ import {
 } from "../shared/ipc.ts";
 import { createSecretStore, safeStorageCipher, setupAccounts } from "./accounts/setup.ts";
 import { BackupService } from "./backup-service.ts";
+import { DraftStore } from "./drafts.ts";
+import { RendererFlush } from "./flush.ts";
 import { FontFiles, FontLister } from "./fonts.ts";
 import { DnsSdAdvertiser } from "./host/bonjour.ts";
 import { defaultRepoPath, stateDirectory } from "./host/environment.ts";
@@ -98,6 +101,27 @@ export function startApp(): void {
   function send(channel: string, ...args: unknown[]): void {
     if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(channel, ...args);
   }
+
+  // Close / quit: the page writes the open post's draft first (E14), within a short wait.
+  const rendererFlush = new RendererFlush({
+    send: (id) => {
+      const w = mainWindow;
+      if (!w || w.isDestroyed() || w.webContents.isDestroyed() || w.webContents.isCrashed())
+        return false;
+      w.webContents.send(DRAFTS_IPC.flushRequest, id);
+      return true;
+    },
+    onDone: (listener) => {
+      const handler = (_event: unknown, id: unknown) => {
+        if (typeof id === "number") listener(id);
+      };
+      ipcMain.on(DRAFTS_IPC.flushDone, handler);
+      return () => ipcMain.removeListener(DRAFTS_IPC.flushDone, handler);
+    },
+    timeoutMs: 2000,
+  });
+  /** The page was asked to flush for this quit (the windows then close without asking again). */
+  let flushedForQuit = false;
 
   const notifier = new Notifier(
     {
@@ -196,6 +220,16 @@ export function startApp(): void {
         if (/^https?:/i.test(url)) void shell.openExternal(url);
       }
     });
+    // The red button / ⌘W: the open post's draft is written before the page goes.
+    let closeFlushed = false;
+    window.on("close", (event) => {
+      if (closeFlushed || flushedForQuit) return;
+      event.preventDefault();
+      void rendererFlush.run().finally(() => {
+        closeFlushed = true;
+        if (!window.isDestroyed()) window.close();
+      });
+    });
     window.on("closed", () => {
       if (mainWindow === window) mainWindow = null;
     });
@@ -275,6 +309,25 @@ export function startApp(): void {
     ipcMain.handle(FONTS_IPC.read, (_event, postscriptName: unknown) =>
       typeof postscriptName === "string" ? fontFiles.read(postscriptName) : null,
     );
+    // The post editor's working drafts (S5): local, one per post, never the API's.
+    const drafts = new DraftStore(join(stateDir, "drafts"));
+    ipcMain.handle(DRAFTS_IPC.save, (_event, draft: unknown) => {
+      drafts.save(draft);
+    });
+    ipcMain.on(DRAFTS_IPC.saveSync, (event, draft: unknown) => {
+      try {
+        drafts.save(draft);
+        event.returnValue = true;
+      } catch {
+        event.returnValue = false;
+      }
+    });
+    ipcMain.handle(DRAFTS_IPC.load, (_event, contentId: unknown) =>
+      typeof contentId === "string" ? drafts.load(contentId) : null,
+    );
+    ipcMain.handle(DRAFTS_IPC.remove, (_event, contentId: unknown) => {
+      if (typeof contentId === "string") drafts.remove(contentId);
+    });
     ipcMain.handle(ACCOUNTS_IPC.backupCreate, () => backups.backup());
     ipcMain.handle(ACCOUNTS_IPC.backupRestore, () => backups.restore());
     host.onChange((snapshot) => send(IPC.hostChanged, snapshot));
@@ -321,6 +374,15 @@ export function startApp(): void {
 
   app.on("before-quit", (event) => {
     if (quitting) return;
+    // ⌘Q: the open post's draft is written first (a short wait at most), then the quit goes on.
+    if (!flushedForQuit) {
+      event.preventDefault();
+      void rendererFlush.run().finally(() => {
+        flushedForQuit = true;
+        app.quit();
+      });
+      return;
+    }
     if (host.ownsChildren) {
       event.preventDefault();
       void shutdown();

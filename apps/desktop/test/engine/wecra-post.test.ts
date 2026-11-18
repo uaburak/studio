@@ -14,6 +14,7 @@ import { EMPTY_DOCUMENT } from "@/editor/fixtures";
 import { Engine } from "@/engine/Engine";
 import { EngineStore } from "@/engine/EngineStore";
 import {
+  BUNDLE_FORMAT,
   BundleImages,
   decodeBundle,
   encodeBundle,
@@ -231,7 +232,8 @@ describe("a post in Wecra's editor (real engine, headless)", () => {
     ]);
     expect([bytes[0], bytes[1]]).toEqual([0x50, 0x4b]); // a zip
     const back = decodeBundle(bytes);
-    expect(back.meta).toMatchObject({ format: 1, kind: "wecra", images: [hash] });
+    // (Not an asset of the brand yet: the picture is inside.)
+    expect(back.meta).toMatchObject({ format: BUNDLE_FORMAT, kind: "wecra", images: [hash] });
     expect(back.meta.wecra.appVersion).toMatch(/^\d+\.\d+\.\d+$/);
     expect(await back.images.get(hash)).toEqual(png);
     const reopened = await headlessEditor(back.message, back.images);
@@ -299,7 +301,7 @@ describe("a post in Wecra's editor (real engine, headless)", () => {
       content: () => ({ id: "post-1", brandId: "brand-1", type: "post", title: "Post" }),
       kit: () => ({ css: "", files: {} }),
       refresh,
-      autosaveMs: 0,
+      draftMs: 0,
       fetchAsset: async () => bundle,
     });
     await session.open({
@@ -333,23 +335,27 @@ describe("a post in Wecra's editor (real engine, headless)", () => {
     expect(version.origin).toBe("manual_edit");
     expect(version.note).toBe("Başlık büyüdü");
     expect(version.renderedAssetIds).toEqual(["asset-1"]);
-    // Measured already (the render is the slide's one layer): no measuring render job follows.
-    expect((version as unknown as { layouts: unknown }).layouts).toEqual([
-      [
-        {
-          id: "canvas",
-          type: "image",
-          role: "background",
-          parent: null,
-          x: 0,
-          y: 0,
-          w: 1080,
-          h: 1350,
-          visible: true,
-        },
-      ],
-    ]);
-    expect(version.editorDocument).toEqual({ kind: "wecra", assetId: "asset-2", format: 1 });
+    // Measured already (the render and the layers the facts describe): no measuring render job.
+    const layouts = (version as unknown as { layouts: { id: string }[][] }).layouts;
+    expect(layouts[0]?.[0]).toEqual({
+      id: "canvas",
+      type: "image",
+      role: "background",
+      parent: null,
+      x: 0,
+      y: 0,
+      w: 1080,
+      h: 1350,
+      visible: true,
+    });
+    // (No fonts are loaded here: the hugging texts in the row are 0 px wide, not painted.)
+    expect(layouts[0]?.map((b) => b.id)).toEqual(["canvas", "headline"]);
+    expect(first(version.slides).html).toContain('<meta name="studio:canvas"');
+    expect(version.editorDocument).toEqual({
+      kind: "wecra",
+      assetId: "asset-2",
+      format: BUNDLE_FORMAT,
+    });
     expect(version.slides[0]).toMatchObject({ width: 1080, height: 1350 });
     expect(first(version.slides).html).toContain('src="/media/asset-1.png"');
     expect(first(version.slides).html).toMatch(/studio:render" content="sha256:[0-9a-f]{64}"/);
@@ -372,11 +378,11 @@ describe("a post in Wecra's editor (real engine, headless)", () => {
       content: () => ({ id: "p", brandId: "b", type: "carousel", title: "C" }),
       kit: () => ({ css: "", files: {} }),
       refresh: async () => {},
-      autosaveMs: 0,
+      draftMs: 0,
     });
     expect(
       session.saveBlocker([{ guid: "1:1", name: "Kare 1", width: 1080, height: 1350 }]),
-    ).toMatch(/2–20 kare/);
+    ).toMatch(/en az 2 kare/);
     expect(
       session.saveBlocker([
         { guid: "1:1", name: "Kare 1", width: 1080, height: 1350 },

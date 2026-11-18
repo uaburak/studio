@@ -35,6 +35,8 @@ final class IOSPostDetailViewController: UIViewController {
     private var navSignature: Int?
     private var lastError: String?
     private var lastNotice: String?
+    /// Passed and skipped checks are folded until asked for.
+    private var showAllChecks = false
 
     init(app: IOSAppModel, card: PostCard) {
         self.app = app
@@ -186,7 +188,7 @@ final class IOSPostDetailViewController: UIViewController {
 
         let placeholder = (title: s.content.title, eyebrow: s.card.eyebrow, needsImage: s.card.needsImage)
         pager.configure(
-            slides: s.slides, placeholder: placeholder, images: app.images, editing: detailTab == .edit,
+            slides: s.slides, placeholder: placeholder, images: app.images, editing: detailTab == .edit && !s.isCanvasVersion,
             selectedLayer: s.selectedLayerId, previewBoxes: s.previewBoxes, selectedSlide: s.selectedSlideIndex)
         let exporting = s.isExporting ? (s.exportMessage ?? "Hazırlanıyor") : nil
         pager.setActivity(s.activity.isBusy ? s.activity.message : exporting)
@@ -220,6 +222,14 @@ final class IOSPostDetailViewController: UIViewController {
         hasher.combine(s.canRedo)
         hasher.combine(nudgeStep)
         hasher.combine(app.posts.slotUploads[s.content.id])
+        hasher.combine(s.checkRun)
+        hasher.combine(s.checkRunVersion)
+        hasher.combine(s.isLoadingChecks)
+        hasher.combine(s.checksError)
+        hasher.combine(s.isStartingChecks)
+        hasher.combine(s.checksRunning)
+        hasher.combine(s.runningCheckJob?.progressMessage)
+        hasher.combine(showAllChecks)
         let signature = hasher.finalize()
         if signature != tabSignature {
             tabSignature = signature
@@ -346,11 +356,181 @@ final class IOSPostDetailViewController: UIViewController {
         }
         tabContent.addArrangedSubview(info)
 
+        if s.content.type != .reel || s.checkRun != nil {
+            tabContent.addArrangedSubview(checksCard())
+        }
+
         if let blocker = s.approveBlocker, !s.content.status.hasApproval, s.activity == .idle {
             tabContent.addArrangedSubview(UILabel.studio(blocker, size: 13, color: IOSTheme.textSecondary, lines: 0, style: .footnote))
         }
         if s.card.needsImage {
-            tabContent.addArrangedSubview(slotCard())
+            // A canvas version's slots are filled on the Mac's canvas.
+            tabContent.addArrangedSubview(s.isCanvasVersion || s.card.isCanvasVersion ? canvasNoteCard() : slotCard())
+        }
+    }
+
+    // MARK: Checks
+
+    private func checksCard() -> UIView {
+        let s = session
+        let card = IOSCardView(padding: 14, spacing: 10)
+        let shown = s.activeVersion?.version
+        let run = s.checkRunVersion == shown ? s.checkRun : nil
+        let running = s.checksRunning
+
+        var header: [UIView] = []
+        if let run { header.append(Self.checkIcon(ContentChecks.overallStatus(run), size: 15)) }
+        let title = UILabel.studio("Kontroller", size: 15, weight: .semibold, style: .subheadline)
+        title.accessibilityTraits = .header
+        header += [title, UIView.spacer()]
+        if running || s.isStartingChecks {
+            let spinner = UIActivityIndicatorView(style: .medium)
+            spinner.startAnimating()
+            let message = s.runningCheckJob?.progressMessage.flatMap { $0.isEmpty ? nil : $0 } ?? "Kontroller çalışıyor"
+            header += [spinner, UILabel.studio(message, size: 12, color: IOSTheme.textSecondary, lines: 1, style: .caption1)]
+        } else if shown != nil {
+            let rerun = UIButton.studioPill(title: run == nil ? "Kontrolleri çalıştır" : "Yeniden kontrol et", kind: .secondary, image: "arrow.clockwise") { [weak self] in
+                guard let self else { return }
+                Task { await self.session.runChecks() }
+            }
+            header.append(rerun)
+        }
+        card.stack.addArrangedSubview(UIStackView.h(header, spacing: 8))
+
+        guard let version = shown else {
+            card.stack.addArrangedSubview(Self.footnote("Henüz tasarım yok."))
+            return card
+        }
+        if run == nil {
+            if s.isLoadingChecks && s.checkRunVersion != version {
+                card.stack.addArrangedSubview(Self.footnote("Kontroller yükleniyor…"))
+            } else if let error = s.checksError {
+                card.stack.addArrangedSubview(UILabel.studio("Kontroller okunamadı: \(error)", size: 13, color: IOSTheme.accent, lines: 0, style: .footnote))
+            } else if running {
+                card.stack.addArrangedSubview(Self.footnote("Kontroller çalışıyor; sonuç birazdan burada."))
+            } else {
+                card.stack.addArrangedSubview(Self.footnote("v\(version) henüz kontrol edilmedi."))
+            }
+            return card
+        }
+        guard let run else { return card }
+
+        var detail = "\(ContentChecks.summaryText(run)) · v\(run.version) · \(AssistantStatus.relative(run.createdAt))"
+        if let fixed = run.fixedVersion { detail += " · v\(fixed) olarak düzeltildi" }
+        if let from = run.fromVersion { detail += " · v\(from) sürümünün otomatik düzeltmesi" }
+        card.stack.addArrangedSubview(Self.footnote(detail))
+
+        let groups = ContentChecks.groups(run)
+        for group in groups where group.isProblem {
+            card.stack.addArrangedSubview(groupHeader(group))
+            for result in group.results { card.stack.addArrangedSubview(checkRow(result)) }
+        }
+        let folded = groups.filter { !$0.isProblem }
+        if !folded.isEmpty {
+            if showAllChecks {
+                for group in folded {
+                    card.stack.addArrangedSubview(groupHeader(group))
+                    for result in group.results { card.stack.addArrangedSubview(checkRow(result)) }
+                }
+            }
+            let counts = folded.map { "\($0.results.count) \($0.status == .pass ? "geçti" : "atlandı")" }.joined(separator: " · ")
+            let toggle = UIButton.studioPill(title: showAllChecks ? "Gizle" : "\(counts) · Göster", kind: .plain, image: showAllChecks ? "chevron.up" : "chevron.down") { [weak self] in
+                guard let self else { return }
+                self.showAllChecks.toggle()
+                self.tabSignature = nil
+                self.render()
+            }
+            toggle.contentHorizontalAlignment = .leading
+            card.stack.addArrangedSubview(UIStackView.h([toggle, UIView.spacer()], spacing: 0))
+        }
+        if run.results.contains(where: { $0.fixable && ($0.status == .fail || $0.status == .warn) }) {
+            card.stack.addArrangedSubview(Self.footnote("Otomatik düzeltme Mac'te, postun Kontroller bölümünde."))
+        }
+        return card
+    }
+
+    private func groupHeader(_ group: ContentChecks.Group) -> UIView {
+        let label = UILabel.studio("\(group.title) (\(group.results.count))", size: 13, weight: .semibold, color: Self.checkColor(group.status), style: .footnote)
+        label.accessibilityTraits = .header
+        return label
+    }
+
+    private func checkRow(_ result: ContentCheckResult) -> UIView {
+        let icon = Self.checkIcon(result.status, size: 13)
+        var titleViews: [UIView] = [UILabel.studio(ContentChecks.label(result.checkId), size: 15, weight: .medium, lines: 0, style: .subheadline)]
+        if result.isModel { titleViews.append(Self.badge("AI", ink: false)) }
+        titleViews.append(UIView.spacer())
+        var texts: [UIView] = [UIStackView.h(titleViews, spacing: 6)]
+        if !result.message.isEmpty {
+            texts.append(UILabel.studio(result.message, size: 13, color: IOSTheme.textSecondary, lines: 0, style: .footnote))
+        }
+        let place = ContentChecks.placeLabel(result)
+        if let place {
+            texts.append(UILabel.studio(place, size: 12, color: IOSTheme.textTertiary, lines: 1, style: .caption1))
+        }
+        let row = UIStackView.h([icon, UIStackView.v(texts, spacing: 2)], spacing: 10, alignment: .top)
+        let spoken = "\(result.status.label): \(ContentChecks.label(result.checkId)). \(result.message)\(place.map { ". \($0)" } ?? "")"
+        guard let slide = result.refs.first(where: { $0.slide != nil })?.slide else {
+            row.isAccessibilityElement = true
+            row.accessibilityLabel = spoken
+            return row
+        }
+        // A finding on a slide: tap to show that slide.
+        let control = UIControl()
+        control.translatesAutoresizingMaskIntoConstraints = false
+        control.addSubview(row)
+        row.pin(to: control)
+        row.isUserInteractionEnabled = false
+        control.addAction(UIAction { [weak self] _ in
+            guard let self else { return }
+            self.session.selectSlide(slide)
+            self.scroll.setContentOffset(CGPoint(x: 0, y: -self.scroll.adjustedContentInset.top), animated: true)
+            Haptics.selection()
+        }, for: .touchUpInside)
+        control.isAccessibilityElement = true
+        control.accessibilityLabel = spoken
+        control.accessibilityHint = "Slaytı gösterir"
+        control.accessibilityTraits = .button
+        return control
+    }
+
+    private static func footnote(_ text: String) -> UILabel {
+        UILabel.studio(text, size: 13, color: IOSTheme.textSecondary, lines: 0, style: .footnote)
+    }
+
+    private static func checkColor(_ status: CheckStatus) -> UIColor {
+        switch status {
+        case .fail: .systemRed
+        case .warn: IOSTheme.accent
+        case .fixed: IOSTheme.textPrimary
+        case .pass, .skipped, .unknown: IOSTheme.textSecondary
+        }
+    }
+
+    private static func checkIcon(_ status: CheckStatus, size: CGFloat) -> UIView {
+        let symbol = switch status {
+        case .fail: "xmark.circle.fill"
+        case .warn: "exclamationmark.triangle.fill"
+        case .fixed: "sparkles"
+        case .pass: "checkmark.circle"
+        case .skipped, .unknown: "circle.dashed"
+        }
+        let view = ChatViews.icon(symbol, checkColor(status), size: size)
+        view.setContentHuggingPriority(.required, for: .horizontal)
+        view.isAccessibilityElement = false
+        return view
+    }
+
+    /// Asks first when the current version's checks found problems, still run, or never ran;
+    /// `proceed` runs right away when they passed.
+    private func guardChecks(then proceed: @escaping () -> Void) {
+        Task {
+            let gate = await session.approvalGate()
+            guard let question = gate.question else {
+                proceed()
+                return
+            }
+            confirm(question.title, message: question.message, action: "Yine de onayla", destructive: false, onConfirm: proceed)
         }
     }
 
@@ -395,6 +575,11 @@ final class IOSPostDetailViewController: UIViewController {
 
     private func buildEditTab() {
         let s = session
+        if s.isCanvasVersion, s.content.type != .reel, !s.content.status.isLocked {
+            tabContent.addArrangedSubview(canvasNoteCard())
+            if !s.isViewingCurrentVersion, let shown = s.activeVersion?.version { tabContent.addArrangedSubview(oldVersionBanner(shown)) }
+            return
+        }
         if let blocker = s.editBlocker {
             tabContent.addArrangedSubview(UILabel.studio(blocker, size: 14, color: IOSTheme.textSecondary, lines: 0, style: .subheadline))
             if !s.isViewingCurrentVersion, let shown = s.activeVersion?.version { tabContent.addArrangedSubview(oldVersionBanner(shown)) }
@@ -420,6 +605,21 @@ final class IOSPostDetailViewController: UIViewController {
         }
         for layer in layers { list.stack.addArrangedSubview(layerRow(layer)) }
         tabContent.addArrangedSubview(list)
+    }
+
+    /// The design was edited on the Mac's canvas: read only here (texts, pictures, slots).
+    private func canvasNoteCard() -> UIView {
+        let card = IOSCardView(padding: 14, spacing: 8, background: IOSTheme.fill)
+        card.layer.borderWidth = 0
+        let icon = ChatViews.icon("laptopcomputer", IOSTheme.textSecondary, size: 13)
+        card.stack.addArrangedSubview(UIStackView.h([icon, UILabel.studio(CanvasOrigin.editNote, size: 14, lines: 0, style: .subheadline)], spacing: 8, alignment: .top))
+        let ai: String = if let source = session.canvasOrigin?.sourceVersion {
+            "“Neyi değiştireyim?” isteği tuvalin başladığı v\(source) üzerinden yeni bir sürüm yapar; Mac onu tuvale yeniden aktarır. Açıklama, onay ve zamanlama burada."
+        } else {
+            "“Neyi değiştireyim?” isteği yeni bir tasarım sürümü yapar; Mac onu tuvale yeniden aktarır. Açıklama, onay ve zamanlama burada."
+        }
+        card.stack.addArrangedSubview(Self.footnote(ai))
+        return card
     }
 
     private static func icon(for kind: SlideLayer.Kind) -> String {
@@ -643,14 +843,22 @@ final class IOSPostDetailViewController: UIViewController {
     }
 
     private func approve() {
-        Task {
-            if await session.approve() { Haptics.success() }
+        guardChecks { [weak self] in
+            guard let self else { return }
+            Task {
+                if await self.session.approve() { Haptics.success() }
+            }
         }
     }
 
     private func presentSchedule() {
-        let sheet = ScheduleSheetViewController(app: app, session: session)
-        presentSheet(sheet, detents: [.large()])
+        let open = { [weak self] in
+            guard let self else { return }
+            let sheet = ScheduleSheetViewController(app: self.app, session: self.session)
+            self.presentSheet(sheet, detents: [.large()])
+        }
+        // Scheduling approves first when needed: ask about the checks before that, too.
+        if session.content.status.isSchedulable { open() } else { guardChecks(then: open) }
     }
 
     private func presentCaptionEditor() {

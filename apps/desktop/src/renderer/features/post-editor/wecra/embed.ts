@@ -6,7 +6,8 @@
 // - `devStore`: Wecra's browser store keeps nothing (no demo files, nothing in Studio's
 //   localStorage): the post's document comes from Studio;
 // - `ownsEvent`: Wecra's keys and clipboard only for what happens in the editor's places, so
-//   Studio's fields, buttons, chat and menus keep theirs.
+//   Studio's fields, buttons, chat and menus keep theirs (⌘[ / ⌘] only on the canvas and its
+//   layers: elsewhere they are the app's back / forward).
 import { memoryStorage } from "@/store/memory/kv";
 
 /** Marks an element (and what is inside) as one of the editor's places. */
@@ -20,9 +21,29 @@ const inRegion = (node: Node | null): boolean => {
   return !!el?.closest(`[${WECRA_REGION}],#${WECRA_OVERLAYS}`);
 };
 
+/** ⌘[ / ⌘]: Wecra's send backward / bring forward, the app's back / forward everywhere else. */
+const isNavKey = (event: Event): boolean => {
+  if (event.type !== "keydown" && event.type !== "keyup") return false;
+  const e = event as KeyboardEvent;
+  return (
+    e.metaKey &&
+    !e.ctrlKey &&
+    (e.code === "BracketLeft" || e.code === "BracketRight" || e.key === "[" || e.key === "]")
+  );
+};
+
+/** On the canvas or in Wecra's layers (where Wecra's ⌘[ / ⌘] apply). */
+const onCanvas = (node: Node | null): boolean => {
+  const el = node instanceof Element ? node : (node?.parentElement ?? null);
+  return !!el?.closest(`[${WECRA_REGION}="canvas"],[${WECRA_REGION}="layers"]`);
+};
+
 /** Whether a key or clipboard event is the editor's. */
 export function ownsEvent(event: Event): boolean {
   const target = event.target as Node | null;
+  // ⌘[ / ⌘] are the editor's only on its canvas and layers (E8): with the focus elsewhere — the
+  // page itself included — they go back and forward in the app.
+  if (isNavKey(event)) return onCanvas(target);
   if (event.type === "copy" || event.type === "cut") {
     // Text selected in Studio's page (the chat, the caption): the browser copies it.
     const selection = window.getSelection();

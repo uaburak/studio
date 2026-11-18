@@ -1,6 +1,7 @@
 // Typed contract between the main process and the renderer (through the preload bridge).
 // Only plain JSON values cross it.
 import type { AccountsBridge, SystemBridge } from "./accounts-ipc.ts";
+import type { DraftsBridge, LifecycleBridge } from "./drafts.ts";
 import type { FontsBridge } from "./fonts.ts";
 
 export type ServiceName = "api" | "gateway" | "worker" | "tunnel";
@@ -159,4 +160,8 @@ export interface StudioBridge {
   system?: SystemBridge;
   /** Fonts installed on this Mac (absent outside Electron and in an app started before it). */
   fonts?: FontsBridge;
+  /** The post editor's working drafts on this Mac (absent outside Electron). */
+  drafts?: DraftsBridge;
+  /** Close / quit: the main process asks the page to write its drafts first. */
+  lifecycle?: LifecycleBridge;
 }

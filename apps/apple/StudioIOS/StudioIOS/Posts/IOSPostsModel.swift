@@ -131,6 +131,7 @@ final class IOSPostsModel {
     func jobChanged(_ job: Job) {
         guard job.brandId == loadedBrandId || job.contentId.map({ card($0) != nil }) == true else { return }
         if let index = jobs.firstIndex(where: { $0.id == job.id }) { jobs[index] = job } else { jobs.append(job) }
+        if let contentId = job.contentId { sessions[contentId]?.session?.noteJob(job) }
         if job.status.isTerminal {
             Task {
                 await load()
@@ -166,25 +167,53 @@ final class IOSPostsModel {
             if let image = UIImage(data: file.data) { self?.app?.images.seed(IOSImageImport.thumbnail(image, side: 600), for: asset.id) }
         }
         session.workerOnline = { [weak self] in self?.app?.isOnline ?? false || self?.app?.isSample == true }
+        // Checks (or the generation that stores them) may already be running.
+        for job in jobs where job.contentId == card.id && job.status.isActive { session.noteJob(job) }
         sessions[card.id] = WeakSession(session: session)
         return session
     }
 
     // MARK: Actions
 
-    func approveReady() async {
+    /// What the checks say about approving each card (problems, running, never checked).
+    func approvalGates(_ cards: [PostCard]) async -> [EntityID: ContentChecks.ApprovalGate] {
+        guard let app else { return [:] }
+        let service = app.dataService
+        let running = Set(jobs.filter { $0.status.isActive && $0.type == .contentCheck }.compactMap(\.contentId))
+        var gates: [EntityID: ContentChecks.ApprovalGate] = [:]
+        await withTaskGroup(of: (EntityID, ContentChecks.ApprovalGate).self) { group in
+            for card in cards {
+                guard let version = card.content.currentVersion?.version else { continue }
+                let id = card.id
+                let isRunning = running.contains(id)
+                group.addTask {
+                    do {
+                        let run = try await service.latestCheckRun(contentId: id, version: version)
+                        return (id, ContentChecks.gate(run: run, version: version, running: isRunning))
+                    } catch {
+                        return (id, .unavailable((error as? StudioAPIError)?.errorDescription ?? error.localizedDescription))
+                    }
+                }
+            }
+            for await (id, gate) in group { gates[id] = gate }
+        }
+        return gates
+    }
+
+    /// Approve every ready post of the month (`only`: just these ids).
+    func approveReady(only: Set<EntityID>? = nil) async {
         guard let app, !isApproving else { return }
         isApproving = true
         defer { isApproving = false }
         var failures: [String] = []
         var contents = board.cards.map(\.content)
-        for card in approvable {
+        for card in approvable where only?.contains(card.id) ?? true {
             guard let hash = card.approvableHash else { continue }
             do {
                 let updated = try await app.dataService.approve(contentId: card.content.id, hash: hash)
                 if let index = contents.firstIndex(where: { $0.id == updated.id }) { contents[index] = updated }
             } catch {
-                failures.append("\(card.title): \(IOSAppModel.describe(error))")
+                failures.append("\(card.title): \(ContentChecks.approvalRefusal(error) ?? IOSAppModel.describe(error))")
             }
         }
         rebuild(contents: contents)
@@ -200,7 +229,7 @@ final class IOSPostsModel {
             rebuild(contents: contents)
             return true
         } catch {
-            self.error = "\(card.title): \(IOSAppModel.describe(error))"
+            self.error = "\(card.title): \(ContentChecks.approvalRefusal(error) ?? IOSAppModel.describe(error))"
             return false
         }
     }
@@ -213,6 +242,10 @@ final class IOSPostsModel {
     /// Fill a card's slot from the grid (Photos / camera on the card's menu).
     func fillSlot(of card: PostCard, with image: UIImage) {
         guard let app else { return }
+        guard !card.isCanvasVersion else {
+            error = "\(card.title): \(CanvasOrigin.editNote)"
+            return
+        }
         guard let ref = card.content.currentVersion else {
             error = "\(card.title): bu postun henüz bir tasarımı yok."
             return

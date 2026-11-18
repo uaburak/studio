@@ -138,17 +138,7 @@ final class IOSPostsViewController: UIViewController, UICollectionViewDelegate {
         approveBar.layer.shadowOffset = CGSize(width: 0, height: 6)
         approveBar.isHidden = true
         approveButton = UIButton.studioPill(title: "Tümünü onayla", kind: .primary) { [weak self] in
-            guard let self else { return }
-            let count = self.model.approvable.count
-            self.confirm("\(count) post onaylansın mı?", message: "Her post gördüğün sürümün özetiyle (hash) onaylanır.", action: "Onayla", destructive: false) {
-                Task {
-                    await self.model.approveReady()
-                    if let error = self.model.error { self.presentError(error) } else {
-                        Haptics.success()
-                        Toast.show("\(count) post onaylandı", in: self.view)
-                    }
-                }
-            }
+            self?.approveAll()
         }
         let row = UIStackView.h([IOSStatusDotView(color: IOSTheme.ink, size: 7), approveLabel, UIView.spacer(), approveButton], spacing: 10)
         approveBar.addSubview(row)
@@ -262,12 +252,10 @@ final class IOSPostsViewController: UIViewController, UICollectionViewDelegate {
         if card.state == .ready, card.approvableHash != nil {
             primary.append(UIAction(title: "Onayla", image: UIImage(systemName: "checkmark.circle")) { [weak self] _ in
                 guard let self else { return }
-                Task {
-                    if await self.model.approve(card) { Haptics.success() } else if let error = self.model.error { self.presentError(error) }
-                }
+                self.approveGuarded(card)
             })
         }
-        if !card.slots.isEmpty {
+        if !card.slots.isEmpty, !card.isCanvasVersion {
             var slotActions: [UIMenuElement] = [UIAction(title: "Fotoğraflardan", image: UIImage(systemName: "photo")) { [weak self] _ in
                 guard let self else { return }
                 ImagePicking.photos(from: self) { images in if let first = images.first { self.model.fillSlot(of: card, with: first) } }
@@ -487,5 +475,69 @@ final class PostGridCell: UICollectionViewCell {
         stateLabel.text = card.state.label
         accessibilityLabel = "\(card.title), \(card.day.map(TurkishFormat.longDay) ?? "tarih yok"), \(card.state.label)\(badgeText.map { ", \($0)" } ?? "")"
         accessibilityHint = "Postu açar. Daha fazla işlem için basılı tut."
+    }
+}
+
+// MARK: - Approving with the checks
+
+extension IOSPostsViewController {
+    /// One post: ask first when its checks found problems, still run, or never ran.
+    fileprivate func approveGuarded(_ card: PostCard) {
+        Task {
+            let gate = await model.approvalGates([card])[card.id] ?? .clear
+            let approve: () -> Void = {
+                Task {
+                    if await self.model.approve(card) { Haptics.success() } else if let error = self.model.error { self.presentError(error) }
+                }
+            }
+            guard let question = gate.question else {
+                approve()
+                return
+            }
+            confirm(question.title, message: "\(card.title)\n\(question.message ?? "")", action: "Yine de onayla", destructive: false, onConfirm: approve)
+        }
+    }
+
+    /// "Tümünü onayla": posts whose checks are not clear are named, and can be left out.
+    fileprivate func approveAll() {
+        let cards = model.approvable
+        let count = cards.count
+        Task {
+            let gates = await model.approvalGates(cards)
+            let flagged = cards.filter { gates[$0.id]?.question != nil }
+            let run = { (only: Set<EntityID>?) in
+                let approving = only?.count ?? count
+                Task {
+                    await self.model.approveReady(only: only)
+                    if let error = self.model.error { self.presentError(error) } else {
+                        Haptics.success()
+                        Toast.show("\(approving) post onaylandı", in: self.view)
+                    }
+                }
+            }
+            guard !flagged.isEmpty else {
+                confirm("\(count) post onaylansın mı?", message: "Her post gördüğün sürümün özetiyle (hash) onaylanır.", action: "Onayla", destructive: false) { run(nil) }
+                return
+            }
+            let names = flagged.prefix(5).map { card -> String in
+                switch gates[card.id] {
+                case .problems(let checkRun): "• \(card.title): \(checkRun.blocking) sorun"
+                case .running: "• \(card.title): kontroller sürüyor"
+                case .notChecked: "• \(card.title): kontrol edilmedi"
+                default: "• \(card.title): kontroller okunamadı"
+                }
+            }
+            let more = flagged.count > 5 ? "\n… ve \(flagged.count - 5) post daha" : ""
+            let alert = UIAlertController(
+                title: "\(flagged.count) postun kontrolleri temiz değil",
+                message: names.joined(separator: "\n") + more, preferredStyle: .alert)
+            let clean = Set(cards.map(\.id)).subtracting(flagged.map(\.id))
+            if !clean.isEmpty {
+                alert.addAction(UIAlertAction(title: "Yalnızca sorunsuz \(clean.count) postu onayla", style: .default) { _ in run(clean) })
+            }
+            alert.addAction(UIAlertAction(title: "Yine de \(count) postu onayla", style: .destructive) { _ in run(nil) })
+            alert.addAction(UIAlertAction(title: "Vazgeç", style: .cancel))
+            present(alert, animated: true)
+        }
     }
 }

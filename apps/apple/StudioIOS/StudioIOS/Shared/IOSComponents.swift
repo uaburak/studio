@@ -233,6 +233,8 @@ final class ZoomableView: UIScrollView, UIScrollViewDelegate {
 final class ImagePicking: NSObject, PHPickerViewControllerDelegate, UIImagePickerControllerDelegate, UINavigationControllerDelegate, UIDocumentPickerDelegate {
     private var onPick: (([UIImage]) -> Void)?
     private var retainSelf: ImagePicking?
+    /// Where a failed pick is reported (a picture that could not be read is never dropped silently).
+    private weak var presenter: UIViewController?
 
     static func photos(from presenter: UIViewController, limit: Int = 1, onPick: @escaping ([UIImage]) -> Void) {
         var config = PHPickerConfiguration(photoLibrary: .shared())
@@ -243,6 +245,7 @@ final class ImagePicking: NSObject, PHPickerViewControllerDelegate, UIImagePicke
         let handler = ImagePicking()
         handler.onPick = onPick
         handler.retainSelf = handler
+        handler.presenter = presenter
         picker.delegate = handler
         presenter.present(picker, animated: true)
     }
@@ -259,6 +262,7 @@ final class ImagePicking: NSObject, PHPickerViewControllerDelegate, UIImagePicke
         let handler = ImagePicking()
         handler.onPick = onPick
         handler.retainSelf = handler
+        handler.presenter = presenter
         picker.delegate = handler
         presenter.present(picker, animated: true)
     }
@@ -270,6 +274,7 @@ final class ImagePicking: NSObject, PHPickerViewControllerDelegate, UIImagePicke
         let handler = ImagePicking()
         handler.onPick = { images in onPick(Array(images.prefix(limit))) }
         handler.retainSelf = handler
+        handler.presenter = presenter
         picker.delegate = handler
         presenter.present(picker, animated: true)
     }
@@ -281,31 +286,71 @@ final class ImagePicking: NSObject, PHPickerViewControllerDelegate, UIImagePicke
         return board.images ?? []
     }
 
+    /// Why a picked item gave no picture.
+    enum Failure: Error, Equatable {
+        /// Could not be read (an iCloud original that did not download, a broken file).
+        case unreadable
+        /// Not a picture this device can open.
+        case unsupported
+    }
+
+    /// The message for picks that failed (nil when none did).
+    static func failureMessage(_ failures: [Failure], picked: Int) -> String? {
+        guard !failures.isEmpty else { return nil }
+        let unreadable = failures.filter { $0 == .unreadable }.count
+        let unsupported = failures.count - unreadable
+        var lines: [String] = []
+        if unreadable > 0 {
+            let what = picked == 1 ? "Fotoğraf" : "\(unreadable) fotoğraf"
+            lines.append("\(what) alınamadı. Asıl dosya iCloud'da olabilir; internet bağlantını kontrol edip yeniden dene.")
+        }
+        if unsupported > 0 {
+            let what = picked == 1 ? "Seçilen dosya" : "\(unsupported) dosya"
+            lines.append("\(what) fotoğraf olarak açılamadı (desteklenmeyen biçim).")
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    /// Hand back what was read and report what was not.
+    private static func finish(_ images: [UIImage], failures: [Failure], picked: Int, onPick: (([UIImage]) -> Void)?, presenter: UIViewController?) {
+        if !images.isEmpty { onPick?(images) }
+        if let message = failureMessage(failures, picked: picked) {
+            (presenter?.presentedViewController == nil ? presenter : presenter?.presentedViewController)?.presentError(message, title: "Fotoğraf eklenemedi")
+        }
+    }
+
     nonisolated func picker(_ picker: PHPickerViewController, didFinishPicking results: [PHPickerResult]) {
-        nonisolated(unsafe) let providers = results.map(\.itemProvider).filter { $0.canLoadObject(ofClass: UIImage.self) }
+        nonisolated(unsafe) let providers = results.map(\.itemProvider)
         MainActor.assumeIsolated {
-            picker.dismiss(animated: true)
-            guard !providers.isEmpty else {
-                retainSelf = nil
-                return
-            }
             let callback = onPick
+            let presenter = presenter
             retainSelf = nil
-            Task { @MainActor in
-                var images: [UIImage] = []
-                for provider in providers {
-                    if let image = await Self.load(provider) { images.append(image) }
+            picker.dismiss(animated: true) {
+                guard !providers.isEmpty else { return }
+                Task { @MainActor in
+                    var images: [UIImage] = []
+                    var failures: [Failure] = []
+                    for provider in providers {
+                        switch await Self.load(provider) {
+                        case .success(let image): images.append(image)
+                        case .failure(let failure): failures.append(failure)
+                        }
+                    }
+                    Self.finish(images, failures: failures, picked: providers.count, onPick: callback, presenter: presenter)
                 }
-                if !images.isEmpty { callback?(images) }
             }
         }
     }
 
-    private static func load(_ provider: NSItemProvider) async -> UIImage? {
-        await withCheckedContinuation { continuation in
-            provider.loadObject(ofClass: UIImage.self) { object, _ in
-                let image = object as? UIImage
-                continuation.resume(returning: image)
+    private static func load(_ provider: NSItemProvider) async -> Result<UIImage, Failure> {
+        guard provider.canLoadObject(ofClass: UIImage.self) else { return .failure(.unsupported) }
+        return await withCheckedContinuation { continuation in
+            provider.loadObject(ofClass: UIImage.self) { object, error in
+                if let image = object as? UIImage {
+                    continuation.resume(returning: .success(image))
+                } else {
+                    continuation.resume(returning: .failure(error == nil ? .unsupported : .unreadable))
+                }
             }
         }
     }
@@ -313,9 +358,12 @@ final class ImagePicking: NSObject, PHPickerViewControllerDelegate, UIImagePicke
     nonisolated func imagePickerController(_ picker: UIImagePickerController, didFinishPickingMediaWithInfo info: [UIImagePickerController.InfoKey: Any]) {
         let image = info[.originalImage] as? UIImage
         MainActor.assumeIsolated {
-            picker.dismiss(animated: true)
-            if let image { onPick?([image]) }
+            let callback = onPick
+            let presenter = presenter
             retainSelf = nil
+            picker.dismiss(animated: true) {
+                Self.finish(image.map { [$0] } ?? [], failures: image == nil ? [.unreadable] : [], picked: 1, onPick: callback, presenter: presenter)
+            }
         }
     }
 
@@ -329,13 +377,18 @@ final class ImagePicking: NSObject, PHPickerViewControllerDelegate, UIImagePicke
     nonisolated func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
         MainActor.assumeIsolated {
             let callback = onPick
+            let presenter = presenter
             retainSelf = nil
             Task { @MainActor in
                 var images: [UIImage] = []
+                var failures: [Failure] = []
                 for url in urls {
-                    if let image = await Self.loadFile(url) { images.append(image) }
+                    switch await Self.loadFile(url) {
+                    case .success(let image): images.append(image)
+                    case .failure(let failure): failures.append(failure)
+                    }
                 }
-                if !images.isEmpty { callback?(images) }
+                Self.finish(images, failures: failures, picked: urls.count, onPick: callback, presenter: presenter)
             }
         }
     }
@@ -345,11 +398,12 @@ final class ImagePicking: NSObject, PHPickerViewControllerDelegate, UIImagePicke
     }
 
     /// Read a picked file off the main thread (copies may sit on slow storage).
-    nonisolated private static func loadFile(_ url: URL) async -> UIImage? {
+    nonisolated private static func loadFile(_ url: URL) async -> Result<UIImage, Failure> {
         let scoped = url.startAccessingSecurityScopedResource()
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
-        guard let data = try? Data(contentsOf: url) else { return nil }
-        return UIImage(data: data)
+        guard let data = try? Data(contentsOf: url) else { return .failure(.unreadable) }
+        guard let image = UIImage(data: data) else { return .failure(.unsupported) }
+        return .success(image)
     }
 }
 

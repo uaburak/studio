@@ -54,7 +54,12 @@ public final class PostEditSession {
 
     public let service: any StudioDataService
     public private(set) var card: PostCard
-    public private(set) var displayedVersion: ContentVersion?
+    public private(set) var displayedVersion: ContentVersion? {
+        didSet {
+            guard oldValue?.id != displayedVersion?.id else { return }
+            if oldValue?.version != displayedVersion?.version { checksReloadTask?.cancel(); checksReloadTask = Task { [weak self] in await self?.loadChecks() } }
+        }
+    }
     public private(set) var versionSummaries: [ContentVersionSummary] = []
     public private(set) var selectedSlideIndex = 0
     /// Selected `data-layer` id on the current slide.
@@ -83,6 +88,16 @@ public final class PostEditSession {
     /// Short confirmation ("Açıklama kaydedildi").
     public var notice: String?
 
+    /// Latest production check run of the shown version (nil: never checked, or not read yet).
+    public private(set) var checkRun: ContentCheckRun?
+    /// The version `checkRun` was read for (nil until read).
+    public private(set) var checkRunVersion: Int?
+    public private(set) var isLoadingChecks = false
+    public private(set) var checksError: String?
+    public private(set) var isStartingChecks = false
+    /// Running jobs of this post that store check runs (`content.check`, generation, render).
+    public private(set) var activeJobs: [EntityID: Job] = [:]
+
     /// The card changed (content and/or its current version); keep lists in step.
     @ObservationIgnored public var onCardChange: (@MainActor (PostCard) -> Void)?
     /// Schedules created by `schedule(at:accountIds:)`.
@@ -105,6 +120,8 @@ public final class PostEditSession {
     @ObservationIgnored private var nudgeTask: Task<Void, Never>?
     @ObservationIgnored private var nudgeDelta: CGSize = .zero
     @ObservationIgnored private var editTask: Task<Void, Never>?
+    @ObservationIgnored private var checksReloadTask: Task<Void, Never>?
+    @ObservationIgnored private var canvasCache: (versionId: EntityID, origin: CanvasOrigin?)?
 
     public init(service: any StudioDataService, card: PostCard) {
         self.service = service
@@ -150,11 +167,24 @@ public final class PostEditSession {
         return nil
     }
 
+    /// The shown version was saved from the Mac's design canvas (Wecra): its layers are not
+    /// edited on the phone, and AI requests go to the HTML version it came from.
+    public var canvasOrigin: CanvasOrigin? {
+        guard let version = activeVersion else { return nil }
+        if let cached = canvasCache, cached.versionId == version.id { return cached.origin }
+        let origin = version.canvasOrigin
+        canvasCache = (version.id, origin)
+        return origin
+    }
+
+    public var isCanvasVersion: Bool { canvasOrigin != nil }
+
     /// Why the design cannot be edited right now (nil = it can).
     public var editBlocker: String? {
         if content.type == .reel { return "Reels tasarımı telefondan düzenlenmiyor." }
         if content.status.isLocked { return "Yayındaki post düzenlenemez." }
         guard activeVersion != nil else { return "Henüz bir tasarım sürümü yok." }
+        if isCanvasVersion { return CanvasOrigin.editNote }
         if !isViewingCurrentVersion { return "Eski bir sürümü görüntülüyorsun; düzenlemek için önce geri yükle." }
         if case .revising = activity { return "AI düzenlemesi sürüyor." }
         if activity == .restoring { return "Sürüm geri yükleniyor." }
@@ -230,6 +260,7 @@ public final class PostEditSession {
             }
         }
         ensureLayouts()
+        await loadChecks()
     }
 
     public func refreshVersionList() async {
@@ -325,7 +356,7 @@ public final class PostEditSession {
 
     /// Versions rendered before layer boxes were stored get measured once (needs the Mac worker).
     public func ensureLayouts() {
-        guard let version = activeVersion, isViewingCurrentVersion, content.type != .reel,
+        guard let version = activeVersion, isViewingCurrentVersion, content.type != .reel, !isCanvasVersion,
               version.slides.contains(where: { $0.layers == nil || $0.renderedAssetId == nil }),
               !measuredVersionIds.contains(version.id), activity == .idle, workerOnline()
         else { return }
@@ -620,11 +651,14 @@ public final class PostEditSession {
             error = "Önceki değişiklik bitince yeniden dene."
             return
         }
+        // A canvas version is the Mac's render, not a design the AI can revise: ask the way the
+        // Mac does (its note, and the HTML version the canvas came from as the base).
+        let request = canvasOrigin?.revisionRequest(version: base, instruction: text) ?? (baseVersion: base, instructions: text)
         activity = .revising("İstek Mac'e gönderiliyor")
         error = nil
         let online = workerOnline
         do {
-            let job = try await service.requestRevision(of: content, baseVersion: base, instructions: text)
+            let job = try await service.requestRevision(of: content, baseVersion: request.baseVersion, instructions: request.instructions)
             revisionJobId = job.id
             instruction = ""
             let done = try await service.waitForJob(job.id, timeout: revisionTimeout, interval: .seconds(1.5)) { [weak self] job in
@@ -700,7 +734,7 @@ public final class PostEditSession {
             notice = "Onaylandı."
             return true
         } catch {
-            self.error = Self.describe(error)
+            self.error = describeApproval(error)
             return false
         }
     }
@@ -752,8 +786,117 @@ public final class PostEditSession {
             notice = "Zamanlandı: \(TurkishFormat.dayAndTime(date))"
             return created
         } catch {
-            self.error = Self.describe(error)
+            self.error = describeApproval(error)
             return []
+        }
+    }
+
+    /// An approval error; a refusal because of the checks also re-reads them.
+    private func describeApproval(_ error: any Error) -> String {
+        guard let refusal = ContentChecks.approvalRefusal(error) else { return Self.describe(error) }
+        Task { await loadChecks() }
+        return refusal
+    }
+
+    // MARK: - Production checks
+
+    /// A `content.check` job of this post is running.
+    public var runningCheckJob: Job? {
+        activeJobs.values.filter { $0.type == .contentCheck }.max { $0.createdAt < $1.createdAt }
+    }
+
+    /// Checks are running for this post: a `content.check` job, or (while the shown version has
+    /// no run yet) the generation or render that will store one.
+    public var checksRunning: Bool {
+        if runningCheckJob != nil { return true }
+        guard checkRun == nil else { return false }
+        return activity.changesVersion || activeJobs.values.contains { $0.type == .contentGenerate || $0.type == .contentRender }
+    }
+
+    /// Read the latest check run of the shown version.
+    public func loadChecks() async {
+        guard let version = activeVersion?.version else {
+            checkRun = nil
+            checkRunVersion = nil
+            checksError = nil
+            return
+        }
+        isLoadingChecks = true
+        defer { isLoadingChecks = false }
+        do {
+            let run = try await service.latestCheckRun(contentId: content.id, version: version)
+            guard activeVersion?.version == version else { return }
+            checkRun = run
+            checkRunVersion = version
+            checksError = nil
+        } catch is CancellationError {
+            return
+        } catch {
+            guard activeVersion?.version == version else { return }
+            if checkRunVersion != version {
+                checkRun = nil
+                checkRunVersion = nil
+            }
+            checksError = Self.describe(error)
+        }
+    }
+
+    /// "Yeniden kontrol et": run the checks again on the shown version (`content.check`).
+    public func runChecks() async {
+        guard let version = activeVersion?.version else {
+            error = "Henüz bir tasarım yok."
+            return
+        }
+        guard runningCheckJob == nil, !isStartingChecks else { return }
+        isStartingChecks = true
+        defer { isStartingChecks = false }
+        do {
+            let job = try await service.runChecks(contentId: content.id, brandId: content.brandId, version: version)
+            noteJob(job)
+            if !job.status.isTerminal {
+                let service = service
+                Task { [weak self] in
+                    let done = try? await service.waitForJob(job.id, timeout: .seconds(900), interval: .seconds(2))
+                    guard let self else { return }
+                    if let done { self.noteJob(done) } else if self.activeJobs[job.id] != nil {
+                        self.activeJobs[job.id] = nil
+                        await self.loadChecks()
+                    }
+                }
+            }
+        } catch {
+            self.error = "Kontroller: \(Self.describe(error))"
+        }
+    }
+
+    /// A job of this post changed (the live job feed): follow running checks and re-read the
+    /// run when one that stores checks ends.
+    public func noteJob(_ job: Job) {
+        guard job.contentId == content.id, [.contentCheck, .contentGenerate, .contentRender].contains(job.type) else { return }
+        if job.status.isTerminal {
+            guard activeJobs.removeValue(forKey: job.id) != nil || job.type == .contentCheck else { return }
+            checksReloadTask?.cancel()
+            checksReloadTask = Task { [weak self] in await self?.loadChecks() }
+        } else {
+            activeJobs[job.id] = job
+        }
+    }
+
+    /// What the checks say about approving the current version (re-read first).
+    public func approvalGate() async -> ContentChecks.ApprovalGate {
+        guard let version = content.currentVersion?.version else { return .clear }
+        do {
+            let run = try await service.latestCheckRun(contentId: content.id, version: version)
+            if activeVersion?.version == version {
+                checkRun = run
+                checkRunVersion = version
+                checksError = nil
+            }
+            let running = runningCheckJob != nil
+                || (run == nil && (activity.changesVersion || activeJobs.values.contains { $0.type == .contentGenerate || $0.type == .contentRender }))
+            return ContentChecks.gate(run: run, version: version, running: running)
+        } catch {
+            return .unavailable(Self.describe(error))
         }
     }
 

@@ -45,19 +45,119 @@ public struct BrandKitLogo: Codable, Sendable, Hashable {
     }
 }
 
+/// Where a kit font comes from (`BrandKitFontSource`): an uploaded file, or a font installed on
+/// the Mac. Kept as a string so a source this build does not know survives a save unchanged.
+public struct BrandKitFontSource: RawRepresentable, Codable, Hashable, Sendable, ExpressibleByStringLiteral {
+    public var rawValue: String
+
+    public init(rawValue: String) { self.rawValue = rawValue }
+    public init(stringLiteral value: String) { self.rawValue = value }
+
+    public init(from decoder: any Decoder) throws {
+        rawValue = try decoder.singleValueContainer().decode(String.self)
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(rawValue)
+    }
+
+    /// An uploaded font file (`assetId`).
+    public static let file: BrandKitFontSource = "file"
+    /// Installed on the Mac (no file; `styles` lists the styles the brand uses).
+    public static let system: BrandKitFontSource = "system"
+}
+
+/// One installed style of a system font (`BrandKitFontStyle`).
+public struct BrandKitFontStyle: Codable, Sendable, Hashable {
+    /// `Regular`, `Demi Bold Italic`.
+    public var name: String
+    /// CSS weight (100 … 900).
+    public var weight: Int
+    public var italic: Bool
+    /// `AvenirNext-DemiBold`, when known.
+    public var postscriptName: String?
+
+    public init(name: String, weight: Int, italic: Bool = false, postscriptName: String? = nil) {
+        self.name = name
+        self.weight = weight
+        self.italic = italic
+        self.postscriptName = postscriptName
+    }
+
+    private enum CodingKeys: String, CodingKey { case name, weight, italic, postscriptName }
+
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        name = try c.decode(String.self, forKey: .name)
+        weight = try c.decode(Int.self, forKey: .weight)
+        italic = try c.decodeIfPresent(Bool.self, forKey: .italic) ?? false
+        postscriptName = try c.decodeIfPresent(String.self, forKey: .postscriptName)
+    }
+}
+
+/// A kit font: an uploaded file (`source: file`, `assetId`) or a font installed on the Mac
+/// (`source: system`, no file, `styles`). Kits saved before system fonts have no `source`.
 public struct BrandKitFont: Codable, Sendable, Hashable {
-    public var assetId: EntityID
-    /// CSS family name the file provides (`Archivo`).
+    public var source: BrandKitFontSource
+    /// The font file; nil for a system font.
+    public var assetId: EntityID?
+    /// CSS family name the file provides (`Archivo`), or the installed family (`Avenir Next`).
     public var family: String
     public var role: BrandKitFontRole
+    /// System fonts: the styles the brand uses (empty = the family as a whole).
+    public var styles: [BrandKitFontStyle]
     /// Where it came from and what the licence allows, in the user's words.
     public var licenseNote: String
 
+    /// An uploaded font file.
     public init(assetId: EntityID, family: String, role: BrandKitFontRole = .any, licenseNote: String = "") {
+        self.source = .file
         self.assetId = assetId
         self.family = family
         self.role = role
+        self.styles = []
         self.licenseNote = licenseNote
+    }
+
+    public init(source: BrandKitFontSource, assetId: EntityID?, family: String, role: BrandKitFontRole = .any, styles: [BrandKitFontStyle] = [], licenseNote: String = "") {
+        self.source = source
+        self.assetId = assetId
+        self.family = family
+        self.role = role
+        self.styles = styles
+        self.licenseNote = licenseNote
+    }
+
+    private enum CodingKeys: String, CodingKey { case source, assetId, family, role, styles, licenseNote }
+
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        source = try c.decodeIfPresent(BrandKitFontSource.self, forKey: .source) ?? .file
+        assetId = try c.decodeIfPresent(EntityID.self, forKey: .assetId)
+        family = try c.decode(String.self, forKey: .family)
+        role = try c.decodeIfPresent(BrandKitFontRole.self, forKey: .role) ?? .any
+        styles = try c.decodeIfPresent([BrandKitFontStyle].self, forKey: .styles) ?? []
+        licenseNote = try c.decodeIfPresent(String.self, forKey: .licenseNote) ?? ""
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(source, forKey: .source)
+        try c.encodeIfPresent(assetId, forKey: .assetId)
+        try c.encode(family, forKey: .family)
+        try c.encode(role, forKey: .role)
+        try c.encode(styles, forKey: .styles)
+        try c.encode(licenseNote, forKey: .licenseNote)
+    }
+
+    /// Installed on the Mac (no file).
+    public var isSystem: Bool { source == .system }
+
+    /// Identity of a kit font (`kitFontKey`): its file, or `system:<family>`.
+    public var key: String {
+        if isSystem || assetId == nil { return "system:\(family.trimmingCharacters(in: .whitespaces).lowercased())" }
+        return assetId ?? family
     }
 }
 
@@ -135,7 +235,7 @@ public struct BrandKit: Codable, Sendable, Hashable {
 
     /// Every asset the kit references.
     public var assetIds: [EntityID] {
-        logos.map(\.assetId) + fonts.map(\.assetId) + samples.map(\.assetId)
+        logos.map(\.assetId) + fonts.compactMap(\.assetId) + samples.map(\.assetId)
     }
 }
 
