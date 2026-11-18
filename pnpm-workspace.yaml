@@ -36,3 +36,5 @@ catalog:
 allowBuilds:
   esbuild: true
   workerd: true
+  # electron-builder's Windows installer helper: never needed on the Mac.
+  electron-winstaller: false
