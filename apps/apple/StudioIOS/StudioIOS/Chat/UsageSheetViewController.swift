@@ -7,6 +7,7 @@ final class UsageSheetViewController: UIViewController {
     private let presence: @MainActor () -> WorkerPresence?
     private let stack = UIStackView.v([], spacing: 14)
     private var observation: IOSObservationToken?
+    private var deciding: ClaudeLimitChoice?
 
     init(app: IOSAppModel, presence: @escaping @MainActor () -> WorkerPresence?) {
         self.app = app
@@ -34,11 +35,15 @@ final class UsageSheetViewController: UIViewController {
             stack.widthAnchor.constraint(equalTo: scroll.frameLayoutGuide.widthAnchor, constant: -2 * IOSTheme.gutter),
         ])
         observation = observeIOS { [weak self] in self?.render() }
+        Task { await app.loadAISpend() }
     }
 
     private func render() {
         stack.removeAllArranged()
         let presence = presence()
+        if let limit = presence?.claude?.limit {
+            stack.addArrangedSubview(limitCard(limit))
+        }
 
         let usage = IOSCardView(padding: 16, spacing: 12)
         usage.stack.addArrangedSubview(UILabel.studio("Claude aboneliği", size: 17, weight: .semibold, style: .headline))
@@ -66,6 +71,8 @@ final class UsageSheetViewController: UIViewController {
         }
         stack.addArrangedSubview(usage)
 
+        stack.addArrangedSubview(spendCard())
+
         let connections = IOSCardView(padding: 16, spacing: 10)
         connections.stack.addArrangedSubview(row("Mac", AssistantStatus.macLine(presence)))
         connections.stack.addArrangedSubview(row("Claude", AssistantStatus.claudeLine(presence)))
@@ -86,9 +93,86 @@ final class UsageSheetViewController: UIViewController {
         }
     }
 
+    /// Claude's window is used up: when it resets and, in mode "Sor", the two answers.
+    private func limitCard(_ limit: ClaudeLimitState) -> UIView {
+        let card = IOSCardView(padding: 16, spacing: 10)
+        card.stack.addArrangedSubview(UIStackView.h([
+            IOSStatusDotView(color: IOSTheme.accent, size: 8),
+            UILabel.studio("Claude sınırı doldu", size: 17, weight: .semibold, style: .headline),
+            UIView.spacer(),
+        ], spacing: 8))
+        var lines = ["Sıfırlanma: \(AssistantStatus.relative(limit.resetsAt))"]
+        if limit.waiting > 0 { lines.append("\(limit.waiting) iş bekliyor") }
+        if let decision = limit.decision {
+            lines.append("Karar: \(decision.label)")
+        } else if limit.mode != .ask {
+            lines.append("Ayar: \(limit.mode.label)")
+        }
+        card.stack.addArrangedSubview(UILabel.studio(lines.joined(separator: " · "), size: 14, color: IOSTheme.textSecondary, lines: 0, style: .subheadline))
+        guard limit.needsDecision else { return card }
+        let gemini = UIButton.studioPill(title: ClaudeLimitChoice.gemini.label, kind: .primary) { [weak self] in self?.decide(.gemini) }
+        gemini.isEnabled = limit.geminiReady && deciding == nil
+        gemini.configuration?.showsActivityIndicator = deciding == .gemini
+        let wait = UIButton.studioPill(title: ClaudeLimitChoice.wait.label, kind: .secondary) { [weak self] in self?.decide(.wait) }
+        wait.isEnabled = deciding == nil
+        wait.configuration?.showsActivityIndicator = deciding == .wait
+        card.stack.addArrangedSubview(UIStackView.h([gemini, wait, UIView.spacer()], spacing: 8))
+        if !limit.geminiReady {
+            card.stack.addArrangedSubview(UILabel.studio("Gemini anahtarı Mac'te eklenmediği için yalnızca beklenebilir.", size: 13, color: IOSTheme.textSecondary, lines: 0, style: .footnote))
+        }
+        return card
+    }
+
+    private func decide(_ choice: ClaudeLimitChoice) {
+        deciding = choice
+        render()
+        Task {
+            let problem = await app.decideClaudeLimit(choice)
+            deciding = nil
+            render()
+            if let problem { presentError(problem) } else {
+                Haptics.success()
+                Toast.show(choice == .gemini ? "Gemini ile devam ediliyor" : "Sınır bekleniyor", in: view)
+            }
+        }
+    }
+
+    /// Paid AI this month (Gemini, OpenAI, ElevenLabs …) against the monthly budget.
+    private func spendCard() -> UIView {
+        let card = IOSCardView(padding: 16, spacing: 10)
+        card.stack.addArrangedSubview(UILabel.studio("Ücretli yapay zekâ", size: 17, weight: .semibold, style: .headline))
+        guard let spend = app.aiSpend else {
+            let text = app.aiSpendError ?? "Yükleniyor…"
+            card.stack.addArrangedSubview(UILabel.studio(text, size: 14, color: IOSTheme.textSecondary, lines: 0, style: .subheadline))
+            return card
+        }
+        card.stack.addArrangedSubview(row("Bu ay", spend.budgetLine))
+        if spend.budget.monthlyUsd != nil {
+            let bar = UIProgressView(progressViewStyle: .default)
+            bar.progress = Float(min(100, spend.budget.usedPercent ?? 0) / 100)
+            bar.progressTintColor = spend.budget.warning ? IOSTheme.accent : IOSTheme.ink
+            bar.trackTintColor = IOSTheme.fill
+            card.stack.addArrangedSubview(bar)
+        }
+        card.stack.addArrangedSubview(row("Bugün", AISpendSummary.usd(spend.today.costUsd)))
+        for line in spend.providerLines {
+            card.stack.addArrangedSubview(row(line.name, line.text))
+        }
+        if spend.budget.exhausted == true {
+            card.stack.addArrangedSubview(UILabel.studio("Bütçe doldu: ücretli çağrılar ay sonuna kadar durdu.", size: 13, color: IOSTheme.accent, lines: 0, style: .footnote))
+        } else if spend.budget.warning {
+            card.stack.addArrangedSubview(UILabel.studio("Aylık bütçenin %80'i geçildi.", size: 13, color: IOSTheme.accent, lines: 0, style: .footnote))
+        }
+        if spend.month.unpricedCalls > 0 {
+            card.stack.addArrangedSubview(UILabel.studio("\(spend.month.unpricedCalls) çağrının fiyatı bilinmiyor; toplama katılmadı.", size: 12, color: IOSTheme.textTertiary, lines: 0, style: .caption1))
+        }
+        card.stack.addArrangedSubview(UILabel.studio("Bütçe Mac'teki Studio'da ayarlanır.", size: 12, color: IOSTheme.textTertiary, lines: 0, style: .caption1))
+        return card
+    }
+
     private func row(_ title: String, _ value: String) -> UIView {
         let titleLabel = UILabel.studio(title, size: 15, weight: .medium, style: .subheadline)
-        titleLabel.widthAnchor.constraint(equalToConstant: 64).isActive = true
+        titleLabel.widthAnchor.constraint(equalToConstant: 84).isActive = true
         let valueLabel = UILabel.studio(value, size: 14, color: IOSTheme.textSecondary, lines: 0, style: .subheadline)
         return UIStackView.h([titleLabel, valueLabel], spacing: 10, alignment: .firstBaseline)
     }

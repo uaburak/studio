@@ -77,12 +77,14 @@ final class IOSNotifier {
         if let id = notice.conversationId { info["conversationId"] = id }
         if let id = notice.contentId { info["contentId"] = id }
         if let id = notice.brandId { info["brandId"] = id }
+        if notice.id.hasPrefix(ActivityNoticeTracker.claudeLimitPrefix) { info["route"] = "usage" }
         content.userInfo = info
         return UNNotificationRequest(identifier: notice.id, content: content, trigger: nil)
     }
 
     /// Where a tapped notification leads.
     nonisolated static func route(from userInfo: [AnyHashable: Any]) -> IOSRoute? {
+        if userInfo["route"] as? String == "usage" { return .usage }
         if let id = userInfo["conversationId"] as? String { return .conversation(id) }
         if let id = userInfo["contentId"] as? String { return .post(id) }
         if let kind = userInfo["kind"] as? String {
