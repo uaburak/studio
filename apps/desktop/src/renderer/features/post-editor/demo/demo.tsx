@@ -9,7 +9,14 @@ import { RightPanel } from "../../../components/panels/right-panel.tsx";
 import { ResizeHandle } from "../../../components/shell/resize-handle.tsx";
 import { SidebarRow, WindowControls } from "../../../components/shell/sidebar.tsx";
 import { TopBar } from "../../../components/shell/top-bar.tsx";
-import { IconCalendar, IconGrid, IconPlus, IconSearch } from "../../../components/ui/icons.tsx";
+import {
+  IconCalendar,
+  IconGrid,
+  IconImage,
+  IconPlus,
+  IconSearch,
+  IconTag,
+} from "../../../components/ui/icons.tsx";
 import { ToastHost } from "../../../components/ui/popover.tsx";
 import { ApiContext } from "../../../lib/api.ts";
 import {
@@ -20,6 +27,7 @@ import {
   useAppStore,
 } from "../../../state/app-store.ts";
 import { type EditorApi, PostEditor } from "../../post-detail/editor.ts";
+import { WorkspaceSlot } from "../slots.tsx";
 import { PostWorkspace } from "../workspace.tsx";
 import { DemoChat } from "./chat-fixtures.ts";
 import { DemoApi, demoPost } from "./fixtures.ts";
@@ -81,17 +89,21 @@ function DemoShell({ editor }: { editor: PostEditor }) {
     <div className="flex h-full w-full overflow-hidden">
       <aside className="sidebar-surface flex h-full w-[265px] shrink-0 flex-col border-r border-hairline">
         <div className="drag">
-          <WindowControls inset={false} />
+          <WindowControls inset={false} placement="sidebar" />
         </div>
-        <nav className="flex flex-col pt-0.5">
+        <nav className="flex shrink-0 flex-col pt-0.5 pb-1">
           <SidebarRow icon={<IconPlus size={16} strokeWidth={1.5} />} label="Yeni sohbet" />
           <SidebarRow icon={<IconSearch size={16} strokeWidth={1.5} />} label="Ara" />
           <SidebarRow icon={<IconGrid size={16} strokeWidth={1.5} />} label="Postlar" selected />
           <SidebarRow icon={<IconCalendar size={16} strokeWidth={1.5} />} label="Takvim" />
+          <SidebarRow icon={<IconImage size={16} strokeWidth={1.5} />} label="Medya" />
+          <SidebarRow icon={<IconTag size={16} strokeWidth={1.5} />} label="Markalar" />
         </nav>
-        <p className="mt-auto px-4 pb-4 text-footnote text-fg-3">
-          Demo: sunucusuz düzenleyici (kenar çubuğu yer tutucu).
-        </p>
+        {/* The open post's layers, where the app's sidebar has its conversations. */}
+        <WorkspaceSlot name="sidebar" className="flex min-h-0 flex-1 flex-col" />
+        <footer className="flex h-[52px] shrink-0 items-center border-t border-hairline px-4 text-footnote text-fg-3">
+          Demo: sunucusuz düzenleyici
+        </footer>
       </aside>
       <main className="relative flex min-w-0 flex-1 flex-col bg-page">
         {width !== null && (

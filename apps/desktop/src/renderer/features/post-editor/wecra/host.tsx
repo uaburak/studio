@@ -4,7 +4,7 @@
 // are drawn in Studio's places instead, on the same editor (EditorContext):
 //
 //   WecraDesignPanel   Wecra's Design panel (DesignPanel) in Studio's right panel
-//   WecraLayers        Wecra's Layers panel in the canvas's layers card
+//   WecraLayers        Wecra's Layers panel in the app's sidebar (the post's layers)
 //   WecraToolbar       Wecra's bottom toolbar (its tools, no mode switch) in Studio's dock
 //   WecraZoomMenu      Wecra's zoom menu (the Design tab row's) in the panel header
 //
@@ -186,14 +186,26 @@ export function WecraDesignPanel({ className }: { className?: string }) {
   );
 }
 
-/** Wecra's Layers panel (its header, the tree, drag to reorder, rename, eye, lock). */
-export function WecraLayers({ width, className }: { width: number; className?: string }) {
+/**
+ * Wecra's Layers panel (the tree, drag to reorder, rename, eye, lock). `sidebar`: in the app's
+ * sidebar, as wide as it, in its look (wecra.css: Wecra's header left out — the sidebar draws
+ * its own —, the frames as group headers, the layers as sidebar rows).
+ */
+export function WecraLayers({
+  width,
+  sidebar,
+  className,
+}: {
+  width?: number;
+  sidebar?: boolean;
+  className?: string;
+}) {
   return (
     <WecraRegion
       name="layers"
       data-panel="left"
-      className={`wecra-layers ${className ?? ""}`}
-      style={{ ["--left-panel-width" as string]: `${width}px`, width }}
+      className={`wecra-layers ${sidebar ? "wecra-sidebar-layers" : ""} ${className ?? ""}`}
+      style={width ? { ["--left-panel-width" as string]: `${width}px`, width } : undefined}
     >
       <Layers />
     </WecraRegion>

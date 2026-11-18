@@ -1,12 +1,13 @@
 // The app's shell keeps its layout while a post is open: the top bar's title area, the panel
-// header above the right panel and the right panel itself are slots the post workspace renders
+// header above the right panel, the right panel itself and the sidebar under its navigation (the
+// post's layers, where the conversations are otherwise) are slots the post workspace renders
 // into (React portals), so everything of the open post lives in one component tree (its
 // editor, canvas, draft and keys) while the shell stays the shell.
 import type { ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { create } from "zustand";
 
-export type SlotName = "title" | "panel-header" | "panel";
+export type SlotName = "title" | "panel-header" | "panel" | "sidebar";
 
 interface SlotsState {
   els: Partial<Record<SlotName, HTMLElement>>;

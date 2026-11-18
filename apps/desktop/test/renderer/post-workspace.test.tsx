@@ -1,6 +1,6 @@
 // The post workspace inside the app's layout: opening a post turns the centre into Wecra's
 // canvas and the right panel into the post's panel (Wecra's Design panel, the caption, the
-// Sohbet), Wecra's Layers sit on a card on the canvas, the dock carries Wecra's tools or the
+// Sohbet), Wecra's Layers sit in the sidebar (where the conversations are otherwise), the dock carries Wecra's tools or the
 // message box, back is only the app's (the title area has no back of its own), the Sohbet /
 // Düzenle mode is remembered per post, and the Sohbet is a conversation bound to the post.
 // Wecra's editor itself (WebGL, the engine) is stood in for here: test/engine drives the real one.
@@ -34,7 +34,9 @@ vi.mock("../../src/renderer/features/post-editor/wecra/host.tsx", () => ({
   },
   WecraScope: ({ children }: { children: React.ReactNode }) => <>{children}</>,
   WecraDesignPanel: () => <section aria-label="Wecra Tasarım paneli" />,
-  WecraLayers: () => <div role="tree" aria-label="Wecra katmanları" />,
+  WecraLayers: ({ sidebar }: { sidebar?: boolean }) => (
+    <div role="tree" aria-label="Wecra katmanları" data-sidebar={sidebar ? "" : undefined} />
+  ),
   WecraToolbar: () => <div role="toolbar" aria-label="Wecra araçları" />,
   WecraZoomMenu: () => <button type="button">100%</button>,
 }));
@@ -269,6 +271,7 @@ function Harness() {
   const presented = useAppStore((s) => s.panelPresented);
   return (
     <div>
+      <WorkspaceSlot name="sidebar" />
       <header>
         <WorkspaceSlot name="title" />
         <WorkspaceSlot name="panel-header" />
@@ -296,10 +299,15 @@ describe("opening a post", () => {
   it("turns the centre into Wecra's canvas and the right panel into the post's panel; back returns", async () => {
     await setup();
     await openPost();
-    // Wecra's canvas, its Layers on the canvas's card, the dock with Wecra's tools (Düzenle).
+    // Wecra's canvas, its Layers in the sidebar, the dock with Wecra's tools (Düzenle).
     expect(await screen.findByTestId("wecra-canvas")).toBeInTheDocument();
-    const card = await screen.findByRole("complementary", { name: "Katmanlar" });
-    expect(within(card).getByRole("tree", { name: "Wecra katmanları" })).toBeInTheDocument();
+    const layers = await within(slot("sidebar")).findByRole("region", { name: "Katmanlar" });
+    expect(within(layers).getByRole("tree", { name: "Wecra katmanları" })).toHaveAttribute(
+      "data-sidebar",
+    );
+    // No layers card on the canvas any more.
+    expect(within(workspace() as HTMLElement).queryByRole("tree")).toBeNull();
+    expect(within(workspace() as HTMLElement).queryByText("Katmanlar")).toBeNull();
     expect(screen.getByTestId("mode-dock")).toHaveAttribute("data-mode", "edit");
     expect(screen.getByRole("toolbar", { name: "Wecra araçları" })).toBeInTheDocument();
     // The shell shows the post: its title area, its panel (Tasarım: Wecra's Design panel).
@@ -326,6 +334,8 @@ describe("opening a post", () => {
     expect(useAppStore.getState().panelPane).toBe("calendar");
     expect(useAppStore.getState().panelPresented).toBe(false);
     expect(screen.getByRole("region", { name: "Postlar" })).toBeInTheDocument();
+    // The sidebar's layers go with the post.
+    expect(within(slot("sidebar")).queryByRole("region", { name: "Katmanlar" })).toBeNull();
   });
 
   it("has exactly one back: the app's (no back or close of its own in the title or the canvas)", async () => {
@@ -337,15 +347,19 @@ describe("opening a post", () => {
     expect(within(workspace() as HTMLElement).queryAllByRole("button", { name: back })).toEqual([]);
   });
 
-  it("folds the layers card into a pill and back (remembered)", async () => {
+  it("folds the sidebar's layers under their header and back (remembered)", async () => {
     await setup();
     await openPost();
-    const card = await screen.findByRole("complementary", { name: "Katmanlar" });
-    await userEvent.click(within(card).getByRole("button", { name: "Katmanları gizle" }));
-    expect(screen.queryByRole("complementary", { name: "Katmanlar" })).toBeNull();
+    const layers = await within(slot("sidebar")).findByRole("region", { name: "Katmanlar" });
+    const header = within(layers).getByRole("button", { name: "Katmanlar" });
+    expect(header).toHaveAttribute("aria-expanded", "true");
+    await userEvent.click(header);
+    expect(within(layers).queryByRole("tree")).toBeNull();
+    expect(header).toHaveAttribute("aria-expanded", "false");
     expect(useWorkspaceStore.getState().layersOpen).toBe(false);
-    await userEvent.click(screen.getByRole("button", { name: "Katmanları göster" }));
-    expect(screen.getByRole("complementary", { name: "Katmanlar" })).toBeInTheDocument();
+    expect(localStorage.getItem("studio.post-workspace.layers-open")).toBe("0");
+    await userEvent.click(header);
+    expect(within(layers).getByRole("tree", { name: "Wecra katmanları" })).toBeInTheDocument();
   });
 
   it("remembers Sohbet for the post and opens it there next time", async () => {

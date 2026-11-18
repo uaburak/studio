@@ -1,5 +1,5 @@
 // The unified top bar (Wecra "Top bar"): window controls (sidebar, back, forward) when the
-// sidebar is hidden, the title with its menu (double-click renames inline), the right panel's
+// sidebar is hidden (with the sidebar, they are in its own top-bar segment), the title with its menu (double-click renames inline), the right panel's
 // tool icons (they only switch the right panel) and the panel header above the panel. Chats
 // and posts are switched from the sidebar. While a post is open on the canvas, its title area
 // and its panel's header are slots the post workspace renders into (features/post-editor/slots).

@@ -2,13 +2,16 @@
 
 Opening a post (a card on Postlar, click or ↩; a chat card; the calendar) opens it straight into
 the canvas, **inside the app's layout** (`src/renderer/features/post-editor/workspace.tsx`): the
-sidebar stays the app's, the top bar stays the app's top bar, and
+top bar stays the app's top bar, and
+
+- **the sidebar keeps its navigation** (Yeni sohbet … Markalar) and, where the conversations are
+  otherwise, shows **Wecra's Layers** in the sidebar's look; leaving the post brings the
+  conversations back;
 
 - **the centre column becomes Wecra's editor**: Wecra's own `EditorApp` — its engine draws the
   slides as frames and does everything Wecra does there: selection, handles, smart guides,
   snapping, auto layout, constraints, its text engine, images, effects, vector editing, its keys,
-  clipboard, context menu, dialogs and overlays. Wecra's Layers sit on a card at its left edge and
-  one floating dock sits at its bottom;
+  clipboard, context menu, dialogs and overlays. One floating dock sits at its bottom;
 - **the right panel becomes the post's panel** (same container as Ayrıntılar & co.: same width,
   resizable, expandable, its header in the top bar's panel segment): on Düzenle **Wecra's Design
   panel** (tab Tasarım; Wecra's zoom menu in the header) and the caption (tab Açıklama); on Sohbet
@@ -17,7 +20,8 @@ sidebar stays the app's, the top bar stays the app's top bar, and
   caption, open in chat, duplicate, delete), its state, the version chip (versions popover), the
   save state, Onayla and Zamanla.
 
-**Back is only the app's**: the top bar's ‹ › (⌘[ ⌘], a swipe). The title area, the canvas and
+**Back is only the app's**: ‹ › at the right edge of the sidebar's top-bar segment (following its
+width; with the sidebar hidden, beside the sidebar toggle in the top bar), ⌘[ ⌘], a swipe. The title area, the canvas and
 the loading view have no back or close button of their own (there used to be a "‹ Postlar" in the
 title area beside the app's ‹ — two backs). Reels keep the post detail over the centre (they are
 edited in chat); its breadcrumb is plain text there too.
@@ -77,7 +81,7 @@ re-implemented:
 | centre column        | `EditorApp` (embedded)                                                                                                                                                                       |
 | right panel, Tasarım | `DesignPanel` (Frame / Text header with Status, Position, Auto layout / Layout, Appearance, Typography, Fill, Stroke, Effects, Selection colors, Layout guide, Export), Tab order as Wecra's |
 | panel header         | `ZoomMenu` (zoom, pixel preview, rulers, outlines …)                                                                                                                                         |
-| layers card          | `Layers` (Wecra's tree: select, ⇧ / ⌘ ranges, rename, eye, lock, drag to reorder and regroup, collapse)                                                                                      |
+| sidebar (`sidebar` slot) | `Layers` (Wecra's tree: select, ⇧ / ⌘ ranges, rename, eye, lock, drag to reorder and regroup, collapse)                                                                                      |
 | dock, Düzenle        | `BottomToolbar` (embedded): Move ▾, Region ▾, Shape ▾, Creation ▾, Text ▾                                                                                                                    |
 
 Hidden (a post editor doesn't need them): Prototype tab, Dev Mode and the mode switch, comments,
@@ -92,12 +96,18 @@ popovers Studio's 14 px radius; its UI font stays Inter (the bundled 3.19), as W
 layout is measured for it. The canvas (WebGL) is Wecra's: its page colour and selection colour are
 the engine's.
 
-**Layers on a card, not a tab**: the right panel switches between Düzenle (Wecra's Design panel)
-and Sohbet, while the layers are needed in both (picking what to talk about is picking layers); a
-card on the canvas keeps Wecra's / Figma's arrangement (layers left of the canvas, properties
-right) without changing the app's layout, and the Design panel keeps the right panel's full
-height. It folds into a "Katmanlar" pill (remembered, `workspace-store.ts`); zoom to fit keeps
-clear of it and of the dock (Wecra's view insets).
+**Layers in the sidebar, not a tab**: the right panel switches between Düzenle (Wecra's Design
+panel) and Sohbet, while the layers are needed in both (picking what to talk about is picking
+layers); the sidebar keeps Wecra's / Figma's arrangement (layers left of the canvas, properties
+right) and the canvas stays clear (no card over it). The sidebar's lower part (where the brand
+groups and their chats are) is a slot the workspace renders into (`ui/sidebar-layers.tsx`):
+Wecra's own `Layers` (every interaction its own) under a "Katmanlar" header like the brand groups'
+(it folds the list, remembered, `workspace-store.ts`), restyled in `wecra/wecra.css`
+(`.wecra-sidebar-layers`) to the sidebar's look — Studio's type and colours, 32 rows 8 in with
+the round full-row hover / selected fill, the frames ("Kare 1" …) drawn as the brand groups'
+collapsible headers (footnote, tertiary, chevron after the name), the layers under them with
+Wecra's glyph, 16 per level; Wecra's own header is left out. With the sidebar hidden (⌘\) the
+layers are hidden too. Zoom to fit keeps clear of the dock (Wecra's view insets).
 
 ### Sohbet / Düzenle
 
@@ -204,7 +214,7 @@ src/renderer/vendor/wecra-editor/   the vendored Wecra (do not edit, never commi
 features/post-detail/post-detail.tsx  the opened post: the canvas workspace (lazy) or the reel detail
 features/post-editor/
   workspace.tsx                     the post workspace (Wecra's editor in Studio's places)
-  workspace-store.ts                mode per post, edit tab, layers card, post → conversation
+  workspace-store.ts                mode per post, edit tab, sidebar layers folded, post → conversation
   slots.tsx                         the shell's slots (title area, panel header, panel)
   chat.ts                           the post's Sohbet (conversation binding, message text)
   wecra/embed.ts                    what the embedding patches read (places, store, keys)
@@ -221,11 +231,11 @@ features/post-editor/
   model/brand-kit.ts                brand.css / fonts as the worker builds them
   ui/title-bar.tsx                  the top bar's title area (no back of its own), versions popover
   ui/mode-dock.tsx                  the dock: morph, mode switch, message box
-  ui/layers-card.tsx                the layers card / pill
+  ui/sidebar-layers.tsx             the sidebar's "Katmanlar" (Wecra's Layers)
   ui/caption-panel.tsx, ui/chat-panel.tsx
   demo/                             `?demo=post-editor[&format=story]` (in-memory API and chat)
 test/engine/wecra-post.test.ts      the real engine: import, bundle round trip, export, save, fonts
-test/renderer/post-workspace.test.tsx  layout, single back, panels, layers card, mode, Sohbet
+test/renderer/post-workspace.test.tsx  layout, single back, panels, sidebar layers, mode, Sohbet
 test/renderer/post-editor-model.test.ts  slide documents, saved slide HTML / hash, keys, AI note
 apps/api/test/contents-editor.test.ts  editor documents on versions
 ```

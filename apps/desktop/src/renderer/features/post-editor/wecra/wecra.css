@@ -4,7 +4,7 @@
  * Wecra's components and layout are kept as they are; only the look is Studio's:
  *  1. Wecra's design tokens (its generated tokens.css: sizes, type, spacing, colours per theme);
  *  2. Wecra's base rules, scoped to the editor's places — `[data-wecra-region]` (the canvas, the
- *     Design panel, the layers card, the dock) and `#ds-overlays` (its menus, popovers, dialogs) —
+ *     Design panel, the sidebar's layers, the dock) and `#ds-overlays` (its menus, popovers, dialogs) —
  *     never on Studio's own elements;
  *  3. Studio's colours: Wecra's colour tokens mapped onto Studio's palette, per theme (raw palette
  *     values, so a forced-dark Wecra menu reads Studio's dark colours in light mode too);
@@ -219,7 +219,7 @@
 .wecra-canvas [data-editor] {
   position: absolute;
 }
-/* The part of the canvas Studio's layers card and dock leave visible: Wecra fits and centres in it. */
+/* The part of the canvas Studio's dock leaves visible: Wecra fits and centres in it. */
 .wecra-canvas [data-canvas-view] {
   margin: 0 0 var(--wecra-inset-bottom, 0) var(--wecra-inset-left, 0);
 }
@@ -237,13 +237,134 @@
   box-shadow: none;
 }
 
-/* Wecra's Layers in Studio's layers card. */
+/* Wecra's Layers. */
 .wecra-layers {
   display: flex;
   flex-direction: column;
   min-height: 0;
   height: 100%;
 }
-.wecra-layers > [data-ds="PanelSection"] > :first-child {
-  padding-right: 36px;
+
+/*
+ * …in the app's sidebar (ui/sidebar-layers.tsx), in the sidebar's look (shell/sidebar.tsx:
+ * SidebarRow, GroupHeader): Studio's type and colours; rows 32 high, 8 in, their hover / selected
+ * fill the whole row, round (fill-control / fill-selected; a run of selected rows one block); the
+ * frames (top-level rows) drawn as the brand groups' headers — footnote, tertiary, the chevron
+ * after the name, no glyph —; the layers under them as rows with Wecra's glyph, 16 per level.
+ * Wecra's own header is left out: the sidebar draws "Katmanlar". Unlayered: these win over
+ * Wecra's (@layer ds / tokens).
+ */
+.wecra-sidebar-layers {
+  height: auto;
+  --figma-color-bg: var(--bg-sidebar);
+  --figma-color-bg-hover: var(--fill-control);
+  --figma-color-bg-selected: var(--fill-selected);
+  --figma-color-bg-selected-secondary: color-mix(in srgb, var(--fill-selected) 45%, transparent);
+  --figma-color-text: var(--text-primary);
+  --figma-color-text-tertiary: var(--text-tertiary);
+  --figma-color-icon: var(--text-primary);
+  --figma-color-icon-secondary: var(--icon-default);
+  --figma-color-icon-tertiary: var(--icon-default);
+  font-family: var(--font-sans);
+}
+.wecra-sidebar-layers > [data-ds="PanelSection"] {
+  border: 0;
+}
+.wecra-sidebar-layers > [data-ds="PanelSection"] > :first-child {
+  display: none;
+}
+.wecra-sidebar-layers [data-layer-list] {
+  padding-top: 0;
+}
+.wecra-sidebar-layers [data-layer-list][data-scrolled]::before {
+  display: none;
+}
+.wecra-sidebar-layers [data-layer-list] [data-sticky-row][data-stuck] {
+  box-shadow: 0 1px 0 var(--border-hairline);
+}
+
+/* A layer: SidebarRow's type, 8 in, the fill the whole 32. */
+.wecra-sidebar-layers [data-ds="LayerRow"] {
+  font-family: var(--font-sans);
+  font-size: var(--type-body-size);
+  font-weight: 400;
+  line-height: var(--type-body-line);
+  letter-spacing: normal;
+  color: var(--text-primary);
+}
+.wecra-sidebar-layers [data-ds="LayerRow"] > div {
+  margin: 0;
+  padding-left: 2px;
+}
+.wecra-sidebar-layers [data-ds="LayerRow"] > div::before {
+  inset: 0;
+  border-radius: 16px;
+  transition: background-color 150ms;
+}
+.wecra-sidebar-layers [data-ds="LayerRow"][data-run="start"] > div::before {
+  border-bottom-right-radius: 0;
+  border-bottom-left-radius: 0;
+}
+.wecra-sidebar-layers [data-ds="LayerRow"][data-run="middle"] > div::before {
+  border-radius: 0;
+}
+.wecra-sidebar-layers [data-ds="LayerRow"][data-run="end"] > div::before {
+  border-top-left-radius: 0;
+  border-top-right-radius: 0;
+}
+/* 16 per level under the frames (the frames' groups are the first level). */
+.wecra-sidebar-layers [data-ds="LayerRow"] > div > span:first-child {
+  width: max(0px, calc((var(--depth, 0) - 1) * 16px));
+}
+.wecra-sidebar-layers [data-layer-icon] {
+  margin-right: 10px;
+}
+/* Lock and eye: at the row's right edge, after everything (the frames' chevron too). */
+.wecra-sidebar-layers [data-ds="LayerRow"] > div > span:has(> [data-cell]) {
+  order: 2;
+  margin-left: auto;
+}
+.wecra-sidebar-layers [data-cell]:hover {
+  background: var(--fill-control-hover);
+}
+.wecra-sidebar-layers [data-ds="LayerRow"][data-drop="before"]::before,
+.wecra-sidebar-layers [data-ds="LayerRow"][data-drop="after"]::after {
+  left: calc(26px + max(0px, calc((var(--depth, 0) - 1) * 16px)));
+}
+
+/* A frame: GroupHeader (footnote, tertiary, secondary on hover, the chevron after the name). */
+.wecra-sidebar-layers [data-ds="LayerRow"][aria-level="1"] {
+  font-size: var(--type-footnote-size);
+  line-height: var(--type-footnote-line);
+  color: var(--text-tertiary);
+  transition: color 150ms;
+}
+.wecra-sidebar-layers [data-ds="LayerRow"][aria-level="1"]:is(:hover, [data-hover]) {
+  color: var(--text-secondary);
+}
+.wecra-sidebar-layers [data-ds="LayerRow"][aria-level="1"][aria-selected="true"] {
+  color: var(--text-primary);
+}
+.wecra-sidebar-layers [data-ds="LayerRow"][aria-level="1"] > div {
+  padding-left: 10px;
+}
+.wecra-sidebar-layers [data-ds="LayerRow"][aria-level="1"] [data-layer-icon] {
+  display: none;
+}
+.wecra-sidebar-layers [data-ds="LayerRow"][aria-level="1"] [data-layer-name] {
+  flex: 0 1 auto;
+  color: inherit;
+  text-overflow: ellipsis;
+  mask-image: none;
+}
+.wecra-sidebar-layers [data-ds="LayerRow"][aria-level="1"] > div > :nth-child(2) {
+  order: 1;
+  width: 12px;
+  height: 12px;
+  margin-left: 4px;
+  color: inherit;
+}
+.wecra-sidebar-layers [data-ds="LayerRow"][aria-level="1"] > div > :nth-child(2) svg {
+  width: 12px;
+  height: 12px;
 }

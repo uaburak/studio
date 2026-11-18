@@ -1,13 +1,13 @@
 // The open post, inside the app's layout (Wecra's "Post Editor" as an app mode, not a screen):
 // the centre column becomes Wecra's own editor — its engine draws the slides as frames and does
 // everything Wecra does there (selection, handles, guides, auto layout, constraints, text, images,
-// effects, its keys, clipboard and context menu) — with Wecra's Layers on a card at its left edge
-// and one floating dock at its bottom (Wecra's tools, or the post's message box, with the
-// Sohbet / Düzenle switch). The right panel becomes the post's panel (Düzenle: Wecra's Design
-// panel, and the caption; Sohbet: the post's conversation) and the top bar's title area shows
-// the post (title, state, versions, save state, Onayla, Zamanla). The sidebar and the top bar
-// stay the app's, and so does back (the top bar's ‹ ›, ⌘[): the post has no back button of its
-// own.
+// effects, its keys, clipboard and context menu) — with one floating dock at its bottom (Wecra's
+// tools, or the post's message box, with the Sohbet / Düzenle switch). The sidebar keeps its
+// navigation and shows Wecra's Layers under it, where the conversations are otherwise. The right
+// panel becomes the post's panel (Düzenle: Wecra's Design panel, and the caption; Sohbet: the
+// post's conversation) and the top bar's title area shows the post (title, state, versions, save
+// state, Onayla, Zamanla). The top bar stays the app's, and so does back (‹ › at the sidebar's
+// top-bar edge, ⌘[): the post has no back button of its own.
 //
 // The document is Wecra's (wecra/session.ts): a version saved from the canvas opens its saved
 // document; any other version (the AI's) is imported from its HTML once. Saving exports the
@@ -48,8 +48,8 @@ import { useRenderKit } from "./data.ts";
 import { InSlot } from "./slots.tsx";
 import { CaptionPanel } from "./ui/caption-panel.tsx";
 import { ChatHeader, ChatPanel } from "./ui/chat-panel.tsx";
-import { LAYERS_CARD_INSET, LAYERS_CARD_WIDTH, LayersCard } from "./ui/layers-card.tsx";
 import { ChatInput, type ChatInputHandle, ModeDock } from "./ui/mode-dock.tsx";
+import { SidebarLayers } from "./ui/sidebar-layers.tsx";
 import { type SaveControl, TitleBar } from "./ui/title-bar.tsx";
 import { installStudioFonts } from "./wecra/fonts.ts";
 import {
@@ -104,6 +104,8 @@ const inWorkspace = (target: EventTarget | null) =>
 
 /** The dock's height and margin: zoom to fit keeps the slides above it. */
 const DOCK_INSET = 68;
+/** What zoom to fit keeps clear of: a margin on the left, the dock at the bottom. */
+const CANVAS_INSETS = { left: 24, bottom: DOCK_INSET };
 
 export function PostWorkspace(props: WorkspaceProps) {
   const { editor, snapshot } = props;
@@ -113,7 +115,6 @@ export function PostWorkspace(props: WorkspaceProps) {
   const version = activeVersion(snapshot);
   const mode = useWorkspaceStore((s) => modeOf(s, content.id));
   const editTab = useWorkspaceStore((s) => s.editTab);
-  const layersOpen = useWorkspaceStore((s) => s.layersOpen);
   const [versionsOpen, setVersionsOpen] = useState(false);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const root = useRef<HTMLElement | null>(null);
@@ -269,12 +270,6 @@ export function PostWorkspace(props: WorkspaceProps) {
   const chatDisabled =
     changesVersion(snapshot.activity) && snapshot.activity.kind !== "rendering" ? "Bekle…" : null;
 
-  const setLayersOpen = (open: boolean) => useWorkspaceStore.getState().setLayersOpen(open);
-  const insets = {
-    left: layersOpen ? LAYERS_CARD_INSET + LAYERS_CARD_WIDTH + 16 : 24,
-    bottom: DOCK_INSET,
-  };
-
   const dock = (layers: ChatLayers) => (
     <div className="pointer-events-none absolute inset-x-3 bottom-3 z-20 flex justify-center">
       <ModeDock
@@ -308,12 +303,11 @@ export function PostWorkspace(props: WorkspaceProps) {
     >
       <div className="@container relative min-w-0 flex-1 overflow-hidden" data-canvas-column="">
         {session.source && (
-          <WecraEditor source={session.source} onReady={session.attach} insets={insets} />
+          <WecraEditor source={session.source} onReady={session.attach} insets={CANVAS_INSETS} />
         )}
         {ed ? (
           <WecraScope ed={ed}>
             <ToolFollower ed={ed} onEdit={() => mode !== "edit" && setMode("edit")} />
-            <LayersCard open={layersOpen} onOpenChange={setLayersOpen} />
             <WithChatLayers ed={ed}>{dock}</WithChatLayers>
           </WecraScope>
         ) : (
@@ -328,6 +322,9 @@ export function PostWorkspace(props: WorkspaceProps) {
         />
       </div>
 
+      <InSlot name="sidebar">
+        <SidebarLayers ed={ed} />
+      </InSlot>
       <InSlot name="title">
         <TitleBar
           save={save}

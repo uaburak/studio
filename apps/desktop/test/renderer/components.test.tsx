@@ -12,7 +12,12 @@ import {
   parseMarkdown,
 } from "../../src/renderer/components/chat/markdown.tsx";
 import { modelMenu, StatusLine } from "../../src/renderer/components/chat/status-line.tsx";
-import { ConversationRow, SidebarRow } from "../../src/renderer/components/shell/sidebar.tsx";
+import {
+  ConversationRow,
+  SidebarBody,
+  SidebarRow,
+  WindowControls,
+} from "../../src/renderer/components/shell/sidebar.tsx";
 import {
   Button,
   Checkbox,
@@ -24,6 +29,8 @@ import {
   UsageRing,
 } from "../../src/renderer/components/ui/controls.tsx";
 import { Menu, MenuButton, type MenuEntry } from "../../src/renderer/components/ui/menu.tsx";
+import { InSlot } from "../../src/renderer/features/post-editor/slots.tsx";
+import { useWorkspaceStore } from "../../src/renderer/features/post-editor/workspace-store.ts";
 import { ApiContext } from "../../src/renderer/lib/api.ts";
 import { createFallbackBridge, setBridge } from "../../src/renderer/lib/bridge.ts";
 import { useAppStore } from "../../src/renderer/state/app-store.ts";
@@ -436,6 +443,64 @@ describe("sidebar rows", () => {
     render(<SidebarRow label="Ara" onClick={onOpen} />);
     fireEvent.keyDown(screen.getByRole("button", { name: "Ara" }), { key: "Enter" });
     expect(onOpen).toHaveBeenCalledOnce();
+  });
+});
+
+describe("sidebar", () => {
+  afterEach(() => {
+    useWorkspaceStore.setState({ active: null });
+    useAppStore.setState({ back: [], forward: [] });
+  });
+
+  it("puts back / forward at the right edge of its top-bar segment; together when hidden", async () => {
+    useAppStore.setState({ back: [{ route: { kind: "posts" }, post: null }], forward: [] });
+    const { unmount } = render(<WindowControls inset placement="sidebar" />);
+    const row = document.querySelector('[data-window-controls="sidebar"]') as HTMLElement;
+    const toggle = within(row).getByRole("button", { name: "Kenar çubuğu" });
+    const nav = row.querySelector("[data-history-nav]") as HTMLElement;
+    // Toggle first (after the traffic lights), then a spacer that pushes ‹ › to the right edge.
+    expect(row.firstElementChild).toBe(toggle);
+    expect(row.lastElementChild).toBe(nav);
+    expect(toggle.nextElementSibling).toHaveClass("flex-1");
+    expect(row).toHaveClass("pr-2");
+    expect(row).toHaveStyle({ paddingLeft: "94px" });
+    expect(within(nav).getByRole("button", { name: "Geri" })).toBeEnabled();
+    expect(within(nav).getByRole("button", { name: "İleri" })).toBeDisabled();
+    unmount();
+
+    // The sidebar hidden: the three together in the top bar (as before).
+    render(<WindowControls inset={false} />);
+    const bar = document.querySelector('[data-window-controls="top-bar"]') as HTMLElement;
+    expect(bar.querySelector(".flex-1")).toBeNull();
+    expect(
+      within(bar)
+        .getAllByRole("button")
+        .map((b) => b.getAttribute("aria-label")),
+    ).toEqual(["Kenar çubuğu", "Geri", "İleri"]);
+  });
+
+  it("shows the open post's layers where the conversations are, and gives them back", () => {
+    render(
+      <>
+        <SidebarBody>
+          <section aria-label="Kasım Ajans">Sohbetler</section>
+        </SidebarBody>
+        <InSlot name="sidebar">
+          <section aria-label="Katmanlar">Kare 1</section>
+        </InSlot>
+      </>,
+    );
+    expect(screen.getByRole("region", { name: "Kasım Ajans" })).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Katmanlar" })).toBeNull();
+
+    act(() => useWorkspaceStore.getState().setActive("p1"));
+    expect(screen.queryByRole("region", { name: "Kasım Ajans" })).toBeNull();
+    const slot = document.querySelector('[data-workspace-slot="sidebar"]') as HTMLElement;
+    expect(within(slot).getByRole("region", { name: "Katmanlar" })).toBeInTheDocument();
+
+    act(() => useWorkspaceStore.getState().setActive(null));
+    expect(screen.getByRole("region", { name: "Kasım Ajans" })).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Katmanlar" })).toBeNull();
   });
 });
 

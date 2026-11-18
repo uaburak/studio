@@ -1,6 +1,6 @@
 // UI state of the post workspace (the canvas in the centre column, the post's panel on the
 // right): which mode the floating dock and the right panel are in (Sohbet / Düzenle, remembered
-// per post on this Mac), the edit panel's tab, the floating layers list, the conversation each
+// per post on this Mac), the edit panel's tab, whether the sidebar's layers are unfolded, the conversation each
 // post's Sohbet continues, and which post the workspace shows right now.
 import type { Content } from "@studio/contract";
 import { create } from "zustand";
@@ -71,6 +71,7 @@ interface WorkspaceState {
   modes: Record<string, WorkspaceMode>;
   /** Post id → the conversation its Sohbet continues. */
   chats: Record<string, string>;
+  /** The sidebar's "Katmanlar" unfolded (remembered on this Mac). */
   layersOpen: boolean;
   editTab: EditTab;
   /** The post the workspace shows (set while it is mounted). */

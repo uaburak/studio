@@ -1,8 +1,11 @@
-// Left sidebar (Wecra "Sidebar"): window controls row, navigation rows, conversations grouped
-// by brand (collapsible), footer with avatar, name, brand menu and settings. Its width is the
-// user's (dragged by the inner edge, see app-shell).
+// Left sidebar (Wecra "Sidebar"): window controls row (back / forward at its right edge),
+// navigation rows, conversations grouped by brand (collapsible) — the open post's layers instead
+// while a post is on the canvas —, footer with avatar, name, brand menu and settings. Its width is
+// the user's (dragged by the inner edge, see app-shell).
 import type { Brand, Conversation } from "@studio/contract";
 import { type ReactNode, useMemo } from "react";
+import { WorkspaceSlot } from "../../features/post-editor/slots.tsx";
+import { useWorkspaceStore } from "../../features/post-editor/workspace-store.ts";
 import { SIDEBAR_WIDTH, useAppStore } from "../../state/app-store.ts";
 import { useBrands, useConversations, useHost, useJobs, useSettings } from "../../state/studio.tsx";
 import { cn, IconButton, WorkingDots } from "../ui/controls.tsx";
@@ -25,35 +28,54 @@ import { useConversationActions } from "./conversation-actions.ts";
 
 export { SIDEBAR_WIDTH };
 
-/** Traffic lights (18 + 52) and the 24 pt gap Claude leaves before its buttons. */
-export function WindowControls({ inset }: { inset: boolean }) {
+/**
+ * Traffic lights (18 + 52) and the 24 pt gap Claude leaves before its buttons, then the sidebar
+ * toggle and back / forward. In the sidebar (`placement="sidebar"`) back / forward sit at the
+ * right edge of its top-bar segment (they follow its width); with the sidebar hidden the three
+ * sit together in the top bar.
+ */
+export function WindowControls({
+  inset,
+  placement = "top-bar",
+}: {
+  inset: boolean;
+  placement?: "sidebar" | "top-bar";
+}) {
   const toggleSidebar = useAppStore((s) => s.toggleSidebar);
   const goBack = useAppStore((s) => s.goBack);
   const goForward = useAppStore((s) => s.goForward);
   const canBack = useAppStore((s) => s.back.length > 0);
   const canForward = useAppStore((s) => s.forward.length > 0);
+  const sidebar = placement === "sidebar";
   return (
-    <div className="flex h-11 shrink-0 items-center" style={{ paddingLeft: inset ? 94 : 12 }}>
+    <div
+      className={cn("flex h-11 shrink-0 items-center", sidebar && "pr-2")}
+      style={{ paddingLeft: inset ? 94 : 12 }}
+      data-window-controls={placement}
+    >
       <IconButton
         icon={<IconSidebar size={16} strokeWidth={1.5} />}
         label="Kenar çubuğu"
         shortcut="⌘\"
         onClick={toggleSidebar}
       />
-      <IconButton
-        icon={<IconChevronLeft size={16} strokeWidth={1.5} />}
-        label="Geri"
-        shortcut="⌘["
-        disabled={!canBack}
-        onClick={goBack}
-      />
-      <IconButton
-        icon={<IconChevronRight size={16} strokeWidth={1.5} />}
-        label="İleri"
-        shortcut="⌘]"
-        disabled={!canForward}
-        onClick={goForward}
-      />
+      {sidebar && <span className="min-w-0 flex-1" />}
+      <span className="flex shrink-0 items-center" data-history-nav="">
+        <IconButton
+          icon={<IconChevronLeft size={16} strokeWidth={1.5} />}
+          label="Geri"
+          shortcut="⌘["
+          disabled={!canBack}
+          onClick={goBack}
+        />
+        <IconButton
+          icon={<IconChevronRight size={16} strokeWidth={1.5} />}
+          label="İleri"
+          shortcut="⌘]"
+          disabled={!canForward}
+          onClick={goForward}
+        />
+      </span>
     </div>
   );
 }
@@ -259,7 +281,7 @@ export function Sidebar({ width = SIDEBAR_WIDTH }: { width?: number }) {
       style={{ width }}
     >
       <div className="drag">
-        <WindowControls inset={!fullScreen} />
+        <WindowControls inset={!fullScreen} placement="sidebar" />
       </div>
       <nav className="flex shrink-0 flex-col gap-0 pt-0.5 pb-1">
         <SidebarRow
@@ -300,38 +322,51 @@ export function Sidebar({ width = SIDEBAR_WIDTH }: { width?: number }) {
           onClick={() => navigate({ kind: "brands" })}
         />
       </nav>
-      <div className="scroll-area min-h-0 flex-1 pb-3">
-        {conversations.isLoading && (
-          <p className="px-5 pt-3 text-footnote text-fg-3">Sohbetler yükleniyor…</p>
-        )}
-        {groups.map((group) => {
-          if (group.conversations.length === 0 && group.id === "general") return null;
-          const expanded = !collapsed.includes(group.id);
-          return (
-            <section key={group.id} aria-label={group.label} className="flex flex-col">
-              <GroupHeader
-                label={group.label}
-                expanded={expanded}
-                onToggle={() => toggleGroup(group.id)}
-              />
-              {expanded &&
-                group.conversations.map((c) => (
-                  <ConversationRow
-                    key={c.id}
-                    conversation={c}
-                    selected={route.kind === "conversation" && route.id === c.id}
-                    running={c.activeRunId !== null}
-                    onOpen={() => navigate({ kind: "conversation", id: c.id })}
-                    menu={actions.menu(c)}
-                  />
-                ))}
-            </section>
-          );
-        })}
-      </div>
+      <SidebarBody>
+        <div className="scroll-area min-h-0 flex-1 pb-3">
+          {conversations.isLoading && (
+            <p className="px-5 pt-3 text-footnote text-fg-3">Sohbetler yükleniyor…</p>
+          )}
+          {groups.map((group) => {
+            if (group.conversations.length === 0 && group.id === "general") return null;
+            const expanded = !collapsed.includes(group.id);
+            return (
+              <section key={group.id} aria-label={group.label} className="flex flex-col">
+                <GroupHeader
+                  label={group.label}
+                  expanded={expanded}
+                  onToggle={() => toggleGroup(group.id)}
+                />
+                {expanded &&
+                  group.conversations.map((c) => (
+                    <ConversationRow
+                      key={c.id}
+                      conversation={c}
+                      selected={route.kind === "conversation" && route.id === c.id}
+                      running={c.activeRunId !== null}
+                      onOpen={() => navigate({ kind: "conversation", id: c.id })}
+                      menu={actions.menu(c)}
+                    />
+                  ))}
+              </section>
+            );
+          })}
+        </div>
+      </SidebarBody>
       <SidebarFooter brands={brands.data ?? []} />
     </aside>
   );
+}
+
+/**
+ * The sidebar under its navigation: the conversations grouped by brand, or — while a post is open
+ * on the canvas — the post's place (`sidebar` slot: Wecra's Layers, features/post-editor). Leaving
+ * the post brings the conversations back.
+ */
+export function SidebarBody({ children }: { children: ReactNode }) {
+  const postOpen = useWorkspaceStore((s) => s.active !== null);
+  if (postOpen) return <WorkspaceSlot name="sidebar" className="flex min-h-0 flex-1 flex-col" />;
+  return <>{children}</>;
 }
 
 function SidebarFooter({ brands }: { brands: Brand[] }) {
