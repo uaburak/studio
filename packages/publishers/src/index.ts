@@ -15,6 +15,7 @@ export {
   firstCommentFailedMessage,
   firstCommentOf,
   postFirstComment,
+  postPublishWarnings,
 } from "./first-comment.ts";
 export * from "./graph/client.ts";
 export { encodeParamPairs, type Params, type ParamValue } from "./graph/encode.ts";

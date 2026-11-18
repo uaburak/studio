@@ -16,6 +16,31 @@ import type { GraphClient } from "./graph/client.ts";
 import { normaliseText } from "./machine.ts";
 import type { PublishRequest, PublishWarning } from "./models.ts";
 
+/**
+ * Warnings worth keeping after a publish (the post is live, something did not go through):
+ * the first comment, Meta's partial-success issues, a missing permalink or id. Pre-flight
+ * warnings (metadata, aspect ratio) are left out.
+ */
+export function postPublishWarnings(
+  warnings: readonly { code: string; message: string }[],
+): { code: string; message: string }[] {
+  const seen = new Set<string>();
+  return warnings
+    .filter(
+      (w) =>
+        w.code === "FIRST_COMMENT_FAILED" ||
+        w.code.startsWith("CONFIG_ISSUE_") ||
+        w.code === "PERMALINK_UNAVAILABLE" ||
+        w.code === "RECONCILED_WITHOUT_ID",
+    )
+    .filter((w) => {
+      if (seen.has(w.code)) return false;
+      seen.add(w.code);
+      return true;
+    })
+    .map((w) => ({ code: w.code.slice(0, 80), message: w.message.slice(0, 1000) }));
+}
+
 export interface FirstCommentState {
   /** Set (and persisted) before the comment can reach Meta. */
   intentAt: number | null;
