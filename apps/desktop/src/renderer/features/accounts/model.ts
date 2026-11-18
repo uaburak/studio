@@ -1,6 +1,11 @@
 // Ayarlar → Hesaplar as data (pure): one table row per account of every active brand, plus a
 // "Bağla" row for each platform a brand has no live account on; what each row says and offers.
-import type { Brand, Platform, SocialAccount } from "@studio/contract";
+import {
+  type Brand,
+  missingEngagementScopes,
+  type Platform,
+  type SocialAccount,
+} from "@studio/contract";
 import type { AccountsPhase, PublishingApps } from "../../../shared/accounts-ipc.ts";
 import {
   platformName,
@@ -51,6 +56,11 @@ export interface AccountRowModel {
   needsOwner: boolean;
   healthy: boolean;
   hint: string | null;
+  /**
+   * N15 / N16: the token lacks the statistics / comment permissions (connected before they were
+   * asked for). Publishing keeps working; the row offers "Yeniden bağla".
+   */
+  engagementHint: string | null;
   action: AccountAction;
   configured: boolean;
   dimmed: boolean;
@@ -72,6 +82,17 @@ export interface MissingRowModel {
 
 export type AccountsTableRow = AccountRowModel | MissingRowModel;
 
+export const ENGAGEMENT_RECONNECT_HINT = "İstatistik ve yorumlar için hesabı yeniden bağlayın";
+
+/** The hint when the account's known scopes lack the engagement permissions (unknown scopes: none). */
+export function engagementHint(account: SocialAccount): string | null {
+  if (account.status === "disabled" || account.hasToken === false) return null;
+  if (!account.tokenScopes) return null;
+  return missingEngagementScopes(account.platform, account.tokenScopes).length
+    ? ENGAGEMENT_RECONNECT_HINT
+    : null;
+}
+
 export function accountRows(input: {
   brands: Brand[];
   accounts: SocialAccount[];
@@ -92,6 +113,7 @@ export function accountRows(input: {
       const disabled = account.status === "disabled";
       const status = tokenHealthLabel(account, now);
       const title = shownHandle(account);
+      const engagement = engagementHint(account);
       rows.push({
         kind: "account",
         id: `account:${account.id}`,
@@ -104,11 +126,13 @@ export function accountRows(input: {
         needsOwner,
         healthy: !needsOwner && !disabled,
         hint: tokenHint(account),
-        // Never connected (no token yet) → "Bağla"; a token that went bad → "Yeniden bağla".
+        engagementHint: engagement,
+        // Never connected (no token yet) → "Bağla"; a token that went bad (or one without the
+        // statistics and comment permissions) → "Yeniden bağla".
         action:
           disabled || account.hasToken === false || account.status === "pending"
             ? "connect"
-            : needsOwner
+            : needsOwner || engagement
               ? "reconnect"
               : "none",
         configured: appConfigured(account.platform, input.apps),
