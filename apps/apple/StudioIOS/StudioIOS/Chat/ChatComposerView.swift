@@ -193,7 +193,7 @@ final class ChatComposerView: UIView, UITextViewDelegate {
         Self.styleRound(attachButton, symbol: "plus", filled: false)
         attachButton.showsMenuAsPrimaryAction = true
         attachButton.accessibilityLabel = "Ekle"
-        attachButton.accessibilityHint = "Fotoğraf, kamera, dosya ya da panodaki görseli ekler"
+        attachButton.accessibilityHint = "Fotoğraf, video, kamera, dosya ya da panodaki görseli ekler"
 
         Self.styleRound(micButton, symbol: "mic", filled: false)
         micButton.accessibilityLabel = "Dikte"
@@ -408,7 +408,31 @@ final class ChatComposerView: UIView, UITextViewDelegate {
         image.isUserInteractionEnabled = false
         NSLayoutConstraint.activate([box.widthAnchor.constraint(equalToConstant: 56), box.heightAnchor.constraint(equalToConstant: 56)])
 
+        if draft.isVideo {
+            let badge = ChatViews.icon("video.fill", .white, size: 10)
+            badge.backgroundColor = UIColor.black.withAlphaComponent(0.55)
+            badge.layer.cornerRadius = 8
+            box.addSubview(badge)
+            NSLayoutConstraint.activate([
+                badge.leadingAnchor.constraint(equalTo: box.leadingAnchor, constant: 4),
+                badge.bottomAnchor.constraint(equalTo: box.bottomAnchor, constant: -4),
+            ])
+        }
+
         switch draft.state {
+        case .preparing(let progress):
+            let dim = UIView()
+            dim.backgroundColor = UIColor.black.withAlphaComponent(0.45)
+            dim.isUserInteractionEnabled = false
+            box.addSubview(dim)
+            dim.pin(to: box)
+            dim.layer.cornerRadius = 14
+            let ring = UsageRingView(size: 22)
+            ring.ringColor = .white
+            ring.fraction = max(0.05, progress)
+            box.addSubview(ring)
+            NSLayoutConstraint.activate([ring.centerXAnchor.constraint(equalTo: box.centerXAnchor), ring.centerYAnchor.constraint(equalTo: box.centerYAnchor)])
+            box.accessibilityValue = "Video hazırlanıyor yüzde \(Int(progress * 100))"
         case .uploading(let progress):
             let dim = UIView()
             dim.backgroundColor = UIColor.black.withAlphaComponent(0.35)
@@ -549,21 +573,27 @@ final class ChatComposerView: UIView, UITextViewDelegate {
             ])
         }
         let remaining = max(1, 10 - composer.drafts.count)
+        // Pictures and (N21) videos: a clip attached here can become a Reels in the chat.
+        let take: (MediaPicking.Picked) -> Void = { [weak self] picked in
+            guard let self else { return }
+            if !picked.images.isEmpty { self.model.composer.add(picked.images) }
+            if !picked.videos.isEmpty { self.model.composer.add(videos: picked.videos) }
+        }
         var items: [UIMenuElement] = [
-            UIAction(title: "Fotoğraflar", image: UIImage(systemName: "photo.on.rectangle")) { [weak self] _ in
+            UIAction(title: "Fotoğraflar ve videolar", image: UIImage(systemName: "photo.on.rectangle")) { [weak self] _ in
                 guard let self, let host = self.host else { return }
-                ImagePicking.photos(from: host, limit: remaining) { self.model.composer.add($0) }
+                MediaPicking.library(from: host, limit: remaining, onPick: take)
             },
         ]
         if ImagePicking.cameraAvailable {
             items.append(UIAction(title: "Kamera", image: UIImage(systemName: "camera")) { [weak self] _ in
                 guard let self, let host = self.host else { return }
-                ImagePicking.camera(from: host) { self.model.composer.add($0) }
+                MediaPicking.camera(from: host, onPick: take)
             })
         }
         items.append(UIAction(title: "Dosyalar", image: UIImage(systemName: "folder")) { [weak self] _ in
             guard let self, let host = self.host else { return }
-            ImagePicking.files(from: host, limit: remaining) { self.model.composer.add($0) }
+            MediaPicking.files(from: host, limit: remaining, onPick: take)
         })
         items.append(UIAction(title: "Panodan yapıştır", image: UIImage(systemName: "doc.on.clipboard"), attributes: UIPasteboard.general.hasImages ? [] : .disabled) { [weak self] _ in
             self?.model.composer.add(ImagePicking.pastedImages())

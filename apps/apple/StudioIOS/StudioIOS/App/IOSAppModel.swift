@@ -5,14 +5,18 @@ import StudioKit
 import UIKit
 
 /// Settings kept on the phone (UserDefaults + the paired device token in the Keychain).
+///
+/// What the share extension and the widget also read (the token, the extra remote address, the
+/// last brand) lives in the App Group's defaults and the shared Keychain item when the build has
+/// them (`StudioSharedContainer`); values saved before move there on first launch.
 @MainActor
 @Observable
 final class IOSAppSettings {
     nonisolated static let appearanceKey = "studio.ios.appearance"
-    nonisolated static let remoteEnabledKey = "studio.ios.useRemoteURL"
-    nonisolated static let remoteURLKey = "studio.ios.remoteURL"
+    nonisolated static let remoteEnabledKey = SharedSettingsKeys.remoteEnabled
+    nonisolated static let remoteURLKey = SharedSettingsKeys.remoteURL
     nonisolated static let sampleKey = "StudioSampleData"
-    nonisolated static let brandKey = "studio.ios.brand"
+    nonisolated static let brandKey = SharedSettingsKeys.lastBrand
     nonisolated static let noticePrefix = "studio.ios.notices."
     nonisolated static let lastBackgroundKey = "studio.ios.notices.lastCheck"
     nonisolated static let ownerNameKey = "studio.ios.ownerName"
@@ -22,6 +26,8 @@ final class IOSAppSettings {
     nonisolated static let remoteURLExample = "https://studio.ornek.com"
 
     @ObservationIgnored let defaults: UserDefaults
+    /// The App Group's defaults (or `defaults` without it): what the extensions read too.
+    @ObservationIgnored let sharedDefaults: UserDefaults
     @ObservationIgnored let tokenStore: any DeviceTokenStore
     let useSampleData: Bool
     @ObservationIgnored let agentStore: AgentSelectionStore
@@ -33,11 +39,11 @@ final class IOSAppSettings {
     /// Gelişmiş → "Ek uzak adres": also try `remoteURLString` when looking for the Mac (after
     /// the addresses the Mac itself sent, which include its tunnel when it has one).
     var useRemoteControlURL: Bool {
-        didSet { defaults.set(useRemoteControlURL, forKey: Self.remoteEnabledKey) }
+        didSet { sharedDefaults.set(useRemoteControlURL, forKey: Self.remoteEnabledKey) }
     }
 
     var remoteURLString: String {
-        didSet { defaults.set(remoteURLString, forKey: Self.remoteURLKey) }
+        didSet { sharedDefaults.set(remoteURLString, forKey: Self.remoteURLKey) }
     }
 
     /// The owner's first name for the home greeting ("" = guess from the paired Mac's name).
@@ -51,17 +57,23 @@ final class IOSAppSettings {
     /// Notification switches per category (all on by default).
     private(set) var noticeCategories: [ActivityNotice.Category: Bool] = [:]
 
+    /// `sharedDefaults` nil: the App Group's defaults for the real app (old values moved there
+    /// once), `defaults` itself in tests. The default token store is the shared Keychain item
+    /// (moved from the app's own item on first read).
     init(
         defaults: UserDefaults = .standard,
-        tokenStore: any DeviceTokenStore = KeychainDeviceTokenStore(),
+        sharedDefaults: UserDefaults? = nil,
+        tokenStore: (any DeviceTokenStore)? = nil,
         useSampleData: Bool? = nil
     ) {
         self.defaults = defaults
-        self.tokenStore = tokenStore
+        let shared = sharedDefaults ?? (defaults === UserDefaults.standard ? SharedDefaults.store(fallback: defaults) : defaults)
+        self.sharedDefaults = shared
+        self.tokenStore = tokenStore ?? SharedDeviceTokenStore.standard()
         self.agentStore = AgentSelectionStore(defaults: defaults, prefix: "studio.ios.agent")
         self.appearance = IOSAppearancePreference(rawValue: defaults.string(forKey: Self.appearanceKey) ?? "") ?? .system
-        self.useRemoteControlURL = defaults.bool(forKey: Self.remoteEnabledKey)
-        self.remoteURLString = defaults.string(forKey: Self.remoteURLKey) ?? ""
+        self.useRemoteControlURL = shared.bool(forKey: Self.remoteEnabledKey)
+        self.remoteURLString = shared.string(forKey: Self.remoteURLKey) ?? ""
         self.ownerName = defaults.string(forKey: Self.ownerNameKey) ?? ""
         let launchSample = ProcessInfo.processInfo.arguments.drop { $0 != "-StudioSampleData" }.dropFirst().first?.uppercased() == "YES"
         self.useSampleData = useSampleData ?? (launchSample || defaults.bool(forKey: Self.sampleKey))
@@ -122,8 +134,19 @@ final class IOSAppSettings {
     }
 
     var lastBrandId: EntityID? {
-        get { defaults.string(forKey: Self.brandKey) }
-        set { defaults.set(newValue, forKey: Self.brandKey) }
+        get { sharedDefaults.string(forKey: Self.brandKey) }
+        set { sharedDefaults.set(newValue, forKey: Self.brandKey) }
+    }
+
+    /// The brands the share sheet lists before the Mac answers.
+    func shareBrands(_ brands: [Brand]) {
+        SharedBrand.save(brands.map { SharedBrand(id: $0.id, name: $0.name) }, to: sharedDefaults)
+    }
+
+    /// Where the token lives (Gelişmiş shows whether the share sheet and widget can use it).
+    var tokenLocation: SharedDeviceTokenStore.Location? {
+        _ = credentialRevision
+        return (tokenStore as? SharedDeviceTokenStore)?.location
     }
 }
 
@@ -134,11 +157,17 @@ enum IOSRoute: Equatable {
     case newConversation
     case post(EntityID)
     case posts
+    /// The posts screen with a filter (the widget's "onay bekliyor" / "başarısız").
+    case postsFiltered(PostListFilter)
     case calendar
     case brands
     case brand(EntityID)
     case jobs
     case settings
+    /// The brand's media (N21).
+    case media
+    /// The brand's products (N23).
+    case products
     /// The usage sheet (Claude limit decision, paid AI spend).
     case usage
     /// "iPhone'u bağla" / "Yeniden bağla": the QR scanner (with `IOSAppModel.pendingInvite`
@@ -148,15 +177,17 @@ enum IOSRoute: Equatable {
 
 /// Full pages pushed over the chat from the drawer (each former tab and more).
 enum IOSDestination: String, CaseIterable {
-    case posts, calendar, brands, jobs, settings
+    case posts, calendar, media, products, brands, jobs, settings
 
     /// Rows of the drawer's top list (Ayarlar is the avatar at the bottom).
-    static let drawerRows: [IOSDestination] = [.posts, .calendar, .brands, .jobs]
+    static let drawerRows: [IOSDestination] = [.posts, .calendar, .media, .products, .brands, .jobs]
 
     var title: String {
         switch self {
         case .posts: "Postlar"
         case .calendar: "Takvim"
+        case .media: "Medya"
+        case .products: "Ürünler"
         case .brands: "Markalar"
         case .jobs: "Mac durumu"
         case .settings: "Ayarlar"
@@ -167,6 +198,8 @@ enum IOSDestination: String, CaseIterable {
         switch self {
         case .posts: "square.grid.2x2"
         case .calendar: "calendar"
+        case .media: "photo.on.rectangle"
+        case .products: "shippingbox"
         case .brands: "building.2"
         case .jobs: "laptopcomputer"
         case .settings: "gearshape"
@@ -177,6 +210,8 @@ enum IOSDestination: String, CaseIterable {
         switch self {
         case .posts: .posts
         case .calendar: .calendar
+        case .media: .media
+        case .products: .products
         case .brands: .brands
         case .jobs: .jobs
         case .settings: .settings
@@ -188,6 +223,8 @@ enum IOSDestination: String, CaseIterable {
         switch self {
         case .posts: IOSPostsViewController(app: app)
         case .calendar: IOSCalendarViewController(app: app)
+        case .media: IOSMediaViewController(app: app)
+        case .products: IOSProductsViewController(app: app)
         case .brands: BrandsViewController(app: app)
         case .jobs: JobsViewController(app: app)
         case .settings: IOSSettingsViewController(app: app)
@@ -199,6 +236,8 @@ enum IOSDestination: String, CaseIterable {
         switch self {
         case .posts: controller is IOSPostsViewController
         case .calendar: controller is IOSCalendarViewController
+        case .media: controller is IOSMediaViewController
+        case .products: controller is IOSProductsViewController
         case .brands: controller is BrandsViewController
         case .jobs: controller is JobsViewController
         case .settings: controller is IOSSettingsViewController
@@ -555,6 +594,7 @@ final class IOSAppModel {
             async let loadedAccounts = dataService.socialAccounts(brandId: nil)
             async let loadedConvs = conversationService.conversations()
             brands = try await loadedBrands
+            if !isSample { settings.shareBrands(brands) }
             accounts = (try? await loadedAccounts) ?? accounts
             conversations = try await loadedConvs
             if currentBrandId == nil || !brands.contains(where: { $0.id == currentBrandId }) {
@@ -569,6 +609,8 @@ final class IOSAppModel {
         }
         startJobFeed()
         await posts.load()
+        // Shares the share sheet left for the app (their uploads ended after it closed).
+        if !isSample { await IOSShareInbox.deliverReady(app: self) }
     }
 
     // MARK: Pairing
@@ -580,13 +622,34 @@ final class IOSAppModel {
         reconnect()
     }
 
-    /// A `studio://pair` link: keep it for the scanner sheet, which pairs with it.
+    /// A `studio://pair` link: keep it for the scanner sheet, which pairs with it. A
+    /// `studio://open/...` link (the widget, a finished share): go there.
     @discardableResult
     func openLink(_ url: URL) -> Bool {
+        if let link = StudioLink(url: url) {
+            follow(link)
+            return true
+        }
         guard PairingInvite.isPairingLink(url) else { return false }
         pendingInvite = try? PairingInvite.parse(url)
         open(.pair)
         return true
+    }
+
+    /// The widget's links (N22): the brand it names, then the screen.
+    func follow(_ link: StudioLink) {
+        if let brandId = link.brandId, brandId != currentBrandId, brands.isEmpty || brands.contains(where: { $0.id == brandId }) {
+            selectBrand(brandId)
+        }
+        switch link {
+        case .approvals: open(.postsFiltered(.ready))
+        case .failures: open(.postsFiltered(.failed))
+        case .post(let id): open(.post(id))
+        case .calendar: open(.calendar)
+        case .media: open(.media)
+        case .products: open(.products)
+        case .conversation(let id): open(.conversation(id))
+        }
     }
 
     /// Forget the Mac on this phone (the Mac lists it until removed there).
@@ -619,6 +682,8 @@ final class IOSAppModel {
             if job.status.isTerminal {
                 if job.type == .schedulePublish || job.type == .contentGenerate { Task { await calendar.load() } }
                 if job.type == .brandAnalyze { Task { await self.load() } }
+                // New versions, publishes and failures change what the widget shows.
+                if [.schedulePublish, .contentGenerate, .contentRender].contains(job.type) { IOSWidgets.reload() }
             }
             let title = job.contentId.flatMap { posts.card($0)?.title }
             for notice in noticeTracker.notices(for: job, contentTitle: title) { deliver(notice) }
@@ -669,6 +734,7 @@ final class IOSAppModel {
         retryTask = nil
         settings.defaults.set(Date(), forKey: IOSAppSettings.lastBackgroundKey)
         notifier.scheduleBackgroundRefresh()
+        if !isSample { IOSWidgets.reload(force: true) }
     }
 
     private func refreshAfterForeground() async {

@@ -395,7 +395,7 @@ final class ShareModel {
                 group.addTask {
                     do {
                         let asset = try await client.uploadAsset(file, brandId: brandId, kind: file.assetKind, tag: tag, bodyDirectory: bodyDirectory) { value in
-                            Task { @MainActor [weak self] in self?.uploadProgress(index: index, value: value * weight) }
+                            Task { @MainActor in self.uploadProgress(index: index, value: value * weight) }
                         }
                         return (index, asset, nil)
                     } catch {

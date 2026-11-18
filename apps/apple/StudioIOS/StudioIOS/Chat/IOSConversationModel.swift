@@ -10,6 +10,8 @@ import UIKit
 final class IOSComposerModel {
     struct Draft: Identifiable, Equatable {
         enum State: Equatable {
+            /// A video being checked / exported to fit the Mac's limit (N21).
+            case preparing(Double)
             case uploading(Double)
             case uploaded(Asset)
             case failed(String)
@@ -20,6 +22,10 @@ final class IOSComposerModel {
         var thumbnail: UIImage
         var file: UploadFile
         var state: State
+        /// The picked video's copy (prepared before the upload; deleted after).
+        var videoSource: URL?
+        /// `file` is the prepared video (as it is, or exported to fit).
+        var videoPrepared = false
 
         var asset: Asset? {
             if case .uploaded(let asset) = state { return asset }
@@ -27,11 +33,17 @@ final class IOSComposerModel {
         }
 
         var isUploading: Bool {
-            if case .uploading = state { return true }
-            return false
+            switch state {
+            case .uploading, .preparing: true
+            case .uploaded, .failed: false
+            }
         }
 
-        static func == (a: Draft, b: Draft) -> Bool { a.id == b.id && a.alias == b.alias && a.state == b.state }
+        var isVideo: Bool { videoSource != nil || file.isVideo }
+
+        static func == (a: Draft, b: Draft) -> Bool {
+            a.id == b.id && a.alias == b.alias && a.state == b.state && a.thumbnail === b.thumbnail
+        }
     }
 
     var text: String = "" {
@@ -94,18 +106,69 @@ final class IOSComposerModel {
         updateSuggestions()
     }
 
+    /// Videos from Photos, the camera or Files (N21): checked and, when they do not fit the Mac's
+    /// 50 MB limit, exported again on the phone, then uploaded like pictures.
+    func add(videos: [URL]) {
+        guard let uploader, attachDisabledReason == nil else {
+            error = attachDisabledReason ?? "Video eklemek için önce bir marka seç."
+            videos.forEach(MediaPicking.discard)
+            return
+        }
+        error = nil
+        let room = max(0, 10 - drafts.count)
+        for url in videos.dropFirst(room) { MediaPicking.discard(url) }
+        for url in videos.prefix(room) {
+            var draft = Draft(
+                alias: allocator.next(), thumbnail: UIImage(systemName: "video") ?? UIImage(),
+                file: UploadFile(filename: url.lastPathComponent, mimeType: "video/quicktime", fileURL: url), state: .preparing(0))
+            draft.videoSource = url
+            drafts.append(draft)
+            let id = draft.id
+            Task { [weak self] in
+                guard let image = await VideoThumbnail.make(url), let self, let index = self.drafts.firstIndex(where: { $0.id == id }) else { return }
+                self.drafts[index].thumbnail = image
+            }
+            prepareVideo(id, uploader: uploader)
+        }
+        if videos.count > room { error = "Bir mesajda en fazla 10 ek olabilir." }
+        updateSuggestions()
+    }
+
+    private func prepareVideo(_ id: UUID, uploader: @escaping (UploadFile, @escaping @Sendable (Double) -> Void) async throws -> Asset) {
+        guard let source = drafts.first(where: { $0.id == id })?.videoSource else { return }
+        uploads[id]?.cancel()
+        uploads[id] = Task { [weak self] in
+            do {
+                let prepared = try await VideoPreparation.prepare(source, workDirectory: source.deletingLastPathComponent()) { progress in
+                    Task { @MainActor in self?.setState(id, .preparing(progress)) }
+                }
+                guard let self, let index = self.drafts.firstIndex(where: { $0.id == id }) else { return }
+                self.drafts[index].file = prepared.file
+                self.drafts[index].videoPrepared = true
+                self.drafts[index].state = .uploading(0)
+                self.startUpload(id, uploader: uploader)
+            } catch is CancellationError {
+                return
+            } catch {
+                self?.setState(id, .failed(IOSAppModel.describe(error)))
+            }
+        }
+    }
+
     private func startUpload(_ id: UUID, uploader: @escaping (UploadFile, @escaping @Sendable (Double) -> Void) async throws -> Asset) {
         guard let draft = drafts.first(where: { $0.id == id }) else { return }
         let file = draft.file
-        let thumbnail = draft.thumbnail
+        let source = draft.videoSource
         uploads[id]?.cancel()
         uploads[id] = Task { [weak self] in
             do {
                 let asset = try await uploader(file) { [weak self] progress in
                     Task { @MainActor in self?.setState(id, .uploading(progress)) }
                 }
-                self?.onUploaded?(asset, thumbnail)
+                let thumbnail = self?.drafts.first { $0.id == id }?.thumbnail
+                if let thumbnail { self?.onUploaded?(asset, thumbnail) }
                 self?.setState(id, .uploaded(asset))
+                if let source { MediaPicking.discard(source) }
             } catch is CancellationError {
                 return
             } catch {
@@ -116,12 +179,22 @@ final class IOSComposerModel {
 
     private func setState(_ id: UUID, _ state: Draft.State) {
         guard let index = drafts.firstIndex(where: { $0.id == id }) else { return }
-        if case .uploading = state, case .uploaded = drafts[index].state { return }
-        drafts[index].state = state
+        switch (state, drafts[index].state) {
+        case (.uploading, .uploaded), (.preparing, .uploaded), (.preparing, .uploading), (.preparing, .failed), (.uploading, .failed):
+            return
+        default:
+            drafts[index].state = state
+        }
     }
 
     func retry(_ id: UUID) {
         guard let uploader, let index = drafts.firstIndex(where: { $0.id == id }) else { return }
+        // A video that never got ready is prepared again.
+        if drafts[index].videoSource != nil, !drafts[index].videoPrepared {
+            drafts[index].state = .preparing(0)
+            prepareVideo(id, uploader: uploader)
+            return
+        }
         drafts[index].state = .uploading(0)
         startUpload(id, uploader: uploader)
     }
@@ -129,7 +202,10 @@ final class IOSComposerModel {
     func remove(_ id: UUID) {
         uploads[id]?.cancel()
         uploads[id] = nil
-        if let draft = drafts.first(where: { $0.id == id }) { allocator.release(draft.alias) }
+        if let draft = drafts.first(where: { $0.id == id }) {
+            allocator.release(draft.alias)
+            if let source = draft.videoSource { MediaPicking.discard(source) }
+        }
         drafts.removeAll { $0.id == id }
         updateSuggestions()
     }

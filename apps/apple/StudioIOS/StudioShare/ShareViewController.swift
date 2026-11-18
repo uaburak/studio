@@ -49,7 +49,7 @@ final class ShareFormViewController: UITableViewController, UITextViewDelegate {
     private let onFinish: (ShareViewController.Outcome) -> Void
     private var sections: [(title: String?, footer: String?, rows: [Row])] = []
     private let messageView = UITextView()
-    private lazy var sendItem = UIBarButtonItem(title: "Gönder", style: .done, target: self, action: #selector(sendTapped))
+    private lazy var sendItem = UIBarButtonItem(title: "Gönder", style: .prominent, target: self, action: #selector(sendTapped))
 
     init(model: ShareModel, onFinish: @escaping (ShareViewController.Outcome) -> Void) {
         self.model = model
@@ -105,7 +105,7 @@ final class ShareFormViewController: UITableViewController, UITextViewDelegate {
                 : nil
         case .done:
             navigationItem.leftBarButtonItem = nil
-            navigationItem.rightBarButtonItem = UIBarButtonItem(title: "Kapat", style: .done, target: self, action: #selector(leaveTapped))
+            navigationItem.rightBarButtonItem = UIBarButtonItem(title: "Kapat", style: .prominent, target: self, action: #selector(leaveTapped))
         case .editing, .failed:
             navigationItem.leftBarButtonItem = UIBarButtonItem(title: "Vazgeç", style: .plain, target: self, action: #selector(cancelTapped))
             navigationItem.rightBarButtonItem = sendItem

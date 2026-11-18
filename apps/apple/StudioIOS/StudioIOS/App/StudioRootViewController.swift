@@ -336,6 +336,13 @@ final class StudioRootViewController: UIViewController, UINavigationControllerDe
             showPost(id)
         case .posts:
             show(.posts)
+        case .postsFiltered(let filter):
+            app.posts.focus(filter)
+            show(.posts)
+        case .media:
+            show(.media)
+        case .products:
+            show(.products)
         case .calendar:
             show(.calendar)
         case .brands:
@@ -429,6 +436,11 @@ final class StudioRootViewController: UIViewController, UINavigationControllerDe
     private func showPost(_ id: EntityID) {
         Task {
             if app.posts.card(id) == nil { await app.posts.load() }
+            // A post of another brand (the widget lists every brand): switch to it first.
+            if app.posts.card(id) == nil, let content = try? await app.dataService.content(id), content.brandId != app.currentBrandId {
+                app.selectBrand(content.brandId)
+                await app.posts.load()
+            }
             guard let card = app.posts.card(id) else {
                 Toast.show("Post bulunamadı", in: view, isError: true)
                 return
