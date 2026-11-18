@@ -171,6 +171,39 @@ public protocol StudioDataService: Sendable {
     func linkedInOAuth(_ input: LinkedInOAuthInput) async throws -> SocialAccount
     func checkSocialAccount(id: EntityID, _ input: SocialAccountCheckInput) async throws -> SocialAccount
     func disconnectSocialAccount(id: EntityID) async throws -> SocialAccount
+
+    // Products, one asset, Reels from footage (N21, N23). Defaults below.
+    func products(brandId: EntityID) async throws -> [BrandProduct]
+    func createProduct(brandId: EntityID, _ input: BrandProductCreate) async throws -> BrandProduct
+    func updateProduct(brandId: EntityID, id: EntityID, _ input: BrandProductUpdate) async throws -> BrandProduct
+    func deleteProduct(brandId: EntityID, id: EntityID) async throws
+    /// One asset (with what the Mac read on it, once analysed).
+    func asset(_ id: EntityID) async throws -> Asset
+    /// "Bu çekimden Reels yap": a new Reels content and its `content.generate` job.
+    func createReel(_ request: ReelFromFootage) async throws -> (Content, Job)
+}
+
+/// N21 / N23 defaults: other conformers keep compiling.
+extension StudioDataService {
+    public func products(brandId: EntityID) async throws -> [BrandProduct] { [] }
+    public func createProduct(brandId: EntityID, _ input: BrandProductCreate) async throws -> BrandProduct {
+        throw StudioAPIError.invalidConfiguration("Ürünler bu bağlantıda kaydedilemiyor.")
+    }
+    public func updateProduct(brandId: EntityID, id: EntityID, _ input: BrandProductUpdate) async throws -> BrandProduct {
+        throw StudioAPIError.invalidConfiguration("Ürünler bu bağlantıda kaydedilemiyor.")
+    }
+    public func deleteProduct(brandId: EntityID, id: EntityID) async throws {
+        throw StudioAPIError.invalidConfiguration("Ürünler bu bağlantıda silinemiyor.")
+    }
+    public func asset(_ id: EntityID) async throws -> Asset {
+        guard let found = try await assets(brandId: nil, kind: nil).first(where: { $0.id == id }) else {
+            throw StudioAPIError.server(status: 404, code: .notFound, message: "asset \(id) not found", issues: [])
+        }
+        return found
+    }
+    public func createReel(_ request: ReelFromFootage) async throws -> (Content, Job) {
+        throw StudioAPIError.invalidConfiguration("Reels bu bağlantıda başlatılamıyor.")
+    }
 }
 
 /// Approval without the checks' acknowledgement (E7): what every caller sends unless the user
@@ -396,8 +429,9 @@ public struct RemoteConversationService: ConversationService {
         try await client.generatePlan(planId, PlanGenerate(model: model?.sendable, effort: effort?.sendable)).plan
     }
 
+    /// A picture or (N21) a video attached to a message.
     public func uploadImage(_ file: UploadFile, brandId: EntityID, progress: @escaping @Sendable (Double) -> Void) async throws -> Asset {
-        try await client.uploadAsset(file, brandId: brandId, kind: .image, progress: progress)
+        try await client.uploadAsset(file, brandId: brandId, kind: file.assetKind, progress: progress)
     }
 }
 
@@ -523,8 +557,19 @@ public struct RemoteStudioDataService: StudioDataService {
     }
 
     public func uploadImage(_ file: UploadFile, brandId: EntityID, progress: @escaping @Sendable (Double) -> Void) async throws -> Asset {
-        try await client.uploadAsset(file, brandId: brandId, kind: .image, progress: progress)
+        try await client.uploadAsset(file, brandId: brandId, kind: file.assetKind, progress: progress)
     }
+
+    public func products(brandId: EntityID) async throws -> [BrandProduct] { try await client.products(brandId: brandId) }
+    public func createProduct(brandId: EntityID, _ input: BrandProductCreate) async throws -> BrandProduct {
+        try await client.createProduct(brandId: brandId, input)
+    }
+    public func updateProduct(brandId: EntityID, id: EntityID, _ input: BrandProductUpdate) async throws -> BrandProduct {
+        try await client.updateProduct(brandId: brandId, id: id, input)
+    }
+    public func deleteProduct(brandId: EntityID, id: EntityID) async throws { try await client.deleteProduct(brandId: brandId, id: id) }
+    public func asset(_ id: EntityID) async throws -> Asset { try await client.asset(id) }
+    public func createReel(_ request: ReelFromFootage) async throws -> (Content, Job) { try await client.createReel(request) }
 
     public func generateAIImage(
         brandId: EntityID, prompt: String, aspectRatio: String, imageSize: String,

@@ -13,8 +13,17 @@ SWIFT_EMIT_LOC_STRINGS = YES
 LOCALIZATION_PREFERS_STRING_CATALOGS = YES
 
 // The app's bundle id: the one place it is set for iOS (Info.plist and the code derive from
-// it). Override it in Config/Local.xcconfig for your own Apple team.
+// it). Override it in Config/Local.xcconfig for your own Apple team. The extensions are
+// $(STUDIO_BUNDLE_ID).share and $(STUDIO_BUNDLE_ID).widget; the App Group is
+// group.$(STUDIO_BUNDLE_ID); the shared Keychain group $(AppIdentifierPrefix)$(STUDIO_BUNDLE_ID).shared.
 STUDIO_BUNDLE_ID = net.burakkoc.studio.ios
+
+// What the app shares with its share extension and widget (apps/apple/README.md):
+//   YES      App Group + shared Keychain group (a paid team with both identifiers registered)
+//   KEYCHAIN shared Keychain group only (a free personal team; the wildcard-profile install)
+//   NO       neither (the extensions then ask to open Studio)
+// Override it in Config/Local.xcconfig. Simulator builds are unsigned and ignore it.
+STUDIO_SHARING = YES
 
 MARKETING_VERSION = 0.1.0
 CURRENT_PROJECT_VERSION = 1

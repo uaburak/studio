@@ -72,6 +72,7 @@ final class IOSPostsModel {
                     month = nearest
                 }
             }
+            applyFocus()
             error = nil
         } catch {
             guard generation == loadGeneration else { return }
@@ -103,6 +104,30 @@ final class IOSPostsModel {
             sessions[card.id]?.session?.replaceCard(card)
         }
         sessions = sessions.filter { $0.value.session != nil }
+        applyFocus()
+        // Approvals and schedules changed: the widget asks again (throttled).
+        if app?.isSample == false { IOSWidgets.reload() }
+    }
+
+    // MARK: Opening with a filter (the widget)
+
+    @ObservationIgnored private var pendingFocus: PostListFilter?
+
+    /// Show `filter`, on the month nearest to today that has such posts (the widget's
+    /// "onay bekliyor" may be in another month).
+    func focus(_ filter: PostListFilter) {
+        self.filter = filter
+        pendingFocus = filter
+        applyFocus()
+    }
+
+    private func applyFocus() {
+        guard let filter = pendingFocus, hasLoaded || !board.cards.isEmpty, loadedBrandId == brandId else { return }
+        pendingFocus = nil
+        let matching = months.filter { month in board.cards(in: month).contains { filter.matches($0.state) } }
+        guard !matching.contains(month) else { return }
+        let today = MonthKey(Date())
+        if let nearest = matching.min(by: { abs($0.distance(to: today)) < abs($1.distance(to: today)) }) { month = nearest }
     }
 
     // MARK: Derived

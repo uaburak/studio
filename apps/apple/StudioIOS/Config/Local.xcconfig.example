@@ -11,3 +11,8 @@ DEVELOPMENT_TEAM =
 
 // Your own bundle id, when the default one is not registered to your team.
 // STUDIO_BUNDLE_ID = com.example.studio.ios
+
+// What the app shares with its share extension and widget (apps/apple/README.md):
+// YES = App Group + shared Keychain (paid team, group.<bundle id> registered); KEYCHAIN = a free
+// personal team (no App Groups); NO = neither.
+// STUDIO_SHARING = KEYCHAIN

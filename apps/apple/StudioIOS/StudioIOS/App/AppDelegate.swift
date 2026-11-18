@@ -35,6 +35,8 @@ final class AppDelegate: UIResponder, UIApplicationDelegate, UNUserNotificationC
 
     /// The system finished (or needs the app for) uploads it kept sending while the app was away.
     func application(_ application: UIApplication, handleEventsForBackgroundURLSession identifier: String, completionHandler: @escaping () -> Void) {
+        // The share extension's uploads that ended after its sheet closed (N20).
+        if IOSShareInbox.handleEvents(identifier: identifier, app: model, completion: completionHandler) { return }
         guard identifier == IOSUploads.identifier else {
             completionHandler()
             return

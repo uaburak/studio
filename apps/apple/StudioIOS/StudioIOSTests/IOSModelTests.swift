@@ -198,4 +198,54 @@ struct IOSModelTests {
         #expect(ReelVideo.assetId(in: #"<main data-artboard data-video-asset-id="vid-1" data-cover-asset-id="c"></main>"#) == "vid-1")
         #expect(ReelVideo.assetId(in: "<main></main>") == nil)
     }
+
+    /// Widget links (N22) and finished shares (N20) lead to the right screen.
+    @Test func studioLinksOpenTheirScreens() async throws {
+        let (app, _, _) = await makeIOSApp()
+        #expect(app.openLink(StudioLink.approvals(brandId: "b-koc").url))
+        #expect(app.currentBrandId == "b-koc")
+        #expect(app.pendingRoute == .postsFiltered(.ready))
+        #expect(app.openLink(StudioLink.failures(brandId: nil).url))
+        #expect(app.pendingRoute == .postsFiltered(.failed))
+        #expect(app.openLink(StudioLink.post("c-1").url))
+        #expect(app.pendingRoute == .post("c-1"))
+        #expect(app.openLink(StudioLink.media(brandId: nil).url))
+        #expect(app.pendingRoute == .media)
+        #expect(!app.openLink(URL(string: "studio://open/nothing")!))
+        #expect(IOSNotifier.route(from: ["link": StudioLink.conversation("conv-9").url.absoluteString]) == .conversation("conv-9"))
+        #expect(IOSNotifier.route(from: ["link": StudioLink.products(brandId: nil).url.absoluteString]) == .products)
+    }
+
+    /// The settings the extensions read live in the shared defaults.
+    @Test func sharedSettingsGoToTheSharedDefaults() throws {
+        let own = try #require(UserDefaults(suiteName: "studio.ios.tests.own.\(UUID().uuidString)"))
+        let shared = try #require(UserDefaults(suiteName: "studio.ios.tests.shared.\(UUID().uuidString)"))
+        let settings = IOSAppSettings(defaults: own, sharedDefaults: shared, tokenStore: InMemoryDeviceTokenStore(), useSampleData: true)
+        settings.lastBrandId = "b-1"
+        settings.useRemoteControlURL = true
+        settings.remoteURLString = "https://studio.ornek.com"
+        settings.shareBrands([Brand(id: "b-1", name: "Koç", slug: "koc", createdAt: .now, updatedAt: .now)])
+        #expect(shared.string(forKey: SharedSettingsKeys.lastBrand) == "b-1")
+        #expect(SharedSettingsKeys.manualRemoteURL(in: shared)?.host() == "studio.ornek.com")
+        #expect(SharedBrand.load(from: shared).map(\.name) == ["Koç"])
+        #expect(own.object(forKey: SharedSettingsKeys.lastBrand) == nil)
+    }
+
+    /// Products and media on the sample backend.
+    @Test func productsAndMediaModels() async throws {
+        let (app, _, _) = await makeIOSApp()
+        let products = IOSProductsModel(app: app)
+        await products.load()
+        #expect(products.products.isEmpty)
+        let created = try await app.dataService.createProduct(brandId: app.currentBrandId!, BrandProductCreate(name: " Kompoze ", tags: ["a", "A"]))
+        products.saved(created)
+        #expect(products.products.map(\.name) == ["Kompoze"])
+        #expect(await products.delete(created) == nil)
+        #expect(products.products.isEmpty)
+
+        let media = IOSMediaModel(app: app)
+        await media.load()
+        media.filter = .videos
+        #expect(media.visible.allSatisfy { $0.kind == .video })
+    }
 }

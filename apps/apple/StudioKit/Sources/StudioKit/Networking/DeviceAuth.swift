@@ -41,19 +41,25 @@ public protocol DeviceTokenStore: Sendable {
 public struct KeychainDeviceTokenStore: DeviceTokenStore {
     public var service: String
     public var account: String
+    /// The Keychain access group (the one shared with the extensions); nil = the process's own
+    /// default group (and, when reading, every group it may read).
+    public var accessGroup: String?
 
     /// `service` defaults to the app's bundle id (set once in the app's build settings).
-    public init(service: String = Bundle.main.bundleIdentifier ?? "studio", account: String = "paired-device-token") {
+    public init(service: String = Bundle.main.bundleIdentifier ?? "studio", account: String = "paired-device-token", accessGroup: String? = nil) {
         self.service = service
         self.account = account
+        self.accessGroup = accessGroup
     }
 
     private var baseQuery: [String: Any] {
-        [
+        var query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: account,
         ]
+        if let accessGroup { query[kSecAttrAccessGroup as String] = accessGroup }
+        return query
     }
 
     public func load() throws -> DeviceCredential? {

@@ -86,6 +86,18 @@ final class IOSNotifier {
     /// Where a tapped notification leads.
     nonisolated static func route(from userInfo: [AnyHashable: Any]) -> IOSRoute? {
         if userInfo["route"] as? String == "usage" { return .usage }
+        // A finished share (N20) links where it went.
+        if let raw = userInfo["link"] as? String, let url = URL(string: raw), let link = StudioLink(url: url) {
+            switch link {
+            case .conversation(let id): return .conversation(id)
+            case .post(let id): return .post(id)
+            case .media: return .media
+            case .products: return .products
+            case .calendar: return .calendar
+            case .approvals: return .postsFiltered(.ready)
+            case .failures: return .postsFiltered(.failed)
+            }
+        }
         if let id = userInfo["conversationId"] as? String { return .conversation(id) }
         if let id = userInfo["contentId"] as? String { return .post(id) }
         if let kind = userInfo["kind"] as? String {
@@ -136,17 +148,15 @@ private final class BackgroundTaskBox: @unchecked Sendable {
 /// Claude limit that waits for "Gemini ile devam et / Sınırı bekle".
 enum BackgroundJobCheck {
     static func run(defaults: UserDefaults = .standard) async -> Bool {
-        let pairing = PairingClient(store: KeychainDeviceTokenStore())
+        let store = SharedDeviceTokenStore.standard()
+        let pairing = PairingClient(store: store)
         guard let credential = pairing.credential() else { return true }
-        var manual: URL?
-        if defaults.bool(forKey: IOSAppSettings.remoteEnabledKey),
-           let raw = defaults.string(forKey: IOSAppSettings.remoteURLKey), let url = URL(string: raw), url.host != nil {
-            manual = url
-        }
+        let shared = SharedDefaults.store(fallback: defaults)
+        let manual = SharedSettingsKeys.manualRemoteURL(in: shared)
         let candidates = MacRoutePlanner.candidates(lastKnown: credential.serverURL, routes: credential.routes, manual: manual)
         guard let found = await MacConnector().firstReachable(candidates, macId: credential.macId) else { return false }
         if found.url != credential.serverURL { try? pairing.updateServerURL(found.url) }
-        let client = APIClient(baseURL: found.url, auth: DeviceTokenAuth(store: KeychainDeviceTokenStore()))
+        let client = APIClient(baseURL: found.url, auth: DeviceTokenAuth(store: store))
         let since = defaults.object(forKey: IOSAppSettings.lastBackgroundKey) as? Date ?? Date().addingTimeInterval(-3600)
         let enabled = { (notice: ActivityNotice) -> Bool in
             defaults.object(forKey: IOSAppSettings.noticePrefix + notice.kind.category.rawValue) as? Bool ?? true
@@ -164,6 +174,8 @@ enum BackgroundJobCheck {
                 try? await UNUserNotificationCenter.current().add(IOSNotifier.request(for: notice))
             }
             defaults.set(Date(), forKey: IOSAppSettings.lastBackgroundKey)
+            // The widget follows what the background pass saw (N22).
+            if !notices.isEmpty { await MainActor.run { IOSWidgets.reload(force: true) } }
             return true
         } catch {
             return false

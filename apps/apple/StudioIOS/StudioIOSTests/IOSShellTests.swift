@@ -171,7 +171,7 @@ struct IOSShellTests {
         let app = await makeApp()
         let root = await makeRoot(app)
         let drawer = root.drawer
-        #expect(IOSDestination.drawerRows == [.posts, .calendar, .brands, .jobs])
+        #expect(IOSDestination.drawerRows == [.posts, .calendar, .media, .products, .brands, .jobs])
 
         for destination in IOSDestination.allCases {
             root.setDrawer(open: true, animated: false)
