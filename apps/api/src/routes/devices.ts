@@ -320,7 +320,7 @@ async function closeDeviceStreams(env: Env, deviceId: string): Promise<void> {
 }
 
 /** Saved routes, or null when the Mac app has not published any (or they no longer parse). */
-async function readRoutes(db: Db): Promise<MacRoutes | null> {
+export async function readRoutes(db: Db): Promise<MacRoutes | null> {
   const row = await db.query.appMeta.findFirst({ where: eq(appMeta.key, ROUTES_KEY) });
   if (!row) return null;
   try {

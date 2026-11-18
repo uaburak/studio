@@ -121,6 +121,16 @@ export const MacRoutes = z
       .url({ protocol: /^https$/ })
       .max(2_000)
       .nullable(),
+    /**
+     * State of the Remote Control tunnel as the Mac app sees it (P9, `/api/health`): off, running
+     * (ok), waiting for a token or address (warn), stopped (fail). Absent from older Mac apps.
+     */
+    tunnel: z
+      .object({
+        state: z.enum(["off", "ok", "warn", "fail"]),
+        detail: z.string().max(500),
+      })
+      .optional(),
     updatedAt: Timestamp,
   })
   .meta({ id: "MacRoutes" });
