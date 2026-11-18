@@ -28,6 +28,9 @@ export type ValidationCode =
   | "ALT_TEXT_NOT_SUPPORTED"
   | "TOO_MANY_COLLABORATORS"
   | "USER_TAG_POSITION_REQUIRED"
+  | "TOO_MANY_USER_TAGS"
+  | "USERNAME_INVALID"
+  | "FIRST_COMMENT_TOO_LONG"
   | "IMAGE_FORMAT_UNSUPPORTED"
   | "IMAGE_TOO_LARGE"
   | "IMAGE_PNG_LARGE"
@@ -186,6 +189,74 @@ function checkCollaborators(c: Collector, path: string, list: string[] | undefin
       path,
       `En fazla ${INSTAGRAM_LIMITS.collaborators.max} ortak hesap eklenebilir (şu an ${list.length}).`,
     );
+  list?.forEach((name, i) => {
+    if (!INSTAGRAM_LIMITS.username.test(name))
+      c.error("USERNAME_INVALID", join(path, i), `Geçersiz Instagram kullanıcı adı: ${name}`);
+  });
+}
+
+/** The first comment on Instagram: the caption's limits. */
+function checkIgComment(c: Collector, path: string, text: string | undefined) {
+  if (!text) return;
+  const L = INSTAGRAM_LIMITS.comment;
+  const chars = charCount(text);
+  if (chars > L.maxChars)
+    c.error(
+      "FIRST_COMMENT_TOO_LONG",
+      path,
+      `İlk yorum en fazla ${n(L.maxChars)} karakter olabilir (şu an ${n(chars)}).`,
+    );
+  const tags = countHashtags(text);
+  if (tags > L.maxHashtags)
+    c.error(
+      "TOO_MANY_HASHTAGS",
+      path,
+      `İlk yorumda en fazla ${L.maxHashtags} hashtag kullanılabilir (şu an ${tags}).`,
+    );
+  const mentions = countMentions(text);
+  if (mentions > L.maxMentions)
+    c.error(
+      "TOO_MANY_MENTIONS",
+      path,
+      `İlk yorumda en fazla ${L.maxMentions} @ etiketi kullanılabilir (şu an ${mentions}).`,
+    );
+}
+
+function checkFbComment(c: Collector, path: string, text: string | undefined) {
+  if (!text) return;
+  const chars = charCount(text);
+  if (chars > FACEBOOK_LIMITS.comment.maxChars)
+    c.error(
+      "FIRST_COMMENT_TOO_LONG",
+      path,
+      `İlk yorum en fazla ${n(FACEBOOK_LIMITS.comment.maxChars)} karakter olabilir (şu an ${n(chars)}).`,
+    );
+}
+
+/** User tags of one picture: count, usernames and (for pictures) the x / y position. */
+function checkUserTags(
+  c: Collector,
+  path: string,
+  tags: { username: string; x?: number | undefined; y?: number | undefined }[] | undefined,
+  opts: { positions: boolean },
+) {
+  if (!tags) return;
+  if (tags.length > INSTAGRAM_LIMITS.userTags.maxPerMedia)
+    c.error(
+      "TOO_MANY_USER_TAGS",
+      path,
+      `Bir görselde en fazla ${INSTAGRAM_LIMITS.userTags.maxPerMedia} kişi etiketlenebilir (şu an ${tags.length}).`,
+    );
+  tags.forEach((t, i) => {
+    if (!INSTAGRAM_LIMITS.username.test(t.username))
+      c.error("USERNAME_INVALID", join(path, i), `Geçersiz Instagram kullanıcı adı: ${t.username}`);
+    if (opts.positions && (t.x === undefined || t.y === undefined))
+      c.error(
+        "USER_TAG_POSITION_REQUIRED",
+        join(path, i),
+        "Görselde kişi etiketi için x ve y konumu gerekli.",
+      );
+  });
 }
 
 /** One warning listing every metadata field we could not check. `mimeType` counts as known if the URL extension tells. */
@@ -381,14 +452,8 @@ function validateInstagram(c: Collector, r: InstagramRequest) {
       checkIgImage(c, "image", r.image, { feed: true });
       checkIgCaption(c, "caption", r.caption);
       checkCollaborators(c, "collaborators", r.collaborators);
-      r.userTags?.forEach((t, i) => {
-        if (t.x === undefined || t.y === undefined)
-          c.error(
-            "USER_TAG_POSITION_REQUIRED",
-            `userTags.${i}`,
-            "Görselde kişi etiketi için x ve y konumu gerekli.",
-          );
-      });
+      checkUserTags(c, "userTags", r.userTags, { positions: true });
+      checkIgComment(c, "firstComment", r.firstComment);
       return;
     case "instagram.carousel": {
       const L = INSTAGRAM_LIMITS.carousel;
@@ -407,8 +472,10 @@ function validateInstagram(c: Collector, r: InstagramRequest) {
       const first = r.items[0] ? aspectOf(r.items[0]) : undefined;
       r.items.forEach((item, i) => {
         const p = `items.${i}`;
-        if (item.kind === "image") checkIgImage(c, p, item, { feed: true });
-        else checkVideo(c, p, item, INSTAGRAM_LIMITS.reel, "Instagram");
+        if (item.kind === "image") {
+          checkIgImage(c, p, item, { feed: true });
+          checkUserTags(c, join(p, "userTags"), item.userTags, { positions: true });
+        } else checkVideo(c, p, item, INSTAGRAM_LIMITS.reel, "Instagram");
         const a = aspectOf(item);
         if (i > 0 && first !== undefined && a !== undefined && Math.abs(a - first) > 0.01)
           c.warn(
@@ -419,12 +486,15 @@ function validateInstagram(c: Collector, r: InstagramRequest) {
       });
       checkIgCaption(c, "caption", r.caption);
       checkCollaborators(c, "collaborators", r.collaborators);
+      checkIgComment(c, "firstComment", r.firstComment);
       return;
     }
     case "instagram.reel": {
       checkVideo(c, "video", r.video, INSTAGRAM_LIMITS.reel, "Instagram");
       checkIgCaption(c, "caption", r.caption);
       checkCollaborators(c, "collaborators", r.collaborators);
+      checkUserTags(c, "userTags", r.userTags, { positions: false });
+      checkIgComment(c, "firstComment", r.firstComment);
       if (r.coverUrl && r.thumbOffsetMs !== undefined)
         c.warn(
           "COVER_OVERRIDES_THUMB_OFFSET",
@@ -492,6 +562,7 @@ function validateFacebook(c: Collector, r: FacebookRequest) {
   switch (r.kind) {
     case "facebook.photo":
       checkFbPhoto(c, "image", r.image);
+      checkFbComment(c, "firstComment", r.firstComment);
       return;
     case "facebook.multi_photo": {
       const L = FACEBOOK_LIMITS.multiPhoto;
@@ -510,6 +581,7 @@ function validateFacebook(c: Collector, r: FacebookRequest) {
       r.images.forEach((img, i) => {
         checkFbPhoto(c, `images.${i}`, img);
       });
+      checkFbComment(c, "firstComment", r.firstComment);
       return;
     }
     case "facebook.video":
@@ -527,9 +599,11 @@ function validateFacebook(c: Collector, r: FacebookRequest) {
         },
         "Facebook",
       );
+      checkFbComment(c, "firstComment", r.firstComment);
       return;
     case "facebook.reel":
       checkVideo(c, "video", r.video, FACEBOOK_LIMITS.reel, "Facebook");
+      checkFbComment(c, "firstComment", r.firstComment);
       return;
     case "facebook.story":
       if (r.media.kind === "image") checkFbPhoto(c, "media", r.media);

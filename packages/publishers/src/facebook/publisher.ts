@@ -13,6 +13,10 @@
  *   story video   same as reel with /{page}/video_stories
  *   story photo   upload_photos (published=false) -> arm -> publish (POST /{page}/photo_stories) -> permalink
  *
+ * With `firstComment` two more steps follow the permalink: arm_comment (persist the intent) and
+ * first_comment (POST /{post-id}/comments, after looking for it first). A failure there is only
+ * a warning: the post is live.
+ *
  * Every publish step first looks for the post on the Page (reconcile), so
  * re-running it after a crash never publishes twice. When a post cannot be
  * attributed with certainty the step fails with PUBLISH_UNCERTAIN instead of
@@ -24,6 +28,7 @@
  */
 
 import { GraphError } from "../errors.ts";
+import { type FirstCommentState, firstCommentOf, postFirstComment } from "../first-comment.ts";
 import type { Params } from "../graph/encode.ts";
 import {
   assertValid,
@@ -59,7 +64,9 @@ export type FacebookPhase =
   | "arm_publish"
   | "publish"
   | "wait_publish"
-  | "fetch_permalink";
+  | "fetch_permalink"
+  | "arm_comment"
+  | "first_comment";
 
 export interface FacebookState
   extends BaseState<FacebookRequest["kind"], FacebookRequest, FacebookPhase> {
@@ -77,6 +84,8 @@ export interface FacebookState
   postId: string | null;
   publishedAt: number | null;
   reconciled: boolean;
+  /** The first comment (absent from states saved before it existed). */
+  comment?: FirstCommentState | null;
 }
 
 interface VideoStatus {
@@ -162,6 +171,7 @@ export class FacebookPublisher implements Publisher<FacebookRequest, FacebookSta
       postId: null,
       publishedAt: null,
       reconciled: false,
+      comment: null,
     };
   }
 
@@ -406,6 +416,31 @@ export class FacebookPublisher implements Publisher<FacebookRequest, FacebookSta
           reconciled: s.reconciled,
         };
         s.result = result;
+        s.phase = target && firstCommentOf(req) ? "arm_comment" : "done";
+        return;
+      }
+
+      case "arm_comment": {
+        // Persisted before the comment can reach Meta: a re-run looks for it first.
+        s.comment = { intentAt: clock.now(), id: null };
+        s.phase = "first_comment";
+        return;
+      }
+
+      case "first_comment": {
+        const target = s.postId ?? s.externalId;
+        const message = firstCommentOf(req);
+        if (target && message && s.result) {
+          const id = await postFirstComment(graph, {
+            platform: "facebook",
+            objectId: target,
+            message,
+            accessToken: token,
+            warnings: s.warnings,
+          });
+          s.comment = { intentAt: s.comment?.intentAt ?? clock.now(), id };
+          s.result = { ...s.result, warnings: s.warnings, firstCommentId: id };
+        }
         s.phase = "done";
         return;
       }

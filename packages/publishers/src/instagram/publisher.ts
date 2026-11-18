@@ -12,11 +12,15 @@
  *   arm_publish      GET  content_publishing_limit; persist `intentAt`
  *   publish          GET status first: PUBLISHED -> reconcile, FINISHED -> POST /{ig}/media_publish
  *   fetch_permalink  GET  /{media-id}?fields=permalink
+ *   arm_comment      persist the first comment's intent (only with `firstComment`)
+ *   first_comment    GET /{media-id}/comments (already there?) -> POST /{media-id}/comments;
+ *                    a failure here is a warning: the post is live
  *
  * Docs: https://developers.facebook.com/docs/instagram-platform/content-publishing
  */
 
 import { GraphError } from "../errors.ts";
+import { type FirstCommentState, firstCommentOf, postFirstComment } from "../first-comment.ts";
 import type { GraphClient } from "../graph/client.ts";
 import type { Params, ParamValue } from "../graph/encode.ts";
 import {
@@ -54,7 +58,9 @@ export type InstagramPhase =
   | "wait_parent"
   | "arm_publish"
   | "publish"
-  | "fetch_permalink";
+  | "fetch_permalink"
+  | "arm_comment"
+  | "first_comment";
 
 export interface InstagramItemState {
   containerId: string | null;
@@ -78,6 +84,8 @@ export interface InstagramState
   quota: PublishingQuota | null;
   /** Times expired/failed containers were recreated. */
   recreations: number;
+  /** The first comment (absent from states saved before it existed). */
+  comment?: FirstCommentState | null;
 }
 
 type ContainerStatusCode = "EXPIRED" | "ERROR" | "FINISHED" | "IN_PROGRESS" | "PUBLISHED";
@@ -159,7 +167,12 @@ export function itemContainerParams(req: InstagramRequest, i: number): Params {
       if (!m) throw new Error(`carousel item ${i} missing`);
       // is_ai_generated goes on the parent only; Meta errors on children.
       return m.kind === "image"
-        ? { image_url: m.url, is_carousel_item: true, alt_text: m.altText }
+        ? {
+            image_url: m.url,
+            is_carousel_item: true,
+            alt_text: m.altText,
+            user_tags: tags(m.userTags),
+          }
         : { media_type: "VIDEO", is_carousel_item: true, ...videoParams(m) };
     }
     case "instagram.reel":
@@ -173,7 +186,8 @@ export function itemContainerParams(req: InstagramRequest, i: number): Params {
         audio_name: req.audioName,
         collaborators: req.collaborators as ParamValue,
         location_id: req.locationId,
-        user_tags: tags(req.userTags),
+        // Reels take usernames only; a position would be refused.
+        user_tags: req.userTags?.map((t) => ({ username: t.username })),
         trial_params: req.trial ? { graduation_strategy: req.trial.graduationStrategy } : undefined,
         ...ai,
       };
@@ -248,6 +262,7 @@ export class InstagramPublisher implements Publisher<InstagramRequest, Instagram
       reconciled: false,
       quota: null,
       recreations: 0,
+      comment: null,
     };
   }
 
@@ -430,6 +445,30 @@ export class InstagramPublisher implements Publisher<InstagramRequest, Instagram
           ...(s.quota ? { quota: s.quota } : {}),
         };
         s.result = result;
+        s.phase = s.mediaId && firstCommentOf(req) ? "arm_comment" : "done";
+        return;
+      }
+
+      case "arm_comment": {
+        // Persisted before the comment can reach Meta: a re-run looks for it first.
+        s.comment = { intentAt: clock.now(), id: null };
+        s.phase = "first_comment";
+        return;
+      }
+
+      case "first_comment": {
+        const message = firstCommentOf(req);
+        if (s.mediaId && message && s.result) {
+          const id = await postFirstComment(graph, {
+            platform: "instagram",
+            objectId: s.mediaId,
+            message,
+            accessToken: token,
+            warnings: s.warnings,
+          });
+          s.comment = { intentAt: s.comment?.intentAt ?? clock.now(), id };
+          s.result = { ...s.result, warnings: s.warnings, firstCommentId: id };
+        }
         s.phase = "done";
         return;
       }

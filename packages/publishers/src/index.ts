@@ -5,8 +5,17 @@
 export const PACKAGE_NAME = "@studio/publishers";
 
 export * from "./accounts.ts";
+export * from "./engagement/comments.ts";
+export * from "./engagement/errors.ts";
+export * from "./engagement/insights.ts";
 export * from "./errors.ts";
 export { type FacebookPhase, FacebookPublisher, type FacebookState } from "./facebook/publisher.ts";
+export {
+  type FirstCommentState,
+  firstCommentFailedMessage,
+  firstCommentOf,
+  postFirstComment,
+} from "./first-comment.ts";
 export * from "./graph/client.ts";
 export { encodeParamPairs, type Params, type ParamValue } from "./graph/encode.ts";
 export {

@@ -5,6 +5,9 @@
  * transitions and expiry, resumable rupload, the publishing quota,
  * config_issue partial successes, Facebook photos/feed/videos/Reels/stories,
  * chunked video uploads, /me/accounts, token exchange and debug_token.
+ * Engagement (N15, N16): comments and replies on IG media and FB posts / photos / videos (list,
+ * create, reply, hide, delete), media / post / video insights with Meta's metric names (retired
+ * ones refused like v22+ does), follower counts, deleted media, and scope checks on those routes.
  * Fault injection covers transient errors, rate limits, lost responses
  * (applied server-side, then the connection drops) and interrupted uploads.
  *
@@ -131,6 +134,26 @@ interface FbVideo {
   chunkSize?: number;
 }
 
+/** A comment (or reply) on an IG media, FB post, photo or video. */
+export interface FakeComment {
+  id: string;
+  platform: "instagram" | "facebook";
+  /** The media / post / photo / video it is on. */
+  objectId: string;
+  /** Parent comment for replies. */
+  parentId: string | null;
+  text: string;
+  /** IG username / FB name. */
+  author: string;
+  authorId: string;
+  createdAt: number;
+  likeCount: number;
+  hidden: boolean;
+  deleted: boolean;
+  /** Written by the account itself (a reply we sent, the first comment). */
+  own: boolean;
+}
+
 interface FbStory {
   postId: string;
   pageId: string;
@@ -197,6 +220,19 @@ export class FakeGraph {
   readonly posts = new Map<string, FbPost>();
   readonly videos = new Map<string, FbVideo>();
   readonly stories: FbStory[] = [];
+  readonly comments = new Map<string, FakeComment>();
+  /** Insight values per object id (IG media, FB post / video), by Meta metric name. */
+  readonly insights = new Map<string, Record<string, number>>();
+  /** Likes / reactions per object id. */
+  readonly likes = new Map<string, number>();
+  /** Shares per FB post id. */
+  readonly shares = new Map<string, number>();
+  /** Followers per IG user id / page id. */
+  readonly followers = new Map<string, number>();
+  /** Media / posts deleted on the platform (reads answer "does not exist"). */
+  readonly deleted = new Set<string>();
+  /** Metric names Meta refuses (v22+ retired `impressions` and `plays` for IG media). */
+  readonly refusedMetrics = new Set(["impressions", "plays", "clips_replays_count"]);
 
   /** Next created IG container ends in ERROR with this status text. */
   nextContainerError: string | null = null;
@@ -233,6 +269,12 @@ export class FakeGraph {
         "pages_show_list",
         "pages_read_engagement",
         "pages_manage_posts",
+        // Engagement (N15, N16): granted by default; `revokeScope` takes one away.
+        "instagram_manage_insights",
+        "instagram_manage_comments",
+        "read_insights",
+        "pages_read_user_content",
+        "pages_manage_engagement",
       ],
       expiresAt: now + 60 * 24 * 3600_000,
       dataAccessExpiresAt: now + 90 * 24 * 3600_000,
@@ -260,6 +302,58 @@ export class FakeGraph {
     this.addUserToken(pageToken, { kind: "page", profileId: pageId, expiresAt: 0 });
     if (opts.igUserId)
       this.igUsers.set(opts.igUserId, { publishTimes: [], quotaTotal: this.opts.quotaTotal });
+  }
+
+  /** Take a permission away from a token (the owner did not grant it). */
+  revokeScope(token: string, scope: string) {
+    const t = this.tokens.get(token);
+    if (t) t.scopes = t.scopes.filter((s) => s !== scope);
+  }
+
+  /** A comment from someone else (or, with `own`, from the account) on an object or a comment. */
+  addComment(
+    objectId: string,
+    opts: {
+      text: string;
+      author?: string;
+      authorId?: string;
+      parentId?: string;
+      at?: number;
+      likeCount?: number;
+      own?: boolean;
+    },
+  ): FakeComment {
+    const parent = opts.parentId ? this.comments.get(opts.parentId) : undefined;
+    const platform =
+      this.igMedia.has(objectId) || parent?.platform === "instagram" ? "instagram" : "facebook";
+    const c: FakeComment = {
+      id: platform === "facebook" ? `${objectId.split("_").pop()}_${this.id()}` : this.id(),
+      platform,
+      objectId: parent?.objectId ?? objectId,
+      parentId: parent?.id ?? null,
+      text: opts.text,
+      author: opts.author ?? (platform === "instagram" ? "takipci" : "Takipçi"),
+      authorId: opts.authorId ?? `u${this.seq}`,
+      createdAt: opts.at ?? this.clock.now(),
+      likeCount: opts.likeCount ?? 0,
+      hidden: false,
+      deleted: false,
+      own: opts.own ?? false,
+    };
+    this.comments.set(c.id, c);
+    return c;
+  }
+
+  /** Live comments of an object (replies included), oldest first. */
+  commentsOf(objectId: string): FakeComment[] {
+    return [...this.comments.values()]
+      .filter((c) => c.objectId === objectId && !c.deleted)
+      .sort((a, b) => a.createdAt - b.createdAt);
+  }
+
+  /** Delete a media / post on the platform. */
+  deleteObject(id: string) {
+    this.deleted.add(id);
   }
 
   expireToken(token: string) {
@@ -681,12 +775,15 @@ export class FakeGraph {
             edge === "stories" ? m.productType === "STORY" : m.productType !== "STORY",
           )
           .sort((a, b) => b.timestamp - a.timestamp)
+          .filter((m) => !this.deleted.has(m.id))
           .map((m) => ({
             id: m.id,
             caption: m.caption,
             timestamp: igTime(m.timestamp),
             media_product_type: m.productType,
             permalink: m.permalink,
+            comments_count: this.commentsOf(m.id).length,
+            like_count: this.likes.get(m.id) ?? 0,
           }));
         return json({ data });
       },
@@ -1085,6 +1182,152 @@ export class FakeGraph {
       },
     },
 
+    // ---------------------------------------------------------------- Engagement (N15, N16)
+    {
+      name: "comments.list",
+      method: "GET",
+      re: /^\/([\d_]+)\/(comments|replies)$/,
+      handle: ({ ids, params, headers }) => {
+        const [id, edge] = ids as [string, string];
+        const parent = this.comments.get(id);
+        const platform = parent?.platform ?? (this.igMedia.has(id) ? "instagram" : "facebook");
+        const denied = this.requireScopes(
+          headers.authorization,
+          platform === "instagram"
+            ? ["instagram_manage_comments"]
+            : ["pages_read_engagement", "pages_read_user_content"],
+        );
+        if (denied) return denied;
+        if (!parent && !this.engagementObject(id)) return this.missing(id);
+        if (this.deleted.has(id)) return this.missing(id);
+        if (parent && edge === "replies" && parent.platform !== "instagram")
+          return graphError({ code: 100, message: "Unknown edge replies" });
+        let rows: FakeComment[];
+        if (parent) rows = this.commentsOf(parent.objectId).filter((c) => c.parentId === parent.id);
+        else if (platform === "instagram")
+          rows = this.commentsOf(id).filter((c) => c.parentId === null);
+        else rows = this.commentsOf(id); // filter=stream: replies too, with parent{id}
+        if (params.order === "reverse_chronological") rows = [...rows].reverse();
+        const limit = Number(params.limit ?? 25);
+        const start = Number(params.after ?? 0);
+        const page = rows.slice(start, start + limit);
+        const more = start + limit < rows.length;
+        const data = page.map((c) => this.commentJson(c, platform));
+        return json({
+          data,
+          paging: {
+            cursors: { before: String(start), after: String(start + limit) },
+            ...(more ? { next: `https://graph.facebook.com/next?after=${start + limit}` } : {}),
+          },
+        });
+      },
+    },
+    {
+      name: "comments.create",
+      method: "POST",
+      re: /^\/([\d_]+)\/(comments|replies)$/,
+      handle: ({ ids, params, headers }) => {
+        const [id, edge] = ids as [string, string];
+        const parent = this.comments.get(id);
+        const platform = parent?.platform ?? (this.igMedia.has(id) ? "instagram" : "facebook");
+        const denied = this.requireScopes(
+          headers.authorization,
+          platform === "instagram" ? ["instagram_manage_comments"] : ["pages_manage_engagement"],
+        );
+        if (denied) return denied;
+        if (parent?.deleted || this.deleted.has(id)) return this.missing(id);
+        if (!parent && !this.engagementObject(id)) return this.missing(id);
+        if (platform === "instagram" && parent && edge !== "replies")
+          return graphError({ code: 100, message: "Use /replies to reply to a comment" });
+        if (!params.message) return graphError({ code: 100, message: "message is required" });
+        const owner = this.ownerOf(parent?.objectId ?? id);
+        const c = this.addComment(parent?.objectId ?? id, {
+          text: params.message,
+          author: owner.name,
+          authorId: owner.id,
+          ...(parent ? { parentId: parent.id } : {}),
+          own: true,
+        });
+        return json({ id: c.id });
+      },
+    },
+    {
+      name: "insights.read",
+      method: "GET",
+      re: /^\/([\d_]+)\/(insights|video_insights)$/,
+      handle: ({ ids, params, headers }) => {
+        const [id, edge] = ids as [string, string];
+        const ig = this.igMedia.has(id);
+        const denied = this.requireScopes(
+          headers.authorization,
+          ig ? ["instagram_manage_insights"] : ["read_insights"],
+        );
+        if (denied) return denied;
+        if (this.deleted.has(id) || !this.engagementObject(id)) return this.missing(id);
+        if (edge === "video_insights" && !this.videos.has(id))
+          return graphError({ code: 100, message: "Unsupported get request." });
+        const metrics = (params.metric ?? "").split(",").filter(Boolean);
+        const refused = metrics.find((m) => this.refusedMetrics.has(m));
+        if (refused)
+          return graphError({
+            code: 100,
+            message: `(#100) The value must be a valid insights metric: ${refused} is no longer supported`,
+          });
+        const values = this.insights.get(id) ?? {};
+        const data = metrics.map((name) => {
+          const value = values[name] ?? 0;
+          return ig
+            ? {
+                name,
+                period: "lifetime",
+                values: [{ value }],
+                id: `${id}/insights/${name}/lifetime`,
+              }
+            : { name, period: "lifetime", values: [{ value }] };
+        });
+        return json({ data });
+      },
+    },
+    {
+      name: "comment.update",
+      method: "POST",
+      re: /^\/([\d_]+)$/,
+      when: (call) => this.comments.has(call.path.slice(1)),
+      handle: ({ ids, params, headers }) => {
+        const c = this.comments.get(ids[0] as string) as FakeComment;
+        const denied = this.requireScopes(
+          headers.authorization,
+          c.platform === "instagram" ? ["instagram_manage_comments"] : ["pages_manage_engagement"],
+        );
+        if (denied) return denied;
+        if (c.deleted) return this.missing(c.id);
+        const flag = c.platform === "instagram" ? params.hide : params.is_hidden;
+        if (flag === undefined) return graphError({ code: 100, message: "Nothing to update" });
+        if (c.own && c.platform === "instagram")
+          return graphError({ code: 100, message: "Cannot hide your own comment" });
+        c.hidden = flag === "true";
+        return json({ success: true });
+      },
+    },
+    {
+      name: "comment.delete",
+      method: "DELETE",
+      re: /^\/([\d_]+)$/,
+      handle: ({ ids, headers }) => {
+        const c = this.comments.get(ids[0] as string);
+        if (!c || c.deleted) return this.missing(ids[0] as string);
+        const denied = this.requireScopes(
+          headers.authorization,
+          c.platform === "instagram" ? ["instagram_manage_comments"] : ["pages_manage_engagement"],
+        );
+        if (denied) return denied;
+        c.deleted = true;
+        for (const reply of this.comments.values())
+          if (reply.parentId === c.id) reply.deleted = true;
+        return json({ success: true });
+      },
+    },
+
     // ---------------------------------------------------------------- Node reads (last: most generic)
     {
       name: "node.get",
@@ -1131,6 +1374,92 @@ export class FakeGraph {
     return post;
   }
 
+  /** 403-style permission error when the token lacks one of `scopes`. */
+  private requireScopes(header: string | undefined, scopes: string[]): Response | null {
+    const rec = this.tokens.get(header?.replace(/^OAuth\s+/, "") ?? "");
+    if (!rec) return null;
+    const missing = scopes.filter((s) => !rec.scopes.includes(s));
+    if (missing.length === 0) return null;
+    return graphError({
+      code: 10,
+      message: `(#10) Application does not have permission for this action (${missing.join(", ")})`,
+      type: "OAuthException",
+    });
+  }
+
+  /** IG media, FB post, photo or video that can carry comments and insights. */
+  private engagementObject(id: string): boolean {
+    return this.igMedia.has(id) || this.posts.has(id) || this.photos.has(id) || this.videos.has(id);
+  }
+
+  private missing(id: string): Response {
+    return graphError({
+      code: 100,
+      subcode: 33,
+      message: `Unsupported get request. Object with ID '${id}' does not exist, cannot be loaded due to missing permissions, or does not support this operation.`,
+    });
+  }
+
+  /** Who writes the account's own comments on an object (IG username / the Page). */
+  private ownerOf(objectId: string): { id: string; name: string } {
+    const m = this.igMedia.get(objectId);
+    if (m) return { id: m.igUserId, name: `ig_${m.igUserId}` };
+    const pageId =
+      this.posts.get(objectId)?.pageId ??
+      this.photos.get(objectId)?.pageId ??
+      this.videos.get(objectId)?.pageId ??
+      objectId.split("_")[0] ??
+      "";
+    return { id: pageId, name: this.pages.get(pageId)?.name ?? `Page ${pageId}` };
+  }
+
+  private commentJson(c: FakeComment, platform: "instagram" | "facebook") {
+    if (platform === "instagram") {
+      const replies = this.commentsOf(c.objectId).filter((r) => r.parentId === c.id);
+      return {
+        id: c.id,
+        text: c.text,
+        username: c.author,
+        timestamp: igTime(c.createdAt),
+        like_count: c.likeCount,
+        hidden: c.hidden,
+        ...(c.parentId === null && replies.length
+          ? {
+              replies: {
+                data: replies.map((r) => ({
+                  id: r.id,
+                  text: r.text,
+                  username: r.author,
+                  timestamp: igTime(r.createdAt),
+                  like_count: r.likeCount,
+                  hidden: r.hidden,
+                })),
+              },
+            }
+          : {}),
+      };
+    }
+    return {
+      id: c.id,
+      message: c.text,
+      from: { id: c.authorId, name: c.author },
+      created_time: igTime(c.createdAt),
+      like_count: c.likeCount,
+      is_hidden: c.hidden,
+      parent: { id: c.parentId ?? c.objectId },
+    };
+  }
+
+  private countsJson(id: string) {
+    const total = this.commentsOf(id).length;
+    const likes = this.likes.get(id) ?? 0;
+    return {
+      comments: { data: [], summary: { total_count: total } },
+      reactions: { data: [], summary: { total_count: likes } },
+      likes: { data: [], summary: { total_count: likes } },
+    };
+  }
+
   private readNode(id: string): Response {
     const now = this.clock.now();
     const c = this.containers.get(id);
@@ -1157,22 +1486,54 @@ export class FakeGraph {
           : {}),
       });
     }
+    if (this.deleted.has(id)) return this.missing(id);
     const m = this.igMedia.get(id);
     if (m)
       return json({
         id: m.id,
         permalink: m.permalink,
         media_product_type: m.productType,
+        media_type: m.mediaType,
         timestamp: igTime(m.timestamp),
+        like_count: this.likes.get(m.id) ?? 0,
+        comments_count: this.commentsOf(m.id).length,
       });
+    const igUser = this.igUsers.get(id);
+    if (igUser)
+      return json({
+        id,
+        followers_count: this.followers.get(id) ?? 0,
+        media_count: this.igPublishedMedia(id).length,
+      });
+    const page = this.pages.get(id);
+    if (page)
+      return json({
+        id,
+        name: page.name,
+        followers_count: this.followers.get(id) ?? 0,
+        fan_count: this.followers.get(id) ?? 0,
+      });
+    const comment = this.comments.get(id);
+    if (comment) {
+      if (comment.deleted) return this.missing(id);
+      return json(this.commentJson(comment, comment.platform));
+    }
     const post = this.posts.get(id);
     if (post)
       return json({
         id: post.id,
         permalink_url: `https://www.facebook.com/${post.id.replace("_", "/posts/")}`,
+        created_time: igTime(post.createdAt),
+        shares: { count: this.shares.get(post.id) ?? 0 },
+        ...this.countsJson(post.id),
       });
     const photo = this.photos.get(id);
-    if (photo) return json({ id: photo.id, permalink_url: `/photo/?fbid=${photo.id}` });
+    if (photo)
+      return json({
+        id: photo.id,
+        permalink_url: `/photo/?fbid=${photo.id}`,
+        ...this.countsJson(photo.id),
+      });
     const story = this.stories.find((s) => s.postId === id);
     if (story)
       return json({ id, permalink_url: `https://www.facebook.com/stories/${story.pageId}/` });
@@ -1183,6 +1544,7 @@ export class FakeGraph {
       return json({
         id: v.id,
         permalink_url: `/${v.pageId}/videos/${v.id}/`,
+        ...this.countsJson(v.id),
         status: {
           video_status: videoStatus,
           uploading_phase: {
