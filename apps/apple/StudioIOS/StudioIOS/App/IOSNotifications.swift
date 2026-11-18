@@ -77,12 +77,14 @@ final class IOSNotifier {
         if let id = notice.conversationId { info["conversationId"] = id }
         if let id = notice.contentId { info["contentId"] = id }
         if let id = notice.brandId { info["brandId"] = id }
+        if notice.id.hasPrefix(ActivityNoticeTracker.claudeLimitPrefix) { info["route"] = "usage" }
         content.userInfo = info
         return UNNotificationRequest(identifier: notice.id, content: content, trigger: nil)
     }
 
     /// Where a tapped notification leads.
     nonisolated static func route(from userInfo: [AnyHashable: Any]) -> IOSRoute? {
+        if userInfo["route"] as? String == "usage" { return .usage }
         if let id = userInfo["conversationId"] as? String { return .conversation(id) }
         if let id = userInfo["contentId"] as? String { return .post(id) }
         if let kind = userInfo["kind"] as? String {
@@ -127,24 +129,37 @@ private final class BackgroundTaskBox: @unchecked Sendable {
     func complete(_ success: Bool) { task.setTaskCompleted(success: success) }
 }
 
-/// The background pass: jobs that finished since the app was last active.
+/// The background pass (M7): find the Mac where it is now (the last address, its LAN
+/// addresses, then the Remote Control tunnel, as the app does), then announce jobs that finished
+/// since the app was last active, conversations waiting on the user (consent / question) and a
+/// Claude limit that waits for "Gemini ile devam et / Sınırı bekle".
 enum BackgroundJobCheck {
     static func run(defaults: UserDefaults = .standard) async -> Bool {
         let pairing = PairingClient(store: KeychainDeviceTokenStore())
         guard let credential = pairing.credential() else { return true }
-        var baseURL = credential.serverURL
+        var manual: URL?
         if defaults.bool(forKey: IOSAppSettings.remoteEnabledKey),
            let raw = defaults.string(forKey: IOSAppSettings.remoteURLKey), let url = URL(string: raw), url.host != nil {
-            baseURL = url
+            manual = url
         }
-        let client = APIClient(baseURL: baseURL, auth: DeviceTokenAuth(store: KeychainDeviceTokenStore()))
+        let candidates = MacRoutePlanner.candidates(lastKnown: credential.serverURL, routes: credential.routes, manual: manual)
+        guard let found = await MacConnector().firstReachable(candidates, macId: credential.macId) else { return false }
+        if found.url != credential.serverURL { try? pairing.updateServerURL(found.url) }
+        let client = APIClient(baseURL: found.url, auth: DeviceTokenAuth(store: KeychainDeviceTokenStore()))
         let since = defaults.object(forKey: IOSAppSettings.lastBackgroundKey) as? Date ?? Date().addingTimeInterval(-3600)
+        let enabled = { (notice: ActivityNotice) -> Bool in
+            defaults.object(forKey: IOSAppSettings.noticePrefix + notice.kind.category.rawValue) as? Bool ?? true
+        }
         do {
             let jobs = try await client.jobs(limit: 50)
-            let notices = ActivityNoticeTracker.notices(for: jobs, finishedAfter: since).filter { notice in
-                defaults.object(forKey: IOSAppSettings.noticePrefix + notice.kind.category.rawValue) as? Bool ?? true
+            var notices = ActivityNoticeTracker.notices(for: jobs, finishedAfter: since)
+            // Waiting on the user: never announced twice (the app shares the same list).
+            var waiting = await waitingNotices(client)
+            if let presence = try? await client.presence(), let limit = ActivityNoticeTracker.claudeLimitNotice(presence.claude?.limit) {
+                waiting.append(limit)
             }
-            for notice in notices {
+            notices += waiting.filter { IOSAppModel.markAnnounced($0.id, defaults: defaults) }
+            for notice in notices where enabled(notice) {
                 try? await UNUserNotificationCenter.current().add(IOSNotifier.request(for: notice))
             }
             defaults.set(Date(), forKey: IOSAppSettings.lastBackgroundKey)
@@ -152,6 +167,18 @@ enum BackgroundJobCheck {
         } catch {
             return false
         }
+    }
+
+    /// Pending consents and questions in conversations with a run going (a waiting run stays
+    /// active), from each one's latest messages. At most a few conversations per pass.
+    static func waitingNotices(_ client: APIClient) async -> [ActivityNotice] {
+        guard let conversations = try? await client.conversations() else { return [] }
+        var found: [ActivityNotice] = []
+        for conversation in conversations.filter({ $0.activeRunId != nil }).prefix(5) {
+            guard let page = try? await client.messages(conversationId: conversation.id, limit: 10) else { continue }
+            found += ActivityNoticeTracker.waitingNotices(conversation: conversation, messages: page.items)
+        }
+        return found
     }
 }
 

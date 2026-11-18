@@ -6,6 +6,8 @@ public enum PostState: String, Sendable, Hashable {
     case generating
     /// No version yet, nothing running.
     case draft
+    /// The latest generation failed and nothing newer replaced it ("Üretilemedi", A3).
+    case generationFailed
     /// The design has an empty image slot (or the plan asked for the user's image).
     case imageNeeded
     /// The user uploaded an image for the slot; the slot-fill pipeline has not placed it yet.
@@ -22,6 +24,7 @@ public enum PostState: String, Sendable, Hashable {
         switch self {
         case .generating: "Üretiliyor"
         case .draft: "Taslak"
+        case .generationFailed: "Üretilemedi"
         case .imageNeeded: "Görsel bekliyor"
         case .imageUploaded: "Görsel yüklendi"
         case .ready: "Hazır"
@@ -38,7 +41,7 @@ public enum PostState: String, Sendable, Hashable {
         switch self {
         case .imageNeeded, .generating: .attention
         case .ready: .primary
-        case .failed: .attention
+        case .failed, .generationFailed: .attention
         default: .muted
         }
     }
@@ -164,14 +167,36 @@ public struct PostCard: Sendable, Hashable, Identifiable {
             if content.currentVersion == nil {
                 if let job, job.status.isActive { return .generating }
                 if let generation = planItem?.generation, generation.status.isActive { return .generating }
+                if generationFailure != nil { return .generationFailed }
                 return planItem?.imageSlot == .userUpload ? .imageNeeded : .draft
             }
+            if generationFailure != nil { return .generationFailed }
             if needsImage {
                 if let pendingImage, pendingImage.forVersion == content.currentVersion?.version { return .imageUploaded }
                 return .imageNeeded
             }
             return .ready
         }
+    }
+
+    /// The failed generation the card shows (A3): no version yet, or the failure came after the
+    /// current version (a revision that failed). A cancelled job is not a failure; a newer job
+    /// (running or done) settles it. Mirrors `generationFailure` in the desktop board.
+    public var generationFailure: GenerationFailure? {
+        var failed: (id: EntityID, error: String?, at: Date)?
+        if let job, job.type == .contentGenerate {
+            guard job.status == .failed else { return nil }
+            failed = (job.id, job.error, job.finishedAt ?? job.updatedAt)
+        } else if let item = planItem, let generation = item.generation, generation.status == .failed {
+            failed = (generation.jobId, generation.error, item.updatedAt)
+        }
+        guard let failed else { return nil }
+        if content.currentVersion != nil {
+            // A version made after the failure settles it; without the loaded version the
+            // failure is not shown on a post that has a design.
+            guard let version, version.createdAt < failed.at else { return nil }
+        }
+        return GenerationFailure(jobId: failed.id, error: failed.error)
     }
 
     public var placeholderTone: PlaceholderTone {
@@ -185,6 +210,44 @@ public struct PostCard: Sendable, Hashable, Identifiable {
         guard let version, version.version == ref.version else { return nil }
         let local = ContentHash.compute(version.slides)
         return local == ref.contentHash ? local : nil
+    }
+}
+
+/// Why a post could not be generated, and the job "Yeniden dene" retries.
+public struct GenerationFailure: Sendable, Hashable {
+    public var jobId: EntityID
+    /// The server's message as it came.
+    public var error: String?
+
+    public init(jobId: EntityID, error: String?) {
+        self.jobId = jobId
+        self.error = error
+    }
+
+    /// The reason in plain Turkish (`failureText` in the desktop app).
+    public var reason: String { Self.text(error) }
+
+    private static let patterns: [(String, String)] = [
+        ("lost the job|gave up after", "Mac'teki işçi işi yarıda bıraktı."),
+        ("usage limit|rate.?limit|\\b429\\b|quota", "Yapay zekâ kullanım sınırına takıldı."),
+        ("timed? ?out|timeout|deadline", "İş zamanında bitmedi."),
+        ("render(ing)? failed|could not render|chromium|playwright", "Görsel oluşturulamadı."),
+        ("invalid json|unexpected token|did not match|schema|parse", "Yapay zekâ geçersiz bir yanıt verdi."),
+        ("ECONN|ENOTFOUND|network|fetch failed|socket hang up", "Bağlantı kurulamadı."),
+        ("cancel", "İş durduruldu."),
+        ("not found|\\b404\\b", "Gerekli kayıt bulunamadı (silinmiş olabilir)."),
+    ]
+
+    private static let turkish = "[çğıöşüÇĞİÖŞÜ]|\\b(post|marka|görsel|yapay zekâ|sürüm|kontrol|hata|bulunamadı)\\b"
+
+    public static func text(_ error: String?) -> String {
+        let raw = (error ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !raw.isEmpty else { return "Neden bildirilmedi." }
+        if raw.range(of: turkish, options: [.regularExpression, .caseInsensitive]) != nil { return raw }
+        for (pattern, text) in patterns where raw.range(of: pattern, options: [.regularExpression, .caseInsensitive]) != nil {
+            return text
+        }
+        return "İş başarısız oldu."
     }
 }
 
@@ -216,7 +279,7 @@ public struct PostBoard: Sendable, Equatable {
             if let existing = jobByContent[id], existing.createdAt >= job.createdAt { continue }
             jobByContent[id] = job
         }
-        cards = contents.map { content in
+        cards = contents.filter { $0.deletedAt == nil }.map { content in
             let version = versions[content.id].flatMap { $0.version == content.currentVersion?.version ? $0 : nil }
             return PostCard(
                 content: content, version: version, planItem: itemsByContent[content.id],
@@ -261,5 +324,20 @@ public struct PostBoard: Sendable, Equatable {
     /// Cards the floating bar approves in one go: ready, with a verified hash.
     public static func approvable(_ cards: [PostCard]) -> [PostCard] {
         cards.filter { $0.state == .ready && $0.approvableHash != nil }
+    }
+}
+
+/// Which post a finished job changed (M6): the phone refreshes only that post instead of the
+/// whole list. Chat answers, brand work and echo jobs touch no post (nil).
+public enum PostRefreshPlanner {
+    public static func affectedContent(of job: Job) -> EntityID? {
+        switch job.type {
+        case .contentGenerate, .contentRender, .contentCheck, .schedulePublish, .canvasApply:
+            return job.contentId
+        case .imageGenerate:
+            return job.contentId ?? job.payload["targetContentId"]?.stringValue
+        default:
+            return nil
+        }
     }
 }

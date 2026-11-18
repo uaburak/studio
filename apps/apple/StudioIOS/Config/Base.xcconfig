@@ -3,7 +3,8 @@
 SDKROOT = iphoneos
 SUPPORTED_PLATFORMS = iphoneos iphonesimulator
 IPHONEOS_DEPLOYMENT_TARGET = 26.0
-TARGETED_DEVICE_FAMILY = 1,2
+// iPhone only (M9): the iPad has no layout of its own.
+TARGETED_DEVICE_FAMILY = 1
 
 // Swift 6 language mode: complete strict concurrency checking.
 SWIFT_VERSION = 6.0

@@ -31,6 +31,18 @@ final class AppDelegate: UIResponder, UIApplicationDelegate, UNUserNotificationC
         return config
     }
 
+    // MARK: Background uploads
+
+    /// The system finished (or needs the app for) uploads it kept sending while the app was away.
+    func application(_ application: UIApplication, handleEventsForBackgroundURLSession identifier: String, completionHandler: @escaping () -> Void) {
+        guard identifier == IOSUploads.identifier else {
+            completionHandler()
+            return
+        }
+        let box = IOSUploads.CompletionBox(completionHandler)
+        IOSUploads.transport.handleEvents { box.call() }
+    }
+
     // MARK: Remote notifications (seam; see PushRegistration)
 
     func application(_ application: UIApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {

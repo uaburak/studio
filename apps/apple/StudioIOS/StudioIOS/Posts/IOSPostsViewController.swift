@@ -229,7 +229,8 @@ final class IOSPostsViewController: UIViewController, UICollectionViewDelegate {
         guard let indexPath = indexPaths.first, let id = dataSource.itemIdentifier(for: indexPath), let card = model.card(id) else { return nil }
         let source = collectionView.cellForItem(at: indexPath)
         return UIContextMenuConfiguration(identifier: id as NSString, previewProvider: { [weak self] in
-            guard let self, let rendered = card.renderedAssetIds.first, let image = self.app.images.image(rendered) else { return nil }
+            guard let self, let rendered = card.renderedAssetIds.first,
+                  let image = self.app.images.image(rendered) ?? self.app.images.image(rendered, width: 640) else { return nil }
             let preview = UIViewController()
             let imageView = UIImageView(image: image)
             imageView.contentMode = .scaleAspectFit
@@ -253,6 +254,14 @@ final class IOSPostsViewController: UIViewController, UICollectionViewDelegate {
             primary.append(UIAction(title: "Onayla", image: UIImage(systemName: "checkmark.circle")) { [weak self] _ in
                 guard let self else { return }
                 self.approveGuarded(card)
+            })
+        }
+        if card.state == .generationFailed {
+            primary.append(UIAction(title: "Yeniden dene", image: UIImage(systemName: "arrow.clockwise")) { [weak self] _ in
+                guard let self else { return }
+                Task {
+                    if await self.model.retryGeneration(card) { Toast.show("Yeniden üretiliyor", in: self.view) } else if let error = self.model.error { self.presentError(error) }
+                }
             })
         }
         if !card.slots.isEmpty, !card.isCanvasVersion {
@@ -286,9 +295,12 @@ final class IOSPostsViewController: UIViewController, UICollectionViewDelegate {
             },
             UIAction(title: "Sil…", image: UIImage(systemName: "trash"), attributes: IOSPostsModel.deletionBlocker(card) == nil ? .destructive : [.destructive, .disabled]) { [weak self] _ in
                 guard let self else { return }
-                self.confirm("“\(card.title)” silinsin mi?", message: "Post ve tüm sürümleri silinir. Bu geri alınamaz.", action: "Sil") {
+                self.confirm("“\(card.title)” silinsin mi?", message: IOSPostsModel.deleteMessage, action: "Sil") {
                     Task {
-                        if await self.model.delete(card) { Haptics.success() } else if let error = self.model.error { self.presentError(error) }
+                        if await self.model.delete(card) {
+                            Haptics.success()
+                            IOSPostsModel.showUndo(for: card, model: self.model, in: self.view)
+                        } else if let error = self.model.error { self.presentError(error) }
                     }
                 }
             },
@@ -376,8 +388,10 @@ final class PostsHeaderView: UIView {
 // MARK: - Card
 
 final class PostGridCell: UICollectionViewCell {
+    /// About how wide a card is on an iPhone (two columns), in points: grids load thumbnails.
+    static let displayWidth: CGFloat = 200
     private let artboard = UIView()
-    private let imageView = IOSAssetImageView(store: nil, cornerRadius: 0)
+    private let imageView = IOSAssetImageView(store: nil, cornerRadius: 0, displayWidth: PostGridCell.displayWidth)
     private let placeholder = UIStackView()
     private let eyebrow = UILabel.studio("", size: 10, weight: .bold, color: IOSTheme.accent, style: .caption2)
     private let titleLabel = UILabel.studio("", size: 16, weight: .heavy, lines: 4, style: .headline)

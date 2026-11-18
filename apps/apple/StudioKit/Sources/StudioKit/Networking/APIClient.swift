@@ -20,6 +20,8 @@ public final class APIClient: Sendable {
     private let base: Mutex<URL>
     public let session: URLSession
     public let auth: any AuthProvider
+    /// How uploads are sent and retried (`useUploads`); nil transport = `session` in process.
+    private let uploads = Mutex<(transport: (any UploadTransport)?, retry: UploadRetryPolicy)>((nil, UploadRetryPolicy()))
 
     /// `http://127.0.0.1:8787`: `pnpm --filter @studio/api dev`.
     public static let localDefaultURL = URL(string: "http://127.0.0.1:8787")!
@@ -37,6 +39,12 @@ public final class APIClient: Sendable {
 
     public func updateBaseURL(_ url: URL) {
         base.withLock { $0 = url }
+    }
+
+    /// Send uploads through `transport` (the phone: a background session, so leaving the app
+    /// does not stop them) and retry them by `retry`. nil transport = this client's session.
+    public func useUploads(transport: (any UploadTransport)?, retry: UploadRetryPolicy = UploadRetryPolicy()) {
+        uploads.withLock { $0 = (transport, retry) }
     }
 
     // MARK: - Core
@@ -550,20 +558,32 @@ public final class APIClient: Sendable {
         if let height = file.height { form.addField("height", String(height)) }
         form.addFile("file", filename: file.filename, mimeType: file.mimeType, data: file.data)
         let body = form.finalize()
+        let (configured, retry) = uploads.withLock { $0 }
+        let transport = configured ?? ForegroundUploadTransport(session: session)
 
-        var request = try await makeRequest(.post, "/api/assets")
-        request.setValue(form.contentType, forHTTPHeaderField: "Content-Type")
-        request.timeoutInterval = 120
-        let delegate = progress.map { UploadProgressDelegate(onProgress: $0) }
-        let data: Data
-        let response: URLResponse
-        do {
-            (data, response) = try await session.upload(for: request, from: body, delegate: delegate)
-        } catch {
-            throw StudioAPIError.from(error)
+        var attempt = 1
+        while true {
+            // Built again for every attempt: the Mac may have moved (Wi-Fi → tunnel) meanwhile.
+            var request = try await makeRequest(.post, "/api/assets")
+            request.setValue(form.contentType, forHTTPHeaderField: "Content-Type")
+            request.timeoutInterval = 120
+            do throws(StudioAPIError) {
+                let data: Data
+                let response: URLResponse
+                do {
+                    (data, response) = try await transport.upload(request, body: body, progress: progress)
+                } catch {
+                    throw StudioAPIError.from(error)
+                }
+                try Self.check(response, data)
+                progress?(1)
+                return try decode(Asset.self, from: data)
+            } catch {
+                guard attempt < retry.maxAttempts, UploadRetryPolicy.isRetryable(error), !Task.isCancelled else { throw error }
+                attempt += 1
+                progress?(0)
+                do { try await Task.sleep(for: retry.delay(beforeAttempt: attempt)) } catch { throw .cancelled }
+            }
         }
-        try Self.check(response, data)
-        progress?(1)
-        return try decode(Asset.self, from: data)
     }
 }

@@ -236,6 +236,8 @@ final class IOSConversationModel {
     var error: String?
     var busyPlans: Set<EntityID> = []
     var expandedPlans: Set<EntityID> = []
+    /// What the last generation round left alone ("2 post atlandı: …"), per plan.
+    var planNotes: [EntityID: String] = [:]
     /// Tool-step groups the user opened ("message id:group index").
     var expandedSteps: Set<String> = []
     var busyQuestions: Set<String> = []
@@ -430,7 +432,8 @@ final class IOSConversationModel {
         busyPlans.insert(plan.id)
         defer { busyPlans.remove(plan.id) }
         do {
-            _ = try await app.conversationService.acceptAndGenerate(plan, model: selection.model, effort: selection.effort)
+            let result = try await app.conversationService.acceptAndGenerateResult(plan, model: selection.model, effort: selection.effort)
+            planNotes[plan.id] = result.skippedSummary
             Haptics.success()
             await app.posts.load()
             error = nil
@@ -444,7 +447,9 @@ final class IOSConversationModel {
         busyPlans.insert(plan.id)
         defer { busyPlans.remove(plan.id) }
         do {
-            _ = try await app.conversationService.generatePlan(plan.id, model: selection.model, effort: selection.effort)
+            let result = try await app.conversationService.generatePlanResult(plan.id, model: selection.model, effort: selection.effort)
+            planNotes[plan.id] = result.skippedSummary
+            if result.jobs.isEmpty, result.skippedSummary == nil { planNotes[plan.id] = "Üretilecek post kalmadı." }
             Haptics.success()
             error = nil
         } catch {

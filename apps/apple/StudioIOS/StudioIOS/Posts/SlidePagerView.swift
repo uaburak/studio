@@ -291,21 +291,61 @@ enum ReelVideo {
         return value.isEmpty ? nil : value
     }
 
-    /// Download the video (auth headers) and play it full screen.
+    /// Play the video full screen, streamed from the Mac with the paired device's key (M5):
+    /// AVPlayer reads byte ranges through `AuthenticatedMediaLoader`; nothing is kept on disk.
+    /// Sample data (no Mac) writes a temporary file that is deleted when the player closes.
     @MainActor
     static func play(_ assetId: EntityID, app: IOSAppModel, from presenter: UIViewController) {
-        Toast.show("Video indiriliyor…", in: presenter.view)
+        removeLeftovers()
         Task {
             do {
-                let data = try await app.dataService.imageData(assetId: assetId)
-                let url = FileManager.default.temporaryDirectory.appendingPathComponent("studio-reel-\(assetId).mp4")
-                try data.write(to: url, options: .atomic)
-                let player = AVPlayerViewController()
-                player.player = AVPlayer(url: url)
+                let player = ReelPlayerViewController()
+                if app.isSample {
+                    let data = try await app.dataService.imageData(assetId: assetId)
+                    let url = FileManager.default.temporaryDirectory.appendingPathComponent("\(tempPrefix)\(UUID().uuidString).mp4")
+                    try data.write(to: url, options: .atomic)
+                    player.temporaryFile = url
+                    player.player = AVPlayer(url: url)
+                } else {
+                    let url = try app.client.assetContentURL(assetId)
+                    let loader = AuthenticatedMediaLoader(source: url, headers: try await app.client.authHeaders(), session: app.client.session)
+                    player.loader = loader
+                    player.player = AVPlayer(playerItem: AVPlayerItem(asset: loader.makeAsset()))
+                }
                 presenter.present(player, animated: true) { player.player?.play() }
             } catch {
                 presenter.presentError(IOSAppModel.describe(error))
             }
+        }
+    }
+
+    static let tempPrefix = "studio-reel-"
+
+    /// Video files an older build (or a crash) left in the temporary folder.
+    static func removeLeftovers() {
+        let folder = FileManager.default.temporaryDirectory
+        guard let names = try? FileManager.default.contentsOfDirectory(atPath: folder.path) else { return }
+        for name in names where name.hasPrefix(tempPrefix) {
+            try? FileManager.default.removeItem(at: folder.appendingPathComponent(name))
+        }
+    }
+}
+
+/// The full-screen player: keeps the streaming loader alive while it plays and deletes a
+/// temporary file (sample data) when it closes.
+final class ReelPlayerViewController: AVPlayerViewController {
+    var loader: AuthenticatedMediaLoader?
+    var temporaryFile: URL?
+
+    override func viewDidDisappear(_ animated: Bool) {
+        super.viewDidDisappear(animated)
+        guard isBeingDismissed || presentingViewController == nil else { return }
+        player?.pause()
+        player?.replaceCurrentItem(with: nil)
+        loader = nil
+        if let temporaryFile {
+            try? FileManager.default.removeItem(at: temporaryFile)
+            self.temporaryFile = nil
         }
     }
 }

@@ -4,7 +4,7 @@ import Foundation
 
 /// The status filter of the Mac posts screen (one pill per case).
 public enum PostListFilter: String, CaseIterable, Sendable, Hashable {
-    case all, ready, imageNeeded, approved, scheduled, published
+    case all, ready, imageNeeded, approved, scheduled, published, failed
 
     public var label: String {
         switch self {
@@ -14,6 +14,7 @@ public enum PostListFilter: String, CaseIterable, Sendable, Hashable {
         case .approved: "Onaylandı"
         case .scheduled: "Zamanlandı"
         case .published: "Yayınlandı"
+        case .failed: "Hata"
         }
     }
 
@@ -25,6 +26,7 @@ public enum PostListFilter: String, CaseIterable, Sendable, Hashable {
         case .approved: state == .approved
         case .scheduled: state == .scheduled || state == .publishing
         case .published: state == .published
+        case .failed: state == .failed || state == .generationFailed
         }
     }
 }

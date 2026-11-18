@@ -366,36 +366,101 @@ extension UIViewController {
 
 // MARK: - Images
 
+/// One cached picture: an asset at a thumbnail width (nil = shown full screen, 1280 px).
+struct IOSImageKey: Hashable, Sendable {
+    var assetId: EntityID
+    var width: Int
+
+    static let fullWidth = AssetThumbnail.widths.last ?? 1280
+
+    init(_ assetId: EntityID, width: Int? = nil) {
+        self.assetId = assetId
+        self.width = width.map { AssetThumbnail.width(for: Double($0)) } ?? Self.fullWidth
+    }
+}
+
+/// Decoded pictures, bounded (M5): an `NSCache` with a byte budget, emptied on a memory warning
+/// and when the app goes to the background. Pictures come from the Mac's thumbnail endpoint at
+/// the size they are shown and are decoded with ImageIO at that size, never as full bitmaps.
 @MainActor
 @Observable
 final class IOSImageStore {
     weak var app: IOSAppModel?
-    private(set) var images: [EntityID: UIImage] = [:]
-    private(set) var failed: Set<EntityID> = []
-    @ObservationIgnored private var loading: Set<EntityID> = []
+    /// Bumped when a picture lands, so bound views refresh (the pictures live in `cache`).
+    private(set) var revisions: [IOSImageKey: Int] = [:]
+    private(set) var failed: Set<IOSImageKey> = []
+    @ObservationIgnored private var loading: Set<IOSImageKey> = []
+    @ObservationIgnored private let cache = NSCache<KeyBox, UIImage>()
+    /// Pictures the phone itself picked (uploads), shown until the Mac's copy loads.
+    @ObservationIgnored private let seeded = NSCache<NSString, UIImage>()
+    @ObservationIgnored private var observers: [any NSObjectProtocol] = []
 
-    func seed(_ image: UIImage, for assetId: EntityID) {
-        images[assetId] = image
-        failed.remove(assetId)
+    /// About 80 MB of decoded pixels (a 1280×1600 slide is ~8 MB, a grid thumbnail ~1.6 MB).
+    static let costLimit = 80 * 1024 * 1024
+
+    private final class KeyBox: NSObject {
+        let key: IOSImageKey
+        init(_ key: IOSImageKey) { self.key = key }
+        override var hash: Int { key.hashValue }
+        override func isEqual(_ object: Any?) -> Bool { (object as? KeyBox)?.key == key }
     }
 
-    func image(_ assetId: EntityID) -> UIImage? { images[assetId] }
+    init() {
+        cache.totalCostLimit = Self.costLimit
+        cache.countLimit = 400
+        seeded.totalCostLimit = 16 * 1024 * 1024
+        let center = NotificationCenter.default
+        for name in [UIApplication.didReceiveMemoryWarningNotification, UIApplication.didEnterBackgroundNotification] {
+            observers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.purge() }
+            })
+        }
+    }
 
-    func load(_ assetId: EntityID) {
-        guard images[assetId] == nil, !loading.contains(assetId), !failed.contains(assetId),
+    /// Drop every decoded picture (views keep the one they show; others load again when needed).
+    func purge() {
+        cache.removeAllObjects()
+        seeded.removeAllObjects()
+    }
+
+    func seed(_ image: UIImage, for assetId: EntityID) {
+        seeded.setObject(image, forKey: assetId as NSString, cost: Self.cost(image))
+        for key in revisions.keys where key.assetId == assetId { failed.remove(key) }
+        revisions[IOSImageKey(assetId), default: 0] += 1
+    }
+
+    /// The picture at `width` px (nil: full size); a seeded or larger cached copy stands in.
+    func image(_ assetId: EntityID, width: Int? = nil) -> UIImage? {
+        let key = IOSImageKey(assetId, width: width)
+        _ = revisions[key]
+        if let hit = cache.object(forKey: KeyBox(key)) { return hit }
+        for other in AssetThumbnail.widths where other > key.width {
+            if let larger = cache.object(forKey: KeyBox(IOSImageKey(assetId, width: other))) { return larger }
+        }
+        return seeded.object(forKey: assetId as NSString)
+    }
+
+    func hasFailed(_ assetId: EntityID, width: Int? = nil) -> Bool {
+        failed.contains(IOSImageKey(assetId, width: width))
+    }
+
+    func load(_ assetId: EntityID, width: Int? = nil) {
+        let key = IOSImageKey(assetId, width: width)
+        guard cache.object(forKey: KeyBox(key)) == nil, !loading.contains(key), !failed.contains(key),
               let service = app?.dataService else { return }
-        loading.insert(assetId)
+        loading.insert(key)
         Task {
-            defer { loading.remove(assetId) }
+            defer { loading.remove(key) }
             do {
-                let data = try await service.imageData(assetId: assetId)
-                if let image = await Self.decode(data) {
-                    images[assetId] = image
+                let data = try await service.thumbnailData(assetId: assetId, width: key.width)
+                if let image = await Self.decode(data, width: key.width) {
+                    cache.setObject(image, forKey: KeyBox(key), cost: Self.cost(image))
+                    revisions[key, default: 0] += 1
                 } else {
-                    failed.insert(assetId)
+                    failed.insert(key)
                 }
             } catch {
-                failed.insert(assetId)
+                failed.insert(key)
             }
         }
     }
@@ -409,13 +474,21 @@ final class IOSImageStore {
     func retryFailed() { failed = [] }
 
     func clear() {
-        images = [:]
+        purge()
+        revisions = [:]
         failed = []
     }
 
-    nonisolated private static func decode(_ data: Data) async -> UIImage? {
-        guard let image = UIImage(data: data) else { return nil }
-        return await image.byPreparingForDisplay() ?? image
+    static func cost(_ image: UIImage) -> Int {
+        if let cg = image.cgImage { return ImageDownsampler.memoryCost(cg) }
+        return Int(image.size.width * image.scale * image.size.height * image.scale * 4)
+    }
+
+    /// Decode at `width` px off the main thread (ImageIO thumbnail; no full-size bitmap).
+    nonisolated private static func decode(_ data: Data, width: Int) async -> UIImage? {
+        await Task.detached(priority: .userInitiated) {
+            ImageDownsampler.downsample(data, width: width).map { UIImage(cgImage: $0) }
+        }.value
     }
 }
 
@@ -425,17 +498,22 @@ final class IOSAssetImageView: UIImageView {
     }
     private var token: IOSObservationToken?
     private let spinner = UIActivityIndicatorView(style: .medium)
+    /// Pixel width to load (nil: full size). Set from the view's width in points.
+    private var pixelWidth: Int?
 
     var assetId: EntityID? {
         didSet {
             guard assetId != oldValue else { return }
+            image = nil
             bind()
         }
     }
 
-    init(store: IOSImageStore?, assetId: EntityID? = nil, cornerRadius: CGFloat = 0, contentMode: UIView.ContentMode = .scaleAspectFill) {
+    /// `displayWidth`: about how wide the view is shown, in points (nil: full screen / zoomable).
+    init(store: IOSImageStore?, assetId: EntityID? = nil, cornerRadius: CGFloat = 0, contentMode: UIView.ContentMode = .scaleAspectFill, displayWidth: CGFloat? = nil) {
         self.store = store
         self.assetId = assetId
+        self.pixelWidth = displayWidth.map { AssetThumbnail.width(points: Double($0), scale: Double(UITraitCollection.current.displayScale)) }
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
         self.contentMode = contentMode
@@ -465,12 +543,20 @@ final class IOSAssetImageView: UIImageView {
             spinner.stopAnimating()
             return
         }
-        store.load(assetId)
+        let width = pixelWidth
+        store.load(assetId, width: width)
         token = observeIOS { [weak self, weak store] in
             guard let self, let store else { return }
-            let loaded = store.image(assetId)
-            self.image = loaded
-            if loaded == nil && !store.failed.contains(assetId) { self.spinner.startAnimating() } else { self.spinner.stopAnimating() }
+            if let loaded = store.image(assetId, width: width) {
+                self.image = loaded
+                self.spinner.stopAnimating()
+            } else if store.hasFailed(assetId, width: width) {
+                self.spinner.stopAnimating()
+            } else {
+                // Evicted (memory warning) while bound: keep what is shown and load it again.
+                if self.image == nil { self.spinner.startAnimating() }
+                store.load(assetId, width: width)
+            }
         }
     }
 }

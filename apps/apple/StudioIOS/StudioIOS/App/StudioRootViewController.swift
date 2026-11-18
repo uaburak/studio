@@ -316,6 +316,15 @@ final class StudioRootViewController: UIViewController, UINavigationControllerDe
             presentPairing()
             return
         }
+        if route == .usage {
+            setDrawer(open: false, animated: true)
+            let present = { [weak self] in
+                guard let self else { return }
+                self.presentSheet(UsageSheetViewController(app: self.app, presence: { [weak app = self.app] in app?.presence }), detents: [.medium(), .large()])
+            }
+            if presentedViewController != nil { dismiss(animated: false, completion: present) } else { present() }
+            return
+        }
         if presentedViewController != nil { dismiss(animated: isOnScreen) }
         setDrawer(open: false, animated: true)
         switch route {
@@ -335,7 +344,7 @@ final class StudioRootViewController: UIViewController, UINavigationControllerDe
             show(.jobs)
         case .settings:
             show(.settings)
-        case .pair:
+        case .pair, .usage:
             break
         case .brand(let id):
             guard let root = mainNav.viewControllers.first else { return }

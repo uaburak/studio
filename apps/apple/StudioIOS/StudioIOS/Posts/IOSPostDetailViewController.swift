@@ -317,6 +317,9 @@ final class IOSPostDetailViewController: UIViewController {
         if !s.isViewingCurrentVersion, let shown = s.activeVersion?.version {
             tabContent.addArrangedSubview(oldVersionBanner(shown))
         }
+        if let failure = card.generationFailure {
+            tabContent.addArrangedSubview(failureCard(failure))
+        }
 
         // Caption
         let captionCard = IOSCardView(padding: 16, spacing: 8)
@@ -367,6 +370,32 @@ final class IOSPostDetailViewController: UIViewController {
             // A canvas version's slots are filled on the Mac's canvas.
             tabContent.addArrangedSubview(s.isCanvasVersion || s.card.isCanvasVersion ? canvasNoteCard() : slotCard())
         }
+    }
+
+    /// "Üretilemedi": the reason in plain words and "Yeniden dene" (`POST /api/jobs/{id}/retry`).
+    private func failureCard(_ failure: GenerationFailure) -> UIView {
+        let card = IOSCardView(padding: 16, spacing: 8)
+        let title = UIStackView.h([
+            IOSStatusDotView(color: IOSTheme.accent, size: 8),
+            UILabel.studio(session.content.currentVersion == nil ? "Post üretilemedi" : "Son düzenleme üretilemedi", size: 15, weight: .semibold, style: .subheadline),
+            UIView.spacer(),
+        ], spacing: 8)
+        card.stack.addArrangedSubview(title)
+        card.stack.addArrangedSubview(UILabel.studio(failure.reason, size: 14, color: IOSTheme.textSecondary, lines: 0, style: .subheadline))
+        let retry = UIButton.studioPill(title: "Yeniden dene", kind: .primary, image: "arrow.clockwise") { [weak self] in
+            guard let self else { return }
+            Task {
+                if await self.app.posts.retryGeneration(self.session.card) {
+                    Haptics.success()
+                    Toast.show("Yeniden üretiliyor", in: self.view)
+                } else if let error = self.app.posts.error {
+                    self.presentError(error)
+                }
+            }
+        }
+        retry.isEnabled = !session.content.status.isLocked
+        card.stack.addArrangedSubview(UIStackView.h([retry, UIView.spacer()], spacing: 0))
+        return card
     }
 
     // MARK: Checks
@@ -940,12 +969,15 @@ final class IOSPostDetailViewController: UIViewController {
     }
 
     private func delete() {
-        confirm("“\(session.content.title)” silinsin mi?", message: "Post ve tüm sürümleri silinir. Bu geri alınamaz.", action: "Sil") { [weak self] in
+        confirm("“\(session.content.title)” silinsin mi?", message: IOSPostsModel.deleteMessage, action: "Sil") { [weak self] in
             guard let self else { return }
             Task {
-                if await self.app.posts.delete(self.session.card) {
+                let card = self.session.card
+                if await self.app.posts.delete(card) {
                     Haptics.success()
+                    let host = self.navigationController?.view
                     self.navigationController?.popViewController(animated: true)
+                    IOSPostsModel.showUndo(for: card, model: self.app.posts, in: host)
                 } else if let error = self.app.posts.error {
                     self.presentError(error)
                 }

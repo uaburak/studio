@@ -16,6 +16,8 @@ final class IOSAppSettings {
     nonisolated static let noticePrefix = "studio.ios.notices."
     nonisolated static let lastBackgroundKey = "studio.ios.notices.lastCheck"
     nonisolated static let ownerNameKey = "studio.ios.ownerName"
+    /// "Seni bekliyor" notices already shown (by the app or the background check), newest last.
+    nonisolated static let announcedKey = "studio.ios.notices.announced"
     nonisolated static let defaultRemoteURLString = "https://social.burakkoc.net"
 
     @ObservationIgnored let defaults: UserDefaults
@@ -136,6 +138,8 @@ enum IOSRoute: Equatable {
     case brand(EntityID)
     case jobs
     case settings
+    /// The usage sheet (Claude limit decision, paid AI spend).
+    case usage
     /// "iPhone'u bağla" / "Yeniden bağla": the QR scanner (with `IOSAppModel.pendingInvite`
     /// when a `studio://pair` link was opened).
     case pair
@@ -284,6 +288,7 @@ final class IOSAppModel {
             self.conversationService = RemoteConversationService(client: client)
             self.dataService = RemoteStudioDataService(client: client)
             self.isSample = false
+            IOSUploads.configure(client)
         }
         currentBrandId = settings.lastBrandId
         images.app = self
@@ -293,6 +298,48 @@ final class IOSAppModel {
 
     var presence: WorkerPresence? { jobBoard.presence }
     var isOnline: Bool { presence?.online == true }
+
+    // MARK: Paid AI and the Claude limit (S7)
+
+    /// Claude's window is used up and work waits (presence `claude.limit`).
+    var claudeLimit: ClaudeLimitState? { presence?.claude?.limit }
+    private(set) var aiSpend: AISpendSummary?
+    private(set) var aiPreferences: AIPreferences?
+    private(set) var aiSpendError: String?
+
+    func loadAISpend() async {
+        async let spend = dataService.aiSpend()
+        async let preferences = dataService.aiPreferences()
+        do {
+            aiSpend = try await spend
+            aiSpendError = nil
+        } catch {
+            aiSpendError = Self.describe(error)
+        }
+        aiPreferences = (try? await preferences) ?? aiPreferences
+    }
+
+    /// "Gemini ile devam et" / "Sınırı bekle". Returns why it did not work (nil: saved).
+    func decideClaudeLimit(_ choice: ClaudeLimitChoice) async -> String? {
+        do {
+            aiPreferences = try await dataService.decideClaudeLimit(choice)
+            _ = try? await dataService.claudeRefresh()
+            return nil
+        } catch {
+            return Self.claudeLimitRefusal(error) ?? Self.describe(error)
+        }
+    }
+
+    /// The API takes the answer from the Mac only today (403): say where to give it.
+    static func claudeLimitRefusal(_ error: any Error) -> String? {
+        let apiError = StudioAPIError.from(error)
+        switch apiError {
+        case .server(let status, _, _, _), .unauthorized(let status), .http(let status):
+            return status == 403 ? "Bu kararı şimdilik Mac'teki Studio'dan ver (Ayarlar → Yapay zekâ ya da sohbetteki kart)." : nil
+        default:
+            return nil
+        }
+    }
 
     /// The connection in plain words: "Mac'e bağlı", "Mac'e bağlanıyor…", "Mac'e ulaşılamıyor"
     /// (with one reason and one action) or "Bağlı değil".
@@ -336,6 +383,7 @@ final class IOSAppModel {
     func reconnect() {
         guard !isSample else { return }
         let client = settings.makeClient()
+        IOSUploads.configure(client)
         self.client = client
         conversationService = RemoteConversationService(client: client)
         dataService = RemoteStudioDataService(client: client)
@@ -559,6 +607,7 @@ final class IOSAppModel {
 
     private func handle(_ event: JobFeedEvent) {
         jobBoard.apply(event)
+        for notice in noticeTracker.claudeLimitNotices(jobBoard.presence) { deliver(notice) }
         switch event {
         case .state(let state):
             feedTrouble(state)
@@ -586,7 +635,18 @@ final class IOSAppModel {
     private func deliver(_ notice: ActivityNotice) {
         guard settings.isNoticeEnabled(notice.kind.category) else { return }
         if isInForeground, let id = notice.conversationId, id == visibleConversationId, notice.kind != .waitingOnYou { return }
+        // "Seni bekliyor" once across launches and the background check (M7).
+        if notice.kind == .waitingOnYou, !Self.markAnnounced(notice.id, defaults: settings.defaults) { return }
         notifier.post(notice)
+    }
+
+    /// Remember an announced "seni bekliyor" key; false when it was shown before.
+    nonisolated static func markAnnounced(_ id: String, defaults: UserDefaults) -> Bool {
+        var seen = defaults.stringArray(forKey: IOSAppSettings.announcedKey) ?? []
+        guard !seen.contains(id) else { return false }
+        seen.append(id)
+        defaults.set(Array(seen.suffix(300)), forKey: IOSAppSettings.announcedKey)
+        return true
     }
 
     // MARK: Lifecycle
