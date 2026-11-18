@@ -10,6 +10,9 @@
     "dev:renderer": "vite --config renderer.vite.config.ts",
     "build": "node scripts/wecra-guard.mjs -- electron-vite build",
     "start": "electron-vite preview",
+    "package": "node scripts/package.mjs",
+    "build:host": "node scripts/build-host.mjs",
+    "self-test": "electron . --self-test",
     "tokens": "node scripts/gen-tokens.ts",
     "typecheck": "node scripts/wecra-guard.mjs -- tsc -p tsconfig.json && tsc -p tsconfig.node.json",
     "test": "node scripts/wecra-guard.mjs --without 'vitest run --project main' -- vitest run"

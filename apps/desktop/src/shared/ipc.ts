@@ -4,6 +4,7 @@ import type { AccountsBridge, SystemBridge } from "./accounts-ipc.ts";
 import type { CanvasRunnerBridge } from "./canvas-runner.ts";
 import type { DraftsBridge, LifecycleBridge } from "./drafts.ts";
 import type { FontsBridge } from "./fonts.ts";
+import type { PackagingBridge } from "./system-ipc.ts";
 
 export type ServiceName = "api" | "gateway" | "worker" | "tunnel";
 
@@ -72,6 +73,8 @@ export interface DesktopSettings {
   ownerName: string;
   appearance: Appearance;
   notificationsEnabled: boolean;
+  /** "Mac'i uyanık tut": no idle sleep while jobs run or a schedule is due within the hour. */
+  keepAwake: boolean;
   agent: {
     last: AgentChoiceValue | null;
     conversations: Record<string, AgentChoiceValue>;
@@ -178,4 +181,6 @@ export interface StudioBridge {
   lifecycle?: LifecycleBridge;
   /** Only in the hidden canvas runner's page (shared/canvas-runner.ts). */
   canvasRunner?: CanvasRunnerBridge;
+  /** Health, tools, worker keys, login item (absent outside Electron and in an older app). */
+  packaging?: PackagingBridge;
 }

@@ -11,7 +11,6 @@ import {
   closeSync,
   constants,
   copyFileSync,
-  existsSync,
   fstatSync,
   openSync,
   readSync,
@@ -22,28 +21,21 @@ import {
 } from "node:fs";
 import { createServer } from "node:net";
 import { homedir, networkInterfaces, userInfo } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
+import { findRepo } from "./layout.ts";
 
 /** `~/Library/Application Support/Studio` (shared with the AppKit app). */
 export function stateDirectory(home = homedir()): string {
   return join(home, "Library", "Application Support", "Studio");
 }
 
-/** The checkout this build runs from (walks up to `pnpm-workspace.yaml` + `apps/api`). */
-export function defaultRepoPath(startDir: string, home = homedir()): string {
-  let dir = startDir;
-  for (let i = 0; i < 12; i++) {
-    if (
-      existsSync(join(dir, "pnpm-workspace.yaml")) &&
-      existsSync(join(dir, "apps", "api", "wrangler.jsonc"))
-    ) {
-      return dir;
-    }
-    const parent = dirname(dir);
-    if (parent === dir) break;
-    dir = parent;
-  }
-  return join(home, "Desktop", "Burak", "Code", "Studio");
+/**
+ * The checkout this build runs from (walks up to `pnpm-workspace.yaml` + `apps/api`); "" when
+ * there is none (the packaged app: its host comes from the app bundle, host/layout.ts). Never a
+ * guessed folder.
+ */
+export function defaultRepoPath(startDir: string): string {
+  return findRepo(startDir) ?? "";
 }
 
 /** `~/...` → absolute. */

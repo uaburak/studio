@@ -33,10 +33,9 @@ import { CanvasRunnerWindow } from "./canvas/runner-window.ts";
 import { DraftStore } from "./drafts.ts";
 import { RendererFlush } from "./flush.ts";
 import { FontFiles, FontLister } from "./fonts.ts";
-import { DnsSdAdvertiser } from "./host/bonjour.ts";
+import { createHost } from "./host/create-host.ts";
 import { defaultRepoPath, macUserName, stateDirectory } from "./host/environment.ts";
-import { defaultHostDeps, type HostConfiguration, LocalHost } from "./host/local-host.ts";
-import { SpawnLauncher } from "./host/process.ts";
+import type { HostConfiguration } from "./host/local-host.ts";
 import {
   loadOrCreateHostSecrets,
   loadOrCreateInstanceId,
@@ -53,6 +52,7 @@ import { APP_ORIGIN, handleAppProtocol, OWNER_HEADER } from "./protocol.ts";
 import { needsOwnerHeader, originOf } from "./protocol-paths.ts";
 import { RendererLink, watchRenderer } from "./renderer-link.ts";
 import { defaultSettings, SettingsStore } from "./settings.ts";
+import { type SystemServices, setupSystemServices } from "./system-services.ts";
 
 export function startApp(): void {
   const isDev = !app.isPackaged && Boolean(process.env.ELECTRON_RENDERER_URL);
@@ -97,19 +97,22 @@ export function startApp(): void {
   let ownerSecret = loadOrCreateOwnerSecret(stateDir);
   const currentOwnerSecret = () => ownerSecret;
 
-  const host = new LocalHost(
-    {
-      ...defaultHostDeps({
-        stateDir,
-        launcher: new SpawnLauncher(),
-        advertiser: new DnsSdAdvertiser(),
-        cipher: safeStorageCipher,
-        ownerSecret: currentOwnerSecret,
-      }),
-      readTunnelToken: () => secrets.load("cloudflare-tunnel-token"),
-    },
-    hostConfiguration,
-  );
+  // Dev: the repo this build runs from; packaged: Contents/Resources/host (host/layout.ts).
+  const created = createHost({
+    stateDir,
+    configuration: hostConfiguration,
+    cipher: safeStorageCipher,
+    ownerSecret: currentOwnerSecret,
+    executable: process.execPath,
+    isPackaged: app.isPackaged,
+    resourcesPath: process.resourcesPath,
+    appPath: app.getAppPath(),
+    version: app.getVersion(),
+    hostDirOverride: process.env.STUDIO_HOST_DIR,
+    readTunnelToken: () => secrets.load("cloudflare-tunnel-token"),
+    log: (message) => mainLog.write("info", message),
+  });
+  const host = created.host;
 
   let mainWindow: BrowserWindow | null = null;
 
@@ -355,6 +358,8 @@ export function startApp(): void {
     },
   });
 
+  let systemServices: SystemServices | null = null;
+
   function registerIpc(): void {
     ipcMain.handle(IPC.hostGet, () => host.snapshot());
     ipcMain.handle(IPC.hostRestart, () => host.restart());
@@ -410,6 +415,17 @@ export function startApp(): void {
       // A new or removed tunnel token restarts only the tunnel, not the jobs (A9).
       onTunnelTokenChange: () => void host.restartTunnel(),
       send,
+    });
+    // Health, tools, worker keys, login item, keeping the Mac awake (P1, P2, P9).
+    systemServices = setupSystemServices({
+      ipcMain,
+      created,
+      stateDir,
+      ownerSecret: currentOwnerSecret,
+      settings: () => settings.get(),
+      onSettingsChange: (listener) => settings.onChange(listener),
+      send,
+      log: (level, message) => mainLog.write(level, message),
     });
     let tunnelHostname = settings.get().remoteHostname;
     settings.onChange((value) => {
@@ -469,6 +485,7 @@ export function startApp(): void {
   async function shutdown(): Promise<void> {
     if (quitting) return;
     quitting = true;
+    systemServices?.stop();
     stopCanvasRunner();
     activity.stop();
     try {

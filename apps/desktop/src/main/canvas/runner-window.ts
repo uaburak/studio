@@ -142,6 +142,13 @@ export class CanvasRunnerWindow implements CanvasJobRunner {
     );
   }
 
+  /** Opens the (hidden) page and waits until it is ready (the self-test's check). */
+  async warmUp(): Promise<void> {
+    clearTimeout(this.idleTimer);
+    await this.open();
+    this.scheduleIdle();
+  }
+
   async run(job: Job, ctx: CanvasJobContext): Promise<Record<string, unknown>> {
     clearTimeout(this.idleTimer);
     await this.open();

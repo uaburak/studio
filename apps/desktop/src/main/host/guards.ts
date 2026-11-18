@@ -209,18 +209,26 @@ async function cwdOf(pid: number): Promise<string | null> {
   );
 }
 
+/** What `stopLeftovers` matches: the layout's own paths (host/layout.ts). */
+export interface LeftoverTargets {
+  /** `pkill -f` patterns of the API and gateway (full paths inside the repo or the app). */
+  leftoverPatterns: string[];
+  /** The worker: `pgrep -f` pattern and the working folder it must have. */
+  workerLeftover: { pattern: string; cwd: string };
+}
+
 /**
- * Stops this repo's API, gateway and worker processes that outlived their app (matched by
- * their full paths inside the repo, so nothing else is touched), and the app's orphaned
- * `dns-sd` and `cloudflared` (see `orphanedHelpers`).
+ * Stops this layout's API, gateway and worker processes that outlived their app (matched by
+ * their full paths inside the repo or the app, so nothing else is touched), and the app's
+ * orphaned `dns-sd` and `cloudflared` (see `orphanedHelpers`).
  */
-export async function stopLeftovers(repoPath: string, stateDir: string): Promise<void> {
-  const workerDir = `${repoPath}/apps/worker`;
-  // The worker runs as `tsx src/main.ts` inside apps/worker: match its working directory.
-  const pids = (await output("/usr/bin/pgrep", ["-f", "tsx src/main.ts"]))
+export async function stopLeftovers(targets: LeftoverTargets, stateDir: string): Promise<void> {
+  const workerDir = targets.workerLeftover.cwd;
+  // Match the worker's command and its working directory.
+  const pids = (await output("/usr/bin/pgrep", ["-f", targets.workerLeftover.pattern]))
     .split("\n")
     .map((s) => Number.parseInt(s, 10))
-    .filter((n) => Number.isInteger(n) && n > 0);
+    .filter((n) => Number.isInteger(n) && n > 0 && n !== process.pid);
   let stopped = false;
   for (const pid of pids) {
     if ((await cwdOf(pid)) === workerDir) {
@@ -241,7 +249,7 @@ export async function stopLeftovers(repoPath: string, stateDir: string): Promise
       stopped = true;
     }
   }
-  for (const pattern of leftoverPatterns(repoPath)) {
+  for (const pattern of targets.leftoverPatterns) {
     // pkill exits 0 when it signalled something, 1 when nothing matched.
     const matched = await new Promise<boolean>((resolve) => {
       const child = spawn("/usr/bin/pkill", ["-TERM", "-f", pattern], { stdio: "ignore" });

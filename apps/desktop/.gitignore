@@ -1,1 +1,3 @@
 out/
+# electron-builder output (Studio.app, zip, dmg)
+release/

@@ -18,7 +18,7 @@
  */
 import { type ChildProcess, spawn as nodeSpawn } from "node:child_process";
 import type { RunUsage } from "@studio/contract";
-import type { McpBridge } from "../chat/mcp-bridge.ts";
+import { type McpBridge, nodeModeEnv } from "../chat/mcp-bridge.ts";
 import type { Effort } from "../claude/models.ts";
 import { LineSplitter } from "../claude/stream.ts";
 import { startTurnTimer, type TurnWaits } from "../claude/turn-waits.ts";
@@ -184,6 +184,10 @@ export function codexExecArgs(options: CodexTurnOptions): string[] {
       "-c",
       "mcp_servers.studio.startup_timeout_sec=30",
     );
+    // Studio.app: `process.execPath` is the app's binary, Node only with this variable.
+    for (const [name, value] of Object.entries(nodeModeEnv())) {
+      args.push("-c", `mcp_servers.studio.env.${name}=${toml(value)}`);
+    }
   }
   for (const image of options.images ?? []) args.push("-i", image);
   // The prompt comes on stdin.
