@@ -11,6 +11,7 @@ import { type ImageRequestForm, imageRequestPayload } from "./media-model.ts";
 
 export const mediaKeys = {
   assets: (brandId: string | null) => ["media", "assets", brandId] as const,
+  similar: (assetId: string | null) => ["media", "similar", assetId] as const,
 };
 
 export function useBrandAssets(brandId: string | null) {
@@ -18,6 +19,8 @@ export function useBrandAssets(brandId: string | null) {
   const up = isHostUp(useHost());
   // A finished image generation (or render) adds assets.
   useRefreshOnJobs(["image.generate", "content.render"], brandId, [mediaKeys.assets(brandId)]);
+  // Tagging (N12) adds what Vision read; a backfill job has no brand, so any of them counts.
+  useRefreshOnJobs(["media.analyze"], null, [mediaKeys.assets(brandId)]);
   return useQuery({
     queryKey: mediaKeys.assets(brandId),
     queryFn: (): Promise<Asset[]> =>
@@ -26,6 +29,18 @@ export function useBrandAssets(brandId: string | null) {
       ),
     enabled: up && brandId !== null,
     staleTime: 15_000,
+  });
+}
+
+/** "Benzerleri" (N12): the brand's pictures that look like `assetId`, nearest first. */
+export function useSimilarAssets(assetId: string | null) {
+  const api = useApi();
+  const up = isHostUp(useHost());
+  return useQuery({
+    queryKey: mediaKeys.similar(assetId),
+    queryFn: () => api.assets.similar(assetId as string, { limit: 24 }),
+    enabled: up && assetId !== null,
+    staleTime: 30_000,
   });
 }
 

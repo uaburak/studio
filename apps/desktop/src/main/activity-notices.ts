@@ -69,6 +69,8 @@ interface JobFrame {
   payload: Record<string, unknown>;
   brandId?: string;
   error?: string;
+  /** Kept for the notice text (e.g. a product picture's label check, U9). */
+  output?: unknown;
 }
 
 const ACTIVE = new Set(["queued", "running"]);
@@ -85,6 +87,7 @@ function asJob(value: unknown): JobFrame | null {
     payload: job.payload && typeof job.payload === "object" ? job.payload : {},
     ...(typeof job.brandId === "string" ? { brandId: job.brandId } : {}),
     ...(typeof job.error === "string" ? { error: job.error } : {}),
+    ...(job.output && typeof job.output === "object" ? { output: job.output } : {}),
   };
 }
 

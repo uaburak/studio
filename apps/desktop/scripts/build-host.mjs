@@ -4,6 +4,8 @@
 //   out/host/
 //     manifest.json        what was built (version, latest migration, Chromium revision, …)
 //     bin/node-shim.cjs    preloaded into every Node child run by Electron's own binary
+//     bin/studio-vision    Apple Vision helper (apps/vision-helper, `swift build -c release`);
+//                          the worker finds it next to worker/; missing → features say so
 //     api/index.js         the API Worker, bundled (`wrangler deploy --dry-run`)
 //     api/wrangler.json    its configuration (paths filled in by the app at start)
 //     api/migrations/      D1 migrations (*.sql)
@@ -19,6 +21,7 @@
 //   node scripts/build-host.mjs [--out <dir>]
 import { spawnSync } from "node:child_process";
 import {
+  chmodSync,
   cpSync,
   existsSync,
   mkdirSync,
@@ -155,6 +158,30 @@ async function buildWorker() {
     },
     absWorkingDir: workerDir,
   });
+}
+
+// --- studio-vision (Apple Vision helper, N12 / U9) ------------------------------------------
+
+/**
+ * Builds apps/vision-helper with the Mac's Swift toolchain and copies the binary to bin/. A Mac
+ * without Xcode still gets an app: tagging and label checks then say the helper is missing.
+ */
+function buildVisionHelper() {
+  const pkg = join(repo, "apps", "vision-helper");
+  const result = spawnSync("swift", ["build", "-c", "release", "--package-path", pkg], {
+    stdio: ["ignore", "pipe", "pipe"],
+    encoding: "utf8",
+  });
+  const built = join(pkg, ".build", "release", "studio-vision");
+  if (result.status !== 0 || !existsSync(built)) {
+    process.stderr.write(result.stderr ?? "");
+    log("WARNING: studio-vision was not built (needs Xcode / Swift); the app ships without it");
+    return null;
+  }
+  const dest = join(out, "bin", "studio-vision");
+  cpSync(built, dest);
+  chmodSync(dest, 0o755);
+  return relative(out, dest);
 }
 
 // --- node_modules: an npm-style copy of the pnpm packages the children need -------------------
@@ -299,6 +326,8 @@ async function main() {
   mkdirSync(join(out, "bin"), { recursive: true });
   cpSync(join(desktop, "build", "node-shim.cjs"), join(out, "bin", "node-shim.cjs"));
   cpSync(join(repo, "agent", "skills"), join(out, "agent", "skills"), { recursive: true });
+  log("studio-vision");
+  const visionHelper = buildVisionHelper();
 
   log("node_modules");
   const modules = collectModules([
@@ -323,6 +352,7 @@ async function main() {
       chromiumHeadlessShell: shell?.revision ?? null,
     },
     modules: modules.length,
+    visionHelper,
   };
   writeFileSync(join(out, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`);
   const mb = (folderSize(out) / 1024 / 1024).toFixed(1);

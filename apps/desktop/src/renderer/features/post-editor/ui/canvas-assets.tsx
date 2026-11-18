@@ -23,8 +23,8 @@ import { IconImagePlus } from "../../../components/ui/icons.tsx";
 import { assetUrl, describeError, useApi } from "../../../lib/api.ts";
 import { hasAssetDrag, readAssetDrag } from "../../../lib/asset-drag.ts";
 import { useBrandAssets } from "../../media/media-data.ts";
-import { filterAssets, isImageAsset } from "../../media/media-model.ts";
-import { MediaTile } from "../../media/media-views.tsx";
+import { filterAssets, isImageAsset, topTags } from "../../media/media-model.ts";
+import { MediaTile, TagChips } from "../../media/media-views.tsx";
 import { mediaSource } from "../../posts/slides.ts";
 import { assetContentUrl, type RenderKit } from "../model/brand-kit.ts";
 import {
@@ -261,6 +261,8 @@ export function MediaPickerDialog({
   const file = useRef<HTMLInputElement | null>(null);
   const images = useMemo(() => (assets.data ?? []).filter(isImageAsset), [assets.data]);
   const shown = useMemo(() => filterAssets(images, query), [images, query]);
+  // N12: the search also finds what Vision read in a picture (tags, text, colours).
+  const tags = useMemo(() => topTags(images, 10), [images]);
   return (
     <Dialog
       open={open}
@@ -290,11 +292,12 @@ export function MediaPickerDialog({
         <SearchField
           data-autofocus=""
           className="w-full"
-          placeholder="Medyada ara"
+          placeholder="Medyada ara (etiket, yazı, renk)"
           aria-label="Medyada ara"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
         />
+        <TagChips tags={tags} query={query} onQuery={setQuery} />
         {assets.error ? (
           <p className="text-footnote text-danger">{describeError(assets.error)}</p>
         ) : assets.isLoading ? (

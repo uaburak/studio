@@ -1,26 +1,29 @@
-// The media library ("Tümü"): the brand's files with kind filters and counts, search, upload
-// (button or drop files on the page), "AI ile görsel üret", click → lightbox, right-click menu
-// (Sil: to the trash with "Geri al", refused while the file is used), drag pictures into a
+// The media library ("Tümü"): the brand's files with kind filters and counts, search (names and
+// what Vision read in pictures: Turkish tags, text, colours — N12), tag chips, "Benzerleri",
+// upload (button or drop files on the page), "AI ile görsel üret", click → lightbox, right-click
+// menu (Sil: to the trash with "Geri al", refused while the file is used), drag pictures into a
 // chat's composer. Only the rows near the viewport are drawn (thumbnails, A4).
+import type { Asset } from "@studio/contract";
 import { useMemo, useRef, useState } from "react";
 import { Button, cn, SearchField, SegmentedControl } from "../../components/ui/controls.tsx";
-import { IconImage, IconSparkles, IconUpload } from "../../components/ui/icons.tsx";
+import { IconClose, IconImage, IconSparkles, IconUpload } from "../../components/ui/icons.tsx";
 import { useContextMenu } from "../../components/ui/menu.tsx";
 import { describeError } from "../../lib/api.ts";
 import { PageHeader, PaneMessage } from "../pane-ui.tsx";
 import { usePanelBrand } from "../panel-brand.ts";
 import { useAssetDelete } from "./asset-delete.tsx";
 import { ImageGeneratorSheet } from "./image-generator.tsx";
-import { useBrandAssets, useUploadAssets } from "./media-data.ts";
+import { useBrandAssets, useSimilarAssets, useUploadAssets } from "./media-data.ts";
 import {
-  assetMeta,
   filterAssets,
   MEDIA_FILTERS,
   type MediaFilter,
   mediaCounts,
+  tileDetail,
+  topTags,
   UPLOAD_ACCEPT,
 } from "./media-model.ts";
-import { MediaTile, mediaMenu, useMediaLightbox } from "./media-views.tsx";
+import { MediaTile, mediaMenu, TagChips, useMediaLightbox } from "./media-views.tsx";
 import { VirtualGrid } from "./virtual-grid.tsx";
 
 /** Height under a tile: the figure's gap and the two caption lines. */
@@ -55,10 +58,22 @@ function MediaPageBody({ brandId, brandName }: { brandId: string; brandName: str
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const menu = useContextMenu();
   const deletion = useAssetDelete(brandId);
+  // "Benzerleri": the grid shows the pictures closest to this one (N12).
+  const [similarTo, setSimilarTo] = useState<Asset | null>(null);
+  const similar = useSimilarAssets(similarTo?.id ?? null);
   const all = assets.data ?? [];
   const counts = useMemo(() => mediaCounts(all), [all]);
-  const shown = useMemo(() => filterAssets(all, query, filter), [all, query, filter]);
+  const tags = useMemo(() => topTags(all), [all]);
+  const filtered = useMemo(() => filterAssets(all, query, filter), [all, query, filter]);
+  const shown = useMemo(
+    () => (similarTo ? (similar.data?.items ?? []).map((i) => i.asset) : filtered),
+    [similarTo, similar.data, filtered],
+  );
   const lightbox = useMediaLightbox(shown);
+  const showSimilar = (asset: Asset) => {
+    setSimilarTo(asset);
+    scrollRef.current?.scrollTo({ top: 0 });
+  };
 
   return (
     // biome-ignore lint/a11y/noStaticElementInteractions: drop files anywhere on the page to upload
@@ -131,23 +146,51 @@ function MediaPageBody({ brandId, brandName }: { brandId: string; brandName: str
           />
           <SearchField
             className="w-[260px]"
-            placeholder="Medyada ara"
+            placeholder="Medyada ara (etiket, yazı, renk)"
             aria-label="Medyada ara"
             value={query}
-            onChange={(event) => setQuery(event.target.value)}
+            onChange={(event) => {
+              setSimilarTo(null);
+              setQuery(event.target.value);
+            }}
           />
         </div>
+        {similarTo ? (
+          <div className="mt-3 flex items-center gap-2 text-footnote text-fg-2">
+            <span className="min-w-0 truncate">
+              “{similarTo.originalFilename ?? "Adsız"}” görseline benzeyenler
+            </span>
+            <Button
+              size="sm"
+              variant="secondary"
+              icon={<IconClose size={12} strokeWidth={1.75} />}
+              onClick={() => setSimilarTo(null)}
+            >
+              Temizle
+            </Button>
+          </div>
+        ) : (
+          tags.length > 0 && (
+            <div className="mt-3">
+              <TagChips tags={tags} query={query} onQuery={setQuery} />
+            </div>
+          )
+        )}
       </PageHeader>
       <div ref={scrollRef} className="scroll-area min-h-0 flex-1 px-8 pb-10">
         {assets.error ? (
           <p className="text-body text-danger">{describeError(assets.error)}</p>
-        ) : assets.isLoading ? (
+        ) : assets.isLoading || (similarTo && similar.isLoading) ? (
           <p className="text-body text-fg-3">Yükleniyor…</p>
+        ) : similarTo && similar.error ? (
+          <p className="text-body text-danger">{describeError(similar.error)}</p>
         ) : shown.length === 0 ? (
           <p className="text-body text-fg-3">
-            {all.length === 0
-              ? "Henüz dosya yok. Yükle ya da dosyaları buraya bırak."
-              : "Bu filtreyle eşleşen dosya yok."}
+            {similarTo
+              ? (similar.data?.note ?? "Benzer görsel bulunamadı.")
+              : all.length === 0
+                ? "Henüz dosya yok. Yükle ya da dosyaları buraya bırak."
+                : "Bu filtreyle eşleşen dosya yok."}
           </p>
         ) : (
           <VirtualGrid
@@ -174,6 +217,7 @@ function MediaPageBody({ brandId, brandName }: { brandId: string; brandName: str
                         asset,
                         () => lightbox.open(asset),
                         () => void deletion.remove(asset),
+                        () => showSimilar(asset),
                       ),
                     )
                   }
@@ -185,7 +229,7 @@ function MediaPageBody({ brandId, brandName }: { brandId: string; brandName: str
                   >
                     {asset.originalFilename ?? "Adsız"}
                   </div>
-                  <div className="truncate text-caption text-fg-3">{assetMeta(asset)}</div>
+                  <div className="truncate text-caption text-fg-3">{tileDetail(asset)}</div>
                 </figcaption>
               </figure>
             )}
