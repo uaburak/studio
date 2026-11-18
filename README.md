@@ -4,17 +4,17 @@ Tek kullanıcılı sosyal medya içerik stüdyosu. Mimari ve kararlar için [PLA
 
 ## Depo yapısı
 
-| Klasör                | İçerik                                                                            |
-| --------------------- | --------------------------------------------------------------------------------- |
-| `apps/api`            | Cloudflare Workers API (Hono), `Hub` Durable Object (WebSocket), D1 (Drizzle), R2 |
-| `apps/desktop`        | Mac uygulaması (Electron + React); yerel sunucuyu başlatır ve gözetir             |
-| `apps/apple`          | iPhone uygulaması (`StudioIOS`), ortak Swift çekirdeği (`StudioKit`), eski `StudioMac` |
-| `apps/cloud-publisher`| Yalnızca zamanlanmış postları paylaşan Cloudflare Worker                          |
-| `apps/worker`         | Mac worker (Node): hub'a bağlanır, işleri çalıştırır                              |
-| `packages/contract`   | Ortak zod şemaları: sağlık yanıtı, iş, worker–hub protokolü, tipli API istemcisi  |
-| `packages/design-kit` | Tasarım kiti (şimdilik boş kabuk)                                                 |
-| `packages/publishers` | Yayın bağdaştırıcıları (şimdilik boş kabuk)                                       |
-| `agent/`              | Üretim ajanının çalışma alanı (şimdilik yalnızca README)                          |
+| Klasör                 | İçerik                                                                                 |
+| ---------------------- | -------------------------------------------------------------------------------------- |
+| `apps/api`             | Cloudflare Workers API (Hono), `Hub` Durable Object (WebSocket), D1 (Drizzle), R2      |
+| `apps/desktop`         | Mac uygulaması (Electron + React); yerel sunucuyu başlatır ve gözetir                  |
+| `apps/apple`           | iPhone uygulaması (`StudioIOS`), ortak Swift çekirdeği (`StudioKit`), eski `StudioMac` |
+| `apps/cloud-publisher` | Yalnızca zamanlanmış postları paylaşan Cloudflare Worker                               |
+| `apps/worker`          | Mac worker (Node): hub'a bağlanır, işleri çalıştırır                                   |
+| `packages/contract`    | Ortak zod şemaları: sağlık yanıtı, iş, worker–hub protokolü, tipli API istemcisi       |
+| `packages/design-kit`  | Tasarım kiti (şimdilik boş kabuk)                                                      |
+| `packages/publishers`  | Yayın bağdaştırıcıları (şimdilik boş kabuk)                                            |
+| `agent/`               | Üretim ajanının çalışma alanı (şimdilik yalnızca README)                               |
 
 `spikes/` pnpm çalışma alanına dahil değildir; her deneme kendi başına kurulur.
 

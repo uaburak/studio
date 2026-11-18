@@ -18,19 +18,8 @@
     "video starts at pts 0": true,
     "duration ~10.0 s": true
   },
-  "top_level_atoms": [
-    "ftyp",
-    "moov",
-    "free",
-    "mdat"
-  ],
-  "keyframe_times": [
-    0.0,
-    2.0,
-    4.0,
-    6.0,
-    8.0
-  ],
+  "top_level_atoms": ["ftyp", "moov", "free", "mdat"],
+  "keyframe_times": [0.0, 2.0, 4.0, 6.0, 8.0],
   "idr_nal_count": 5,
   "video_bitrate": "2704791",
   "nb_frames": "300",

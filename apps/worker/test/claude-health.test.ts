@@ -278,12 +278,7 @@ describe("worker with an agent runtime", () => {
     second?.simulateOpen();
     expect(second?.sent[0]).toMatchObject({
       type: "hello",
-      capabilities: [
-        "demo.echo",
-        "content.render",
-        "schedule.publish",
-        "content.check",
-      ],
+      capabilities: ["demo.echo", "content.render", "schedule.publish", "content.check"],
       workerVersion: "0.1.0+claude.unauthenticated",
     });
     expect(second?.sent.some((m) => m.type === "worker.usage")).toBe(true);

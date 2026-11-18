@@ -18,9 +18,7 @@
       "durationMs": 10000,
       "videoAssetId": "01a1e62b-ba0a-7000-9b7f-d2d709a3c939",
       "coverAssetId": "01a1e62b-ba34-7000-a286-e4cd5ee0578e",
-      "renderedAssetIds": [
-        "01a1e62b-ba34-7000-a286-e4cd5ee0578e"
-      ],
+      "renderedAssetIds": ["01a1e62b-ba34-7000-a286-e4cd5ee0578e"],
       "frames": 300,
       "bytes": 3396113,
       "voice": null,
@@ -67,9 +65,7 @@
       "durationMs": 12000,
       "videoAssetId": "01a1e62c-03e5-7000-a25d-6d28cced042c",
       "coverAssetId": "01a1e62c-044f-7000-991f-06f0b3bd5424",
-      "renderedAssetIds": [
-        "01a1e62c-044f-7000-991f-06f0b3bd5424"
-      ],
+      "renderedAssetIds": ["01a1e62c-044f-7000-991f-06f0b3bd5424"],
       "frames": 360,
       "bytes": 11646787,
       "voice": null,
@@ -118,9 +114,7 @@
       "durationMs": 12420,
       "videoAssetId": "01a1e62c-484e-7000-ba31-ea8939ca281e",
       "coverAssetId": "01a1e62c-48b5-7000-be9a-a8be96d24bd6",
-      "renderedAssetIds": [
-        "01a1e62c-48b5-7000-be9a-a8be96d24bd6"
-      ],
+      "renderedAssetIds": ["01a1e62c-48b5-7000-be9a-a8be96d24bd6"],
       "frames": 373,
       "bytes": 10314847,
       "voice": "mac-say:Yelda",
@@ -164,9 +158,7 @@
       "version": 2,
       "versionId": "01a1e62c-709a-7000-846e-38ee08b0279c",
       "contentHash": "f0e78acb707f9024abedab09a85dce5ddb03b94f6b636db0e7316191431cd858",
-      "renderedAssetIds": [
-        "01a1e62c-7094-7000-8501-656c249a0c24"
-      ],
+      "renderedAssetIds": ["01a1e62c-7094-7000-8501-656c249a0c24"],
       "videoAssetId": "01a1e62c-7076-7000-b3af-b01a5e7e5f1a",
       "coverAssetId": "01a1e62c-7094-7000-8501-656c249a0c24",
       "durationMs": 9600,
@@ -214,9 +206,7 @@
       "durationMs": 10200,
       "videoAssetId": "01a1e631-9eca-7000-b051-51d580951225",
       "coverAssetId": "01a1e631-9f6a-7000-9a26-6cda8750da15",
-      "renderedAssetIds": [
-        "01a1e631-9f6a-7000-9a26-6cda8750da15"
-      ],
+      "renderedAssetIds": ["01a1e631-9f6a-7000-9a26-6cda8750da15"],
       "frames": 306,
       "bytes": 4540733,
       "voice": null,

@@ -76,13 +76,13 @@ kiwi-schema, fzstd, gifenc, mp4-muxer, webm-muxer, qrcode-generator).
 Wecra's components drawn in Studio's layout on the same editor (`EditorContext`), nothing
 re-implemented:
 
-| Studio               | Wecra                                                                                                                                                                                        |
-| -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| centre column        | `EditorApp` (embedded)                                                                                                                                                                       |
-| right panel, Tasarım | `DesignPanel` (Frame / Text header with Status, Position, Auto layout / Layout, Appearance, Typography, Fill, Stroke, Effects, Selection colors, Layout guide, Export), Tab order as Wecra's |
-| panel header         | `ZoomMenu` (zoom, pixel preview, rulers, outlines …)                                                                                                                                         |
+| Studio                   | Wecra                                                                                                                                                                                        |
+| ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| centre column            | `EditorApp` (embedded)                                                                                                                                                                       |
+| right panel, Tasarım     | `DesignPanel` (Frame / Text header with Status, Position, Auto layout / Layout, Appearance, Typography, Fill, Stroke, Effects, Selection colors, Layout guide, Export), Tab order as Wecra's |
+| panel header             | `ZoomMenu` (zoom, pixel preview, rulers, outlines …)                                                                                                                                         |
 | sidebar (`sidebar` slot) | `Layers` (Wecra's tree: select, ⇧ / ⌘ ranges, rename, eye, lock, drag to reorder and regroup, collapse)                                                                                      |
-| dock, Düzenle        | `BottomToolbar` (embedded): Move ▾, Region ▾, Shape ▾, Creation ▾, Text ▾                                                                                                                    |
+| dock, Düzenle            | `BottomToolbar` (embedded): Move ▾, Region ▾, Shape ▾, Creation ▾, Text ▾                                                                                                                    |
 
 Hidden (a post editor doesn't need them): Prototype tab, Dev Mode and the mode switch, comments,
 the rail (Assets, Agents, Brands), Pages, Actions, sharing, multiplayer chrome, the file menu.

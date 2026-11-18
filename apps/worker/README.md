@@ -256,11 +256,11 @@ saklar: `<main data-artboard>` üzerinde `data-video-asset-id`, `data-cover-asse
 `data-reel-recipe` ve `data-reel-spec-b64` (spec'in base64 JSON'u); slaytın görseli kapaktır. İçerik hash'i
 spec'i ve video kimliğini kapsar, yani onay tam olarak o videoya verilir.
 
-| Tarif             | Ne yapar                                                                                                                                         |
-| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `motion_graphics` | Marka renkleri/fontlarıyla (brand.css) sahne sahne kinetik tipografi, isteğe bağlı ürün görseli, kapanış kartı (logo + CTA). Süre = sahneler (+1,8 sn kapanış). |
+| Tarif             | Ne yapar                                                                                                                                                                  |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `motion_graphics` | Marka renkleri/fontlarıyla (brand.css) sahne sahne kinetik tipografi, isteğe bağlı ürün görseli, kapanış kartı (logo + CTA). Süre = sahneler (+1,8 sn kapanış).           |
 | `footage_edit`    | Kullanıcının çekimi (ffmpeg ile 1080×1920'ye kırpılır, kendi sesiyle) üzerine kanca rozeti, zamanlı metin katmanları ve konuşmadan kelime altyazısı (saydam PNG kareler). |
-| `narration`       | Türkçe seslendirme (macOS `say` "Yelda"; `ELEVENLABS_API_KEY` varsa ElevenLabs) + kelime senkron altyazı; isteğe bağlı müzik altta %16.             |
+| `narration`       | Türkçe seslendirme (macOS `say` "Yelda"; `ELEVENLABS_API_KEY` varsa ElevenLabs) + kelime senkron altyazı; isteğe bağlı müzik altta %16.                                   |
 
 Akış: medya (çekim/ses/görsel) → çekimse konuşma dökümü → senaryo (Claude/Gemini; yoksa şablon, notta
 yazılır; `reel.spec` verilirse AI yok) → seslendirme → kompozisyon HTML'i → Chromium kareleri (`window.__seek`)
