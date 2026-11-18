@@ -26,8 +26,10 @@ Branch: `worktree-agent-a27aa4042025421c6`. Resume notes; delete this file befor
 
 ## Status
 
-- [ ] 1 packaging
-- [ ] 2 packaged host
-- [ ] 3 self-test
-- [ ] 4 health + lock
-- [ ] 5 tools / keys / P2
+- [x] 1 packaging (`node scripts/package.mjs` → release/mac-arm64/Studio.app + zip; ad-hoc)
+- [x] 2 packaged host (layout.ts, create-host.ts, build-host.mjs)
+- [x] 3 self-test: dev `Electron . --self-test` and packaged `Studio --self-test` both OK
+- [x] 4 health (API lib/health.ts, contract) + lock (host/lock.ts)
+- [~] 5 tools.ts / worker-env.ts / system-services.ts done in main; Settings UI pending
+- [ ] unit tests (layout, lock, worker-env, keep-awake, tools), fix local-host test
+      (stopLeftovers now gets the layout), docs/PACKAGING.md, lint, full test runs

@@ -1,8 +1,10 @@
-import { existsSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AdvertiseInput, Advertiser } from "../../src/main/host/bonjour.ts";
+import { electronNodeRuntime, packagedLayout } from "../../src/main/host/layout.ts";
+import { HostLock, type LockDeps } from "../../src/main/host/lock.ts";
 import {
   buildSpecs,
   FOREIGN_HOST_MESSAGE,
@@ -197,7 +199,10 @@ describe("LocalHost attach rules", () => {
     writeFileSync(join(ctx.stateDir, "host.json"), JSON.stringify({ apiPort: 8790, pid: 777 }));
     ctx.setApiUp(true); // the leftover API still answers — it must not be reused
     await ctx.host.start();
-    expect(ctx.deps.stopLeftovers).toHaveBeenCalledWith("/repo", ctx.stateDir);
+    expect(ctx.deps.stopLeftovers).toHaveBeenCalledWith(
+      expect.objectContaining({ mode: "dev", root: "/repo" }),
+      ctx.stateDir,
+    );
     expect(ctx.host.status).toEqual({ kind: "running" });
     expect(ctx.launcher.names()).toEqual(["migrate", "api", "gateway", "worker"]);
     const hostFile = JSON.parse(readFileSync(join(ctx.stateDir, "host.json"), "utf8"));
@@ -331,6 +336,8 @@ describe("LocalHost start", () => {
       lanPort: 8791,
       bonjourName: "Burak's MacBook Pro",
       tunnelUrl: null,
+      // `/api/health` reads the tunnel's state from here (P9).
+      tunnel: { state: "off", detail: "Kapalı." },
     });
   });
 
@@ -651,6 +658,74 @@ describe("LocalHost start and quit (A11)", () => {
     expect(ctx.host.status).toEqual({ kind: "stopped" });
   });
 
+  it("runs the packaged host with the app's own binary as Node (S3)", async () => {
+    const hostDir = mkdtempSync(join(tmpdir(), "studio-app-host-"));
+    mkdirSync(join(hostDir, "api"), { recursive: true });
+    writeFileSync(
+      join(hostDir, "api", "wrangler.json"),
+      JSON.stringify({
+        name: "studio-api",
+        main: "index.js",
+        d1_databases: [{ binding: "DB", migrations_dir: "migrations" }],
+      }),
+    );
+    const app = "/Applications/Studio.app/Contents/MacOS/Studio";
+    const ctx = setup({
+      layout: () => packagedLayout(hostDir, ctxState.dir),
+      nodeRuntime: (l) => electronNodeRuntime(app, l.root),
+      workerEnv: () => ({ GEMINI_API_KEY: "gemini-key-0123456789", STUDIO_HUB_URL: "ws://x" }),
+      // Node from the login PATH must not be needed.
+      which: () => null,
+    });
+    const ctxState = { dir: ctx.stateDir };
+    hosts.push(ctx.host);
+    await ctx.host.start();
+    expect(ctx.host.status).toEqual({ kind: "running" });
+    const byName = Object.fromEntries(ctx.launcher.started.map((p) => [p.spec.name, p.spec]));
+    const shim = `--require=${join(hostDir, "bin", "node-shim.cjs")}`;
+    const config = join(ctx.stateDir, "runtime", "api", "wrangler.json");
+    for (const name of ["migrate", "api", "gateway", "worker"]) {
+      expect(byName[name]?.executable).toBe(app);
+      expect(byName[name]?.args[0]).toBe(shim);
+      expect(byName[name]?.env.ELECTRON_RUN_AS_NODE).toBe("1");
+    }
+    expect(byName.migrate?.args[1]).toBe(
+      join(hostDir, "node_modules", "wrangler", "bin", "wrangler.js"),
+    );
+    expect(byName.migrate?.args.slice(-2)).toEqual(["--config", config]);
+    expect(byName.api?.args.slice(-2)).toEqual(["--config", config]);
+    expect(byName.api?.cwd).toBe(join(ctx.stateDir, "runtime", "api"));
+    // wrangler's config is written in the state folder, its paths pointing into the app.
+    const written = JSON.parse(readFileSync(config, "utf8"));
+    expect(written.main).toBe(join(hostDir, "api", "index.js"));
+    expect(written.no_bundle).toBe(true);
+    expect(written.d1_databases[0].migrations_dir).toBe(join(hostDir, "api", "migrations"));
+    // The worker: the bundle, no repo `.env`, skills from the app, keys from the app's store;
+    // the host's own variables win over the store's.
+    expect(byName.worker?.args).toEqual([shim, "--enable-source-maps", join(hostDir, "worker", "main.js")]);
+    expect(byName.worker?.args.join(" ")).not.toContain(".env");
+    expect(byName.worker?.env.STUDIO_SKILLS_DIR).toBe(join(hostDir, "agent", "skills"));
+    expect(byName.worker?.env.GEMINI_API_KEY).toBe("gemini-key-0123456789");
+    expect(byName.worker?.env.STUDIO_HUB_URL).toBe("ws://127.0.0.1:8790/api/hub");
+    expect(byName.worker?.cwd).toBe(join(ctx.stateDir, "worker"));
+    // Keys never show up in what the app displays.
+    expect(ctx.host.lastLines("worker")).not.toContain("gemini-key-0123456789");
+  });
+
+  it("says what is missing when the app's host files are not there", async () => {
+    const ctx = setup({
+      layout: () => packagedLayout("/nowhere/host", "/tmp/state"),
+      nodeRuntime: (l) => electronNodeRuntime("/app", l.root),
+      fileExists: () => false,
+    });
+    hosts.push(ctx.host);
+    await ctx.host.start();
+    expect(ctx.host.status).toMatchObject({
+      kind: "error",
+      message: expect.stringContaining("Studio uygulamasının bir dosyası eksik"),
+    });
+  });
+
   it("keeps the children's logs under their limit while they run", async () => {
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
     try {
@@ -668,5 +743,68 @@ describe("LocalHost start and quit (A11)", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe("LocalHost: one host per state folder (P9)", () => {
+  const lockDeps = (alive: Set<number>): LockDeps => ({
+    isAlive: (pid) => alive.has(pid),
+    processStartedAt: () => null,
+    now: Date.now,
+  });
+  const lockFile = (dir: string) => join(dir, "host.lock");
+  const holder = (pid: number, mode: string) =>
+    JSON.stringify({ pid, startedAt: null, mode, version: "1", host: "mac", acquiredAt: "" });
+
+  it("takes the lock before touching the database and gives it back on stop", async () => {
+    const ctx = setup();
+    const lock = new HostLock(
+      ctx.stateDir,
+      { pid: 4242, mode: "dev", version: "1" },
+      lockDeps(new Set([4242])),
+    );
+    const withLock = new LocalHost({ ...ctx.deps, lock }, () => config);
+    hosts.push(withLock);
+    await withLock.start();
+    expect(withLock.status).toEqual({ kind: "running" });
+    expect(JSON.parse(readFileSync(lockFile(ctx.stateDir), "utf8")).pid).toBe(4242);
+    await withLock.stop();
+    expect(existsSync(lockFile(ctx.stateDir))).toBe(false);
+  });
+
+  it("refuses clearly while another live app holds the folder", async () => {
+    const ctx = setup();
+    writeFileSync(lockFile(ctx.stateDir), holder(777, "packaged"));
+    const lock = new HostLock(
+      ctx.stateDir,
+      { pid: 4242, mode: "dev", version: "1" },
+      lockDeps(new Set([777, 4242])),
+    );
+    const second = new LocalHost({ ...ctx.deps, lock }, () => config);
+    hosts.push(second);
+    await second.start();
+    expect(second.status).toMatchObject({
+      kind: "error",
+      message: expect.stringContaining("başka bir Studio sunucusu kullanıyor"),
+    });
+    expect(ctx.launcher.started).toHaveLength(0);
+    expect(ctx.deps.snapshotDatabase).not.toHaveBeenCalled();
+    // The other app's lock is left alone.
+    expect(JSON.parse(readFileSync(lockFile(ctx.stateDir), "utf8")).pid).toBe(777);
+  });
+
+  it("takes over the lock of an app that is gone", async () => {
+    const ctx = setup();
+    writeFileSync(lockFile(ctx.stateDir), holder(777, "dev"));
+    const lock = new HostLock(
+      ctx.stateDir,
+      { pid: 4242, mode: "dev", version: "1" },
+      lockDeps(new Set([4242])),
+    );
+    const host = new LocalHost({ ...ctx.deps, lock }, () => config);
+    hosts.push(host);
+    await host.start();
+    expect(host.status).toEqual({ kind: "running" });
+    expect(JSON.parse(readFileSync(lockFile(ctx.stateDir), "utf8")).pid).toBe(4242);
   });
 });
