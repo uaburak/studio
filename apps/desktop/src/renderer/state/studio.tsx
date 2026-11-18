@@ -8,7 +8,13 @@ import type {
   Job,
   SocialAccount,
 } from "@studio/contract";
-import { QueryClient, QueryClientProvider, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  QueryClient,
+  QueryClientProvider,
+  useInfiniteQuery,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
 import {
   createContext,
   type ReactNode,
@@ -23,14 +29,13 @@ import type { DesktopSettings, HostSnapshot, SettingsPatch } from "../../shared/
 import { ApiContext, createStudioClient, useApi } from "../lib/api.ts";
 import { bridge, fallbackSettings } from "../lib/bridge.ts";
 import { type AgentChoice, choiceFor, saveChoicePatch } from "../lib/models.ts";
-import { jobTitle } from "../lib/usage.ts";
 import { sessionOf, useAppStore } from "./app-store.ts";
 import {
   ConversationCache,
   ConversationController,
   type ConversationSnapshot,
 } from "./conversation.ts";
-import { finishedNotice, JobsController, type JobsSnapshot } from "./jobs.ts";
+import { JobsController, type JobsSnapshot } from "./jobs.ts";
 
 // --- host & settings ------------------------------------------------------------------------------
 
@@ -138,8 +143,12 @@ export function useAgentChoice(
 export const queryKeys = {
   brands: ["brands"] as const,
   conversations: ["conversations"] as const,
+  archivedConversations: ["conversations", "archived"] as const,
   accounts: ["accounts"] as const,
 };
+
+/** At most this many pages of 100 for the sidebar (beyond 2 000 the oldest ones wait). */
+export const CONVERSATION_PAGES = 20;
 
 export function useBrands() {
   const api = useApi();
@@ -160,7 +169,8 @@ export function useConversations() {
     queryFn: async (): Promise<Conversation[]> => {
       const items: Conversation[] = [];
       let cursor: string | undefined;
-      for (let page = 0; page < 4; page++) {
+      // Every page (it stopped at 400 before), up to a generous limit.
+      for (let page = 0; page < CONVERSATION_PAGES; page++) {
         const list: ConversationList = await api.conversations.list({
           status: "active",
           limit: 100,
@@ -174,6 +184,24 @@ export function useConversations() {
     },
     enabled: up,
     refetchInterval: 20_000,
+  });
+}
+
+/** Archived conversations, newest activity first, 50 at a time ("Daha fazla göster"). */
+export function useArchivedConversations() {
+  const api = useApi();
+  const up = isHostUp(useHost());
+  return useInfiniteQuery({
+    queryKey: queryKeys.archivedConversations,
+    initialPageParam: undefined as string | undefined,
+    queryFn: ({ pageParam }): Promise<ConversationList> =>
+      api.conversations.list({
+        status: "archived",
+        limit: 50,
+        ...(pageParam ? { cursor: pageParam } : {}),
+      }),
+    getNextPageParam: (last) => last.nextCursor ?? undefined,
+    enabled: up,
   });
 }
 
@@ -283,21 +311,13 @@ export function StudioProvider({ children }: { children: ReactNode }) {
           },
         }),
     );
-    jobs.onJobChange = (job, previous) => {
+    // Notifications for finished jobs come from the main process (one source, also with the
+    // window closed); the page only refreshes what a job changed.
+    jobs.onJobChange = (job) => {
       if (job.type === "chat.turn")
         void queryClient.invalidateQueries({ queryKey: queryKeys.conversations });
-      if (previous && previous.status !== job.status) {
-        const conversationId = (job.payload as { conversationId?: unknown }).conversationId;
-        const title =
-          job.type === "chat.turn"
-            ? (queryClient
-                .getQueryData<Conversation[]>(queryKeys.conversations)
-                ?.find((c) => c.id === conversationId)?.title ?? "Studio")
-            : jobTitle(job);
-        const notice = finishedNotice(job, title);
-        if (notice && !useAppStore.getState().window.focused) void bridge().notify(notice);
-      }
     };
+    jobs.onCancelError = (message) => useAppStore.getState().showToast({ message, tone: "danger" });
     return { jobs, conversations };
   }, [client, queryClient]);
 
@@ -305,10 +325,12 @@ export function StudioProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (!up) return;
     live.jobs.start();
+    // Open conversations (their views hold the same controllers) reconnect after a restart.
+    live.conversations.resume();
     void queryClient.invalidateQueries();
     return () => {
       live.jobs.stop();
-      live.conversations.clear();
+      live.conversations.pause();
     };
   }, [up, live, queryClient]);
 

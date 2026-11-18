@@ -5,13 +5,14 @@ import type { spawn as nodeSpawn } from "node:child_process";
 import path from "node:path";
 import type { AiProviderStatus, ClaudeAccount, GeminiAccount } from "@studio/contract";
 import { z } from "zod";
+import type { AiPolicy } from "./ai/policy.ts";
 import type { AiUsageRecorder } from "./ai/usage-recorder.ts";
 import type { StudioApi } from "./api.ts";
 import type { Skill } from "./chat/skills.ts";
 import type { ClaudeGate } from "./claude/gate.ts";
 import type { ClaudeHealth } from "./claude/health.ts";
 import type { UsageTracker } from "./claude/usage.ts";
-import { DEFAULT_GEMINI_MODELS, type GeminiModelAlias } from "./gemini/models.ts";
+import { type GeminiModelAlias, liveGeminiModels } from "./gemini/models.ts";
 import type { Logger } from "./log.ts";
 import type { StudioMcpServer } from "./mcp/server.ts";
 
@@ -44,19 +45,20 @@ const AgentEnv = z.object({
   GEMINI_API_KEY: z.string().trim().min(1).optional(),
   STUDIO_GEMINI_BIN: z.string().min(1).default("gemini"),
   STUDIO_GEMINI_MODE: z.enum(["auto", "api", "cli"]).default("auto"),
-  STUDIO_GEMINI_MODEL_FLASH_LITE: z
-    .string()
-    .min(1)
-    .default(DEFAULT_GEMINI_MODELS["gemini-flash-lite"]),
-  STUDIO_GEMINI_MODEL_FLASH: z.string().min(1).default(DEFAULT_GEMINI_MODELS["gemini-flash"]),
-  STUDIO_GEMINI_MODEL_PRO: z.string().min(1).default(DEFAULT_GEMINI_MODELS["gemini-pro"]),
+  /**
+   * Explicit model per alias (always wins); unset = the newest priced model of that tier the
+   * key lists, else DEFAULT_GEMINI_MODELS (`gemini/models.ts`).
+   */
+  STUDIO_GEMINI_MODEL_FLASH_LITE: z.string().trim().min(1).optional(),
+  STUDIO_GEMINI_MODEL_FLASH: z.string().trim().min(1).optional(),
+  STUDIO_GEMINI_MODEL_PRO: z.string().trim().min(1).optional(),
   STUDIO_GEMINI_IMAGE_MODEL: z.string().min(1).default("gemini-nano-banana-2.1"),
 
   // --- Other providers (roadmap 7): Codex CLI, OpenAI API (key in the vault), Antigravity CLI ---
   STUDIO_CODEX_BIN: z.string().min(1).default("codex"),
   /** Model for `codex exec -m`; unset = the Codex CLI's own default. */
   STUDIO_CODEX_MODEL: z.string().trim().min(1).optional(),
-  /** OpenAI API model; unset = the first available of OPENAI_MODEL_PREFERENCE. */
+  /** OpenAI API model; unset = the best chat model the key lists (`pickOpenAiModel`). */
   STUDIO_OPENAI_MODEL: z.string().trim().min(1).optional(),
   STUDIO_ANTIGRAVITY_BIN: z.string().min(1).default("agy"),
   /** Model slug for `agy --model` (see `agy models`); unset = the CLI's default. */
@@ -64,7 +66,8 @@ const AgentEnv = z.object({
 
   // --- Reels Video / TTS / Transcription ---
   ELEVENLABS_API_KEY: z.string().trim().min(1).optional(),
-  STUDIO_ELEVENLABS_VOICE_ID: z.string().trim().min(1).default("21m00Tcm4TlvDq8ikWAM"),
+  /** ElevenLabs voice; unset = a voice of the text's language from the account (`video/tts.ts`). */
+  STUDIO_ELEVENLABS_VOICE_ID: z.string().trim().min(1).optional(),
   STUDIO_FFMPEG_BIN: z.string().trim().min(1).optional(),
   STUDIO_WHISPER_BIN: z.string().trim().min(1).optional(),
 
@@ -98,6 +101,12 @@ export interface AgentSettings {
   geminiApiKey: string | undefined;
   geminiBin: string;
   geminiMode: "auto" | "api" | "cli";
+  /** Explicit `STUDIO_GEMINI_MODEL_*` values only (they always win). */
+  geminiModelOverrides: Partial<Record<GeminiModelAlias, string>>;
+  /**
+   * Model id per alias, resolved on every read (`liveGeminiModels`): override → newest priced
+   * model of the tier in the vault key's model list → static fallback.
+   */
   geminiModels: Record<GeminiModelAlias, string>;
   geminiImageModel: string;
   codexBin: string;
@@ -112,7 +121,8 @@ export interface AgentSettings {
   vault?: AiVault;
   /** ElevenLabs API key from `.env` (never logged). */
   elevenLabsApiKey: string | undefined;
-  elevenLabsVoiceId: string;
+  /** `STUDIO_ELEVENLABS_VOICE_ID`; undefined = a voice of the text's language from the account. */
+  elevenLabsVoiceId: string | undefined;
   ffmpegBin: string | undefined;
   whisperBin: string | undefined;
   /** Cloud Publisher URL & bearer token (never logged). */
@@ -134,7 +144,14 @@ export function loadAgentSettings(env: NodeJS.ProcessEnv = process.env): AgentSe
     throw new Error(`Invalid agent configuration:\n${z.prettifyError(parsed.error)}`);
   }
   const e = parsed.data;
-  return {
+  const geminiModelOverrides: Partial<Record<GeminiModelAlias, string>> = {
+    ...(e.STUDIO_GEMINI_MODEL_FLASH_LITE
+      ? { "gemini-flash-lite": e.STUDIO_GEMINI_MODEL_FLASH_LITE }
+      : {}),
+    ...(e.STUDIO_GEMINI_MODEL_FLASH ? { "gemini-flash": e.STUDIO_GEMINI_MODEL_FLASH } : {}),
+    ...(e.STUDIO_GEMINI_MODEL_PRO ? { "gemini-pro": e.STUDIO_GEMINI_MODEL_PRO } : {}),
+  };
+  const settings: AgentSettings = {
     enabled: e.STUDIO_CLAUDE_ENABLED === "1",
     apiUrl: e.STUDIO_API_URL,
     claudeBin: e.STUDIO_CLAUDE_BIN,
@@ -154,11 +171,9 @@ export function loadAgentSettings(env: NodeJS.ProcessEnv = process.env): AgentSe
     geminiApiKey: e.GEMINI_API_KEY,
     geminiBin: e.STUDIO_GEMINI_BIN,
     geminiMode: e.STUDIO_GEMINI_MODE,
-    geminiModels: {
-      "gemini-flash-lite": e.STUDIO_GEMINI_MODEL_FLASH_LITE,
-      "gemini-flash": e.STUDIO_GEMINI_MODEL_FLASH,
-      "gemini-pro": e.STUDIO_GEMINI_MODEL_PRO,
-    },
+    geminiModelOverrides,
+    // The vault is filled (and replaced) by the runtime later: read it on every lookup.
+    geminiModels: liveGeminiModels(geminiModelOverrides, () => settings.vault?.gemini?.models),
     geminiImageModel: e.STUDIO_GEMINI_IMAGE_MODEL,
     codexBin: e.STUDIO_CODEX_BIN,
     codexModel: e.STUDIO_CODEX_MODEL,
@@ -176,6 +191,7 @@ export function loadAgentSettings(env: NodeJS.ProcessEnv = process.env): AgentSe
     skillsDir: e.STUDIO_SKILLS_DIR,
     parentEnv: env,
   };
+  return settings;
 }
 
 /** Keys the owner stored in the vault, as the worker last read them (`GET /api/worker/ai/credentials`). */
@@ -210,8 +226,10 @@ export interface AgentDeps {
   /** Where caches and MCP work dirs live. */
   stateDir: string;
   now?: () => Date;
-  /** Records paid AI calls (Gemini spend); absent in tests that do not care. */
+  /** Records paid AI calls (Gemini, OpenAI, ElevenLabs spend) and checks the budget; absent in tests that do not care. */
   aiUsage?: AiUsageRecorder;
+  /** The owner's Claude-limit choice and budget (S7); absent: switch to Gemini at the limit, no budget. */
+  aiPolicy?: AiPolicy;
   /** Codex CLI / OpenAI API / Antigravity CLI readiness (`worker.providers`). */
   providers?: () => AiProviderStatus[];
   /** Test seams for Gemini, publishers & consent polling. */

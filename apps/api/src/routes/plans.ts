@@ -1,10 +1,14 @@
-import { createRoute } from "@hono/zod-openapi";
+import { createRoute, z } from "@hono/zod-openapi";
 import {
   AgentRun,
+  EntityId,
   Plan,
   PlanAccept,
   PlanGenerate,
   PlanGenerateResult,
+  PlanItemCreate,
+  PlanItemPatch,
+  PlanItemRemoveResult,
   PlanList,
   PlanListQuery,
   PlanReject,
@@ -58,6 +62,8 @@ export const agentRunRoutes = createRouter()
 // --- plans --------------------------------------------------------------------------
 
 const tags = ["Plans"];
+
+const ItemParams = z.object({ id: EntityId, itemId: EntityId });
 
 export const planRoutes = createRouter()
   .openapi(
@@ -191,8 +197,12 @@ export const planRoutes = createRouter()
       summary: "Request generation for accepted plan items",
       description:
         "Creates one `content.generate` job per item (payload: `ContentGeneratePayload`). Without " +
-        "`itemIds`: every accepted item that is not already queued or running. Named items must " +
-        "be accepted, still have their content item, and not be generating (409 otherwise).",
+        "`itemIds`: only the items that still need a design (no successful generation yet, or " +
+        "the last one failed or was stopped), never a post that is generating, in the trash, " +
+        "edited, approved, scheduled or published — those come back in `skipped`. Named items " +
+        "must be accepted, still have their post and not be generating; one that already has a " +
+        "design needs `force`, an edited or approved one also `overwriteEdits` (the user " +
+        "confirmed); published posts are never regenerated (409 with one issue per item).",
       request: { params: IdParams, body: jsonBody(PlanGenerate) },
       responses: {
         200: json(PlanGenerateResult, "Jobs created."),
@@ -208,5 +218,85 @@ export const planRoutes = createRouter()
         input: c.req.valid("json"),
       });
       return c.json(PlanGenerateResult.parse(result), 200);
+    },
+  )
+  .openapi(
+    createRoute({
+      method: "post",
+      path: "/api/plans/{id}/items",
+      tags,
+      summary: "Add an item to a plan (at the end)",
+      description:
+        "Draft / proposed plans: a plan edit (revision + 1). Accepted plans: the item is " +
+        "accepted at once and gets a draft post (no generation yet). The date must be inside " +
+        "the plan period. Rejected / superseded plans: 409.",
+      request: { params: IdParams, body: jsonBody(PlanItemCreate) },
+      responses: {
+        200: json(Plan, "The plan with the new item."),
+        400: errors[400],
+        404: errors[404],
+        409: errors[409],
+      },
+    }),
+    async (c) => {
+      const plan = await runChat(c.env, {
+        kind: "addPlanItem",
+        planId: c.req.valid("param").id,
+        input: c.req.valid("json"),
+      });
+      return c.json(Plan.parse(plan), 200);
+    },
+  )
+  .openapi(
+    createRoute({
+      method: "patch",
+      path: "/api/plans/{id}/items/{itemId}",
+      tags,
+      summary: "Edit one plan item",
+      description:
+        "Draft / proposed plans: a plan edit (revision + 1). Accepted plans: the item's draft " +
+        "post follows (title, brief, platforms; the type only while the post has no design, " +
+        "platforms not once it is approved or scheduled — 409). Dates stay inside the period.",
+      request: { params: ItemParams, body: jsonBody(PlanItemPatch) },
+      responses: {
+        200: json(Plan, "Updated."),
+        400: errors[400],
+        404: errors[404],
+        409: errors[409],
+      },
+    }),
+    async (c) => {
+      const { id, itemId } = c.req.valid("param");
+      const plan = await runChat(c.env, {
+        kind: "updatePlanItem",
+        planId: id,
+        itemId,
+        input: c.req.valid("json"),
+      });
+      return c.json(Plan.parse(plan), 200);
+    },
+  )
+  .openapi(
+    createRoute({
+      method: "delete",
+      path: "/api/plans/{id}/items/{itemId}",
+      tags,
+      summary: "Remove one plan item",
+      description:
+        "Draft / proposed plans keep at least one item (400). In an accepted plan the item's " +
+        "post goes to the trash when it has no design and nothing is running for it " +
+        "(`trashedContentId`); a post with a design stays, only the plan forgets it.",
+      request: { params: ItemParams },
+      responses: {
+        200: json(PlanItemRemoveResult, "Removed."),
+        400: errors[400],
+        404: errors[404],
+        409: errors[409],
+      },
+    }),
+    async (c) => {
+      const { id, itemId } = c.req.valid("param");
+      const result = await runChat(c.env, { kind: "removePlanItem", planId: id, itemId });
+      return c.json(PlanItemRemoveResult.parse(result), 200);
     },
   );

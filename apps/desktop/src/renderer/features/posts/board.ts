@@ -34,6 +34,8 @@ export type PostState =
   | "generating"
   /** No version yet, nothing running. */
   | "draft"
+  /** No version yet and the last generation failed (A3). */
+  | "generationFailed"
   /** The design has an empty image slot (or the plan expects the owner's picture). */
   | "imageNeeded"
   /** Has a version and waits for approval. */
@@ -47,6 +49,7 @@ export type PostState =
 export const STATE_LABEL: Record<PostState, string> = {
   generating: "Üretiliyor",
   draft: "Taslak",
+  generationFailed: "Üretilemedi",
   imageNeeded: "Görsel bekliyor",
   ready: "Onay bekliyor",
   approved: "Onaylandı",
@@ -59,6 +62,7 @@ export const STATE_LABEL: Record<PostState, string> = {
 export const STATE_TONE: Record<PostState, TagTone> = {
   generating: "accent",
   draft: "neutral",
+  generationFailed: "danger",
   imageNeeded: "accent",
   ready: "warning",
   approved: "success",
@@ -104,7 +108,7 @@ export function filterMatches(filter: PostFilter, state: PostState): boolean {
     case "published":
       return state === "published";
     case "failed":
-      return state === "failed";
+      return state === "failed" || state === "generationFailed";
   }
 }
 
@@ -154,9 +158,45 @@ export function cardState(card: PostCard): PostState {
     if (isActiveJob(card.job)) return "generating";
     const generation = card.planItem?.generation;
     if (generation && !isTerminalJobStatus(generation.status)) return "generating";
+    if (generationFailure(card)) return "generationFailed";
     return card.planItem?.imageSlot === "user_upload" ? "imageNeeded" : "draft";
   }
   return needsImage(card) ? "imageNeeded" : "ready";
+}
+
+/** The failed generation that the card should show (A3): its job and the server's reason. */
+export interface GenerationFailure {
+  jobId: string;
+  error: string | null;
+}
+
+/**
+ * The post's latest generation failed and nothing newer replaced it: no version yet, or the
+ * failure came after the current version (a revision that failed). A stopped (cancelled) job is
+ * not a failure; a newer job (running or done) settles it.
+ */
+export function generationFailure(
+  card: Pick<PostCard, "content" | "version" | "planItem" | "job">,
+): GenerationFailure | null {
+  let failed: { id: string; error: string | null; at: string } | null = null;
+  if (card.job?.type === "content.generate") {
+    if (card.job.status !== "failed") return null;
+    failed = {
+      id: card.job.id,
+      error: card.job.error ?? null,
+      at: card.job.finishedAt ?? card.job.updatedAt,
+    };
+  } else if (card.planItem?.generation?.status === "failed") {
+    const g = card.planItem.generation;
+    failed = { id: g.jobId, error: g.error, at: card.planItem.updatedAt };
+  }
+  if (!failed) return null;
+  if (card.content.currentVersion) {
+    // A version made after the failure (a hand edit, another generation) settles it; without
+    // the loaded version the failure is not shown on a post that has a design.
+    if (!card.version || Date.parse(card.version.createdAt) >= Date.parse(failed.at)) return null;
+  }
+  return { jobId: failed.id, error: failed.error };
 }
 
 /** Publication moment: the schedule, else the plan's day (local midnight). */
@@ -382,6 +422,40 @@ export function moveSelection(
   return ids[Math.max(0, Math.min(ids.length - 1, index + offset))] ?? null;
 }
 
+// --- multi-select (N1) ----------------------------------------------------------------------------
+
+/** ⌘-click: add or take out one card. */
+export function toggleSelection(selected: readonly string[], id: string): string[] {
+  return selected.includes(id) ? selected.filter((s) => s !== id) : [...selected, id];
+}
+
+/**
+ * ⇧-click: every card between the anchor and `id` in the visible order, added to the selection
+ * (no anchor, or one that is not visible: just `id`).
+ */
+export function rangeSelection(
+  ordered: readonly string[],
+  selected: readonly string[],
+  anchor: string | null,
+  id: string,
+): string[] {
+  const from = anchor ? ordered.indexOf(anchor) : -1;
+  const to = ordered.indexOf(id);
+  if (to < 0) return [...selected];
+  if (from < 0) return selected.includes(id) ? [...selected] : [...selected, id];
+  const [a, b] = from <= to ? [from, to] : [to, from];
+  const range = ordered.slice(a, b + 1);
+  return [...selected.filter((s) => !range.includes(s)), ...range];
+}
+
+/** The selection limited to what is still visible, in the visible order. */
+export function visibleSelection(
+  ordered: readonly string[],
+  selected: readonly string[],
+): string[] {
+  return ordered.filter((id) => selected.includes(id));
+}
+
 /** Why a post cannot be deleted (null: it can). */
 export function deletionBlocker(content: Pick<Content, "status">): string | null {
   switch (content.status) {
@@ -421,7 +495,8 @@ export function cardMetaText(card: PostCard): string {
   return `${platform} · ${shortDay(day ?? new Date(card.content.createdAt))}`;
 }
 
-const TYPE_LABEL: Record<ContentType, string> = {
+/** Human names of the content types ("Tek görsel", "Kaydırmalı", "Hikâye", "Reels"). */
+export const CONTENT_TYPE_LABEL: Record<ContentType, string> = {
   post: "Tek görsel",
   carousel: "Kaydırmalı",
   story: "Hikâye",
@@ -434,7 +509,7 @@ export function formatText(
   slides: readonly { width: number; height: number }[],
 ): string {
   const first = slides[0];
-  const parts = [TYPE_LABEL[type]];
+  const parts = [CONTENT_TYPE_LABEL[type]];
   if (type === "carousel" || slides.length > 1) parts.push(`${slides.length} kare`);
   if (first) parts.push(aspectLabel(first.width, first.height));
   return parts.join(" · ");

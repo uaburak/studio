@@ -10,6 +10,8 @@ import type {
   ToolStepPart,
 } from "@studio/contract";
 import { useEffect, useState } from "react";
+import { CONTENT_TYPE_LABEL } from "../../features/posts/board.ts";
+import { openPlanPage } from "../../features/posts/store.ts";
 import { formatDuration, shortDate } from "../../lib/format.ts";
 import { type StepGroup, type WorkingItem, workingLabel } from "../../lib/transcript.ts";
 import type { ConversationController } from "../../state/conversation.ts";
@@ -17,7 +19,7 @@ import type { ConversationController } from "../../state/conversation.ts";
 /** What the cards need from a conversation (the gallery passes a stub). */
 export type CardActions = Pick<
   ConversationController,
-  "acceptAndGenerate" | "rejectPlan" | "decideConsent" | "answer"
+  "acceptAndGenerate" | "generatePlan" | "rejectPlan" | "decideConsent" | "answer"
 >;
 
 import { Button, cn, Spinner, TagPill, TextField, WorkingDots } from "../ui/controls.tsx";
@@ -199,16 +201,28 @@ const PLAN_STATUS: Record<
 };
 
 /** A content plan the agent proposed: items, then "Onayla ve üret" / "Reddet". */
+/**
+ * An accepted plan whose accepted items never got a generation request (the generate step
+ * failed after the accept, or the app closed in between).
+ */
+export function generationNotStarted(plan: Plan): boolean {
+  const items = plan.items.filter((i) => i.status === "accepted");
+  return plan.status === "accepted" && items.length > 0 && items.every((i) => !i.generation);
+}
+
 export function PlanProposalCard({
   plan,
   busy,
   controller,
   onEdit,
+  generateError = null,
 }: {
   plan: Plan | null;
   busy: boolean;
   controller: CardActions;
   onEdit(): void;
+  /** The generation could not be started (accept succeeded): the reason. */
+  generateError?: string | null;
 }) {
   const [expanded, setExpanded] = useState(false);
   if (!plan) {
@@ -248,7 +262,9 @@ export function PlanProposalCard({
               ))}
             </span>
             <span className="min-w-0 flex-1 truncate text-fg">{item.title}</span>
-            <span className="shrink-0 text-footnote text-fg-3">{item.contentType}</span>
+            <span className="shrink-0 text-footnote text-fg-3">
+              {CONTENT_TYPE_LABEL[item.contentType]}
+            </span>
           </li>
         ))}
       </ul>
@@ -272,7 +288,15 @@ export function PlanProposalCard({
               >
                 {busy ? "Gönderiliyor…" : "Onayla ve üret"}
               </Button>
-              <Button variant="ghost" disabled={busy} onClick={onEdit}>
+              <Button
+                variant="ghost"
+                disabled={busy}
+                onClick={() => {
+                  // The plan opens on the posts screen's Planlar view, item by item (N2).
+                  onEdit();
+                  openPlanPage(plan.id, plan.brandId);
+                }}
+              >
                 Düzenle
               </Button>
               <div className="flex-1" />
@@ -285,6 +309,23 @@ export function PlanProposalCard({
                 Reddet
               </Button>
             </>
+          ) : generateError || (!busy && generationNotStarted(plan)) ? (
+            <>
+              <span className="min-w-0 flex-1 px-1 text-footnote text-danger" role="alert">
+                {generateError
+                  ? `Plan onaylandı ama üretim başlatılamadı: ${generateError}`
+                  : "Plan onaylandı ama üretim başlamadı."}
+              </span>
+              <Button
+                variant="secondary"
+                disabled={busy}
+                onClick={() => void controller.generatePlan(plan)}
+              >
+                {busy ? "Gönderiliyor…" : "Yeniden dene"}
+              </Button>
+            </>
+          ) : busy ? (
+            <span className="px-1 text-footnote text-fg-2">Üretime gönderiliyor…</span>
           ) : (
             <span className="px-1 text-footnote text-fg-2">
               Postlar üretime alındı; ilerleme Arka plan işleri’nde.
@@ -419,7 +460,11 @@ export function QuestionCard({
               value={text}
               onChange={(e) => setText(e.target.value)}
               onKeyDown={(e) => {
-                if (e.key === "Enter") void controller.answer(message, question, selected, text);
+                // Once: not again while the answer is on its way, nor while an IME composes.
+                if (e.key !== "Enter" || e.nativeEvent.isComposing) return;
+                e.preventDefault();
+                if (busy || (selected.length === 0 && !text.trim())) return;
+                void controller.answer(message, question, selected, text);
               }}
             />
           )}
@@ -436,11 +481,33 @@ export function QuestionCard({
   );
 }
 
-export function ErrorBlock({ error }: { error: ErrorPart }) {
+/** The agent's error; on the last reply "Yeniden dene" sends the last user message again. */
+export function ErrorBlock({
+  error,
+  onRetry,
+}: {
+  error: ErrorPart;
+  onRetry?: (() => Promise<unknown>) | undefined;
+}) {
+  const [retrying, setRetrying] = useState(false);
   return (
     <div className="my-3.5 flex items-start gap-2 rounded-[12px] border border-danger/30 bg-danger/5 px-4 py-2.5 text-body text-fg">
       <IconCircleX size={15} className="mt-[1px] shrink-0 text-danger" />
-      <span className="selectable">{error.message}</span>
+      <span className="selectable min-w-0 flex-1">{error.message}</span>
+      {onRetry && (
+        <Button
+          size="sm"
+          variant="secondary"
+          disabled={retrying}
+          className="-my-0.5 shrink-0"
+          onClick={() => {
+            setRetrying(true);
+            void onRetry().finally(() => setRetrying(false));
+          }}
+        >
+          {retrying ? "Gönderiliyor…" : "Yeniden dene"}
+        </Button>
+      )}
     </div>
   );
 }

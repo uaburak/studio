@@ -20,7 +20,7 @@ import { toPage } from "../lib/pagination.ts";
 import { createRouter, errors, IdParams, json, jsonBody } from "../lib/router.ts";
 import type { Principal } from "../middleware/access.ts";
 import { requireBrand } from "./brands.ts";
-import { loadContent } from "./contents.ts";
+import { assertNotTrashed, loadContent } from "./contents.ts";
 
 const tags = ["Jobs"];
 
@@ -47,6 +47,7 @@ export async function createJob(env: Env, input: z.output<typeof JobCreate>): Pr
   let brandId = input.brandId;
   if (input.contentId) {
     const { row } = await loadContent(db, input.contentId);
+    assertNotTrashed(row);
     if (brandId && brandId !== row.brandId) {
       throw badRequest("contentId belongs to a different brand", [
         { path: "brandId", message: `content ${row.id} belongs to brand ${row.brandId}` },

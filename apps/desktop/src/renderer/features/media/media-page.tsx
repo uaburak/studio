@@ -1,6 +1,7 @@
 // The media library ("Tümü"): the brand's files with kind filters and counts, search, upload
-// (button or drop files on the page), "AI ile görsel üret", click → lightbox, right-click menu,
-// drag pictures into a chat's composer.
+// (button or drop files on the page), "AI ile görsel üret", click → lightbox, right-click menu
+// (Sil: to the trash with "Geri al", refused while the file is used), drag pictures into a
+// chat's composer. Only the rows near the viewport are drawn (thumbnails, A4).
 import { useMemo, useRef, useState } from "react";
 import { Button, cn, SearchField, SegmentedControl } from "../../components/ui/controls.tsx";
 import { IconImage, IconSparkles, IconUpload } from "../../components/ui/icons.tsx";
@@ -8,6 +9,7 @@ import { useContextMenu } from "../../components/ui/menu.tsx";
 import { describeError } from "../../lib/api.ts";
 import { PageHeader, PaneMessage } from "../pane-ui.tsx";
 import { usePanelBrand } from "../panel-brand.ts";
+import { useAssetDelete } from "./asset-delete.tsx";
 import { ImageGeneratorSheet } from "./image-generator.tsx";
 import { useBrandAssets, useUploadAssets } from "./media-data.ts";
 import {
@@ -19,6 +21,10 @@ import {
   UPLOAD_ACCEPT,
 } from "./media-model.ts";
 import { MediaTile, mediaMenu, useMediaLightbox } from "./media-views.tsx";
+import { VirtualGrid } from "./virtual-grid.tsx";
+
+/** Height under a tile: the figure's gap and the two caption lines. */
+const TILE_CAPTION = 6 + 34;
 
 export default function MediaPage() {
   const { brandId, brand } = usePanelBrand();
@@ -46,7 +52,9 @@ function MediaPageBody({ brandId, brandName }: { brandId: string; brandName: str
   const [generator, setGenerator] = useState(false);
   const [dropping, setDropping] = useState(false);
   const fileInput = useRef<HTMLInputElement | null>(null);
+  const scrollRef = useRef<HTMLDivElement | null>(null);
   const menu = useContextMenu();
+  const deletion = useAssetDelete(brandId);
   const all = assets.data ?? [];
   const counts = useMemo(() => mediaCounts(all), [all]);
   const shown = useMemo(() => filterAssets(all, query, filter), [all, query, filter]);
@@ -130,7 +138,7 @@ function MediaPageBody({ brandId, brandName }: { brandId: string; brandName: str
           />
         </div>
       </PageHeader>
-      <div className="scroll-area min-h-0 flex-1 px-8 pb-10">
+      <div ref={scrollRef} className="scroll-area min-h-0 flex-1 px-8 pb-10">
         {assets.error ? (
           <p className="text-body text-danger">{describeError(assets.error)}</p>
         ) : assets.isLoading ? (
@@ -142,9 +150,18 @@ function MediaPageBody({ brandId, brandName }: { brandId: string; brandName: str
               : "Bu filtreyle eşleşen dosya yok."}
           </p>
         ) : (
-          <div className="grid grid-cols-[repeat(auto-fill,minmax(150px,1fr))] gap-x-3 gap-y-4">
-            {shown.map((asset) => (
-              <figure key={asset.id} className="m-0 flex min-w-0 flex-col gap-1.5">
+          <VirtualGrid
+            items={shown}
+            scrollRef={scrollRef}
+            label="Dosyalar"
+            minColumn={150}
+            columnGap={12}
+            rowGap={16}
+            aspect={1}
+            extra={TILE_CAPTION}
+            keyOf={(asset) => asset.id}
+            render={(asset) => (
+              <figure className="m-0 flex min-w-0 flex-col gap-1.5">
                 <MediaTile
                   asset={asset}
                   radius={10}
@@ -153,11 +170,15 @@ function MediaPageBody({ brandId, brandName }: { brandId: string; brandName: str
                   onContextMenu={(event) =>
                     menu.open(
                       event,
-                      mediaMenu(asset, () => lightbox.open(asset)),
+                      mediaMenu(
+                        asset,
+                        () => lightbox.open(asset),
+                        () => void deletion.remove(asset),
+                      ),
                     )
                   }
                 />
-                <figcaption className="min-w-0 px-0.5">
+                <figcaption className="h-[34px] min-w-0 px-0.5">
                   <div
                     className="truncate text-footnote text-fg"
                     title={asset.originalFilename ?? undefined}
@@ -167,8 +188,8 @@ function MediaPageBody({ brandId, brandName }: { brandId: string; brandName: str
                   <div className="truncate text-caption text-fg-3">{assetMeta(asset)}</div>
                 </figcaption>
               </figure>
-            ))}
-          </div>
+            )}
+          />
         )}
       </div>
       <ImageGeneratorSheet
@@ -178,6 +199,7 @@ function MediaPageBody({ brandId, brandName }: { brandId: string; brandName: str
         assets={all}
       />
       {menu.element}
+      {deletion.dialog}
     </div>
   );
 }

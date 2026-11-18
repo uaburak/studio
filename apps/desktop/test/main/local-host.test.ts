@@ -584,3 +584,89 @@ describe("buildSpecs", () => {
     expect(specs.required).toContain("/r/apps/api/node_modules/wrangler/bin/wrangler.js");
   });
 });
+
+describe("LocalHost start and quit (A11)", () => {
+  it("reads the login PATH and the Mac's name in the background", async () => {
+    const ctx = setup({
+      loginShellPath: async () => "/slow/bin:/usr/bin",
+      computerName: async () => "Async Mac",
+      which: (tool, path) =>
+        tool === "node" && path.startsWith("/slow") ? "/slow/bin/node" : null,
+    });
+    hosts.push(ctx.host);
+    await ctx.host.start();
+    expect(ctx.host.status).toEqual({ kind: "running" });
+    expect(ctx.launcher.started[0]?.spec.executable).toBe("/slow/bin/node");
+    expect(ctx.routes.at(-1)?.macName).toBe("Async Mac");
+  });
+
+  it("hides wrangler's banner (no npm update check on every start)", () => {
+    const specs = buildSpecs({
+      node: "/n",
+      repo: "/r",
+      stateDir: "/s",
+      base: { PATH: "/p" },
+      token: "t",
+      vaultKey: "v",
+      ownerSecret: OWNER,
+      instance: "i",
+      apiPort: 8790,
+      claude: null,
+      gemini: null,
+    });
+    expect(specs.api.env.WRANGLER_HIDE_BANNER).toBe("true");
+    expect(specs.migrate.env.WRANGLER_HIDE_BANNER).toBe("true");
+  });
+
+  it("stops every service at once with one grace period, saying “Kapatılıyor…”", async () => {
+    const ctx = setup();
+    hosts.push(ctx.host);
+    await ctx.host.start();
+    const running = ctx.launcher.started.filter((p) => p.spec.name !== "migrate");
+    const asked: { name: string; grace: number }[] = [];
+    const finish: (() => void)[] = [];
+    for (const p of running) {
+      p.terminate = (grace?: number) => {
+        asked.push({ name: p.spec.name, grace: grace ?? -1 });
+        return new Promise<void>((resolve) => {
+          finish.push(() => {
+            p.end(143);
+            resolve();
+          });
+        });
+      };
+    }
+    const messages: string[] = [];
+    ctx.host.onChange((s) => {
+      if (s.status.kind === "starting") messages.push(s.status.message);
+    });
+    const stopping = ctx.host.stop({ graceMs: 5_000, message: "Kapatılıyor…" });
+    await new Promise((r) => setTimeout(r, 0));
+    // All asked before any finished: not one after another.
+    expect(asked.map((a) => a.name).sort()).toEqual(["api", "gateway", "worker"]);
+    expect(asked.every((a) => a.grace === 5_000)).toBe(true);
+    expect(messages).toContain("Kapatılıyor…");
+    for (const f of finish) f();
+    await stopping;
+    expect(ctx.host.status).toEqual({ kind: "stopped" });
+  });
+
+  it("keeps the children's logs under their limit while they run", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    try {
+      const rotateRunning = vi.fn();
+      const ctx = setup({ rotateRunning, logPollMs: 1_000 });
+      hosts.push(ctx.host);
+      await ctx.host.start();
+      vi.advanceTimersByTime(1_000);
+      expect(rotateRunning).toHaveBeenCalledWith(join(ctx.stateDir, "logs", "api.log"));
+      expect(rotateRunning).toHaveBeenCalledWith(join(ctx.stateDir, "logs", "worker.log"));
+      await ctx.host.stop();
+      rotateRunning.mockClear();
+      vi.advanceTimersByTime(5_000);
+      expect(rotateRunning).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});

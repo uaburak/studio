@@ -15,6 +15,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { z } from "zod";
 import { callGeminiJson } from "../gemini/json-call.ts";
+import { DEFAULT_GEMINI_MODELS } from "../gemini/models.ts";
 import type { GeminiUsageSample } from "../gemini/pricing.ts";
 import { buildToolEnv, extractSpeechWav, type FfmpegRunner, findExecutable } from "./ffmpeg.ts";
 
@@ -288,7 +289,7 @@ export function createDefaultClipTranscriber(options: DefaultTranscriberOptions)
       const res = await callGeminiJson({
         onUsage: options.onGeminiUsage,
         apiKey: options.geminiApiKey,
-        modelId: options.geminiModelId ?? "gemini-2.5-flash",
+        modelId: options.geminiModelId ?? DEFAULT_GEMINI_MODELS["gemini-flash"],
         system:
           "You are a precise Turkish audio/video transcriber. Transcribe spoken speech verbatim into short timestamped segments in milliseconds.",
         content: [

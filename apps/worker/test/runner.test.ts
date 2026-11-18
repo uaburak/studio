@@ -1,4 +1,12 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { Job, JobResultMessage, WorkerToHubMessage } from "@studio/contract";
@@ -365,6 +373,128 @@ describe("resend after reconnect", () => {
       expect(b.list()).toEqual([
         { type: "job.result", jobId: "j1", status: "succeeded", output: { x: 1 } },
       ]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  /** Logger that keeps warn/debug lines for assertions. */
+  const recordingLogger = () => {
+    const warns: string[] = [];
+    const debugs: string[] = [];
+    return {
+      warns,
+      debugs,
+      logger: {
+        ...silentLogger,
+        warn: (m: string) => warns.push(m),
+        debug: (m: string) => debugs.push(m),
+      },
+    };
+  };
+
+  it("FileOutbox: a failed write does not block later ones (latest snapshot wins)", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "studio-outbox-"));
+    try {
+      const file = path.join(dir, "outbox.json");
+      const { warns, logger } = recordingLogger();
+      const outbox = new FileOutbox(file, { logger, writeAttempts: 2, retryDelayMs: 1 });
+      // A directory where the temp file goes: every write fails.
+      mkdirSync(`${file}.tmp`);
+      await outbox.put({ type: "job.result", jobId: "j1", status: "succeeded", output: { x: 1 } });
+      expect(warns.some((w) => w.includes("could not write the outbox file"))).toBe(true);
+      expect(existsSync(file)).toBe(false);
+      expect(outbox.size).toBe(1); // still in memory
+
+      rmSync(`${file}.tmp`, { recursive: true });
+      await outbox.put({ type: "job.result", jobId: "j2", status: "failed", error: "boom" });
+      const saved = JSON.parse(readFileSync(file, "utf8")) as { results: { jobId: string }[] };
+      expect(saved.results.map((r) => r.jobId)).toEqual(["j1", "j2"]);
+      expect(new FileOutbox(file).size).toBe(2);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("FileOutbox: a write that fails once is retried", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "studio-outbox-"));
+    try {
+      const file = path.join(dir, "outbox.json");
+      const { warns, debugs, logger } = recordingLogger();
+      const outbox = new FileOutbox(file, { logger, writeAttempts: 3, retryDelayMs: 50 });
+      mkdirSync(`${file}.tmp`);
+      const put = outbox.put({ type: "job.result", jobId: "j1", status: "succeeded" });
+      await vi.waitFor(() => expect(debugs.length).toBeGreaterThan(0)); // 1st try failed
+      rmSync(`${file}.tmp`, { recursive: true });
+      await put;
+      expect(warns).toEqual([]);
+      expect(new FileOutbox(file).list().map((r) => r.jobId)).toEqual(["j1"]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("FileOutbox: a corrupt file is moved aside and the worker still starts", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "studio-outbox-"));
+    try {
+      const file = path.join(dir, "outbox.json");
+      writeFileSync(file, "{not json");
+      const { warns, logger } = recordingLogger();
+      const outbox = new FileOutbox(file, { logger });
+      expect(outbox.size).toBe(0);
+      const aside = readdirSync(dir).filter((f) => f.startsWith("outbox.json.corrupt-"));
+      expect(aside).toHaveLength(1);
+      expect(readFileSync(path.join(dir, aside[0] ?? ""), "utf8")).toBe("{not json");
+      expect(warns.some((w) => w.includes("is corrupt"))).toBe(true);
+      await outbox.put({ type: "job.result", jobId: "j1", status: "succeeded" });
+      expect(new FileOutbox(file).list().map((r) => r.jobId)).toEqual(["j1"]);
+
+      // startWorker builds its FileOutbox from the state dir: a corrupt file does not stop it.
+      const stateDir = path.join(dir, "state");
+      mkdirSync(stateDir);
+      writeFileSync(path.join(stateDir, "outbox.json"), JSON.stringify({ version: 7 }));
+      const fake = fakeSocketFactory();
+      const worker = startWorker({
+        config: {
+          hubUrl: "ws://hub.test/api/hub",
+          token: "t",
+          workerId: "mac-test",
+          concurrency: 1,
+          heartbeatIntervalMs: 0,
+          shutdownTimeoutMs: 1000,
+          stateDir,
+          backoff: { baseMs: 10, maxMs: 10, jitter: 0 },
+          pingIntervalMs: 0,
+          logLevel: "error",
+        },
+        logger,
+        socketFactory: fake.factory,
+        registry: new JobRegistry().register("demo.echo", demoEcho),
+      });
+      fake.last()?.simulateOpen();
+      expect(fake.last()?.sent[0]).toMatchObject({ type: "hello", activeJobIds: [] });
+      expect(readdirSync(stateDir).some((f) => f.startsWith("outbox.json.corrupt-"))).toBe(true);
+      worker.stop();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("FileOutbox: unreadable entries are dropped, readable ones kept", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "studio-outbox-"));
+    try {
+      const file = path.join(dir, "outbox.json");
+      writeFileSync(
+        file,
+        JSON.stringify({
+          version: 1,
+          results: [{ type: "job.result", jobId: "ok", status: "succeeded" }, { nope: true }],
+        }),
+      );
+      const { warns, logger } = recordingLogger();
+      const outbox = new FileOutbox(file, { logger });
+      expect(outbox.list().map((r) => r.jobId)).toEqual(["ok"]);
+      expect(warns.some((w) => w.includes("1 unreadable result(s) dropped"))).toBe(true);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

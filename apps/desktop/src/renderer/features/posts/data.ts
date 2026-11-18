@@ -1,6 +1,12 @@
 // Server data of the posts screens (react-query): contents of a brand (or all), their current
 // versions, schedules, plans; one post, its versions, schedules and publish logs; the
-// publishing mode. Finished generation / render jobs refresh what they touched.
+// publishing mode; the trash. Finished generation / render jobs refresh what they touched.
+//
+// A4: the post list itself is small (metadata only); the expensive part — one version request per
+// post, with its rendered pictures — is loaded only for the month on screen (the months next to it
+// are prefetched), a version still waiting for its renders is polled with a growing pause and not
+// at all once its render failed, and the cards keep their identity across job events so only the
+// card that changed draws again.
 import {
   type ApiClient,
   type Content,
@@ -15,7 +21,8 @@ import { type QueryClient, useQueries, useQuery, useQueryClient } from "@tanstac
 import { useEffect, useMemo, useRef } from "react";
 import { useApi } from "../../lib/api.ts";
 import { isHostUp, useHost, useJobs, useJobsSnapshot } from "../../state/studio.tsx";
-import { buildBoard, type PostCard } from "./board.ts";
+import { boardMonths, buildBoard, cardMonth, nearestMonth, type PostCard } from "./board.ts";
+import { addMonths, type MonthKey, monthKeyOf } from "./dates.ts";
 
 export const postKeys = {
   all: ["posts"] as const,
@@ -28,6 +35,7 @@ export const postKeys = {
   plans: (scope: string) => ["posts", "plans", scope] as const,
   logs: (scheduleId: string) => ["posts", "logs", scheduleId] as const,
   publishing: ["posts", "publishing-status"] as const,
+  trash: (scope: string) => ["posts", "trash", scope] as const,
 };
 
 /** Every page of a cursor list (bounded). */
@@ -97,26 +105,84 @@ export function usePlans(brandId: string | null, enabled = true) {
   });
 }
 
-/** A version is immutable except for renders: refetch while a slide still waits for one. */
-function versionQuery(api: ApiClient, contentId: string, version: number) {
+/** First pause before asking again for a version whose renders are missing. */
+export const RENDER_POLL_FIRST_MS = 8_000;
+const RENDER_POLL_MAX_MS = 120_000;
+/** After this many polls (≈ 15 min) a version without renders is left alone until a job ends. */
+const RENDER_POLL_LIMIT = 10;
+
+/**
+ * Pause before the next poll of a version that still waits for renders: 8 s, doubling up to
+ * 2 min, none after RENDER_POLL_LIMIT polls or when its render failed (a finished job refreshes
+ * it anyway, see useFinishedContentJobs). False: no polling.
+ */
+export function renderPollInterval(
+  version: Pick<ContentVersion, "slides"> | undefined,
+  polls: number,
+  renderFailed = false,
+): number | false {
+  if (!version || renderFailed) return false;
+  if (!version.slides.some((s) => !s.renderedAssetId)) return false;
+  if (polls >= RENDER_POLL_LIMIT) return false;
+  return Math.min(RENDER_POLL_FIRST_MS * 2 ** Math.max(0, polls - 1), RENDER_POLL_MAX_MS);
+}
+
+/** A version is immutable except for renders: refetch (with backoff) while a slide waits for one. */
+function versionQuery(
+  api: ApiClient,
+  contentId: string,
+  version: number,
+  renderFailed?: (contentId: string) => boolean,
+) {
   return {
     queryKey: postKeys.version(contentId, version),
     queryFn: () => api.contents.versions.get(contentId, version),
     staleTime: Number.POSITIVE_INFINITY,
-    refetchInterval: (query: { state: { data: ContentVersion | undefined } }) =>
-      query.state.data?.slides.some((s) => !s.renderedAssetId) ? 8_000 : false,
+    refetchInterval: (query: {
+      state: { data: ContentVersion | undefined; dataUpdateCount: number };
+    }) =>
+      renderPollInterval(
+        query.state.data,
+        query.state.dataUpdateCount,
+        renderFailed?.(contentId) ?? false,
+      ),
   };
+}
+
+/** Contents whose latest render or generation job failed (their versions are not polled). */
+function useFailedRenders(): (contentId: string) => boolean {
+  const { jobs } = useJobsSnapshot();
+  const failed = useMemo(() => {
+    const latest = new Map<string, Job>();
+    for (const job of jobs) {
+      if (job.type !== "content.render" && job.type !== "content.generate") continue;
+      if (!job.contentId) continue;
+      const seen = latest.get(job.contentId);
+      if (!seen || Date.parse(seen.createdAt) < Date.parse(job.createdAt))
+        latest.set(job.contentId, job);
+    }
+    return new Set(
+      [...latest.values()].filter((j) => j.status === "failed").map((j) => j.contentId as string),
+    );
+  }, [jobs]);
+  const ref = useRef(failed);
+  ref.current = failed;
+  return useMemo(() => (id: string) => ref.current.has(id), []);
 }
 
 /** The current version of each content (one request each, cached by version). */
 export function useCurrentVersions(contents: readonly Content[]): Map<string, ContentVersion> {
   const api = useApi();
   const up = useUp();
+  const renderFailed = useFailedRenders();
   const refs = contents.flatMap((c) =>
     c.currentVersion ? [{ id: c.id, version: c.currentVersion.version }] : [],
   );
   const results = useQueries({
-    queries: refs.map((r) => ({ ...versionQuery(api, r.id, r.version), enabled: up })),
+    queries: refs.map((r) => ({
+      ...versionQuery(api, r.id, r.version, renderFailed),
+      enabled: up,
+    })),
   });
   const data = results.map((r) => r.data);
   // A new map only when a loaded version (or one of its renders) changed.
@@ -134,30 +200,127 @@ export function useCurrentVersions(contents: readonly Content[]): Map<string, Co
 }
 
 export interface BoardData {
+  /** Every card; only the month on screen carries its loaded version. */
   cards: PostCard[];
   isLoading: boolean;
   error: unknown;
   refetch(): void;
 }
 
-/** The board of one brand (null: every brand). */
-export function useBoard(brandId: string | null, enabled = true): BoardData {
+/** "id:status" of the jobs the board shows (progress reports do not change it). */
+export function boardJobSignature(jobs: readonly Job[]): string {
+  let out = "";
+  for (const j of jobs) {
+    if ((j.type === "content.generate" || j.type === "content.render") && j.contentId)
+      out += `${j.id}:${j.status}|`;
+  }
+  return out;
+}
+
+/** The board's jobs, the same array while none of them changed status. */
+function useBoardJobs(): Job[] {
+  const { jobs } = useJobs();
+  const signature = boardJobSignature(jobs);
+  const latest = useRef(jobs);
+  latest.current = jobs;
+  return useMemo(
+    () =>
+      latest.current.filter(
+        (j) => (j.type === "content.generate" || j.type === "content.render") && j.contentId,
+      ),
+    // `signature` stands for the jobs that matter.
+    [signature],
+  );
+}
+
+/**
+ * Cards of `next` that equal the previous build (same content, version, plan item, schedule and
+ * job objects) keep the previous card object, so a memoized card does not draw again.
+ */
+export function reuseCards(previous: readonly PostCard[], next: PostCard[]): PostCard[] {
+  if (previous.length === 0) return next;
+  const old = new Map(previous.map((c) => [c.id, c]));
+  let same = previous.length === next.length;
+  const out = next.map((card, index) => {
+    const before = old.get(card.id);
+    const keep =
+      before &&
+      before.content === card.content &&
+      before.version === card.version &&
+      before.planItem === card.planItem &&
+      before.schedule === card.schedule &&
+      before.job === card.job;
+    if (!keep || previous[index] !== before) same = false;
+    return keep ? before : card;
+  });
+  return same ? (previous as PostCard[]) : out;
+}
+
+/** The months whose versions are loaded: the shown one first, then the ones beside it. */
+export function versionMonths(month: MonthKey): MonthKey[] {
+  return [month, addMonths(month, -1), addMonths(month, 1)];
+}
+
+/**
+ * The board of one brand (null: every brand). `month`: the month on screen (null: the one with
+ * the nearest posts, as the board picks it) — only its posts' versions are loaded, the months
+ * beside it are prefetched.
+ */
+export function useBoard(
+  brandId: string | null,
+  enabled = true,
+  wanted: MonthKey | null = null,
+  now: Date = new Date(),
+): BoardData {
+  const api = useApi();
+  const queryClient = useQueryClient();
+  const up = useUp();
   const contents = useContents(brandId, enabled);
   const schedules = useSchedules(brandId, enabled);
   const plans = usePlans(brandId, enabled);
-  const { jobs } = useJobs();
-  const versions = useCurrentVersions(contents.data ?? []);
-  const cards = useMemo(
+  const jobs = useBoardJobs();
+  const base = useMemo(
     () =>
       buildBoard({
         contents: contents.data ?? [],
-        versions,
         plans: plans.data ?? [],
         schedules: schedules.data ?? [],
         jobs,
       }),
-    [contents.data, versions, plans.data, schedules.data, jobs],
+    [contents.data, plans.data, schedules.data, jobs],
   );
+  const thisMonth = monthKeyOf(now);
+  const month = useMemo(
+    () => wanted ?? nearestMonth(boardMonths(base), thisMonth),
+    [wanted, base, thisMonth],
+  );
+  const shown = useMemo(
+    () => base.filter((c) => cardMonth(c) === month).map((c) => c.content),
+    [base, month],
+  );
+  const versions = useCurrentVersions(shown);
+  // The months beside the shown one load in the background (‹ › then shows them at once).
+  useEffect(() => {
+    if (!up) return;
+    const near = new Set(versionMonths(month).slice(1));
+    for (const card of base) {
+      const ref = card.content.currentVersion;
+      if (!ref || !near.has(cardMonth(card))) continue;
+      void queryClient.prefetchQuery(versionQuery(api, card.id, ref.version));
+    }
+  }, [base, month, up, api, queryClient]);
+  const previous = useRef<PostCard[]>([]);
+  const cards = useMemo(() => {
+    const next = base.map((card) => {
+      const loaded = versions.get(card.id);
+      return loaded && loaded.version === card.content.currentVersion?.version
+        ? { ...card, version: loaded }
+        : card;
+    });
+    const out = reuseCards(previous.current, next);
+    previous.current = out;
+    return out;
+  }, [base, versions]);
   return {
     cards,
     isLoading: contents.isLoading,
@@ -168,6 +331,30 @@ export function useBoard(brandId: string | null, enabled = true): BoardData {
       void plans.refetch();
     },
   };
+}
+
+/** The trash ("Silinenler") of one brand (null: every brand), newest deletion first. */
+export function useTrash(brandId: string | null, enabled = true) {
+  const api = useApi();
+  const up = useUp();
+  return useQuery({
+    queryKey: postKeys.trash(scopeKey(brandId)),
+    queryFn: async (): Promise<Content[]> => {
+      const list = await allPages(
+        (cursor) =>
+          api.contents.list({
+            ...brandQuery(brandId),
+            deleted: "only",
+            limit: 100,
+            ...(cursor ? { cursor } : {}),
+          }),
+        5,
+      );
+      return list.sort((a, b) => (b.deletedAt ?? "").localeCompare(a.deletedAt ?? ""));
+    },
+    enabled: up && enabled,
+    staleTime: 15_000,
+  });
 }
 
 // --- one post ---------------------------------------------------------------------------------
@@ -256,6 +443,8 @@ export function storeVersion(queryClient: QueryClient, version: ContentVersion):
 export function invalidatePosts(queryClient: QueryClient, contentId?: string): Promise<void> {
   return Promise.all([
     queryClient.invalidateQueries({ queryKey: ["posts", "contents"] }),
+    queryClient.invalidateQueries({ queryKey: ["posts", "trash"] }),
+    queryClient.invalidateQueries({ queryKey: ["posts", "plans"] }),
     queryClient.invalidateQueries({ queryKey: ["posts", "schedules"] }),
     queryClient.invalidateQueries({ queryKey: CALENDAR_SCHEDULES }),
     queryClient.invalidateQueries({ queryKey: CALENDAR_CONTENTS }),
@@ -296,6 +485,8 @@ export function useFinishedContentJobs(onFinished?: (contentId: string, job: Job
       if (first || !CONTENT_JOBS.has(job.type) || !job.contentId) continue;
       if (previous === job.status || !isTerminalJobStatus(job.status)) continue;
       void invalidatePosts(queryClient, job.contentId);
+      // Renders land on an existing version (its query is never stale on its own).
+      void queryClient.invalidateQueries({ queryKey: ["posts", "version", job.contentId] });
       callback.current?.(job.contentId, job);
     }
   }, [jobs, queryClient]);

@@ -1,6 +1,9 @@
 // The composer (Wecra "Composer", Liquid Glass capsule, 44 pt): + attach, auto-growing text,
 // mic, send / stop. Attached images show as chips with their @alias; typing `@` suggests the
-// conversation's images. ↩ sends, ⇧↩ new line, ⌘↩ queues while a reply runs.
+// conversation's images. ↩ sends (while a reply runs: queues), ⇧↩ new line, ⌘↩ while a reply
+// runs: stops it and sends this message right away ("Şimdi gönder").
+// Images upload to the composer's brand; when the brand changes (a new chat's title menu) they
+// are uploaded again to the new one, so a send never carries another brand's images.
 
 import { autoUpdate, FloatingPortal, flip, offset, shift, useFloating } from "@floating-ui/react";
 import type { ConversationAlias } from "@studio/contract";
@@ -33,6 +36,7 @@ import {
   mentionQuery,
   mentionSuggestions,
   sendButtonMode,
+  sendProblem,
 } from "../../lib/composer.ts";
 import type { OutgoingMessage } from "../../lib/transcript.ts";
 import { newClientMessageId } from "../../state/conversation.ts";
@@ -55,7 +59,8 @@ export interface ComposerProps {
   brandId: string | null;
   attachDisabledReason?: string | null;
   aliases?: ConversationAlias[];
-  onSend(message: OutgoingMessage, options: { queue: boolean }): Promise<boolean>;
+  /** `now`: ⌘↩ while a reply runs (stop it, this message goes first). */
+  onSend(message: OutgoingMessage, options: { now: boolean }): Promise<boolean>;
   onStop?(): void;
   /** Starting text (gallery states). */
   initialText?: string;
@@ -86,6 +91,8 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   const draftsRef = useRef<Draft[]>([]);
   draftsRef.current = drafts;
   const [error, setError] = useState<string | null>(null);
+  /** A neutral line above the composer (brand change). */
+  const [notice, setNotice] = useState<string | null>(null);
   const [focused, setFocused] = useState(false);
   const [suggestionIndex, setSuggestionIndex] = useState(0);
   const [dismissedQueryAt, setDismissedQueryAt] = useState<number | null>(null);
@@ -115,18 +122,44 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
   }, [text]);
 
-  // Revoke object URLs of removed drafts.
-  const previews = useRef(new Set<string>());
-  useEffect(() => {
-    const current = new Set(drafts.map((d) => d.previewUrl));
-    for (const url of previews.current) {
-      // Studio assets attached as they are preview from their own URL (nothing to revoke).
-      if (!current.has(url) && url.startsWith("blob:")) URL.revokeObjectURL(url);
-    }
-    previews.current = current;
-  }, [drafts]);
+  // Object URLs of local images: revoked when the chip is removed, the message went out, or the
+  // composer goes away — never while a send is on its way (a failed send puts the chips back).
+  const release = useCallback((list: readonly Draft[]) => {
+    for (const d of list) if (d.previewUrl.startsWith("blob:")) URL.revokeObjectURL(d.previewUrl);
+  }, []);
+  useEffect(() => () => release(draftsRef.current), [release]);
+  /** The bytes of local images (uploaded again when the brand changes). */
+  const sources = useRef(new Map<string, Blob>());
 
   const canAttach = brandId !== null && !attachDisabledReason;
+
+  /** Uploads `file` for draft `id` to `target`; a result for a brand left meanwhile is ignored. */
+  const startUpload = useCallback(
+    (id: string, file: Blob, target: string) => {
+      const current = (list: Draft[]) =>
+        list.find((d) => d.id === id && d.brandId === target && d.state.kind === "uploading");
+      void api.assets
+        .upload({ file, brandId: target, kind: "image", source: "upload" })
+        .then((asset) => {
+          if (!current(draftsRef.current)) return;
+          setDrafts((list) =>
+            list.map((d) =>
+              d === current(list) ? { ...d, state: { kind: "uploaded", assetId: asset.id } } : d,
+            ),
+          );
+        })
+        .catch((e) =>
+          setDrafts((list) =>
+            list.map((d) =>
+              d === current(list)
+                ? { ...d, state: { kind: "failed", error: describeError(e) } }
+                : d,
+            ),
+          ),
+        );
+    },
+    [api],
+  );
 
   const upload = useCallback(
     (files: File[]) => {
@@ -149,6 +182,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
           previewUrl: URL.createObjectURL(file),
           filename: file.name,
           state: { kind: "uploading" },
+          brandId,
         };
       });
       draftsRef.current = [...draftsRef.current, ...added];
@@ -156,28 +190,71 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       setError(null);
       for (const [i, draft] of added.entries()) {
         const file = images[i] as File;
-        void api.assets
-          .upload({ file, brandId, kind: "image", source: "upload" })
-          .then((asset) =>
-            setDrafts((list) =>
-              list.map((d) =>
-                d.id === draft.id ? { ...d, state: { kind: "uploaded", assetId: asset.id } } : d,
-              ),
-            ),
-          )
-          .catch((e) =>
-            setDrafts((list) =>
-              list.map((d) =>
-                d.id === draft.id
-                  ? { ...d, state: { kind: "failed", error: describeError(e) } }
-                  : d,
-              ),
-            ),
-          );
+        sources.current.set(draft.id, file);
+        startUpload(draft.id, file, brandId);
       }
     },
-    [api, aliases, attachDisabledReason, brandId, canAttach],
+    [aliases, attachDisabledReason, brandId, canAttach, startUpload],
   );
+
+  // A new chat's brand changed: its images go to the new brand (the API refuses another brand's
+  // images); with no brand they are taken off. The send waits until they are uploaded again.
+  const uploadedFor = useRef(brandId);
+  useEffect(() => {
+    if (uploadedFor.current === brandId) return;
+    uploadedFor.current = brandId;
+    const moved = draftsRef.current.filter((d) => (d.brandId ?? null) !== brandId);
+    if (moved.length === 0) return;
+    if (!brandId || attachDisabledReason) {
+      const ids = new Set(moved.map((d) => d.id));
+      release(moved);
+      for (const id of ids) sources.current.delete(id);
+      draftsRef.current = draftsRef.current.filter((d) => !ids.has(d.id));
+      setDrafts((list) => list.filter((d) => !ids.has(d.id)));
+      setNotice("Marka değişti; eklenen görseller çıkarıldı.");
+      return;
+    }
+    const ids = new Set(moved.map((d) => d.id));
+    const next = draftsRef.current.map((d) =>
+      ids.has(d.id) ? { ...d, brandId, state: { kind: "uploading" } as const } : d,
+    );
+    draftsRef.current = next;
+    setDrafts(next);
+    setError(null);
+    setNotice("Marka değişti; görseller yeni markaya yükleniyor.");
+    for (const draft of moved) {
+      const local = sources.current.get(draft.id);
+      const bytes = local
+        ? Promise.resolve(local)
+        : fetch(draft.previewUrl).then((res) => {
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            return res.blob();
+          });
+      void bytes
+        .then((blob) => {
+          sources.current.set(draft.id, blob);
+          const named =
+            blob instanceof File ? blob : new File([blob], draft.filename, { type: blob.type });
+          startUpload(draft.id, named, brandId);
+        })
+        .catch((e) =>
+          setDrafts((list) =>
+            list.map((d) =>
+              d.id === draft.id && d.brandId === brandId
+                ? { ...d, state: { kind: "failed", error: describeError(e) } }
+                : d,
+            ),
+          ),
+        );
+    }
+  }, [brandId, attachDisabledReason, release, startUpload]);
+  // The note goes once every image is in place again.
+  useEffect(() => {
+    if (notice && !drafts.some((d) => d.state.kind === "uploading")) {
+      const timer = setTimeout(() => setNotice(null), 4_000);
+      return () => clearTimeout(timer);
+    }
+  }, [notice, drafts]);
 
   // Studio assets (dragged from Medya, or "Sohbete ekle"): an asset of this brand is attached
   // as it is; one of another brand is copied into this brand (the API only takes its own).
@@ -229,6 +306,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
           previewUrl: assetUrl(payload.assetId),
           filename: payload.filename ?? alias,
           state: { kind: "uploaded", assetId: payload.assetId },
+          brandId,
         });
       }
       if (added.length === 0) return;
@@ -277,20 +355,43 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   const hasContent = canSend(text, drafts);
   const mode = sendButtonMode(hasContent, working);
 
-  const submit = async (queue: boolean) => {
+  const submit = async (now: boolean) => {
     if (!canSend(text, drafts) || disabled) return;
+    const problem = sendProblem(text, drafts);
+    if (problem) {
+      setError(problem);
+      return;
+    }
+    if (drafts.some((d) => (d.brandId ?? brandId) !== brandId)) return;
     const message = makeMessage(text, drafts, newClientMessageId());
     const savedText = text;
     const savedDrafts = drafts;
     setText("");
+    draftsRef.current = [];
     setDrafts([]);
     setError(null);
-    const ok = await onSend(message, { queue });
-    if (!ok) {
-      // Keep what was written.
-      setText((t) => (t ? t : savedText));
-      setDrafts((d) => (d.length ? d : savedDrafts));
+    setNotice(null);
+    const ok = await onSend(message, { now });
+    if (ok) {
+      release(savedDrafts);
+      for (const d of savedDrafts) sources.current.delete(d.id);
+      return;
     }
+    // Keep what was written (the previews are still valid: nothing was revoked).
+    setText((t) => (t ? t : savedText));
+    setDrafts((d) => {
+      const restored = d.length ? d : savedDrafts;
+      draftsRef.current = restored;
+      return restored;
+    });
+  };
+
+  const remove = (draft: Draft) => {
+    release([draft]);
+    sources.current.delete(draft.id);
+    draftsRef.current = draftsRef.current.filter((d) => d.id !== draft.id);
+    setDrafts((list) => list.filter((d) => d.id !== draft.id));
+    setError(null);
   };
 
   const { refs, floatingStyles } = useFloating({
@@ -309,11 +410,17 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
 
   return (
     <div className="relative">
-      {error && (
+      {error ? (
         <div className="mb-2 flex items-center gap-1.5 px-3 text-footnote text-danger" role="alert">
           <IconWarning size={13} />
           {error}
         </div>
+      ) : (
+        notice && (
+          <div className="mb-2 px-3 text-footnote text-fg-2" role="status">
+            {notice}
+          </div>
+        )
       )}
       {/* biome-ignore lint/a11y/noStaticElementInteractions: drop target for images */}
       <div
@@ -342,11 +449,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
         {drafts.length > 0 && (
           <div className="flex flex-wrap gap-1.5 px-2.5 pt-2.5">
             {drafts.map((draft) => (
-              <AttachmentChip
-                key={draft.id}
-                draft={draft}
-                onRemove={() => setDrafts((list) => list.filter((d) => d.id !== draft.id))}
-              />
+              <AttachmentChip key={draft.id} draft={draft} onRemove={() => remove(draft)} />
             ))}
           </div>
         )}
@@ -419,7 +522,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
               }
               if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
                 event.preventDefault();
-                void submit(event.metaKey);
+                void submit(working && event.metaKey);
               }
             }}
             className="selectable my-[5px] max-h-[200px] min-h-[22px] flex-1 resize-none bg-transparent px-1.5 text-prose leading-[22px] text-fg outline-none placeholder:text-fg-3 focus-visible:shadow-none"
@@ -434,7 +537,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
           <SendButton
             mode={mode}
             disabled={disabled}
-            onSend={() => void submit(working)}
+            onSend={() => void submit(false)}
             onStop={() => onStop?.()}
           />
         </div>

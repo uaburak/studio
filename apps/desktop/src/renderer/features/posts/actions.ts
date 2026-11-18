@@ -1,5 +1,6 @@
 // Post actions shared by the board, its cards and the opened post: quick look (the lightbox
-// with the rendered slides), copy the caption, duplicate, delete (after the confirmation).
+// with the rendered slides), copy the caption, duplicate, delete (to the trash, with "Geri al"),
+// "Yeniden dene" of a failed generation, and the trash's restore / "Kalıcı olarak sil".
 import type { Content, ContentVersion } from "@studio/contract";
 import { useQueryClient } from "@tanstack/react-query";
 import { useMemo } from "react";
@@ -8,6 +9,7 @@ import { useAppStore } from "../../state/app-store.ts";
 import { deletionBlocker } from "./board.ts";
 import { invalidatePosts } from "./data.ts";
 import { usePostsStore } from "./store.ts";
+import { purgePost, restorePosts, trashPosts } from "./trash.ts";
 
 export function usePostActions() {
   const api = useApi();
@@ -81,14 +83,17 @@ export function usePostActions() {
         }
       },
 
-      /** Ask first (the board's and the detail's confirmation dialog). */
+      /**
+       * ⌫ / "Sil": to the trash at once (the toast's "Geri al" takes it back; no question). A
+       * post that cannot be deleted says why.
+       */
       askDelete(content: Content) {
         const blocker = deletionBlocker(content);
         if (blocker) {
           toast({ message: blocker });
           return;
         }
-        usePostsStore.getState().askDelete(content);
+        void trashPosts(api, queryClient, [content]);
       },
 
       async remove(content: Content): Promise<boolean> {
@@ -97,19 +102,34 @@ export function usePostActions() {
           toast({ message: blocker, tone: "danger" });
           return false;
         }
+        return (await trashPosts(api, queryClient, [content])).length > 0;
+      },
+
+      /** Take a post back out of the trash ("Silinenler"). */
+      async restore(content: Pick<Content, "id" | "title">): Promise<boolean> {
+        return (await restorePosts(api, queryClient, [content])) > 0;
+      },
+
+      /** "Kalıcı olarak sil…": ask first (the detail's confirmation dialog). */
+      askPurge(content: Content) {
+        usePostsStore.getState().askDelete(content);
+      },
+
+      purge(content: Pick<Content, "id" | "title">): Promise<boolean> {
+        return purgePost(api, queryClient, content);
+      },
+
+      /** "Yeniden dene" of a failed job (a plan item's generation goes through its plan). */
+      async retry(jobId: string, title?: string): Promise<boolean> {
         try {
-          await api.contents.delete(content.id);
-          const store = usePostsStore.getState();
-          if (store.opened?.contentId === content.id) store.close();
-          // Back / forward must not reopen the deleted post.
-          useAppStore.getState().forgetPost(content.id);
-          if (store.selectedId === content.id) store.select(null);
-          queryClient.removeQueries({ queryKey: ["posts", "content", content.id] });
+          await api.jobs.retry(jobId);
           await invalidatePosts(queryClient);
-          toast({ message: `“${content.title}” silindi.` });
+          toast({
+            message: title ? `“${title}” yeniden üretime alındı.` : "İş yeniden kuyruğa alındı.",
+          });
           return true;
         } catch (e) {
-          toast({ message: `${content.title}: ${describeError(e)}`, tone: "danger" });
+          toast({ message: describeError(e), tone: "danger" });
           return false;
         }
       },

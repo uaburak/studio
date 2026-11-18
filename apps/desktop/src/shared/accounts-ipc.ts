@@ -91,6 +91,8 @@ export interface AppInfo {
   /** ~/Library/Application Support/Studio */
   stateDir: string;
   logsDir: string;
+  /** The Mac user's full name (the greeting's fallback; "" when unknown). */
+  userName?: string;
 }
 
 /** Outcome of Yedekle / Yedekten geri yükle (`message` is shown as is; empty when cancelled). */

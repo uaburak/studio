@@ -7,7 +7,14 @@ import { type AgentDeps, loadAgentSettings } from "../src/agent.ts";
 import { createChatTurnHandler } from "../src/chat/turn.ts";
 import { ClaudeGate } from "../src/claude/gate.ts";
 import { checkGeminiHealth } from "../src/gemini/health.ts";
-import { thinkingConfigFor } from "../src/gemini/models.ts";
+import {
+  DEFAULT_GEMINI_MODELS,
+  GEMINI_MODELS_CHECKED_AT,
+  pickGeminiModel,
+  resolveGeminiModel,
+  resolveGeminiModelId,
+  thinkingConfigFor,
+} from "../src/gemini/models.ts";
 import { silentLogger } from "../src/log.ts";
 import type { JobContext } from "../src/registry.ts";
 import { createFakeApi, fakeBrand, fakeRun, NOW } from "./fake-api.ts";
@@ -188,6 +195,99 @@ describe("Gemini health & thinkingConfig", () => {
     expect(thinkingConfigFor("gemini-2.5-pro", "low")).toEqual({ thinkingBudget: 1024 });
     expect(thinkingConfigFor("gemini-2.5-pro", "xhigh")).toEqual({ thinkingBudget: 24576 });
     expect(thinkingConfigFor("gemini-custom-future", "high")).toBeUndefined();
+  });
+
+  it("maps effort to thinkingLevel on Gemini 3 and newer (medium only on Flash)", () => {
+    expect(thinkingConfigFor("gemini-3-flash-preview", "low")).toEqual({ thinkingLevel: "low" });
+    expect(thinkingConfigFor("gemini-3-flash-preview", "medium")).toEqual({
+      thinkingLevel: "medium",
+    });
+    expect(thinkingConfigFor("gemini-3.1-flash-lite", undefined)).toEqual({
+      thinkingLevel: "medium",
+    });
+    expect(thinkingConfigFor("gemini-3.1-pro-preview", "medium")).toEqual({
+      thinkingLevel: "low",
+    });
+    expect(thinkingConfigFor("gemini-3.1-pro-preview", "max")).toEqual({ thinkingLevel: "high" });
+    expect(thinkingConfigFor("models/gemini-3.8-flash", "xhigh")).toEqual({
+      thinkingLevel: "high",
+    });
+    expect(thinkingConfigFor("gemini-4-carbon", "medium")).toEqual({ thinkingLevel: "low" });
+    expect(thinkingConfigFor("gemini-3.8-flash-tts", "high")).toBeUndefined();
+    expect(thinkingConfigFor("gemini-2.0-flash", "high")).toBeUndefined();
+  });
+});
+
+describe("Gemini model resolution", () => {
+  const listed = [
+    "gemini-2.5-flash-lite",
+    "gemini-2.5-flash",
+    "gemini-2.5-pro",
+    "gemini-3-flash-preview",
+    "gemini-3.1-pro-preview",
+    "gemini-3.1-flash-lite",
+    "gemini-3.5-flash-lite",
+    "gemini-3.6-flash",
+    "gemini-3.8-flash",
+    "gemini-3.8-flash-tts",
+    "gemini-3.8-flash-lite", // listed but the price table has no flash-lite 3.8 entry
+    "gemini-9-pro", // listed but unpriced
+    "gemini-flash-latest",
+    "gemini-3.1-flash-image",
+    "text-embedding-004",
+  ];
+
+  it("picks the newest priced, stable model of each tier the key lists", () => {
+    expect(pickGeminiModel("gemini-flash-lite", listed)).toBe("gemini-3.5-flash-lite");
+    expect(pickGeminiModel("gemini-flash", listed)).toBe("gemini-3.8-flash");
+    // Stable 2.5 Pro before the 3.1 preview.
+    expect(pickGeminiModel("gemini-pro", listed)).toBe("gemini-2.5-pro");
+    // A preview only when the tier has no stable priced model.
+    expect(pickGeminiModel("gemini-pro", ["gemini-3.1-pro-preview", "gemini-9-pro"])).toBe(
+      "gemini-3.1-pro-preview",
+    );
+    expect(
+      pickGeminiModel("gemini-flash", ["models/gemini-2.5-flash-001", "gemini-2.5-flash"]),
+    ).toBe("gemini-2.5-flash");
+    expect(pickGeminiModel("gemini-flash", [])).toBeUndefined();
+    expect(pickGeminiModel("gemini-flash", undefined)).toBeUndefined();
+  });
+
+  it("env override → key's list → dated static fallback", () => {
+    expect(resolveGeminiModel("gemini-flash", { available: [] })).toBe(
+      DEFAULT_GEMINI_MODELS["gemini-flash"],
+    );
+    expect(resolveGeminiModel("gemini-flash", { available: listed })).toBe("gemini-3.8-flash");
+    expect(
+      resolveGeminiModel("gemini-flash", {
+        overrides: { "gemini-flash": "gemini-custom" },
+        available: listed,
+      }),
+    ).toBe("gemini-custom");
+    expect(GEMINI_MODELS_CHECKED_AT).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+  });
+
+  it("settings.geminiModels follows the vault key's list live; STUDIO_GEMINI_MODEL_* wins", () => {
+    const settings = loadAgentSettings({ STUDIO_GEMINI_MODEL_PRO: "gemini-pinned-pro" });
+    expect(settings.geminiModelOverrides).toEqual({ "gemini-pro": "gemini-pinned-pro" });
+    expect(settings.geminiModels["gemini-flash"]).toBe("gemini-2.5-flash");
+    settings.vault = { gemini: { apiKey: "fake-key", models: listed } };
+    expect(settings.geminiModels["gemini-flash"]).toBe("gemini-3.8-flash");
+    expect(resolveGeminiModelId("gemini-flash-lite", settings.geminiModels)).toBe(
+      "gemini-3.5-flash-lite",
+    );
+    expect(settings.geminiModels["gemini-pro"]).toBe("gemini-pinned-pro");
+    // A new key (new list object) re-resolves.
+    settings.vault.gemini = { apiKey: "fake-key-2", models: ["gemini-2.5-flash"] };
+    expect(settings.geminiModels["gemini-flash"]).toBe("gemini-2.5-flash");
+    // Assigning an alias pins it.
+    settings.geminiModels["gemini-flash"] = "gemini-assigned";
+    expect(settings.geminiModels["gemini-flash"]).toBe("gemini-assigned");
+    expect({ ...settings.geminiModels }).toEqual({
+      "gemini-flash-lite": "gemini-2.5-flash-lite",
+      "gemini-flash": "gemini-assigned",
+      "gemini-pro": "gemini-pinned-pro",
+    });
   });
 });
 
@@ -409,7 +509,14 @@ describe("Direct Gemini SSE API runner & Studio tools", () => {
       jobCtx(),
     );
     expect(out.provider).toBe("gemini");
-    expect(state.parts[0]).toEqual({ type: "text", text: "Gemini otomatik devreye girdi." });
+    expect(out.fallback).toBe("claude_limit");
+    // S7: the switch is visible on the message, then the answer follows.
+    expect(state.parts[0]).toMatchObject({
+      type: "progress",
+      stepId: "claude-fallback",
+      label: "Claude sınırı doldu, Gemini Flash-Lite ile yanıtlanıyor",
+    });
+    expect(state.parts[1]).toEqual({ type: "text", text: "Gemini otomatik devreye girdi." });
   });
 
   it("executes safe brand, content, and social account tools accurately", async () => {

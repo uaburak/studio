@@ -286,6 +286,7 @@ const PRESENCE: WorkerPresence = {
 
 const stub: CardActions = {
   acceptAndGenerate: async () => undefined,
+  generatePlan: async () => undefined,
   rejectPlan: async () => undefined,
   decideConsent: async () => undefined,
   answer: async () => undefined,
@@ -656,7 +657,7 @@ export default function Gallery() {
             />
             <Composer
               placeholder="Bir şey sor…"
-              workingPlaceholder="↩ gönder, ⌘↩ sıraya al"
+              workingPlaceholder="↩ sıraya al · ⌘↩ durdurup hemen gönder"
               working
               brandId="b1"
               onSend={async () => true}

@@ -19,6 +19,7 @@ import {
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { cn, IconButton, SearchField } from "../../components/ui/controls.tsx";
 import { IconClose } from "../../components/ui/icons.tsx";
+import { useModal } from "../../components/ui/modal.ts";
 import { usageMeters } from "../../lib/usage.ts";
 import { useAppStore } from "../../state/app-store.ts";
 import { useAccounts, useBrands, useJobs, useSettings } from "../../state/studio.tsx";
@@ -147,6 +148,9 @@ function SettingsPanel() {
   const [confirm, setConfirm] = useState<ConfirmRequest | null>(null);
   const searchRef = useRef<HTMLInputElement | null>(null);
   const contentRef = useRef<HTMLDivElement | null>(null);
+  const panelRef = useRef<HTMLDivElement | null>(null);
+  // Tab stays in the sheet and focus goes back on close; Esc is handled below (menus, search).
+  useModal(panelRef, { open: true, onClose: null, initialFocus: "input" });
   const remembered = useRef(settings.settingsSection);
   remembered.current = settings.settingsSection;
 
@@ -237,9 +241,11 @@ function SettingsPanel() {
       }}
     >
       <div
+        ref={panelRef}
         role="dialog"
         aria-modal="true"
         aria-label="Ayarlar"
+        tabIndex={-1}
         className="relative flex animate-pop-in flex-col overflow-hidden rounded-[14px] border border-border bg-surface-2 shadow-popover"
         style={{
           width: "clamp(680px, calc(100vw - 120px), 1020px)",

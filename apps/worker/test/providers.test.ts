@@ -14,7 +14,7 @@ import { probeAntigravity, runAntigravityTurn } from "../src/providers/antigravi
 import type { CmdResult, CmdRunner } from "../src/providers/cli.ts";
 import { ProviderError } from "../src/providers/cli.ts";
 import { codexExecArgs, probeCodex } from "../src/providers/codex.ts";
-import { pickOpenAiModel, runOpenAiTurn } from "../src/providers/openai.ts";
+import { newestOpenAiChatModel, pickOpenAiModel, runOpenAiTurn } from "../src/providers/openai.ts";
 import { ProvidersController } from "../src/providers/status.ts";
 import type { JobContext } from "../src/registry.ts";
 import { createFakeApi, fakeBrand, fakeRun, NOW } from "./fake-api.ts";
@@ -447,6 +447,50 @@ describe("OpenAI API (Responses)", () => {
     expect(pickOpenAiModel(undefined, [])).toBe("gpt-6-sol");
   });
 
+  it("never picks a model the key does not list: newest general chat model of the list", () => {
+    const listed = [
+      "babbage-002",
+      "chatgpt-4o-latest",
+      "dall-e-3",
+      "gpt-4o",
+      "gpt-4o-mini",
+      "gpt-4o-realtime-preview",
+      "gpt-4.1",
+      "gpt-4.1-2025-04-14",
+      "gpt-5",
+      "gpt-5-2025-08-07",
+      "gpt-5-mini",
+      "gpt-5-nano",
+      "gpt-5-pro",
+      "gpt-5-codex",
+      "gpt-5-chat-latest",
+      "gpt-5-search-api",
+      "gpt-audio",
+      "gpt-image-1",
+      "gpt-4o-mini-tts",
+      "gpt-4o-transcribe",
+      "o3",
+      "text-embedding-3-large",
+    ];
+    expect(pickOpenAiModel(undefined, listed)).toBe("gpt-5");
+    expect(newestOpenAiChatModel(["gpt-4o", "gpt-4.1", "gpt-4"])).toBe("gpt-4.1");
+    expect(newestOpenAiChatModel(["gpt-5.2-codex", "gpt-5-mini", "gpt-4.1"])).toBe("gpt-4.1");
+    expect(newestOpenAiChatModel(["gpt-5-mini", "gpt-image-1"])).toBe("gpt-5-mini");
+    // A preferred model in the list still wins over a newer unknown one.
+    expect(pickOpenAiModel(undefined, ["gpt-7", "gpt-5.5"])).toBe("gpt-5.5");
+    // No chat model listed: the static preference (the status says it is not listed).
+    expect(pickOpenAiModel(undefined, ["text-embedding-3-large", "whisper-1"])).toBe("gpt-6-sol");
+  });
+
+  it("status shows the picked model as the default", () => {
+    const settings = loadAgentSettings({});
+    settings.vault = { openai: { apiKey: "sk-test-0000", models: ["gpt-4.1", "gpt-4o"] } };
+    const controller = new ProvidersController({ settings, logger: silentLogger });
+    const openai = controller.list().find((p) => p.provider === "openai");
+    expect(openai).toMatchObject({ state: "ready", defaultModel: "gpt-4.1" });
+    expect(openai?.detail).toContain("gpt-4.1");
+  });
+
   it("runs a tool round, then answers; the key goes only into the header", async () => {
     const KEY = "sk-test-secret-0123456789";
     const requests: { headers: Headers; body: Record<string, unknown> }[] = [];
@@ -685,8 +729,13 @@ describe("model routing and provider readiness", () => {
   });
 
   it("keeps the prices in one dated file", () => {
-    const src = readFileSync(new URL("../src/gemini/pricing.ts", import.meta.url), "utf8");
-    expect(src).toContain("PRICING_CHECKED_AT");
+    const src = readFileSync(
+      new URL("../../../packages/contract/src/ai-pricing.ts", import.meta.url),
+      "utf8",
+    );
+    expect(src).toContain("GEMINI_PRICING_CHECKED_AT");
     expect(src).toContain("ai.google.dev/gemini-api/docs/pricing");
+    expect(src).toContain("OPENAI_PRICING_CHECKED_AT");
+    expect(src).toContain("ELEVENLABS_PRICING_CHECKED_AT");
   });
 });

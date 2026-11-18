@@ -11,7 +11,8 @@ import {
   useRef,
   useState,
 } from "react";
-import { Button, cn, SearchField, TagPill } from "../../components/ui/controls.tsx";
+import { cn, SearchField, TagPill } from "../../components/ui/controls.tsx";
+import { ConfirmDialog as SharedConfirmDialog } from "../../components/ui/dialog.tsx";
 import { IconChevronDown } from "../../components/ui/icons.tsx";
 import { MenuButton, type MenuEntry } from "../../components/ui/menu.tsx";
 import { matches, type SettingsItem } from "./catalog.ts";
@@ -413,7 +414,7 @@ export interface ConfirmRequest {
   onConfirm(): void;
 }
 
-/** In-sheet alert (Esc / Vazgeç cancels, ↩ confirms). */
+/** Ayarlar's confirmations: the app's one ConfirmDialog (Esc / Vazgeç cancels, ↩ confirms). */
 export function ConfirmDialog({
   request,
   onClose,
@@ -421,50 +422,23 @@ export function ConfirmDialog({
   request: ConfirmRequest | null;
   onClose(): void;
 }) {
-  const confirmRef = useRef<HTMLButtonElement | null>(null);
-  useEffect(() => {
-    if (!request) return;
-    requestAnimationFrame(() => confirmRef.current?.focus());
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        event.stopPropagation();
-        onClose();
-      }
-    };
-    document.addEventListener("keydown", onKey, true);
-    return () => document.removeEventListener("keydown", onKey, true);
-  }, [request, onClose]);
-  if (!request) return null;
+  // The last request stays on screen while the dialog closes.
+  const last = useRef<ConfirmRequest | null>(request);
+  if (request) last.current = request;
+  const shown = request ?? last.current;
   return (
-    // biome-ignore lint/a11y/noStaticElementInteractions: backdrop click cancels (Esc does too)
-    <div
-      className="absolute inset-0 z-10 flex items-center justify-center rounded-[14px] bg-black/30 animate-fade-in"
-      onMouseDown={(e) => {
-        if (e.target === e.currentTarget) onClose();
+    <SharedConfirmDialog
+      open={request !== null}
+      title={shown?.title ?? ""}
+      message={shown?.message ?? ""}
+      confirmLabel={shown?.confirm ?? ""}
+      destructive={shown?.danger === true}
+      role="alertdialog"
+      onClose={onClose}
+      onConfirm={() => {
+        onClose();
+        request?.onConfirm();
       }}
-    >
-      <div
-        role="alertdialog"
-        aria-label={request.title}
-        className="glass w-[380px] animate-pop-in rounded-[14px] p-5"
-      >
-        <h4 className="text-heading font-semibold text-fg">{request.title}</h4>
-        <p className="selectable mt-2 text-body text-fg-2">{request.message}</p>
-        <div className="mt-5 flex justify-end gap-2">
-          <Button onClick={onClose}>Vazgeç</Button>
-          <Button
-            ref={confirmRef}
-            variant={request.danger ? "danger" : "primary"}
-            onClick={() => {
-              onClose();
-              request.onConfirm();
-            }}
-          >
-            {request.confirm}
-          </Button>
-        </div>
-      </div>
-    </div>
+    />
   );
 }

@@ -4,7 +4,7 @@
 import { Spinner, TagPill } from "../../components/ui/controls.tsx";
 import { IconChevronRight, IconGrid, IconWarning } from "../../components/ui/icons.tsx";
 import { Card } from "../../components/ui/popover.tsx";
-import { assetUrl } from "../../lib/api.ts";
+import { thumbUrl } from "../../lib/thumbnail.ts";
 import { cardState, type PostCard, STATE_LABEL, STATE_TONE } from "./board.ts";
 import { useContent, useVersion } from "./data.ts";
 import { coverAssetId, PostMedia } from "./post-media.tsx";
@@ -34,10 +34,18 @@ export function ChatPostCard({
     );
   }
   if (!content.data) {
+    // Only a 404 means the post is gone; a server that is down or failed says so instead.
+    const gone = (content.error as { status?: unknown } | null)?.status === 404;
+    const text = gone
+      ? "Post bulunamadı"
+      : content.isError
+        ? "Post şu an yüklenemedi"
+        : "Post, sunucu açılınca görünecek";
     return (
       <Card className="my-3.5 flex h-11 items-center gap-2 px-3.5 text-body text-fg-2">
         <IconWarning size={14} className="text-fg-3" />
-        Post bulunamadı{note ? ` · ${note}` : ""}
+        {text}
+        {note ? ` · ${note}` : ""}
       </Card>
     );
   }
@@ -105,7 +113,7 @@ export function ChatPostCard({
             >
               {slide.renderedAssetId ? (
                 <img
-                  src={assetUrl(slide.renderedAssetId)}
+                  src={thumbUrl(slide.renderedAssetId, 96)}
                   alt=""
                   draggable={false}
                   loading="lazy"

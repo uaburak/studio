@@ -1,19 +1,32 @@
 // Ayarlar → Yapay zekâ (default model and effort grouped by provider; the Mac's Claude Code
-// sign-in; Gemini readiness and its API key in the vault; Codex CLI, OpenAI API key and
-// Antigravity CLI) and Kullanım (Claude subscription windows, Gemini API spend and budget).
-import type {
-  AiKeyList,
-  AiKeyProvider,
-  AiKeyState,
-  AiProviderStatus,
-  AiProvidersControl,
-  AiSpendSummary,
-  ClaudeControl,
-  GeminiControl,
+// sign-in, its limit and what happens then (S7); Gemini readiness and its API key in the vault;
+// Codex CLI, OpenAI API key and Antigravity CLI) and Kullanım (Claude subscription windows, paid
+// AI spend of Gemini / OpenAI / ElevenLabs, the monthly budget and "Bütçe dolunca dur").
+import {
+  type AiKeyList,
+  type AiKeyProvider,
+  type AiKeyState,
+  type AiPreferences,
+  type AiProviderStatus,
+  type AiProvidersControl,
+  type AiSpendSummary,
+  type ClaudeControl,
+  type ClaudeLimitChoice,
+  type ClaudeLimitMode,
+  type ClaudeLimitState,
+  DEFAULT_CLAUDE_LIMIT_MODE,
+  type GeminiControl,
 } from "@studio/contract";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
-import { Button, Meter, Spinner, TextField } from "../../../components/ui/controls.tsx";
+import {
+  Button,
+  Meter,
+  SegmentedControl,
+  Spinner,
+  Switch,
+  TextField,
+} from "../../../components/ui/controls.tsx";
 import { describeError, useApi } from "../../../lib/api.ts";
 import { bridge } from "../../../lib/bridge.ts";
 import { formatAgo } from "../../../lib/format.ts";
@@ -26,16 +39,28 @@ import {
 } from "../../../lib/models.ts";
 import {
   budgetLine,
-  formatTokens,
+  budgetNotice,
+  EXHAUSTED_TEXT,
   formatUsd,
+  modelSpendLine,
+  parseBudgetInput,
+  serviceSpendLines,
   spendHeadline,
   spendKey,
   unpricedNote,
-  useGeminiSpend,
+  useAiSpend,
 } from "../../../lib/spend.ts";
 import { usageMeters } from "../../../lib/usage.ts";
 import { isHostUp, useHost, useJobs, useSettings } from "../../../state/studio.tsx";
 import { ITEMS, type SettingsItem } from "../catalog.ts";
+import {
+  CLAUDE_LIMIT_OPTIONS,
+  claudeLimitChoiceNow,
+  claudeLimitChoiceText,
+  claudeLimitHints,
+  claudeLimitLine,
+  claudeLimitModeWarning,
+} from "../claude-limit.ts";
 import { FormFooter, Note, Pane, Row, Select, Subheader, useConfirm } from "../parts.tsx";
 import { claudeStatus, geminiStatusLines, providerStatusLines } from "../status-text.ts";
 
@@ -90,6 +115,20 @@ function useAiKeys() {
   });
 }
 
+export const aiPreferencesKey = ["ai", "preferences"] as const;
+
+/** The Claude-limit behaviour, the monthly budget and "Bütçe dolunca dur" (S7). */
+function useAiPreferences() {
+  const api = useApi();
+  const up = isHostUp(useHost());
+  return useQuery({
+    queryKey: aiPreferencesKey,
+    queryFn: () => api.ai.preferences(),
+    enabled: up,
+    staleTime: 15_000,
+  });
+}
+
 export function AiSection() {
   const { settings, update } = useSettings();
   const { presence } = useJobs();
@@ -125,6 +164,7 @@ export function AiSection() {
         />
       </Row>
       <ClaudeRow />
+      <ClaudeLimitRow />
       <GeminiRow />
       <KeyRow provider="gemini" item={ITEMS.geminiKey} />
       <Subheader
@@ -140,15 +180,29 @@ export function AiSection() {
 
 function ClaudeRow() {
   const api = useApi();
+  const queryClient = useQueryClient();
   const { presence } = useJobs();
   const fetched = useClaudeControl();
   const [override, setOverride] = useState<ClaudeControl | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // An answer just sent for this limit window (presence shows it once the worker re-reads).
+  const [answered, setAnswered] = useState<{ choice: ClaudeLimitChoice; resetsAt: string } | null>(
+    null,
+  );
+  const [deciding, setDeciding] = useState<ClaudeLimitChoice | null>(null);
+  const [limitError, setLimitError] = useState<string | null>(null);
   const account = presence?.claude ?? override?.account ?? fetched.data?.account ?? null;
   const online =
     presence?.online === true || override?.online === true || fetched.data?.online === true;
   const status = claudeStatus(account, online, ITEMS.claude.detail);
+  const limit: ClaudeLimitState | null = account?.limit ?? null;
+  const choice = limit
+    ? claudeLimitChoiceNow(
+        limit,
+        answered && answered.resetsAt === limit.resetsAt ? answered.choice : null,
+      )
+    : null;
   const run = async (call: () => Promise<ClaudeControl>, openLogin: boolean) => {
     if (busy) return;
     setBusy(true);
@@ -164,11 +218,41 @@ function ClaudeRow() {
       setBusy(false);
     }
   };
+  const decide = async (next: ClaudeLimitChoice) => {
+    if (!limit || deciding) return;
+    setDeciding(next);
+    setLimitError(null);
+    try {
+      const saved = await api.ai.decideClaudeLimit({ choice: next });
+      queryClient.setQueryData<AiPreferences>(aiPreferencesKey, saved);
+      setAnswered({ choice: next, resetsAt: limit.resetsAt });
+    } catch (e) {
+      setLimitError(describeError(e));
+    } finally {
+      setDeciding(null);
+    }
+  };
+  const lines = [...status.lines];
+  if (limit) {
+    lines.push(claudeLimitLine(limit));
+    if (choice) lines.push(claudeLimitChoiceText(choice));
+  }
+  if (error) lines.push(error);
   return (
     <Row
       item={ITEMS.claude}
-      detail={[...status.lines, error].filter(Boolean).join("\n")}
-      detailTone={error ? "danger" : "default"}
+      detail={lines.join("\n")}
+      detailTone={error ? "danger" : limit ? "accent" : "default"}
+      footer={
+        limit && !choice ? (
+          <ClaudeLimitActions
+            geminiReady={limit.geminiReady}
+            busy={deciding}
+            error={limitError}
+            onDecide={(next) => void decide(next)}
+          />
+        ) : undefined
+      }
     >
       {status.loginUrl && (
         <Button onClick={() => void bridge().openExternal(status.loginUrl as string)}>
@@ -189,6 +273,96 @@ function ClaudeRow() {
       >
         {status.action.title}
       </Button>
+    </Row>
+  );
+}
+
+/** The owner's answer while Claude is at its limit and the preference is "Sor". */
+export function ClaudeLimitActions({
+  geminiReady,
+  busy,
+  error,
+  onDecide,
+}: {
+  geminiReady: boolean;
+  busy: ClaudeLimitChoice | null;
+  error: string | null;
+  onDecide(choice: ClaudeLimitChoice): void;
+}) {
+  return (
+    <FormFooter
+      fields={
+        <p className="text-footnote text-fg-2">
+          Gemini ile sürerse ücretlidir ve işte not görünür.
+        </p>
+      }
+      buttons={
+        <>
+          <Button
+            disabled={busy !== null}
+            icon={busy === "wait" ? <Spinner size={12} /> : undefined}
+            onClick={() => onDecide("wait")}
+          >
+            Sınırı bekle
+          </Button>
+          <Button
+            variant="primary"
+            disabled={!geminiReady || busy !== null}
+            title={geminiReady ? undefined : "Gemini anahtarı yok"}
+            icon={busy === "gemini" ? <Spinner size={12} /> : undefined}
+            onClick={() => onDecide("gemini")}
+          >
+            Gemini ile devam et
+          </Button>
+        </>
+      }
+      message={error ?? (geminiReady ? null : "Gemini anahtarı yok")}
+      messageTone={error ? "danger" : "default"}
+    />
+  );
+}
+
+/** "Claude sınırı dolunca": Sor (default) / Gemini'ye geç / Bekle. */
+function ClaudeLimitRow() {
+  const api = useApi();
+  const up = isHostUp(useHost());
+  const queryClient = useQueryClient();
+  const { presence } = useJobs();
+  const prefs = useAiPreferences();
+  const [saving, setSaving] = useState<ClaudeLimitMode | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const mode: ClaudeLimitMode = saving ?? prefs.data?.claudeLimit ?? DEFAULT_CLAUDE_LIMIT_MODE;
+  const geminiReady =
+    presence?.claude?.limit?.geminiReady ?? presence?.gemini?.apiKeyConfigured ?? true;
+  const choose = async (next: ClaudeLimitMode) => {
+    if (!up || saving !== null || next === mode) return;
+    setSaving(next);
+    setError(null);
+    try {
+      queryClient.setQueryData<AiPreferences>(
+        aiPreferencesKey,
+        await api.ai.setPreferences({ claudeLimit: next }),
+      );
+    } catch (e) {
+      setError(describeError(e));
+    } finally {
+      setSaving(null);
+    }
+  };
+  const warning = claudeLimitModeWarning(mode, geminiReady);
+  const problem = error ?? (prefs.isError ? describeError(prefs.error) : null);
+  return (
+    <Row
+      item={ITEMS.claudeLimit}
+      detail={[...claudeLimitHints(), warning, problem].filter(Boolean).join("\n")}
+      detailTone={problem ? "danger" : "default"}
+    >
+      <SegmentedControl
+        label={ITEMS.claudeLimit.title}
+        value={mode}
+        onChange={(next) => void choose(next)}
+        options={CLAUDE_LIMIT_OPTIONS.map((o) => ({ value: o.value, label: o.label }))}
+      />
     </Row>
   );
 }
@@ -490,50 +664,51 @@ export function UsageSection() {
           </Row>
         ))
       )}
-      <GeminiSpendRows />
+      <AiSpendRows />
     </Pane>
   );
 }
 
 /** "gemini-2.5-flash — $0.42 · 18 çağrı · 120K giriş / 8K çıkış" */
 export function modelSpendLines(spend: AiSpendSummary): string[] {
-  return spend.byModel.map(
-    (m) =>
-      `${m.model} — ${formatUsd(m.costUsd)} · ${m.calls} çağrı · ${formatTokens(m.inputTokens)} giriş / ${formatTokens(m.outputTokens + m.thoughtsTokens)} çıkış`,
-  );
+  return spend.byModel.map(modelSpendLine);
 }
 
-function GeminiSpendRows() {
+/** Paid AI spend (Gemini, OpenAI, ElevenLabs), the monthly budget and "Bütçe dolunca dur". */
+function AiSpendRows() {
   const api = useApi();
   const up = isHostUp(useHost());
   const queryClient = useQueryClient();
-  const spend = useGeminiSpend();
+  const spend = useAiSpend();
+  const prefs = useAiPreferences();
   const data = spend.data;
   const [budget, setBudget] = useState("");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<{ text: string; error: boolean } | null>(null);
+  const [stopBusy, setStopBusy] = useState(false);
+  const [stopError, setStopError] = useState<string | null>(null);
   useEffect(() => {
     const value = data?.budget.monthlyUsd;
     setBudget(value === null || value === undefined ? "" : String(value));
   }, [data?.budget.monthlyUsd]);
 
   const saveBudget = async () => {
-    const raw = budget.trim().replace(",", ".");
-    const value = raw === "" ? null : Number(raw);
-    if (value !== null && (!Number.isFinite(value) || value < 0)) {
-      setMessage({ text: "Bütçe 0 ya da daha büyük bir sayı olmalı (USD).", error: true });
+    const parsed = parseBudgetInput(budget);
+    if (!parsed.ok) {
+      setMessage({ text: parsed.error, error: true });
       return;
     }
     setBusy(true);
     setMessage(null);
     try {
       const next = await api.ai.setBudget({
-        geminiMonthlyUsd: value,
+        geminiMonthlyUsd: parsed.value,
         tzOffset: new Date().getTimezoneOffset(),
       });
       queryClient.setQueryData(spendKey, next);
+      void queryClient.invalidateQueries({ queryKey: aiPreferencesKey });
       setMessage({
-        text: value === null ? "Bütçe kaldırıldı." : "Bütçe kaydedildi.",
+        text: parsed.value === null ? "Bütçe kaldırıldı." : "Bütçe kaydedildi.",
         error: false,
       });
     } catch (e) {
@@ -543,21 +718,43 @@ function GeminiSpendRows() {
     }
   };
 
+  const stopAtBudget = prefs.data?.stopAtBudget ?? data?.budget.stopAtBudget ?? false;
+  const setStopAtBudget = async (next: boolean) => {
+    if (stopBusy) return;
+    setStopBusy(true);
+    setStopError(null);
+    try {
+      queryClient.setQueryData<AiPreferences>(
+        aiPreferencesKey,
+        await api.ai.setPreferences({ stopAtBudget: next }),
+      );
+      await queryClient.invalidateQueries({ queryKey: spendKey });
+    } catch (e) {
+      setStopError(describeError(e));
+    } finally {
+      setStopBusy(false);
+    }
+  };
+
   const lines: string[] = [];
   if (data) {
     lines.push(spendHeadline(data));
     const unpriced = unpricedNote(data);
     if (unpriced) lines.push(unpriced);
     lines.push(
-      `Tahmini tutar: token sayısı × fiyat tablosu${data.pricingVersion ? ` (${data.pricingVersion} tarihli)` : ""}.`,
+      `Tahmini tutar: kullanım × fiyat tablosu${data.pricingVersion ? ` (${data.pricingVersion} tarihli)` : ""}.`,
     );
   } else if (spend.isError) {
     lines.push(describeError(spend.error));
   } else {
     lines.push(ITEMS.geminiSpend.detail);
   }
+  const services = data ? serviceSpendLines(data) : [];
   const models = data ? modelSpendLines(data) : [];
   const budgetText = data ? budgetLine(data) : null;
+  const exhausted = data?.budget.exhausted === true;
+  const notice = data ? budgetNotice(data) : null;
+  const hasBudget = data?.budget.monthlyUsd !== null && data?.budget.monthlyUsd !== undefined;
 
   return (
     <>
@@ -565,10 +762,17 @@ function GeminiSpendRows() {
         item={ITEMS.geminiSpend}
         detail={lines.join("\n")}
         footer={
-          models.length > 0 ? (
-            <p className="selectable text-footnote whitespace-pre-line text-fg-2">
-              {models.join("\n")}
-            </p>
+          services.length > 0 ? (
+            <div className="flex flex-col gap-1.5">
+              <p className="selectable text-footnote whitespace-pre-line text-fg-2">
+                {services.join("\n")}
+              </p>
+              {models.length > 0 && (
+                <p className="selectable text-footnote whitespace-pre-line text-fg-3">
+                  {models.join("\n")}
+                </p>
+              )}
+            </div>
           ) : undefined
         }
       >
@@ -579,19 +783,19 @@ function GeminiSpendRows() {
       <Row
         item={ITEMS.geminiBudget}
         detail={budgetText ?? ITEMS.geminiBudget.detail}
-        detailTone={data?.budget.warning ? "accent" : "default"}
+        detailTone={exhausted ? "danger" : data?.budget.warning ? "accent" : "default"}
         footer={
           <FormFooter
             fields={
               <>
-                {data?.budget.monthlyUsd !== null && data?.budget.monthlyUsd !== undefined && (
+                {hasBudget && data && (
                   <Meter
                     percent={Math.min(100, data.budget.usedPercent ?? 0)}
                     tone={data.budget.warning ? "danger" : "info"}
                   />
                 )}
                 <TextField
-                  aria-label="Aylık bütçe (USD)"
+                  aria-label="Aylık yapay zekâ bütçesi (USD)"
                   inputMode="decimal"
                   placeholder="Aylık bütçe, USD (ör. 10)"
                   value={budget}
@@ -611,15 +815,30 @@ function GeminiSpendRows() {
                 Kaydet
               </Button>
             }
-            message={
-              message?.text ?? (data?.budget.warning ? "Aylık bütçenin %80'i aşıldı." : null)
-            }
-            messageTone={
-              message?.error || (!message && data?.budget.warning) ? "danger" : "default"
-            }
+            message={message?.text ?? notice}
+            messageTone={message?.error || (!message && notice) ? "danger" : "default"}
           />
         }
       />
+      <Row
+        item={ITEMS.stopAtBudget}
+        detail={
+          stopError ??
+          (exhausted
+            ? EXHAUSTED_TEXT
+            : stopAtBudget && data && !hasBudget
+              ? "Bütçe girilmedi; bütçe girilene kadar sınır yok."
+              : ITEMS.stopAtBudget.detail)
+        }
+        detailTone={stopError || exhausted ? "danger" : "default"}
+      >
+        <Switch
+          label={ITEMS.stopAtBudget.title}
+          checked={stopAtBudget}
+          disabled={!up || stopBusy}
+          onChange={(next) => void setStopAtBudget(next)}
+        />
+      </Row>
       <Row item={ITEMS.geminiCredit}>
         <span className="text-body text-fg-2">Bilinmiyor</span>
         <Button

@@ -11,12 +11,11 @@ import { MediaPane } from "../../features/media/media-pane.tsx";
 import { WorkspaceSlot } from "../../features/post-editor/slots.tsx";
 import { openSettings } from "../../features/settings/store.ts";
 import { useApi } from "../../lib/api.ts";
-import { compactNumber, formatAgo, formatDuration, percentText } from "../../lib/format.ts";
+import { compactNumber, formatDuration, percentText } from "../../lib/format.ts";
 import { effortLabel, modelLabel } from "../../lib/models.ts";
 import {
   claudeLine,
   geminiLine,
-  jobStatusText,
   jobsBoard,
   jobTitle,
   macLine,
@@ -50,6 +49,7 @@ import {
   IconLink,
   PlatformIcon,
 } from "../ui/icons.tsx";
+import { FinishedJobRow } from "./finished-job.tsx";
 
 export { PANEL_WIDTH, PANEL_WIDTH_EXPANDED };
 
@@ -506,25 +506,7 @@ function JobsPane() {
           {showFinished && (
             <ul className="mt-1 flex flex-col">
               {board.finished.slice(0, 30).map((job) => (
-                <li
-                  key={job.id}
-                  className="flex h-11 items-center gap-2 rounded-[10px] px-3 text-body hover:bg-control"
-                >
-                  <span
-                    className={cn(
-                      "min-w-0 flex-1 truncate",
-                      job.status === "failed" ? "text-danger" : "text-fg-2",
-                    )}
-                    title={job.error}
-                  >
-                    {jobTitle(job)}
-                  </span>
-                  <span className="shrink-0 text-footnote text-fg-3">
-                    {job.status === "succeeded"
-                      ? formatAgo(job.finishedAt ?? job.updatedAt)
-                      : jobStatusText(job.status)}
-                  </span>
-                </li>
+                <FinishedJobRow key={job.id} job={job} />
               ))}
             </ul>
           )}

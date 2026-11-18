@@ -17,6 +17,7 @@ import {
   resolveAliasMentions,
 } from "@studio/contract";
 import type { AgentDeps } from "../agent.ts";
+import { isBudgetExceeded } from "../ai/policy.ts";
 import { geminiUsageSink } from "../ai/usage-recorder.ts";
 import {
   brandSkillsUsed,
@@ -27,10 +28,16 @@ import {
 } from "../brand/skills.ts";
 import type { ModelCaller } from "../checks/model.ts";
 import { failedBrief, runContentChecks, type SlideReport } from "../checks/pipeline.ts";
-import { describeClaudeError, formatClock, isClaudeError } from "../claude/errors.ts";
-import type { ParkInfo } from "../claude/gate.ts";
+import { describeClaudeError, isClaudeError } from "../claude/errors.ts";
+import { limitParkMessage } from "../claude/limit-text.ts";
 import { describeGeminiError, isGeminiError } from "../gemini/errors.ts";
-import { callStructuredAi, hasGeminiApiKey, resolveStructuredRoute } from "../gemini/json-call.ts";
+import {
+  callStructuredAi,
+  fallbackNote,
+  geminiAliasLabel,
+  hasGeminiApiKey,
+  resolveStructuredRoute,
+} from "../gemini/json-call.ts";
 import { extensionForMime, imageInfo } from "../media.ts";
 import { defineHandler, type JobContext, RetryableError } from "../registry.ts";
 import { RENDER_ASSET_PREFIXES } from "../render/handler.ts";
@@ -49,6 +56,7 @@ import {
   runDesignPipeline,
   type SlideRenderer,
   slideBounds,
+  slideFailureMessage,
 } from "./pipeline.ts";
 import type { DesignBrief } from "./prompt.ts";
 
@@ -78,7 +86,12 @@ async function runContentGenerate(
   const signal = ctx.signal;
   const init = { signal };
   const parsed = parseContentGenerateJob(ctx.job);
-  if (!parsed.ok) throw new Error(`invalid content.generate payload: ${parsed.error}`);
+  if (!parsed.ok) {
+    logger.warn(`[job ${ctx.jobId}] invalid content.generate payload: ${parsed.error}`);
+    throw new Error(
+      "Üretim isteği eksik ya da bozuk geldi; post üretilemedi. Postu yeniden üretmeyi deneyin.",
+    );
+  }
   const payload = parsed.payload;
   const { brandId, contentId } = payload;
 
@@ -121,7 +134,7 @@ async function runContentGenerate(
 
     const content = await api.client.contents.get(contentId, init);
     if (content.brandId !== brandId)
-      throw new Error(`content ${contentId} belongs to another brand`);
+      throw new Error("Bu post başka bir markaya ait; üretim yapılmadı.");
     const contentType = payload.type ?? content.type;
 
     if (contentType === "reel") {
@@ -185,6 +198,7 @@ async function runContentGenerate(
       defaultGeminiAlias: "gemini-flash",
       settings,
       claudeHealth: health,
+      limitChoice: deps.aiPolicy?.limitChoice(),
     });
 
     ctx.progress(0.05, "Marka profili okunuyor");
@@ -261,13 +275,16 @@ async function runContentGenerate(
       language: brand.brand.defaultLanguage.split("-")[0] ?? "tr",
     };
 
-    const onPark = (info: ParkInfo) => {
-      ctx.progress(
-        0.2,
-        `Claude kullanım sınırı doldu: ${formatClock(info.until)} civarında devam edecek`,
-      );
+    // At Claude's limit the job shows what it waits for (S7, U3).
+    const hooks = {
+      onPark: (info: Parameters<typeof limitParkMessage>[0]) =>
+        ctx.progress(0.2, limitParkMessage(info)),
+      onResume: () => ctx.progress(0.2, "Claude'a yeniden bağlanılıyor"),
     };
-    const hooks = { onPark, onResume: () => ctx.progress(0.2, "Claude'a yeniden bağlanılıyor") };
+    const fallbackAlias = route.provider === "claude" ? route.fallbackAlias : route.alias;
+    if (route.provider === "gemini" && route.fallback?.reason === "claude_limit") {
+      ctx.progress(0.04, `Claude sınırı doldu; ${geminiAliasLabel(route.alias)} ile üretiliyor`);
+    }
     const requestedLabelModel = route.provider === "gemini" ? route.alias : route.model;
     const useCustomCaller = route.provider === "gemini" || route.canFallbackToGemini;
 
@@ -295,6 +312,13 @@ async function runContentGenerate(
                   kind: "generate",
                   jobId: ctx.jobId,
                 }),
+                onFallback: (f) =>
+                  ctx.progress(
+                    0.22,
+                    f.reason === "claude_limit"
+                      ? `Claude sınırı doldu; ${geminiAliasLabel(fallbackAlias)} ile sürüyor`
+                      : `Claude kullanılamıyor; ${geminiAliasLabel(fallbackAlias)} ile sürüyor`,
+                  ),
               }),
           }
         : {}),
@@ -320,9 +344,10 @@ async function runContentGenerate(
     const final = result.final;
     const missing = final.slides.filter((s) => !s.jpeg);
     if (missing.length > 0) {
-      throw new Error(
-        `Tasarım render edilemedi (${missing.map((s) => `${s.id}: ${s.failure ?? "?"}`).join("; ")})`,
+      logger.warn(
+        `[job ${ctx.jobId}] design not rendered: ${missing.map((s) => `${s.id}: ${s.failure ?? "?"}`).join("; ")}`,
       );
+      throw new Error(slideFailureMessage(final.slides));
     }
 
     ctx.progress(0.9, "Görseller yükleniyor");
@@ -364,6 +389,8 @@ async function runContentGenerate(
     const providerLabel = result.provider === "gemini" ? "Gemini" : "Claude";
     const missingFonts = missingSystemFonts(final.slides.map((s) => s.report));
     const note = [
+      // Gemini instead of Claude is said on the version (S7).
+      result.fallback ? fallbackNote(result.fallback, fallbackAlias) : "",
       revision
         ? `AI düzenleme (v${revision.input.baseVersion} üzerine): ${instruction.slice(0, 400)}`
         : `Üretildi (${brand.label}).`,
@@ -460,6 +487,18 @@ async function runContentGenerate(
       })),
       finalPass: final.label,
       calls: result.calls,
+      ...(result.reasked ? { reasked: result.reasked } : {}),
+      ...(result.fallback
+        ? {
+            fallback: {
+              reason: result.fallback.reason,
+              note: fallbackNote(result.fallback, fallbackAlias),
+              ...(result.fallback.resetsAt
+                ? { claudeResetsAt: result.fallback.resetsAt.toISOString() }
+                : {}),
+            },
+          }
+        : {}),
       provider: result.provider ?? "claude",
       model: result.model ?? null,
       requestedModel: requestedLabelModel,
@@ -482,21 +521,42 @@ async function runContentGenerate(
     };
   } catch (error) {
     if (signal.aborted) throw signal.reason ?? error;
+    // The owner sees Turkish and what to do; the technical detail stays in the log (U12).
+    logger.warn(`[job ${ctx.jobId}] content.generate failed: ${(error as Error).message}`);
+    if (isBudgetExceeded(error)) throw error;
     if (isClaudeError(error)) {
       const message = describeClaudeError(error);
       if (error.code === "transient" || error.code === "timeout") throw new RetryableError(message);
-      throw new Error(`${message} (${error.message.slice(0, 300)})`);
+      throw new Error(message);
     }
     if (isGeminiError(error)) {
       const message = describeGeminiError(error);
       if (error.code === "transient" || error.code === "timeout") throw new RetryableError(message);
       throw new Error(message);
     }
-    if (error instanceof ApiError && (error.status === undefined || error.status >= 500)) {
-      throw new RetryableError(error.message);
+    if (error instanceof ApiError) {
+      if (error.status === undefined || error.status >= 500) {
+        throw new RetryableError(
+          "Studio sunucusuna ulaşılamadı ya da sunucu hata verdi; üretim yeniden denenecek.",
+        );
+      }
+      if (error.status === 404) {
+        throw new Error("Post ya da markası bulunamadı (silinmiş olabilir); üretim yapılmadı.");
+      }
+      throw new Error(
+        "Studio sunucusu üretim sonucunu kabul etmedi. Postu yeniden üretmeyi deneyin.",
+      );
     }
-    throw error;
+    throw new Error(
+      turkishOr(error, "Post üretilemedi. Yeniden deneyin; sürerse günlüklere bakın."),
+    );
   }
+}
+
+/** The error's own message when it is already Turkish (ours), else `fallback` (U12). */
+function turkishOr(error: unknown, fallback: string): string {
+  const message = error instanceof Error ? error.message : String(error);
+  return /[çğıİöşüÇĞÖŞÜ]/.test(message) ? message.slice(0, 1_000) : fallback;
 }
 
 interface LoadedRevision {

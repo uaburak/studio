@@ -54,7 +54,8 @@ export function startWorker(options: StartWorkerOptions): RunningWorker {
   const registry = options.registry ?? createDefaultRegistry(agent);
   const aiTypes = new Set<string>(AI_JOB_TYPES);
   const baseTypes = registry.types().filter((t) => !agent || !aiTypes.has(t));
-  const outbox = options.outbox ?? new FileOutbox(path.join(config.stateDir, "outbox.json"));
+  const outbox =
+    options.outbox ?? new FileOutbox(path.join(config.stateDir, "outbox.json"), { logger });
   let connection: HubConnection | undefined;
   let usageUnsupported = false;
 
@@ -113,7 +114,9 @@ export function startWorker(options: StartWorkerOptions): RunningWorker {
         agent.providers.startAntigravityLogin();
         return;
       case "ai.credentials":
+        // Keys changed, or (S7) the Claude-limit choice / answer or the budget.
         await agent.refreshCredentials();
+        await agent.refreshAiSettings();
         sendProviders();
         return;
     }

@@ -7,9 +7,11 @@ import { type ReactNode, useMemo } from "react";
 import { WorkspaceSlot } from "../../features/post-editor/slots.tsx";
 import { useWorkspaceStore } from "../../features/post-editor/workspace-store.ts";
 import { SIDEBAR_WIDTH, useAppStore } from "../../state/app-store.ts";
-import { useBrands, useConversations, useHost, useJobs, useSettings } from "../../state/studio.tsx";
+import { useOwnerName } from "../../state/owner-name.ts";
+import { useBrands, useConversations, useHost, useJobs } from "../../state/studio.tsx";
 import { cn, IconButton, WorkingDots } from "../ui/controls.tsx";
 import {
+  IconArchive,
   IconCalendar,
   IconChevronDown,
   IconChevronLeft,
@@ -351,6 +353,13 @@ export function Sidebar({ width = SIDEBAR_WIDTH }: { width?: number }) {
               </section>
             );
           })}
+          <SidebarRow
+            icon={<IconArchive size={14} strokeWidth={1.5} />}
+            label="Arşivlenen sohbetler"
+            selected={route.kind === "archive"}
+            onClick={() => navigate({ kind: "archive" })}
+            className="mt-2.5 text-fg-2"
+          />
         </div>
       </SidebarBody>
       <SidebarFooter brands={brands.data ?? []} />
@@ -370,12 +379,11 @@ export function SidebarBody({ children }: { children: ReactNode }) {
 }
 
 function SidebarFooter({ brands }: { brands: Brand[] }) {
-  const { settings } = useSettings();
   const { presence } = useJobs();
   const currentBrandId = useAppStore((s) => s.currentBrandId);
   const setCurrentBrand = useAppStore((s) => s.setCurrentBrand);
   const host = useHost();
-  const name = settings.ownerName.trim() || presence?.claude?.displayName || "Burak";
+  const name = useOwnerName() || "Studio";
   const brand = brands.find((b) => b.id === currentBrandId);
   const active = brands.filter((b) => b.status === "active");
   const entries: MenuEntry[] = [

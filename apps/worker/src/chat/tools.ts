@@ -14,14 +14,17 @@
  * `view_alias`, `list_aliases` (thumbnails) and `view_post` return pictures
  * (`images`), which the MCP server sends as image content blocks (A5).
  */
+import path from "node:path";
 import {
   type AgentEffort,
   ApiError,
+  aiCallCostUsd,
   type Content,
   type ContentGeneratePayload,
   ContentStatus,
   ContentType,
   computeContentHash,
+  ESTIMATE_CONFIRM_THRESHOLD,
   isTerminalJobStatus,
   type Job,
   type Plan,
@@ -32,6 +35,7 @@ import { readCanvas } from "@studio/design-kit/canvas";
 import { z } from "zod";
 import type { StudioApi } from "../api.ts";
 import { abortableSleep } from "../claude/gate.ts";
+import type { TurnWaits } from "../claude/turn-waits.ts";
 import type { Logger } from "../log.ts";
 import { silentLogger } from "../log.ts";
 import { prepareModelImage } from "../media.ts";
@@ -42,6 +46,7 @@ import {
   canvasOutlineTool,
   canvasScreenshotTool,
 } from "./canvas-tools.ts";
+import { estimateLine } from "./estimate-text.ts";
 import { profileFacts } from "./prompt.ts";
 import {
   CHAT_CONTENT_TYPES,
@@ -51,6 +56,8 @@ import {
   toQuestionPart,
 } from "./schema.ts";
 import type { Skill } from "./skills.ts";
+import { type LedgerEntry, ToolCallLedger, toolCallKey } from "./tool-ledger.ts";
+import { conversationWorkDir } from "./workdir.ts";
 import { RunClosedError, type TurnWriter } from "./writer.ts";
 
 export interface ToolJsonSchema {
@@ -432,11 +439,17 @@ export const STUDIO_TOOLS: readonly StudioToolDefinition[] = [
         itemIds: {
           type: "array",
           items: { type: "string" },
-          description: "Yalnızca belirli kalemleri üretmek için kalem id'leri.",
+          description:
+            "Yalnızca belirli kalemleri üretmek için kalem id'leri. Boşsa yalnızca tasarımı olmayan ya da üretimi başarısız olan kalemler üretilir.",
         },
         instructions: {
           type: "string",
           description: "Tasarım üretimi için ek yönerge.",
+        },
+        force: {
+          type: "boolean",
+          description:
+            "itemIds ile: tasarımı zaten olan kalemleri yeniden üret. Yalnızca kullanıcı üretilmiş postların yeniden üretilmesini açıkça isterse. Elle ya da yapay zekâyla düzenlenmiş ve onaylı postlar yine korunur (onları Studio'da kullanıcı onaylar).",
         },
       },
     },
@@ -526,7 +539,7 @@ export const STUDIO_TOOLS: readonly StudioToolDefinition[] = [
   {
     name: "generate_ai_image",
     description:
-      "Gemini görsel modeliyle yapay zekâ görseli üretir (`image.generate`). Ürün ambalajı referans görseli varsa `preserveProductLabel: true` ile Türkçe etiket yazılarını piksel hassasiyetiyle korur ve isteğe bağlı olarak doğrudan bir postun görsel yuvasına yerleştirir.",
+      "Gemini görsel modeliyle yapay zekâ görseli üretir (`image.generate`). Ücretlidir: kullanıcıya model ve tahmini tutarla izin (consent) kartı gösterir ve yanıtını bekler. Aynı istek bu sohbette zaten çalıştıysa yeni iş açmaz, öncekini döner (`repeat: true` yalnızca kullanıcı bilerek bir kez daha isterse). Ürün ambalajı referans görseli varsa `preserveProductLabel: true` ile Türkçe etiket yazılarını piksel hassasiyetiyle korur ve isteğe bağlı olarak doğrudan bir postun görsel yuvasına yerleştirir.",
     inputSchema: {
       type: "object",
       required: ["prompt"],
@@ -565,6 +578,11 @@ export const STUDIO_TOOLS: readonly StudioToolDefinition[] = [
         targetSlotId: {
           type: "string",
           description: "Hedef posttaki görsel yuvası katman id'si (`data-layer`, opsiyonel).",
+        },
+        repeat: {
+          type: "boolean",
+          description:
+            "Aynı istek bu sohbette zaten çalıştıysa yine de yeniden üret (yalnızca kullanıcı açıkça bir kez daha isterse).",
         },
       },
     },
@@ -700,6 +718,7 @@ const ViewPostInput = z.object({
 
 const GeneratePostInput = z
   .object({
+    repeat: z.boolean().default(false),
     planItemId: z.string().trim().min(1).optional(),
     brief: trimmed(20_000).optional(),
     title: trimmed(200).optional(),
@@ -713,6 +732,7 @@ const GeneratePostInput = z
 
 const GenerateReelInput = z
   .object({
+    repeat: z.boolean().default(false),
     planItemId: z.string().trim().min(1).optional(),
     brief: trimmed(20_000).optional(),
     title: trimmed(200).optional(),
@@ -761,6 +781,7 @@ const AcceptGeneratePlanInput = z.object({
   skipItemIds: z.array(z.string().min(1)).default([]),
   itemIds: z.array(z.string().min(1)).optional(),
   instructions: z.string().max(4_000).optional(),
+  force: z.boolean().optional(),
 });
 
 const ApproveContentInput = z.object({
@@ -788,6 +809,7 @@ const AnalyzeBrandInput = z.object({
 });
 
 const GenerateAiImageInput = z.object({
+  repeat: z.boolean().default(false),
   brandId: z.string().trim().min(1).optional(),
   prompt: trimmed(4_000).refine((s) => s.length >= 1, "Görsel tarifi (prompt) boş olamaz"),
   aspectRatio: z.enum(["4:5", "9:16", "1:1"]).default("4:5"),
@@ -886,6 +908,15 @@ export interface StudioToolExecutorOptions {
   imageMaxEdge?: number;
   now?: () => Date;
   sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
+  /**
+   * The turn's waits: consent cards, `ask_user` and `wait_jobs` run inside it, so the turn's time
+   * cap stops and its Claude slot is free meanwhile (U1, U6).
+   */
+  waits?: TurnWaits;
+  /** Where the conversation's tool ledger lives (idempotent generate tools, U7); none = memory. */
+  stateDir?: string;
+  /** Gemini image model `image.generate` will use (shown with its estimated cost). */
+  imageModel?: string;
 }
 
 export class StudioToolExecutor {
@@ -902,12 +933,41 @@ export class StudioToolExecutor {
     toolCalls: [],
   };
 
+  /** Calls that create work or spend money, per conversation (U7). */
+  private readonly ledger: ToolCallLedger;
+
   constructor(private readonly options: StudioToolExecutorOptions) {
     this.brandId = options.initialBrandId;
     this.openPlan = options.initialOpenPlan;
     this.logger = options.logger ?? silentLogger;
     this.now = options.now ?? (() => new Date());
     this.sleep = options.sleep ?? abortableSleep;
+    this.ledger = new ToolCallLedger(
+      options.stateDir
+        ? path.join(
+            conversationWorkDir(options.stateDir, options.conversationId),
+            "tool-calls.json",
+          )
+        : undefined,
+      () => new Date(),
+    );
+  }
+
+  /** Run a wait for the owner / other jobs (the turn's clock stops, the Claude slot is free). */
+  private idle<T>(fn: () => Promise<T>): Promise<T> {
+    return this.options.waits ? this.options.waits.around(fn) : fn();
+  }
+
+  /** The earlier identical call of this conversation, as the result to give back (U7). */
+  private async earlierCall(
+    tool: string,
+    key: string,
+    repeat: boolean,
+  ): Promise<LedgerEntry | null> {
+    if (repeat) return null;
+    const found = await this.ledger.find(key).catch(() => null);
+    if (found) this.logger.info(`tool ${tool}: same call as ${found.at}; not run again`);
+    return found;
   }
 
   toolNames(): string[] {
@@ -995,7 +1055,7 @@ export class StudioToolExecutor {
           name,
           "Post üretimi başlatılıyor…",
           "Post üretimi kuyruğa alındı",
-          () => this.generatePost(args),
+          () => this.generatePost(args, rawCallId),
         );
       case "generate_reel":
         return this.runSafe(
@@ -1003,7 +1063,7 @@ export class StudioToolExecutor {
           name,
           "Reels üretimi başlatılıyor…",
           "Reels üretimi kuyruğa alındı",
-          () => this.generateReel(args),
+          () => this.generateReel(args, rawCallId),
         );
       case "wait_jobs":
         return this.runSafe(stepId, name, "Üretim bekleniyor…", "Üretim bitti", () =>
@@ -1050,13 +1110,7 @@ export class StudioToolExecutor {
           () => this.analyzeBrand(args),
         );
       case "generate_ai_image":
-        return this.runSafe(
-          stepId,
-          name,
-          "AI görsel üretimi başlatılıyor…",
-          "AI görsel üretimi kuyruğa alındı",
-          () => this.generateAiImage(args),
-        );
+        return this.generateAiImage(stepId, args, rawCallId);
       case "fill_post_slot":
         return this.runSafe(
           stepId,
@@ -1454,6 +1508,11 @@ export class StudioToolExecutor {
     const pollMs = Math.max(this.options.consentPollIntervalMs ?? 1_000, 100);
     // A wait, not a business date: the real clock (the injected `now` may be frozen in tests).
     const deadline = Date.now() + (this.options.askTimeoutMs ?? DEFAULT_ASK_TIMEOUT_MS);
+    return this.idle(() => this.pollAnswer(questionId, pollMs, deadline));
+  }
+
+  /** `ask_user`'s wait for the answer (a turn wait: U1, U6). */
+  private async pollAnswer(questionId: string, pollMs: number, deadline: number) {
     for (;;) {
       this.options.signal.throwIfAborted();
       const remaining = deadline - Date.now();
@@ -1624,7 +1683,7 @@ export class StudioToolExecutor {
     };
   }
 
-  private async generatePost(args: Record<string, unknown>) {
+  private async generatePost(args: Record<string, unknown>, callId?: string) {
     const parsed = GeneratePostInput.safeParse(args);
     if (!parsed.success) {
       throw new Error(`Geçersiz üretim isteği: ${z.prettifyError(parsed.error).slice(0, 300)}`);
@@ -1675,6 +1734,28 @@ export class StudioToolExecutor {
     if (!brandId) throw new Error("Konuşmanın markası yok; önce set_conversation_brand kullan.");
     const title = input.title || (input.brief ?? "").split("\n")[0]?.slice(0, 80) || "Yeni post";
     const platforms = input.platforms ?? ["instagram"];
+    // The same brief again (a continued turn, a repeated call) does not make a second post (U7).
+    const key = toolCallKey("generate_post", {
+      brandId,
+      type: input.type,
+      title,
+      brief: input.brief ?? "",
+      platforms,
+      imageSlot: input.imageSlot,
+      imageBrief: input.imageBrief,
+      instructions: input.instructions,
+    });
+    const earlier = await this.earlierCall("generate_post", key, input.repeat);
+    if (earlier) {
+      return {
+        data: {
+          ...earlier.data,
+          duplicate: true,
+          note: "Bu post bu sohbette zaten üretime alınmıştı; ikinci kez açılmadı. Bitmesini wait_jobs ile bekle. Kullanıcı bilerek bir tane daha isterse repeat: true ile çağır.",
+        },
+        summary: `${title} · zaten üretimde`,
+      };
+    }
     const content = await this.options.api.client.contents.create(
       { brandId, type: input.type, title, brief: input.brief ?? "", targetPlatforms: platforms },
       { signal: this.options.signal },
@@ -1696,18 +1777,20 @@ export class StudioToolExecutor {
       { type: "content.generate", brandId, contentId: content.id, payload },
       { signal: this.options.signal },
     );
+    const data = { ok: true, contentId: content.id, jobIds: [job.id] };
+    await this.ledger.put({ key, tool: "generate_post", callId: callId ?? null, data });
     await this.options.writer
       .setPart({ type: "content_ref", contentId: content.id, version: null, note: "Üretiliyor" })
       .catch((error: unknown) => {
         if (error instanceof RunClosedError) throw error;
       });
     return {
-      data: { ok: true, contentId: content.id, jobIds: [job.id] },
+      data,
       summary: `${title} · 1 iş`,
     };
   }
 
-  private async generateReel(args: Record<string, unknown>) {
+  private async generateReel(args: Record<string, unknown>, callId?: string) {
     const parsed = GenerateReelInput.safeParse(args);
     if (!parsed.success) {
       throw new Error(`Geçersiz Reels isteği: ${z.prettifyError(parsed.error).slice(0, 300)}`);
@@ -1741,6 +1824,30 @@ export class StudioToolExecutor {
     const brief = input.brief ?? "";
     const title = input.title || brief.split("\n")[0]?.slice(0, 80) || "Yeni Reels";
     const platforms = input.platforms ?? ["instagram"];
+    // The same Reels brief again does not make a second Reels (U7).
+    const key = toolCallKey("generate_reel", {
+      brandId,
+      title,
+      brief,
+      platforms,
+      recipe: input.recipe,
+      clipAssetId,
+      heroAssetId,
+      audioAssetId,
+      durationSec: input.durationSec,
+      instructions: input.instructions,
+    });
+    const earlier = await this.earlierCall("generate_reel", key, input.repeat);
+    if (earlier) {
+      return {
+        data: {
+          ...earlier.data,
+          duplicate: true,
+          note: "Bu Reels bu sohbette zaten üretime alınmıştı; ikinci kez açılmadı. Kullanıcı bilerek bir tane daha isterse repeat: true ile çağır.",
+        },
+        summary: `${title} · zaten üretimde`,
+      };
+    }
     const content = await this.options.api.client.contents.create(
       { brandId, type: "reel", title, brief, targetPlatforms: platforms },
       { signal: this.options.signal },
@@ -1767,6 +1874,13 @@ export class StudioToolExecutor {
       { type: "content.generate", brandId, contentId: content.id, payload },
       { signal: this.options.signal },
     );
+    const data = {
+      ok: true,
+      contentId: content.id,
+      jobIds: [job.id],
+      recipe: input.recipe ?? "otomatik",
+    };
+    await this.ledger.put({ key, tool: "generate_reel", callId: callId ?? null, data });
     await this.options.writer
       .setPart({
         type: "content_ref",
@@ -1778,17 +1892,17 @@ export class StudioToolExecutor {
         if (error instanceof RunClosedError) throw error;
       });
     return {
-      data: {
-        ok: true,
-        contentId: content.id,
-        jobIds: [job.id],
-        recipe: input.recipe ?? "otomatik",
-      },
+      data,
       summary: `${title} · Reels · 1 iş`,
     };
   }
 
   private async waitJobs(args: Record<string, unknown>) {
+    // Waiting for other jobs is a turn wait: the clock stops, the Claude slot is free (U1, U6).
+    return this.idle(() => this.waitJobsNow(args));
+  }
+
+  private async waitJobsNow(args: Record<string, unknown>) {
     const parsed = WaitJobsInput.parse(args);
     const pollMs = this.options.jobPollIntervalMs ?? DEFAULT_JOB_POLL_MS;
     const deadline = Date.now() + parsed.timeoutSec * 1000;
@@ -1947,7 +2061,37 @@ export class StudioToolExecutor {
       }
       const skipSet = new Set(parsed.skipItemIds);
       const count = plan.items.filter((i) => !skipSet.has(i.id)).length;
-      const detail = `${plan.title || `${plan.periodStart} – ${plan.periodEnd}`} (${count} post kabul edilecek ve tasarım üretimi kuyruğa alınacak)`;
+      // What will be generated (N4): named items, else what still needs a design (the API
+      // decides; failed / stopped and never generated items).
+      const toGenerate = parsed.itemIds?.length
+        ? plan.items.filter((i) => parsed.itemIds?.includes(i.id))
+        : plan.items.filter((i) =>
+            plan.status === "accepted"
+              ? i.status === "accepted" &&
+                (i.generation === null ||
+                  i.generation.status === "failed" ||
+                  i.generation.status === "cancelled")
+              : !skipSet.has(i.id),
+          );
+      let detail = `${plan.title || `${plan.periodStart} – ${plan.periodEnd}`} (${count} post kabul edilecek ve tasarım üretimi kuyruğa alınacak)`;
+      if (plan.status === "accepted") {
+        detail = `${plan.title || `${plan.periodStart} – ${plan.periodEnd}`} (${toGenerate.length} post için tasarım üretimi kuyruğa alınacak)`;
+      }
+      if (toGenerate.length > ESTIMATE_CONFIRM_THRESHOLD) {
+        try {
+          const estimate = await this.options.api.client.estimates.generation(
+            {
+              count: toGenerate.length,
+              brandId: plan.brandId,
+              imageSlots: toGenerate.filter((i) => i.imageSlot === "ai_generate").length,
+            },
+            { signal: this.options.signal },
+          );
+          detail = `${detail} · ${estimateLine(estimate)}`;
+        } catch {
+          // An estimate never blocks the card.
+        }
+      }
 
       const decision = await this.awaitConsent({
         tool,
@@ -1973,6 +2117,7 @@ export class StudioToolExecutor {
         plan.id,
         {
           ...(parsed.itemIds?.length ? { itemIds: parsed.itemIds } : {}),
+          ...(parsed.itemIds?.length && parsed.force ? { force: true } : {}),
           ...(parsed.instructions ? { instructions: parsed.instructions } : {}),
           ...(choice?.model ? { model: choice.model } : {}),
           ...(choice?.effort ? { effort: choice.effort } : {}),
@@ -1987,7 +2132,7 @@ export class StudioToolExecutor {
           name: tool,
           label: doneLabel,
           state: "done",
-          summary: `${gen.jobs.length} post üretimi başlatıldı`,
+          summary: `${gen.jobs.length} post üretimi başlatıldı${gen.skipped.length ? `; ${gen.skipped.length} kalem atlandı` : ""}`,
         },
         stepIndex,
       );
@@ -1999,6 +2144,8 @@ export class StudioToolExecutor {
           status: gen.plan.status,
           queuedJobs: gen.jobs.length,
           jobIds: gen.jobs.map((j) => j.id),
+          // generated / edited / approved posts are kept (not regenerated); generating = busy.
+          skipped: gen.skipped,
         },
         isError: false,
       };
@@ -2248,55 +2395,130 @@ export class StudioToolExecutor {
     return match.assetId;
   }
 
-  private async generateAiImage(args: Record<string, unknown>) {
-    const parsed = GenerateAiImageInput.parse(args);
-    let brandId = parsed.brandId ? (await this.resolveBrand(parsed.brandId)).id : this.brandId;
-    if (!brandId && parsed.targetContentId) {
-      const targetContent = await this.options.api.client.contents.get(parsed.targetContentId, {
-        signal: this.options.signal,
-      });
-      brandId = targetContent.brandId;
-    }
-    if (!brandId) {
-      throw new Error("Görsel üretimi için marka seçilmedi; brandId belirtin.");
-    }
+  /**
+   * `generate_ai_image` (U7): a paid call, so a consent card with the model and the estimated
+   * cost comes first; the same request again in this conversation returns the first job instead
+   * of paying twice.
+   */
+  private async generateAiImage(
+    stepId: string,
+    args: Record<string, unknown>,
+    callId?: string,
+  ): Promise<StudioToolExecutionResult> {
+    const tool = "generate_ai_image";
+    const runningLabel = "AI görsel için izin bekleniyor…";
+    const doneLabel = "AI görsel üretimi kuyruğa alındı";
+    const stepIndex = await this.options.writer.setPart({
+      type: "tool_step",
+      id: stepId,
+      name: tool,
+      label: runningLabel,
+      state: "running",
+      summary: null,
+    });
+    try {
+      const parsed = GenerateAiImageInput.parse(args);
+      let brandId = parsed.brandId ? (await this.resolveBrand(parsed.brandId)).id : this.brandId;
+      if (!brandId && parsed.targetContentId) {
+        const targetContent = await this.options.api.client.contents.get(parsed.targetContentId, {
+          signal: this.options.signal,
+        });
+        brandId = targetContent.brandId;
+      }
+      if (!brandId) {
+        throw new Error("Görsel üretimi için marka seçilmedi; brandId belirtin.");
+      }
 
-    const referenceAssetIds: string[] = [...parsed.referenceAssetIds];
-    for (const aliasName of parsed.referenceAliases) {
-      const assetId = await this.resolveAliasToAssetId(aliasName);
-      if (!referenceAssetIds.includes(assetId)) referenceAssetIds.push(assetId);
-    }
-
-    const job = await this.options.api.client.jobs.create(
-      {
-        type: "image.generate",
-        brandId,
-        payload: {
-          prompt: parsed.prompt,
-          aspectRatio: parsed.aspectRatio,
-          imageSize: parsed.imageSize,
-          referenceAssetIds,
-          preserveProductLabel: parsed.preserveProductLabel,
-          ...(parsed.targetContentId ? { targetContentId: parsed.targetContentId } : {}),
-          ...(parsed.targetSlotId ? { targetSlotId: parsed.targetSlotId } : {}),
-        },
-      },
-      { signal: this.options.signal },
-    );
-
-    return {
-      data: {
-        ok: true,
-        jobId: job.id,
-        brandId,
-        status: job.status,
+      const referenceAssetIds: string[] = [...parsed.referenceAssetIds];
+      for (const aliasName of parsed.referenceAliases) {
+        const assetId = await this.resolveAliasToAssetId(aliasName);
+        if (!referenceAssetIds.includes(assetId)) referenceAssetIds.push(assetId);
+      }
+      const payload = {
+        prompt: parsed.prompt,
+        aspectRatio: parsed.aspectRatio,
+        imageSize: parsed.imageSize,
         referenceAssetIds,
         preserveProductLabel: parsed.preserveProductLabel,
         ...(parsed.targetContentId ? { targetContentId: parsed.targetContentId } : {}),
         ...(parsed.targetSlotId ? { targetSlotId: parsed.targetSlotId } : {}),
-      },
-      summary: `AI görsel işi (${job.id})`,
-    };
+      };
+
+      const key = toolCallKey(tool, { brandId, ...payload });
+      const earlier = await this.earlierCall(tool, key, parsed.repeat);
+      if (earlier) {
+        await this.options.writer.setPart(
+          {
+            type: "tool_step",
+            id: stepId,
+            name: tool,
+            label: "AI görsel zaten üretimde",
+            state: "done",
+            summary: "Aynı istek bu sohbette zaten çalıştı; ikinci kez ücret ödenmedi",
+          },
+          stepIndex,
+        );
+        return {
+          data: {
+            ...earlier.data,
+            duplicate: true,
+            note: "Bu görsel bu sohbette zaten üretime alınmıştı; ikinci kez ücret ödenmedi. Kullanıcı bilerek bir tane daha isterse repeat: true ile çağır.",
+          },
+          isError: false,
+        };
+      }
+
+      const model = this.options.imageModel ?? "gemini-nano-banana-2.1";
+      const decision = await this.awaitConsent({
+        tool,
+        title: "AI görsel üret (ücretli)",
+        detail: aiImageConsentDetail({
+          model,
+          prompt: parsed.prompt,
+          aspectRatio: parsed.aspectRatio,
+          imageSize: parsed.imageSize,
+          references: referenceAssetIds.length,
+          preserveLabel: parsed.preserveProductLabel,
+        }),
+        stepId,
+        stepIndex,
+        doneLabel,
+      });
+      if (!decision.allowed) {
+        return { data: decision, isError: false };
+      }
+
+      const job = await this.options.api.client.jobs.create(
+        { type: "image.generate", brandId, payload },
+        { signal: this.options.signal },
+      );
+      const data = {
+        ok: true,
+        jobId: job.id,
+        brandId,
+        status: job.status,
+        model,
+        referenceAssetIds,
+        preserveProductLabel: parsed.preserveProductLabel,
+        ...(parsed.targetContentId ? { targetContentId: parsed.targetContentId } : {}),
+        ...(parsed.targetSlotId ? { targetSlotId: parsed.targetSlotId } : {}),
+      };
+      await this.ledger.put({ key, tool, callId: callId ?? null, data });
+      await this.options.writer.setPart(
+        {
+          type: "tool_step",
+          id: stepId,
+          name: tool,
+          label: doneLabel,
+          state: "done",
+          summary: `AI görsel işi (${job.id})`,
+        },
+        stepIndex,
+      );
+      return { data: { allowed: true, ...data }, isError: false };
+    } catch (error) {
+      return this.failStep(stepId, tool, runningLabel, stepIndex, error);
+    }
   }
 
   private async fillPostSlot(args: Record<string, unknown>) {
@@ -2584,7 +2806,24 @@ export class StudioToolExecutor {
     const pollMs = this.options.consentPollIntervalMs ?? DEFAULT_CONSENT_POLL_MS;
     const timeoutMs = this.options.consentTimeoutMs ?? DEFAULT_CONSENT_TIMEOUT_MS;
     const deadline = this.now().getTime() + timeoutMs;
+    // Waiting for the owner is a turn wait: the clock stops, the Claude slot is free (U1, U6).
+    return this.idle(() => this.pollConsent(input, consentId, consentIndex, pollMs, deadline));
+  }
 
+  private async pollConsent(
+    input: {
+      tool: string;
+      title: string;
+      detail: string | null;
+      stepId: string;
+      doneLabel: string;
+      stepIndex: number;
+    },
+    consentId: string,
+    consentIndex: number,
+    pollMs: number,
+    deadline: number,
+  ): Promise<{ allowed: true } | { allowed: false; reason: "denied_by_owner" | "expired" }> {
     for (;;) {
       this.options.signal.throwIfAborted();
       const remaining = deadline - this.now().getTime();
@@ -2710,4 +2949,39 @@ export class StudioToolExecutor {
     }
     return `step-${seq}`;
   }
+}
+
+/** Typical image output tokens of one generated picture (Gemini image models, 1K–2K). */
+const IMAGE_OUTPUT_TOKENS = 1_290;
+/** Typical input tokens of one reference picture. */
+const REFERENCE_IMAGE_TOKENS = 560;
+
+/** The consent card's detail for a paid AI image: model, size and the estimated cost (U7). */
+export function aiImageConsentDetail(input: {
+  model: string;
+  prompt: string;
+  aspectRatio: string;
+  imageSize: string;
+  references: number;
+  preserveLabel: boolean;
+}): string {
+  const usd = aiCallCostUsd({
+    provider: "gemini",
+    model: input.model,
+    inputTokens: Math.ceil(input.prompt.length / 4) + input.references * REFERENCE_IMAGE_TOKENS,
+    imageOutputTokens: IMAGE_OUTPUT_TOKENS,
+  });
+  const cost =
+    usd === null
+      ? "tahmini tutar bilinmiyor (model fiyat tablosunda yok)"
+      : `tahmini ≈ ${Math.max(usd, 0.001).toFixed(3).replace(".", ",")} $`;
+  return [
+    `Model: ${input.model} · ${input.imageSize} · ${input.aspectRatio} · ${cost}`,
+    input.references > 0
+      ? `${input.references} referans görsel${input.preserveLabel ? " · ürün etiketi korunacak" : ""}`
+      : "",
+    `Tarif: ${input.prompt.slice(0, 300)}${input.prompt.length > 300 ? "…" : ""}`,
+  ]
+    .filter(Boolean)
+    .join("\n");
 }

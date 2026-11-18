@@ -23,6 +23,7 @@ import { z } from "zod";
 import type { AgentDeps } from "../agent.ts";
 import { geminiUsageSink } from "../ai/usage-recorder.ts";
 import { describeClaudeError, isClaudeError } from "../claude/errors.ts";
+import { limitParkMessage } from "../claude/limit-text.ts";
 import type { ClaudeContentBlock } from "../claude/runner.ts";
 import { describeGeminiError, isGeminiError } from "../gemini/errors.ts";
 import { callStructuredAi, resolveStructuredRoute } from "../gemini/json-call.ts";
@@ -220,6 +221,7 @@ export function createBrandSkillDraftHandler(deps: AgentDeps) {
           defaultGeminiAlias: "gemini-flash",
           settings: deps.settings,
           claudeHealth: deps.health(),
+          limitChoice: deps.aiPolicy?.limitChoice(),
         });
         const prompt = skillDraftPrompt({
           brandName: brand.name,
@@ -245,6 +247,7 @@ export function createBrandSkillDraftHandler(deps: AgentDeps) {
           signal,
           ...(deps.geminiFetch ? { geminiFetch: deps.geminiFetch } : {}),
           onGeminiUsage: geminiUsageSink(deps.aiUsage, { kind: "brand", jobId: ctx.jobId }),
+          hooks: { onPark: (info) => ctx.progress(0.5, limitParkMessage(info)) },
         });
         const draft = DraftOutput.parse(result.output);
 

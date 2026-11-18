@@ -1,6 +1,14 @@
+import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
-import { AiKeyList, AiKeyState, AiSpendSummary, WorkerAiCredentials } from "@studio/contract";
-import { afterEach, describe, expect, it } from "vitest";
+import {
+  AiKeyList,
+  AiKeyState,
+  AiPreferences,
+  AiSpendSummary,
+  WorkerAiCredentials,
+  WorkerAiSettings,
+} from "@studio/contract";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { budgetState, periodStarts } from "../src/lib/ai-keys.ts";
 import { api, BASE, expectError, localFetch } from "./helpers.ts";
 
@@ -186,5 +194,282 @@ describe("Gemini spend", () => {
     expect(budgetState(10, 7.9).warning).toBe(false);
     expect(budgetState(10, 8).warning).toBe(true);
     expect(budgetState(0, 0)).toMatchObject({ usedPercent: 0, warning: false });
+  });
+
+  it("is exhausted only with stop-at-budget on and the budget reached", () => {
+    expect(budgetState(10, 10, false)).toMatchObject({ stopAtBudget: false, exhausted: false });
+    expect(budgetState(10, 9.99, true)).toMatchObject({ stopAtBudget: true, exhausted: false });
+    expect(budgetState(10, 10, true)).toMatchObject({ stopAtBudget: true, exhausted: true });
+    expect(budgetState(null, 50, true)).toMatchObject({ monthlyUsd: null, exhausted: false });
+  });
+});
+
+const usage = (
+  provider: string,
+  model: string,
+  costUsd: number | null,
+  occurredAt = new Date().toISOString(),
+) => ({
+  provider,
+  model,
+  kind: "other",
+  inputTokens: 100,
+  outputTokens: 10,
+  costUsd,
+  pricingVersion: "2026-11-18",
+  occurredAt,
+});
+
+async function resetAi() {
+  await env.DB.prepare("delete from ai_usage").run();
+  await env.DB.prepare("delete from ai_settings").run();
+}
+
+describe("Paid AI spend across services (U8)", () => {
+  beforeEach(resetAi);
+
+  it("stores OpenAI and ElevenLabs records and sums every service, per model and per service", async () => {
+    const old = new Date(Date.now() - 70 * 24 * 3600_000).toISOString();
+    const stored = await worker<{ stored: number }>("POST", "/api/worker/ai/usage", {
+      records: [
+        usage("gemini", "gemini-2.5-flash", 0.5),
+        usage("openai", "gpt-image-1", 2),
+        usage("openai", "gpt-image-1", 1),
+        usage("elevenlabs", "eleven_multilingual_v2", 0.25),
+        usage("elevenlabs", "eleven_turbo", null),
+        usage("openai", "gpt-image-1", 40, old),
+      ],
+    });
+    expect(stored).toEqual({ status: 200, body: { stored: 6 } });
+
+    const res = await api<AiSpendSummary>("GET", "/api/ai/spend?tzOffset=-180");
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    const spend = AiSpendSummary.parse(res.body);
+    expect(spend.provider).toBe("gemini");
+    expect(spend.month.costUsd).toBeCloseTo(3.75, 6);
+    expect(spend.month.calls).toBe(5);
+    expect(spend.month.unpricedCalls).toBe(1);
+    expect(spend.today.costUsd).toBeCloseTo(3.75, 6);
+    expect(spend.byModel[0]).toMatchObject({ provider: "openai", model: "gpt-image-1", calls: 2 });
+    expect(spend.byModel[0]?.costUsd).toBeCloseTo(3, 6);
+    expect(spend.byProvider?.map((p) => [p.provider, p.calls])).toEqual([
+      ["openai", 2],
+      ["gemini", 1],
+      ["elevenlabs", 2],
+    ]);
+    expect(spend.byProvider?.[2]).toMatchObject({ unpricedCalls: 1 });
+    expect(spend.byProvider?.[2]?.costUsd).toBeCloseTo(0.25, 6);
+    expect(spend.budget).toMatchObject({ monthlyUsd: null, stopAtBudget: false, exhausted: false });
+  });
+
+  it("reports the budget as exhausted when stop-at-budget is on and the month reached it", async () => {
+    await worker("POST", "/api/worker/ai/usage", {
+      records: [usage("openai", "gpt-image-1", 3), usage("gemini", "gemini-2.5-pro", 2)],
+    });
+    const prefs = await api<AiPreferences>("PUT", "/api/ai/preferences", {
+      monthlyBudgetUsd: 5,
+      stopAtBudget: true,
+    });
+    expect(prefs.status, JSON.stringify(prefs.body)).toBe(200);
+    const spend = AiSpendSummary.parse((await api("GET", "/api/ai/spend")).body);
+    expect(spend.budget).toMatchObject({
+      monthlyUsd: 5,
+      stopAtBudget: true,
+      exhausted: true,
+      warning: true,
+    });
+    // The budget endpoint sets the same stored budget.
+    const raised = await api<AiSpendSummary>("PUT", "/api/ai/budget", { geminiMonthlyUsd: 6 });
+    expect(raised.body.budget).toMatchObject({
+      monthlyUsd: 6,
+      stopAtBudget: true,
+      exhausted: false,
+    });
+    const read = AiPreferences.parse((await api("GET", "/api/ai/preferences")).body);
+    expect(read.monthlyBudgetUsd).toBe(6);
+  });
+});
+
+describe("AI preferences (S7)", () => {
+  beforeEach(resetAi);
+
+  it("defaults to ask, no budget and no answer", async () => {
+    const res = await api<AiPreferences>("GET", "/api/ai/preferences");
+    expect(res.status).toBe(200);
+    expect(AiPreferences.parse(res.body)).toEqual({
+      claudeLimit: "ask",
+      monthlyBudgetUsd: null,
+      stopAtBudget: false,
+      limitDecision: null,
+      updatedAt: null,
+    });
+  });
+
+  it("changes only the fields sent", async () => {
+    const first = await api<AiPreferences>("PUT", "/api/ai/preferences", { claudeLimit: "wait" });
+    expect(first.status, JSON.stringify(first.body)).toBe(200);
+    expect(first.body).toMatchObject({ claudeLimit: "wait", monthlyBudgetUsd: null });
+    const second = await api<AiPreferences>("PUT", "/api/ai/preferences", {
+      monthlyBudgetUsd: 12.5,
+    });
+    expect(second.body).toMatchObject({
+      claudeLimit: "wait",
+      monthlyBudgetUsd: 12.5,
+      stopAtBudget: false,
+    });
+    const third = await api<AiPreferences>("PUT", "/api/ai/preferences", { stopAtBudget: true });
+    expect(third.body).toMatchObject({
+      claudeLimit: "wait",
+      monthlyBudgetUsd: 12.5,
+      stopAtBudget: true,
+    });
+    const cleared = await api<AiPreferences>("PUT", "/api/ai/preferences", {
+      monthlyBudgetUsd: null,
+    });
+    expect(cleared.body).toMatchObject({ monthlyBudgetUsd: null, stopAtBudget: true });
+    expectError(
+      await api("PUT", "/api/ai/preferences", { claudeLimit: "maybe" }),
+      400,
+      "validation_error",
+    );
+  });
+
+  it("is changed by the Mac itself only", async () => {
+    const viaGateway = await localFetch(`${BASE}/api/ai/preferences`, {
+      method: "PUT",
+      headers: { "X-Studio-Gateway": "1", ...AUTH(), "content-type": "application/json" },
+      body: JSON.stringify({ claudeLimit: "gemini" }),
+    });
+    expect(viaGateway.status).toBe(403);
+    const decision = await localFetch(`${BASE}/api/ai/claude-limit/decision`, {
+      method: "POST",
+      headers: { "X-Studio-Gateway": "1", ...AUTH(), "content-type": "application/json" },
+      body: JSON.stringify({ choice: "wait" }),
+    });
+    expect(decision.status).toBe(403);
+  });
+});
+
+describe("Claude limit decision (S7)", () => {
+  beforeEach(resetAi);
+  afterEach(async () => {
+    await runInDurableObject(env.HUB.getByName("main"), async (_instance, state) => {
+      await state.storage.delete("presence:claude");
+    });
+  });
+
+  it("holds until presence claude.limit.resetsAt by default", async () => {
+    const resetsAt = new Date(Date.now() + 2 * 3600_000).toISOString();
+    await runInDurableObject(env.HUB.getByName("main"), async (_instance, state) => {
+      await state.storage.put("presence:claude", {
+        status: "signed_in",
+        email: null,
+        plan: null,
+        cliVersion: null,
+        loginUrl: null,
+        detail: null,
+        limit: { resetsAt, mode: "ask", decision: null, waiting: 2, geminiReady: true },
+        checkedAt: new Date().toISOString(),
+      });
+    });
+    const res = await api<AiPreferences>("POST", "/api/ai/claude-limit/decision", {
+      choice: "gemini",
+    });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    const prefs = AiPreferences.parse(res.body);
+    expect(prefs.limitDecision).toMatchObject({ choice: "gemini", until: resetsAt });
+    const read = AiPreferences.parse((await api("GET", "/api/ai/preferences")).body);
+    expect(read.limitDecision?.choice).toBe("gemini");
+  });
+
+  it("holds five hours without a known reset, and is gone once `until` passed", async () => {
+    const before = Date.now();
+    const res = await api<AiPreferences>("POST", "/api/ai/claude-limit/decision", {
+      choice: "wait",
+    });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    const until = Date.parse(res.body.limitDecision?.until ?? "");
+    expect(until).toBeGreaterThanOrEqual(before + 5 * 3600_000);
+    expect(until).toBeLessThanOrEqual(Date.now() + 5 * 3600_000);
+
+    // Expire it.
+    await env.DB.prepare("update ai_settings set limit_until = ?")
+      .bind(Date.now() - 1000)
+      .run();
+    const read = AiPreferences.parse((await api("GET", "/api/ai/preferences")).body);
+    expect(read.limitDecision).toBeNull();
+    const settings = await worker<WorkerAiSettings>("GET", "/api/worker/ai/settings");
+    expect(settings.body.limitDecision).toBeNull();
+  });
+
+  it("refuses an `until` in the past and drops the answer when the mode changes", async () => {
+    expectError(
+      await api("POST", "/api/ai/claude-limit/decision", {
+        choice: "wait",
+        until: new Date(Date.now() - 60_000).toISOString(),
+      }),
+      400,
+      "validation_error",
+    );
+    const until = new Date(Date.now() + 3600_000).toISOString();
+    const res = await api<AiPreferences>("POST", "/api/ai/claude-limit/decision", {
+      choice: "wait",
+      until,
+    });
+    expect(res.body.limitDecision).toMatchObject({ choice: "wait", until });
+    // Same mode again: the answer stays.
+    const same = await api<AiPreferences>("PUT", "/api/ai/preferences", { claudeLimit: "ask" });
+    expect(same.body.limitDecision?.choice).toBe("wait");
+    const changed = await api<AiPreferences>("PUT", "/api/ai/preferences", {
+      claudeLimit: "gemini",
+    });
+    expect(changed.body).toMatchObject({ claudeLimit: "gemini", limitDecision: null });
+  });
+});
+
+describe("Worker AI settings (S7)", () => {
+  beforeEach(resetAi);
+
+  it("needs the worker token", async () => {
+    const res = await localFetch(`${BASE}/api/worker/ai/settings`);
+    expect(res.status).toBe(401);
+  });
+
+  it("gives the mode, the answer and this month's spend of every service", async () => {
+    const defaults = await worker<WorkerAiSettings>("GET", "/api/worker/ai/settings?tzOffset=-180");
+    expect(defaults.status, JSON.stringify(defaults.body)).toBe(200);
+    const parsed = WorkerAiSettings.parse(defaults.body);
+    expect(parsed).toMatchObject({
+      claudeLimit: "ask",
+      limitDecision: null,
+      budget: { monthlyUsd: null, stopAtBudget: false, spentUsd: 0 },
+    });
+    expect(parsed.budget.monthStart).toBe(
+      new Date(periodStarts(Date.now(), -180).month).toISOString(),
+    );
+
+    const old = new Date(Date.now() - 70 * 24 * 3600_000).toISOString();
+    await worker("POST", "/api/worker/ai/usage", {
+      records: [
+        usage("gemini", "gemini-2.5-flash", 0.5),
+        usage("openai", "gpt-image-1", 1.25),
+        usage("elevenlabs", "eleven_multilingual_v2", 0.25),
+        usage("elevenlabs", "eleven_turbo", null),
+        usage("openai", "gpt-image-1", 99, old),
+      ],
+    });
+    await api("PUT", "/api/ai/preferences", {
+      claudeLimit: "wait",
+      monthlyBudgetUsd: 2,
+      stopAtBudget: true,
+    });
+    const res = await worker<WorkerAiSettings>("GET", "/api/worker/ai/settings?tzOffset=-180");
+    const settings = WorkerAiSettings.parse(res.body);
+    expect(settings).toMatchObject({
+      claudeLimit: "wait",
+      limitDecision: null,
+      budget: { monthlyUsd: 2, stopAtBudget: true },
+    });
+    expect(settings.budget.spentUsd).toBeCloseTo(2, 6);
   });
 });

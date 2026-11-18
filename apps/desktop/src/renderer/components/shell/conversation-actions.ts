@@ -30,18 +30,31 @@ export function useConversationActions() {
       if (store.route.kind === "conversation" && store.route.id === conversation.id) {
         store.navigate({ kind: "new" });
       }
+      // Back / forward do not lead into it any more (the Arşiv page still opens it).
+      useAppStore.getState().forgetRoute({ kind: "conversation", id: conversation.id });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.archivedConversations });
       store.showToast({
         message: `“${conversation.title || "Adsız sohbet"}” arşivlendi`,
-        action: {
-          label: "Geri al",
-          run: () =>
-            void api.conversations
-              .update(conversation.id, { status: "active" })
-              .then(() => queryClient.invalidateQueries({ queryKey: queryKeys.conversations })),
-        },
+        action: { label: "Geri al", run: () => void unarchive(conversation) },
       });
     } catch (error) {
       store.showToast({ message: describeError(error), tone: "danger" });
+    }
+  }
+
+  /** Back to the sidebar (the toast's "Geri al", the Arşiv page). */
+  async function unarchive(conversation: Conversation): Promise<boolean> {
+    try {
+      updateCached(await api.conversations.update(conversation.id, { status: "active" }));
+      void queryClient.invalidateQueries({ queryKey: queryKeys.conversations });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.archivedConversations });
+      return true;
+    } catch (error) {
+      useAppStore.getState().showToast({
+        message: `Sohbet arşivden çıkarılamadı: ${describeError(error)}`,
+        tone: "danger",
+      });
+      return false;
     }
   }
 
@@ -64,14 +77,21 @@ export function useConversationActions() {
         onSelect: () => void navigator.clipboard?.writeText(conversation.title),
       },
       { type: "separator" },
-      {
-        id: "archive",
-        label: "Arşivle",
-        shortcut: "A",
-        onSelect: () => void archive(conversation),
-      },
+      conversation.status === "archived"
+        ? {
+            id: "unarchive",
+            label: "Arşivden çıkar",
+            shortcut: "A",
+            onSelect: () => void unarchive(conversation),
+          }
+        : {
+            id: "archive",
+            label: "Arşivle",
+            shortcut: "A",
+            onSelect: () => void archive(conversation),
+          },
     ];
   }
 
-  return { rename, archive, menu };
+  return { rename, archive, unarchive, menu };
 }

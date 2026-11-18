@@ -32,6 +32,8 @@ export function setupAccounts(input: {
   apiPort: () => number | null;
   /** The app's owner secret (the API's `local` principal). */
   ownerSecret: () => string;
+  /** The Mac user's full name ("" until read). */
+  userName?: () => string;
   /** A tunnel token was saved or removed: restart the tunnel only. */
   onTunnelTokenChange: () => void;
   send: (channel: string, value: unknown) => void;
@@ -54,6 +56,7 @@ export function setupAccounts(input: {
         node: process.versions.node ?? "",
         stateDir: input.stateDir,
         logsDir: input.logsDir,
+        userName: input.userName?.() ?? "",
       }),
       openPath: (path) => shell.openPath(path),
       secrets: input.secrets,

@@ -25,6 +25,7 @@ import { z } from "zod";
 import type { AgentDeps } from "../agent.ts";
 import { geminiUsageSink } from "../ai/usage-recorder.ts";
 import { describeClaudeError, isClaudeError } from "../claude/errors.ts";
+import { limitParkMessage } from "../claude/limit-text.ts";
 import type { ClaudeContentBlock } from "../claude/runner.ts";
 import { describeGeminiError, isGeminiError } from "../gemini/errors.ts";
 import { callStructuredAi, resolveStructuredRoute } from "../gemini/json-call.ts";
@@ -716,6 +717,7 @@ export function createBrandAnalyzeHandler(deps: AgentDeps) {
           defaultGeminiAlias: "gemini-flash",
           settings: deps.settings,
           claudeHealth: deps.health(),
+          limitChoice: deps.aiPolicy?.limitChoice(),
         });
 
         const system = `Sen Studio'nun kıdemli marka stratejisti, sanat yönetmeni ve Türkçe metin yazarısın.
@@ -764,6 +766,7 @@ Kullanıcı paleti ve font aileleri verildiyse onlar kesindir; görsellerden far
           signal,
           ...(deps.geminiFetch ? { geminiFetch: deps.geminiFetch } : {}),
           onGeminiUsage: geminiUsageSink(deps.aiUsage, { kind: "brand", jobId: ctx.jobId }),
+          hooks: { onPark: (info) => ctx.progress(0.5, limitParkMessage(info)) },
         });
 
         const parsed = BrandAnalysisModelOutput.parse(aiResult.output);

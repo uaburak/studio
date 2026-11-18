@@ -364,6 +364,7 @@ async function ensureVoice(
         ctx.deps.settings.parentEnv.ELEVENLABS_API_KEY ?? ctx.deps.settings.elevenLabsApiKey,
       elevenLabsVoiceId: ctx.deps.settings.elevenLabsVoiceId,
       ffmpeg: ctx.ffmpeg,
+      logger: ctx.deps.logger,
       ...(ctx.deps.geminiFetch ? { fetch: ctx.deps.geminiFetch } : {}),
       ...(ctx.seams?.sayExec ? { sayExec: ctx.seams.sayExec } : {}),
     });
@@ -379,6 +380,8 @@ async function ensureVoice(
       : "Seslendirme üretiliyor (macOS)",
   );
   const voiceDir = await mkdtemp(path.join(ctx.workDir, "voice-"));
+  // ElevenLabs is paid: the monthly budget applies ("bütçe dolunca dur", S7).
+  if (tts.name === "elevenlabs") ctx.deps.aiUsage?.assertBudget();
   const res = await tts.synthesize({
     text: script,
     voice: spec.voice,
@@ -386,6 +389,11 @@ async function ensureVoice(
     workDir: voiceDir,
     signal: ctx.signal,
   });
+  // ElevenLabs spend (characters, dated price table) in the same store as Gemini's (U8).
+  if (res.billing) {
+    ctx.deps.aiUsage?.elevenLabs(res.billing, { kind: "tts" });
+  }
+  if (res.note) ctx.warnings.push(res.note);
   const words = res.words
     .filter((w) => w.word.trim())
     .map((w) => ({
@@ -761,6 +769,7 @@ async function callPlanner(
     defaultGeminiAlias: "gemini-flash",
     settings: deps.settings,
     claudeHealth: deps.health(),
+    limitChoice: deps.aiPolicy?.limitChoice(),
   });
   const res = await callStructuredAi({
     label: input.label,

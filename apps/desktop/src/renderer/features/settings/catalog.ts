@@ -121,16 +121,23 @@ export const ITEMS = {
   geminiSpend: item(
     "usage.gemini",
     "usage",
-    "Gemini API harcaması",
-    "Her Gemini çağrısının token sayısı × fiyat tablosu (tahmini, USD).",
-    "maliyet dolar fatura token gemini",
+    "Yapay zekâ harcaması",
+    "Gemini, OpenAI ve ElevenLabs çağrılarının tahmini tutarı (fiyat tablosuna göre, USD).",
+    "maliyet dolar fatura token gemini openai elevenlabs ses",
   ),
   geminiBudget: item(
     "usage.geminiBudget",
     "usage",
-    "Aylık Gemini bütçesi",
-    "Kalan bütçe ve %80'de uyarı için (USD). Boş bırakılırsa bütçe yok.",
+    "Aylık yapay zekâ bütçesi",
+    "Gemini, OpenAI ve ElevenLabs için toplam (USD); %80'de uyarır. Boş bırakılırsa bütçe yok.",
     "bütçe limit dolar uyarı",
+  ),
+  stopAtBudget: item(
+    "usage.stopAtBudget",
+    "usage",
+    "Bütçe dolunca dur",
+    "Açıkken aylık bütçe dolunca ücretli yapay zekâ çağrıları yapılmaz.",
+    "bütçe limit durdur engelle ücretli",
   ),
   geminiCredit: item(
     "usage.geminiCredit",
@@ -175,6 +182,13 @@ export const ITEMS = {
     "Claude Code",
     "Opus, Sonnet ve Haiku için bu Mac'teki Claude girişi kullanılır.",
     "giriş oturum hesap abonelik login cli",
+  ),
+  claudeLimit: item(
+    "ai.claudeLimit",
+    "ai",
+    "Claude sınırı dolunca",
+    "Claude'un kullanım sınırı dolunca işler ne yapsın.",
+    "limit kota sınır gemini geç bekle sor yedek",
   ),
   gemini: item(
     "ai.gemini",

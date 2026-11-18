@@ -4,6 +4,7 @@ import {
   Content,
   ContentApprove,
   ContentCreate,
+  ContentDeleteQuery,
   ContentDuplicate,
   ContentList,
   ContentListQuery,
@@ -30,7 +31,7 @@ import {
   VERSIONABLE_STATUSES,
   WECRA_DOCUMENT_MIME,
 } from "@studio/contract";
-import { and, asc, desc, eq, inArray, isNotNull, lt, max, or, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNotNull, isNull, lt, max, or, type SQL } from "drizzle-orm";
 import type { BatchItem } from "drizzle-orm/batch";
 import { createDb, type Db } from "../db/client.ts";
 import {
@@ -54,6 +55,7 @@ import { ApiProblem, badRequest, conflict, invalidTransition, notFound } from ".
 import { newId } from "../lib/ids.ts";
 import { toPage } from "../lib/pagination.ts";
 import { requestSyncStatement } from "../lib/publishing.ts";
+import { purgeContent } from "../lib/purge.ts";
 import { createRouter, errors, IdParams, json, jsonBody } from "../lib/router.ts";
 import { requireBrand } from "./brands.ts";
 
@@ -83,6 +85,23 @@ export async function loadContent(db: Db, id: string): Promise<LoadedContent> {
   if (!found) throw notFound("content", id);
   return found;
 }
+
+/** User-facing refusal for changes to a post in the trash. */
+export const TRASHED_CONTENT_MESSAGE = "Post silinmiş; önce geri al.";
+
+/** A post in the trash takes no changes (approve, edit, schedule, new work) until restored. */
+export function assertNotTrashed(row: Pick<ContentRow, "deletedAt">): void {
+  if (row.deletedAt) throw conflict(TRASHED_CONTENT_MESSAGE);
+}
+
+/** Job types stopped when their post goes to the trash. */
+const STOPPED_ON_DELETE = [
+  "content.generate",
+  "content.render",
+  "content.check",
+  "canvas.read",
+  "canvas.apply",
+];
 
 /** True when the stored approval still covers the current version. */
 export function approvalMatchesCurrent({ row, current }: LoadedContent): boolean {
@@ -283,15 +302,18 @@ export const contentRoutes = createRouter()
       path: "/api/contents",
       tags,
       summary: "List content items (newest first)",
+      description: "Posts in the trash are left out unless `deleted` is `only` or `include`.",
       request: { query: ContentListQuery },
       responses: { 200: json(ContentList, "A page of content items."), 400: errors[400] },
     }),
     async (c) => {
-      const { limit, cursor, brandId, status, type } = c.req.valid("query");
+      const { limit, cursor, brandId, status, type, deleted } = c.req.valid("query");
       const where: SQL[] = [];
       if (brandId) where.push(eq(contents.brandId, brandId));
       if (status) where.push(eq(contents.status, status));
       if (type) where.push(eq(contents.type, type));
+      if (deleted === "only") where.push(isNotNull(contents.deletedAt));
+      else if (deleted !== "include") where.push(isNull(contents.deletedAt));
       if (cursor) where.push(lt(contents.id, cursor));
       const rows = await createDb(c.env.DB)
         .select({ row: contents, current: currentVersionColumns })
@@ -383,6 +405,7 @@ export const contentRoutes = createRouter()
       const input = c.req.valid("json");
       const db = createDb(c.env.DB);
       const { row } = await loadContent(db, id);
+      assertNotTrashed(row);
 
       const publishedFieldsChange =
         (input.caption !== undefined && input.caption !== row.caption) ||
@@ -416,23 +439,36 @@ export const contentRoutes = createRouter()
       method: "delete",
       path: "/api/contents/{id}",
       tags,
-      summary: "Delete a content item with its versions",
+      summary: "Move a content item to the trash (or remove a trashed one for good)",
       description:
-        "Refused (409) while scheduled, publishing or published, and while a cancelled " +
-        "schedule's order is still at the cloud publisher (the worker cancels it there within " +
-        "seconds; an immediate sync is requested).",
-      request: { params: IdParams },
+        "Moves the post to the trash (`deletedAt`; restore with `POST /api/contents/{id}/restore`) " +
+        "and stops its queued or running work (generation, render, checks, canvas jobs). It is " +
+        "purged with its generated files TRASH_RETENTION_DAYS later. Refused (409) while " +
+        "scheduled, publishing or published, and while a cancelled schedule's order is still at " +
+        "the cloud publisher (the worker cancels it there within seconds; an immediate sync is " +
+        "requested). `?permanent=true` removes a post that is already in the trash now. " +
+        "Deleting a trashed post again is a no-op.",
+      request: { params: IdParams, query: ContentDeleteQuery },
       responses: { 204: { description: "Deleted." }, 404: errors[404], 409: errors[409] },
     }),
     async (c) => {
       const { id } = c.req.valid("param");
+      const { permanent } = c.req.valid("query");
       const db = createDb(c.env.DB);
       const { row } = await loadContent(db, id);
+      if (permanent) {
+        if (!row.deletedAt) {
+          throw conflict("Kalıcı silmek için post önce Silinenler'de olmalı.");
+        }
+        await purgeContent(db, c.env.MEDIA, id);
+        return c.body(null, 204);
+      }
+      if (row.deletedAt) return c.body(null, 204);
       if (statusIn(row.status, UNDELETABLE_STATUSES)) {
         throw invalidTransition(`content is ${row.status} and cannot be deleted`);
       }
-      // Deleting cascades the schedules away. One cancelled here whose order is still at the
-      // cloud publisher (the worker has not cancelled it there yet) would then never be
+      // A trashed post is purged with its schedules. One cancelled here whose order is still at
+      // the cloud publisher (the worker has not cancelled it there yet) would then never be
       // cancelled and would still publish: wait for that first.
       const [held] = await db
         .select({ id: schedules.id, status: schedules.status })
@@ -459,8 +495,55 @@ export const contentRoutes = createRouter()
             : `content has a ${held.status} schedule and cannot be deleted`,
         );
       }
-      await db.delete(contents).where(eq(contents.id, id));
+      const now = new Date();
+      await db
+        .update(contents)
+        .set({ deletedAt: now, updatedAt: now })
+        .where(and(eq(contents.id, id), isNull(contents.deletedAt)));
+      // Its work stops: a generation finishing later would only fill a post in the trash.
+      const active = await db
+        .select({ id: jobs.id })
+        .from(jobs)
+        .where(
+          and(
+            eq(jobs.contentId, id),
+            inArray(jobs.status, ["queued", "running"]),
+            inArray(jobs.type, STOPPED_ON_DELETE),
+          ),
+        );
+      for (const job of active) {
+        try {
+          await c.env.HUB.getByName("main").cancelJob(job.id);
+        } catch (error) {
+          console.warn(`api: could not cancel job ${job.id} of deleted content ${id}`, error);
+        }
+      }
       return c.body(null, 204);
+    },
+  )
+  .openapi(
+    createRoute({
+      method: "post",
+      path: "/api/contents/{id}/restore",
+      tags,
+      summary: "Take a content item back out of the trash",
+      description:
+        "Clears `deletedAt`; the post is back on the board as it was (work stopped by the delete " +
+        "is not restarted). Restoring a post that is not in the trash is a no-op.",
+      request: { params: IdParams },
+      responses: { 200: json(Content, "Restored."), 404: errors[404] },
+    }),
+    async (c) => {
+      const { id } = c.req.valid("param");
+      const db = createDb(c.env.DB);
+      const { row } = await loadContent(db, id);
+      if (row.deletedAt) {
+        await db
+          .update(contents)
+          .set({ deletedAt: null, updatedAt: new Date() })
+          .where(eq(contents.id, id));
+      }
+      return c.json(await respondContent(db, id), 200);
     },
   )
   .openapi(
@@ -492,6 +575,7 @@ export const contentRoutes = createRouter()
       const db = createDb(c.env.DB);
       const loaded = await loadContent(db, id);
       const { row, current } = loaded;
+      assertNotTrashed(row);
 
       if (!current) throw conflict("content has no version to approve");
       if (
@@ -561,6 +645,7 @@ export const contentRoutes = createRouter()
       const db = createDb(c.env.DB);
       const loaded = await loadContent(db, id);
       const { row, current } = loaded;
+      assertNotTrashed(row);
 
       if (!isManualContentTransition(row.status, to)) {
         throw invalidTransition(`cannot move content from ${row.status} to ${to} manually`);
@@ -640,6 +725,7 @@ export const contentRoutes = createRouter()
       const input = c.req.valid("json");
       const db = createDb(c.env.DB);
       const { row } = await loadContent(db, id);
+      assertNotTrashed(row);
 
       if (!statusIn(row.status, VERSIONABLE_STATUSES)) {
         throw invalidTransition(`content is ${row.status}; no new versions can be added`);
@@ -821,6 +907,7 @@ export const contentRoutes = createRouter()
       const input = c.req.valid("json");
       const db = createDb(c.env.DB);
       const { row } = await loadContent(db, id);
+      assertNotTrashed(row);
       if (!statusIn(row.status, VERSIONABLE_STATUSES)) {
         throw invalidTransition(`content is ${row.status}; no new versions can be added`);
       }
@@ -876,6 +963,7 @@ export const contentRoutes = createRouter()
       const input = c.req.valid("json");
       const db = createDb(c.env.DB);
       const { row, current } = await loadContent(db, id);
+      assertNotTrashed(row);
       const brand = await requireBrand(db, row.brandId);
       if (brand.status !== "active") throw conflict(`brand ${brand.id} is archived`);
       const now = new Date();

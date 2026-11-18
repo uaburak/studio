@@ -1,15 +1,20 @@
 /**
  * Voice-over for `narration` reels, with word timings for burned-in captions.
  * - `ElevenLabsTtsProvider`: `/v1/text-to-speech/{voiceId}/with-timestamps` (character alignment).
- *   Used only when `ELEVENLABS_API_KEY` is set (paid).
- * - `MacSayTtsProvider`: offline macOS `say` (Turkish voice "Yelda"); every sentence is also
- *   measured on its own so the captions follow the real sentence rhythm, words inside a
+ *   Used only when `ELEVENLABS_API_KEY` is set (paid). The voice is `STUDIO_ELEVENLABS_VOICE_ID`,
+ *   else a voice of the text's language from the account (`GET /v1/voices`, free); Turkish text
+ *   without a Turkish voice fails with a clear message instead of an English voice.
+ * - `MacSayTtsProvider`: offline macOS `say` (Turkish: "Yelda" or another installed `tr_TR`
+ *   voice, checked with `say -v ?`; none installed fails with how to add one); every sentence is
+ *   also measured on its own so the captions follow the real sentence rhythm, words inside a
  *   sentence are spread by Turkish syllable weight.
  */
 import { execFile as nodeExecFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
+import { type Logger, silentLogger } from "../log.ts";
 import { buildToolEnv, type FfmpegRunner, probeMedia, transcodeAudioToAac } from "./ffmpeg.ts";
 
 const execFileAsync = promisify(nodeExecFile);
@@ -26,6 +31,10 @@ export interface TtsSynthesisResult {
   durationMs: number;
   words: WordTimestamp[];
   provider: string;
+  /** Paid synthesis (ElevenLabs): the model used and the characters sent (spend). */
+  billing?: { model: string; characters: number };
+  /** Something the owner should know (Turkish), e.g. the asked voice was not installed. */
+  note?: string;
 }
 
 export interface TtsSynthesizeInput {
@@ -39,6 +48,11 @@ export interface TtsSynthesizeInput {
 export interface TtsProvider {
   readonly name: string;
   synthesize(input: TtsSynthesizeInput): Promise<TtsSynthesisResult>;
+}
+
+/** No language means Turkish (Studio's default), like the brand default. */
+function languageCode(language: string | undefined): string {
+  return (language ?? "tr").trim().toLowerCase().split(/[-_]/)[0] || "tr";
 }
 
 const TURKISH_VOWELS = /[aeıioöuüâîûAEIİOÖUÜÂÎÛ]/g;
@@ -150,24 +164,146 @@ export function wordsFromCharacterAlignment(
   };
 }
 
+export const ELEVENLABS_DEFAULT_MODEL = "eleven_multilingual_v2";
+
+export const ELEVENLABS_NO_TURKISH_VOICE =
+  "ElevenLabs hesabında Türkçe ses yok: hesaptaki seslerin hiçbiri Türkçe olarak işaretli değil. ElevenLabs Voice Library'den bir Türkçe ses ekleyin ya da STUDIO_ELEVENLABS_VOICE_ID ayarlayın.";
+
+/** `GET /v1/voices` entry (only the fields the language match reads). */
+export interface ElevenLabsVoice {
+  voice_id?: string;
+  name?: string;
+  labels?: Record<string, string | null | undefined> | null;
+  verified_languages?:
+    | { language?: string | null; locale?: string | null; accent?: string | null }[]
+    | null;
+  fine_tuning?: { language?: string | null } | null;
+}
+
+/** Language names that may appear in labels/accents instead of the ISO code. */
+const LANGUAGE_NAMES: Record<string, readonly string[]> = {
+  tr: ["turk", "türk"],
+  en: ["english"],
+};
+
+function namesLanguage(value: string | null | undefined, lang: string): boolean {
+  if (!value) return false;
+  const v = value.trim().toLowerCase();
+  if (v === lang || v.startsWith(`${lang}-`) || v.startsWith(`${lang}_`)) return true;
+  return (LANGUAGE_NAMES[lang] ?? []).some((name) => v.includes(name));
+}
+
+/**
+ * How surely a voice speaks `lang`: 3 its own language (`labels.language`,
+ * `fine_tuning.language`), 2 its accent label, 1 verified for it (`verified_languages`), 0 no.
+ */
+export function elevenLabsVoiceLanguageScore(voice: ElevenLabsVoice, lang: string): number {
+  if (
+    namesLanguage(voice.labels?.language, lang) ||
+    namesLanguage(voice.fine_tuning?.language, lang)
+  )
+    return 3;
+  const accent = voice.labels?.accent?.toLowerCase() ?? "";
+  if ((LANGUAGE_NAMES[lang] ?? []).some((name) => accent.includes(name))) return 2;
+  if (
+    voice.verified_languages?.some(
+      (l) => namesLanguage(l.language, lang) || namesLanguage(l.locale, lang),
+    )
+  )
+    return 1;
+  return 0;
+}
+
+/** Account voice per (key, language), so each reel does not list the voices again. */
+const accountVoices = new Map<string, { voiceId: string; expiresAt: number }>();
+const ACCOUNT_VOICE_TTL_MS = 60 * 60 * 1000;
+
+/** Tests: forget the account voices found so far. */
+export function clearElevenLabsVoiceCache(): void {
+  accountVoices.clear();
+}
+
 export class ElevenLabsTtsProvider implements TtsProvider {
   readonly name = "elevenlabs";
   private readonly doFetch: typeof globalThis.fetch;
+  private readonly logger: Logger;
 
   constructor(
     private readonly options: {
       apiKey: string;
-      defaultVoiceId?: string;
+      defaultVoiceId?: string | undefined;
       modelId?: string;
       fetch?: typeof globalThis.fetch;
+      logger?: Logger;
     },
   ) {
     this.doFetch = options.fetch ?? globalThis.fetch.bind(globalThis);
+    this.logger = options.logger ?? silentLogger;
+  }
+
+  private redact(text: string): string {
+    return text.split(this.options.apiKey.trim()).join("[REDACTED]");
+  }
+
+  /** A voice of `lang` from the account (`GET /v1/voices`, free); never a made-up id. */
+  private async accountVoice(
+    lang: string,
+    signal: AbortSignal | undefined,
+  ): Promise<{ voiceId: string; cacheKey: string }> {
+    const apiKey = this.options.apiKey.trim();
+    const cacheKey = `${createHash("sha256").update(apiKey).digest("hex").slice(0, 16)}:${lang}`;
+    const hit = accountVoices.get(cacheKey);
+    if (hit && hit.expiresAt > Date.now()) return { voiceId: hit.voiceId, cacheKey };
+    const res = await this.doFetch("https://api.elevenlabs.io/v1/voices", {
+      headers: { "xi-api-key": apiKey, accept: "application/json" },
+      ...(signal ? { signal } : {}),
+    });
+    if (!res.ok) {
+      const errText = this.redact(await res.text().catch(() => ""));
+      throw new Error(
+        `ElevenLabs ses listesi okunamadı (HTTP ${res.status}): ${errText.slice(0, 240)}`,
+      );
+    }
+    const body = (await res.json().catch(() => ({}))) as { voices?: ElevenLabsVoice[] };
+    const voices = (body.voices ?? []).filter(
+      (v): v is ElevenLabsVoice & { voice_id: string } =>
+        typeof v.voice_id === "string" && v.voice_id.length > 0,
+    );
+    let best: (ElevenLabsVoice & { voice_id: string }) | undefined;
+    let bestScore = 0;
+    for (const voice of voices) {
+      const score = elevenLabsVoiceLanguageScore(voice, lang);
+      if (score > bestScore) {
+        best = voice;
+        bestScore = score;
+      }
+    }
+    if (!best) {
+      if (lang === "tr") throw new Error(ELEVENLABS_NO_TURKISH_VOICE);
+      // Other languages: any account voice (the multilingual model speaks them all).
+      best = voices[0];
+      if (!best) {
+        throw new Error(
+          "ElevenLabs hesabında hiç ses yok: Voice Library'den bir ses ekleyin ya da STUDIO_ELEVENLABS_VOICE_ID ayarlayın.",
+        );
+      }
+    }
+    this.logger.info(`elevenlabs: voice "${best.name ?? best.voice_id}" chosen for ${lang}`);
+    accountVoices.set(cacheKey, {
+      voiceId: best.voice_id,
+      expiresAt: Date.now() + ACCOUNT_VOICE_TTL_MS,
+    });
+    return { voiceId: best.voice_id, cacheKey };
   }
 
   async synthesize(input: TtsSynthesizeInput): Promise<TtsSynthesisResult> {
     const apiKey = this.options.apiKey.trim();
-    const voiceId = input.voice ?? this.options.defaultVoiceId ?? "21m00Tcm4TlvDq8ikWAM";
+    const modelId = this.options.modelId ?? ELEVENLABS_DEFAULT_MODEL;
+    const configured = input.voice ?? this.options.defaultVoiceId;
+    const found = configured
+      ? undefined
+      : await this.accountVoice(languageCode(input.language), input.signal);
+    const voiceId = configured ?? found?.voiceId ?? "";
     const res = await this.doFetch(
       `https://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(voiceId)}/with-timestamps`,
       {
@@ -179,14 +315,16 @@ export class ElevenLabsTtsProvider implements TtsProvider {
         },
         body: JSON.stringify({
           text: input.text,
-          model_id: this.options.modelId ?? "eleven_multilingual_v2",
+          model_id: modelId,
           ...(input.language ? { language_code: input.language.split("-")[0] } : {}),
         }),
         ...(input.signal ? { signal: input.signal } : {}),
       },
     );
     if (!res.ok) {
-      const errText = (await res.text().catch(() => "")).split(apiKey).join("[REDACTED]");
+      // A voice found in the account may have been removed since: look it up again next time.
+      if (found) accountVoices.delete(found.cacheKey);
+      const errText = this.redact(await res.text().catch(() => ""));
       throw new Error(
         `ElevenLabs seslendirme hatası (HTTP ${res.status}): ${errText.slice(0, 240)}`,
       );
@@ -205,7 +343,14 @@ export class ElevenLabsTtsProvider implements TtsProvider {
       input.text,
       est,
     );
-    return { audioPath, durationMs, words, provider: this.name };
+    return {
+      audioPath,
+      durationMs,
+      words,
+      provider: this.name,
+      // ElevenLabs bills the characters of the text sent.
+      billing: { model: modelId, characters: [...input.text].length },
+    };
   }
 }
 
@@ -215,10 +360,50 @@ export type SayCommandRunner = (
   options?: { signal?: AbortSignal },
 ) => Promise<{ stdout: string; stderr: string }>;
 
+export const MAC_TURKISH_VOICE_MISSING =
+  "Türkçe seslendirme için bu Mac'te Türkçe bir sistem sesi yüklü değil. Sistem Ayarları → Erişilebilirlik → Sesli İçerik → Sistem sesi → Ses Yönet… → Türkçe bölümünden bir ses (ör. Yelda) indirip yeniden deneyin; ya da ELEVENLABS_API_KEY tanımlayın.";
+
+export interface SystemVoice {
+  name: string;
+  /** `tr_TR`, `en_US`, … */
+  locale: string;
+}
+
+/** `say -v ?` lines: `Yelda (Enhanced)    tr_TR    # Merhaba, benim adım Yelda.` */
+export function parseSayVoices(stdout: string): SystemVoice[] {
+  const voices: SystemVoice[] = [];
+  for (const line of stdout.split("\n")) {
+    const m = /^(.+?)\s+([a-z]{2,3}[_-][A-Za-z0-9]+)\s+#/.exec(line.trim());
+    if (m?.[1] && m[2]) voices.push({ name: m[1].trim(), locale: m[2].replace("-", "_") });
+  }
+  return voices;
+}
+
+/** Name without the quality tag: "Yelda (Enhanced)" → "yelda". */
+const baseVoiceName = (name: string) =>
+  name
+    .replace(/\s*\((?:enhanced|premium|compact)\)\s*$/i, "")
+    .trim()
+    .toLowerCase();
+
+/** An installed voice by name ("Yelda" also finds "Yelda (Premium)"), best quality first. */
+function findSystemVoice(voices: readonly SystemVoice[], wanted: string): SystemVoice | undefined {
+  const exact = voices.find((v) => v.name.toLowerCase() === wanted.trim().toLowerCase());
+  if (exact) return exact;
+  const base = baseVoiceName(wanted);
+  const quality = (v: SystemVoice) =>
+    /\(premium\)/i.test(v.name) ? 0 : /\(enhanced\)/i.test(v.name) ? 1 : 2;
+  return voices
+    .filter((v) => baseVoiceName(v.name) === base)
+    .sort((a, b) => quality(a) - quality(b))[0];
+}
+
 export class MacSayTtsProvider implements TtsProvider {
   readonly name = "mac-say";
   private readonly sayBin: string;
   private readonly exec: SayCommandRunner;
+  private readonly logger: Logger;
+  private voices: Promise<SystemVoice[] | null> | undefined;
 
   constructor(
     private readonly options: {
@@ -226,9 +411,11 @@ export class MacSayTtsProvider implements TtsProvider {
       sayBin?: string;
       voice?: string;
       exec?: SayCommandRunner;
+      logger?: Logger;
     },
   ) {
     this.sayBin = options.sayBin ?? "/usr/bin/say";
+    this.logger = options.logger ?? silentLogger;
     this.exec =
       options.exec ??
       (async (bin, args, opts) => {
@@ -240,33 +427,88 @@ export class MacSayTtsProvider implements TtsProvider {
       });
   }
 
-  private async say(
-    text: string,
-    out: string,
-    voice: string | undefined,
+  /** Installed voices (`say -v ?`, once per provider); null when they cannot be listed. */
+  private systemVoices(signal?: AbortSignal): Promise<SystemVoice[] | null> {
+    this.voices ??= this.exec(this.sayBin, ["-v", "?"], signal ? { signal } : {}).then(
+      (r) => {
+        const list = parseSayVoices(r.stdout);
+        return list.length > 0 ? list : null;
+      },
+      (error: unknown) => {
+        this.logger.warn(`say: voices not listed (${(error as Error).message})`);
+        return null;
+      },
+    );
+    return this.voices;
+  }
+
+  /**
+   * The voice to use: the asked one when installed; for Turkish text "Yelda" or another
+   * installed Turkish voice (none: a clear error, never an English voice); other text the asked
+   * voice or the system voice.
+   */
+  private async chooseVoice(
+    wanted: string | undefined,
+    turkish: boolean,
     signal?: AbortSignal,
-  ): Promise<string | undefined> {
-    const run = (v?: string) =>
-      this.exec(this.sayBin, [...(v ? ["-v", v] : []), "-o", out, text], signal ? { signal } : {});
-    try {
-      await run(voice);
-      return voice;
-    } catch (error) {
-      signal?.throwIfAborted();
-      if (!voice) throw error;
-      await run(undefined); // the Turkish voice is not installed: system voice
-      return undefined;
+  ): Promise<{ voice: string | undefined; verified: boolean; note?: string }> {
+    const voices = await this.systemVoices(signal);
+    signal?.throwIfAborted();
+    const asked = wanted ?? (turkish ? "Yelda" : undefined);
+    if (!voices) return { voice: asked, verified: false };
+    const installed = asked ? findSystemVoice(voices, asked) : undefined;
+    if (installed) return { voice: installed.name, verified: true };
+    if (turkish) {
+      const tr = voices.filter((v) => v.locale.toLowerCase().startsWith("tr"));
+      const pick = findSystemVoice(tr, "Yelda") ?? tr[0];
+      if (!pick) throw new Error(MAC_TURKISH_VOICE_MISSING);
+      if (wanted || !/^yelda/i.test(pick.name)) {
+        this.logger.warn(`say: voice "${asked}" is not installed; using ${pick.name}`);
+      }
+      return {
+        voice: pick.name,
+        verified: true,
+        ...(wanted
+          ? { note: `“${wanted}” sesi bu Mac'te yüklü değil; ${pick.name} kullanıldı.` }
+          : {}),
+      };
     }
+    if (!asked) return { voice: undefined, verified: true };
+    this.logger.warn(`say: voice "${asked}" is not installed; using the system voice`);
+    return {
+      voice: undefined,
+      verified: true,
+      note: `“${asked}” sesi bu Mac'te yüklü değil; sistem sesi kullanıldı.`,
+    };
+  }
+
+  private run(text: string, out: string, voice: string | undefined, signal?: AbortSignal) {
+    return this.exec(
+      this.sayBin,
+      [...(voice ? ["-v", voice] : []), "-o", out, text],
+      signal ? { signal } : {},
+    );
   }
 
   async synthesize(input: TtsSynthesizeInput): Promise<TtsSynthesisResult> {
     const signal = input.signal;
-    const wanted =
-      input.voice ??
-      this.options.voice ??
-      (input.language === undefined || input.language.startsWith("tr") ? "Yelda" : undefined);
+    const turkish = languageCode(input.language) === "tr";
+    const choice = await this.chooseVoice(input.voice ?? this.options.voice, turkish, signal);
     const aiff = path.join(input.workDir, "voice.aiff");
-    const voice = await this.say(input.text, aiff, wanted, signal);
+    let voice = choice.voice;
+    let note = choice.note;
+    try {
+      await this.run(input.text, aiff, voice, signal);
+    } catch (error) {
+      signal?.throwIfAborted();
+      // Voices could not be listed: a failing voice is most likely not installed.
+      if (choice.verified || !voice) throw error;
+      if (turkish) throw new Error(`${MAC_TURKISH_VOICE_MISSING} (${(error as Error).message})`);
+      this.logger.warn(`say: voice "${voice}" failed; using the system voice`);
+      note = `“${voice}” sesi bu Mac'te yüklü değil; sistem sesi kullanıldı.`;
+      voice = undefined;
+      await this.run(input.text, aiff, undefined, signal);
+    }
     const audioPath = path.join(input.workDir, "voice.m4a");
     await transcodeAudioToAac({
       ffmpeg: this.options.ffmpeg,
@@ -284,7 +526,7 @@ export class MacSayTtsProvider implements TtsProvider {
       const lengths: number[] = [];
       for (const [i, sentence] of sentences.entries()) {
         const part = path.join(input.workDir, `sentence-${i}.aiff`);
-        await this.say(sentence, part, voice, signal);
+        await this.run(sentence, part, voice, signal);
         lengths.push((await probeMedia(this.options.ffmpeg, part, signal)).durationMs ?? 0);
       }
       const sum = lengths.reduce((a, b) => a + b, 0);
@@ -308,6 +550,7 @@ export class MacSayTtsProvider implements TtsProvider {
       durationMs: totalMs,
       words,
       provider: `${this.name}${voice ? `:${voice}` : ""}`,
+      ...(note ? { note } : {}),
     };
   }
 }
@@ -318,18 +561,21 @@ export function selectTtsProvider(options: {
   ffmpeg: FfmpegRunner;
   fetch?: typeof globalThis.fetch;
   sayExec?: SayCommandRunner;
+  logger?: Logger;
 }): TtsProvider | null {
   if (options.elevenLabsApiKey?.trim()) {
     return new ElevenLabsTtsProvider({
       apiKey: options.elevenLabsApiKey,
       ...(options.elevenLabsVoiceId ? { defaultVoiceId: options.elevenLabsVoiceId } : {}),
       ...(options.fetch ? { fetch: options.fetch } : {}),
+      ...(options.logger ? { logger: options.logger } : {}),
     });
   }
   if (process.platform === "darwin" || options.sayExec) {
     return new MacSayTtsProvider({
       ffmpeg: options.ffmpeg,
       ...(options.sayExec ? { exec: options.sayExec } : {}),
+      ...(options.logger ? { logger: options.logger } : {}),
     });
   }
   return null;

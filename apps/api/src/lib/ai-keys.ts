@@ -1,9 +1,13 @@
-import type {
-  AiBudget,
-  AiKeyProvider,
-  AiKeyState,
-  AiSpendModel,
-  AiSpendTotals,
+import {
+  type AiBudget,
+  type AiKeyProvider,
+  type AiKeyState,
+  type AiPreferences,
+  type AiSpendTotals,
+  ClaudeLimitChoice,
+  type ClaudeLimitDecision,
+  ClaudeLimitMode,
+  DEFAULT_CLAUDE_LIMIT_MODE,
 } from "@studio/contract";
 import { eq } from "drizzle-orm";
 import type { Db } from "../db/client.ts";
@@ -287,10 +291,30 @@ export function toTotals(row: {
   };
 }
 
+/** True when paid calls must stop: `stopAtBudget` is on and the month's spend reached the budget. */
+export function budgetExhausted(
+  monthlyUsd: number | null,
+  spentUsd: number,
+  stopAtBudget: boolean,
+): boolean {
+  return stopAtBudget && monthlyUsd !== null && spentUsd >= monthlyUsd;
+}
+
 /** Budget state; warns from 80 % of the budget on. */
-export function budgetState(monthlyUsd: number | null, spentUsd: number): AiBudget {
+export function budgetState(
+  monthlyUsd: number | null,
+  spentUsd: number,
+  stopAtBudget = false,
+): AiBudget {
   if (monthlyUsd === null) {
-    return { monthlyUsd: null, remainingUsd: null, usedPercent: null, warning: false };
+    return {
+      monthlyUsd: null,
+      remainingUsd: null,
+      usedPercent: null,
+      warning: false,
+      stopAtBudget,
+      exhausted: false,
+    };
   }
   const usedPercent =
     monthlyUsd > 0 ? Math.round((spentUsd / monthlyUsd) * 1000) / 10 : spentUsd > 0 ? 100 : 0;
@@ -299,25 +323,121 @@ export function budgetState(monthlyUsd: number | null, spentUsd: number): AiBudg
     remainingUsd: roundUsd(monthlyUsd - spentUsd),
     usedPercent,
     warning: usedPercent >= 80,
+    stopAtBudget,
+    exhausted: budgetExhausted(monthlyUsd, spentUsd, stopAtBudget),
   };
 }
 
-export function sortModels(rows: AiSpendModel[]): AiSpendModel[] {
+export function sortModels<T extends AiSpendTotals>(rows: T[]): T[] {
   return [...rows].sort((a, b) => b.costUsd - a.costUsd || b.calls - a.calls);
 }
 
-export async function loadBudget(db: Db): Promise<number | null> {
-  const row = await db.query.aiSettings.findFirst({ where: eq(aiSettings.id, SETTINGS_ID) });
-  return row?.geminiMonthlyBudgetUsd ?? null;
+// --- settings and preferences (S7) ---------------------------------------------------------------
+
+export type AiSettingsRow = typeof aiSettings.$inferSelect;
+
+/** How long an answer to the Claude limit holds when the reset time is unknown. */
+export const DEFAULT_LIMIT_DECISION_MS = 5 * 60 * 60_000;
+
+export async function loadSettings(db: Db): Promise<AiSettingsRow | null> {
+  return (await db.query.aiSettings.findFirst({ where: eq(aiSettings.id, SETTINGS_ID) })) ?? null;
 }
 
-export async function saveBudget(db: Db, monthlyUsd: number | null): Promise<void> {
+export async function loadBudget(db: Db): Promise<number | null> {
+  return (await loadSettings(db))?.geminiMonthlyBudgetUsd ?? null;
+}
+
+/** The stored mode; anything unknown (or never set) is the default `ask`. */
+export function limitMode(row: AiSettingsRow | null): ClaudeLimitMode {
+  const parsed = ClaudeLimitMode.safeParse(row?.claudeLimitMode);
+  return parsed.success ? parsed.data : DEFAULT_CLAUDE_LIMIT_MODE;
+}
+
+/** The owner's answer to the Claude limit while it holds (`until` still ahead), else null. */
+export function activeDecision(
+  row: AiSettingsRow | null,
+  nowMs = Date.now(),
+): ClaudeLimitDecision | null {
+  const choice = ClaudeLimitChoice.safeParse(row?.limitChoice);
+  if (!row || !choice.success || !row.limitUntil) return null;
+  if (row.limitUntil.getTime() <= nowMs) return null;
+  return {
+    choice: choice.data,
+    until: row.limitUntil.toISOString(),
+    decidedAt: (row.limitDecidedAt ?? row.updatedAt).toISOString(),
+  };
+}
+
+export function toPreferences(row: AiSettingsRow | null, nowMs = Date.now()): AiPreferences {
+  return {
+    claudeLimit: limitMode(row),
+    monthlyBudgetUsd: row?.geminiMonthlyBudgetUsd ?? null,
+    stopAtBudget: row?.stopAtBudget ?? false,
+    limitDecision: activeDecision(row, nowMs),
+    updatedAt: row ? row.updatedAt.toISOString() : null,
+  };
+}
+
+type SettingsPatch = Partial<Omit<AiSettingsRow, "id" | "updatedAt">>;
+
+/** Upsert the single settings row with only the given columns. */
+async function patchSettings(db: Db, patch: SettingsPatch): Promise<void> {
   const now = new Date();
   await db
     .insert(aiSettings)
-    .values({ id: SETTINGS_ID, geminiMonthlyBudgetUsd: monthlyUsd, updatedAt: now })
-    .onConflictDoUpdate({
-      target: aiSettings.id,
-      set: { geminiMonthlyBudgetUsd: monthlyUsd, updatedAt: now },
-    });
+    .values({ id: SETTINGS_ID, ...patch, updatedAt: now })
+    .onConflictDoUpdate({ target: aiSettings.id, set: { ...patch, updatedAt: now } });
+}
+
+export async function saveBudget(db: Db, monthlyUsd: number | null): Promise<void> {
+  await patchSettings(db, { geminiMonthlyBudgetUsd: monthlyUsd });
+}
+
+/**
+ * Only the fields sent change. A new Claude-limit mode drops the answer given under the old one
+ * (it was an answer to `ask`).
+ */
+export async function savePreferences(
+  db: Db,
+  input: {
+    claudeLimit?: ClaudeLimitMode;
+    monthlyBudgetUsd?: number | null;
+    stopAtBudget?: boolean;
+  },
+): Promise<void> {
+  const patch: SettingsPatch = {};
+  if (input.claudeLimit !== undefined) {
+    const current = limitMode(await loadSettings(db));
+    patch.claudeLimitMode = input.claudeLimit;
+    if (input.claudeLimit !== current) {
+      patch.limitChoice = null;
+      patch.limitUntil = null;
+      patch.limitDecidedAt = null;
+    }
+  }
+  if (input.monthlyBudgetUsd !== undefined) patch.geminiMonthlyBudgetUsd = input.monthlyBudgetUsd;
+  if (input.stopAtBudget !== undefined) patch.stopAtBudget = input.stopAtBudget;
+  if (Object.keys(patch).length === 0) return;
+  await patchSettings(db, patch);
+}
+
+export async function saveLimitDecision(
+  db: Db,
+  choice: ClaudeLimitChoice,
+  untilMs: number,
+  nowMs = Date.now(),
+): Promise<void> {
+  await patchSettings(db, {
+    limitChoice: choice,
+    limitUntil: new Date(untilMs),
+    limitDecidedAt: new Date(nowMs),
+  });
+}
+
+/**
+ * Until when an answer holds: the reset presence reports (when still ahead), else five hours.
+ */
+export function decisionUntil(resetsAt: string | null | undefined, nowMs = Date.now()): number {
+  const reset = resetsAt ? Date.parse(resetsAt) : Number.NaN;
+  return Number.isFinite(reset) && reset > nowMs ? reset : nowMs + DEFAULT_LIMIT_DECISION_MS;
 }

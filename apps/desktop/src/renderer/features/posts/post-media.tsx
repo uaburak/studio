@@ -4,6 +4,11 @@ import { type ContentVersion, readReelVersionInfo } from "@studio/contract";
 import { cn } from "../../components/ui/controls.tsx";
 import { IconPlay } from "../../components/ui/icons.tsx";
 import { assetUrl } from "../../lib/api.ts";
+import { thumbUrl } from "../../lib/thumbnail.ts";
+
+/** CSS widths the small sizes are shown at (their thumbnails are asked for at this width). */
+const CARD_WIDTH = 320;
+const THUMB_WIDTH = 120;
 
 /** The Wecra "Post card" media gradients (green, blue, orange, yellow). */
 export const PLACEHOLDER_GRADIENTS = [
@@ -76,7 +81,11 @@ export function PostMedia({
     >
       {assetId ? (
         <img
-          src={assetUrl(assetId)}
+          src={
+            size === "large"
+              ? assetUrl(assetId)
+              : thumbUrl(assetId, size === "thumb" ? THUMB_WIDTH : CARD_WIDTH)
+          }
           alt=""
           draggable={false}
           loading="lazy"

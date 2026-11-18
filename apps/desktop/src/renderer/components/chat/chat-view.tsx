@@ -1,6 +1,6 @@
 // A conversation: the transcript (710 pt column, follows the bottom without jumps), the glass
 // composer floating over it, the status line, "jump to latest".
-import type { ConversationAlias, WorkerPresence } from "@studio/contract";
+import type { Conversation, ConversationAlias, WorkerPresence } from "@studio/contract";
 import { useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ScrollFollower, type ScrollMetrics, showJumpToLatest } from "../../lib/scroll-follow.ts";
 import { buildTranscript, type TranscriptItem } from "../../lib/transcript.ts";
@@ -8,7 +8,9 @@ import { canRunChat } from "../../lib/usage.ts";
 import { useAppStore } from "../../state/app-store.ts";
 import type { ConversationController } from "../../state/conversation.ts";
 import { useAgentChoice, useConversation, useJobs } from "../../state/studio.tsx";
-import { cn, WorkingDots } from "../ui/controls.tsx";
+import { useConversationActions } from "../shell/conversation-actions.ts";
+import { Button, cn, WorkingDots } from "../ui/controls.tsx";
+import { ErrorDetail } from "../ui/error-detail.tsx";
 import { IconArrowUp, IconClose } from "../ui/icons.tsx";
 import { EventLine, WorkingLine } from "./blocks.tsx";
 import { Composer, type ComposerHandle } from "./composer.tsx";
@@ -119,6 +121,7 @@ export function ChatView({ id }: { id: string }) {
         busyPlans: conversation.busyPlans,
         busyQuestions: conversation.busyQuestions,
         busyConsents: conversation.busyConsents,
+        planErrors: conversation.planErrors,
         queue: conversation.queue,
         stepStarts: conversation.stepStarts,
       }),
@@ -131,6 +134,7 @@ export function ChatView({ id }: { id: string }) {
       conversation.busyPlans,
       conversation.busyQuestions,
       conversation.busyConsents,
+      conversation.planErrors,
       conversation.queue,
       conversation.stepStarts,
     ],
@@ -184,10 +188,13 @@ export function ChatView({ id }: { id: string }) {
             {follow.jump && <JumpToLatest working={working} onClick={() => follow.resume(true)} />}
             {conversation.error && (
               <div
-                className="mb-2 flex items-center gap-2 px-3 text-footnote text-danger"
+                className="mb-2 flex items-start gap-2 px-3 text-footnote text-danger"
                 role="alert"
               >
-                <span className="flex-1">{conversation.error}</span>
+                <span className="min-w-0 flex-1">
+                  {conversation.error}
+                  <ErrorDetail detail={conversation.errorDetail} />
+                </span>
                 <button
                   type="button"
                   aria-label="Kapat"
@@ -198,29 +205,59 @@ export function ChatView({ id }: { id: string }) {
                 </button>
               </div>
             )}
-            <Composer
-              ref={composer}
-              placeholder={placeholder}
-              workingPlaceholder="↩ gönder, ⌘↩ sıraya al"
-              working={working}
-              brandId={state?.conversation.brandId ?? null}
-              attachDisabledReason={
-                state && !state.conversation.brandId ? "Markasız sohbete görsel eklenemez." : null
-              }
-              aliases={aliases}
-              onSend={async (message) => {
-                follow.resume();
-                setPlaceholder("Bir şey sor…");
-                return controller.send(message);
-              }}
-              onStop={() => void controller.cancelRun()}
-            />
+            {state?.conversation.status === "archived" ? (
+              <ArchivedBar conversation={state.conversation} />
+            ) : (
+              <Composer
+                ref={composer}
+                placeholder={placeholder}
+                workingPlaceholder="↩ sıraya al · ⌘↩ durdurup hemen gönder"
+                working={working}
+                brandId={state?.conversation.brandId ?? null}
+                attachDisabledReason={
+                  state && !state.conversation.brandId ? "Markasız sohbete görsel eklenemez." : null
+                }
+                aliases={aliases}
+                onSend={async (message, { now }) => {
+                  follow.resume();
+                  setPlaceholder("Bir şey sor…");
+                  const ok = await controller.send(message);
+                  // ⌘↩ while a reply runs: it stops and this message goes first.
+                  if (ok && now) void controller.sendQueuedNow(message.clientMessageId);
+                  return ok;
+                }}
+                onStop={() => void controller.cancelRun()}
+              />
+            )}
             <div className="mt-1.5">
               <StatusLine choice={choice} onChoice={setChoice} presence={presence} />
             </div>
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+/** An archived conversation (opened from Arşiv) is read-only until it is taken back. */
+function ArchivedBar({ conversation }: { conversation: Conversation }) {
+  const actions = useConversationActions();
+  const [busy, setBusy] = useState(false);
+  return (
+    <div className="glass-composer flex min-h-11 items-center gap-3 rounded-[22px] py-1.5 pr-1.5 pl-4">
+      <span className="min-w-0 flex-1 text-body text-fg-2">
+        Bu sohbet arşivde. Yazmak için arşivden çıkar.
+      </span>
+      <Button
+        variant="primary"
+        disabled={busy}
+        onClick={() => {
+          setBusy(true);
+          void actions.unarchive(conversation).finally(() => setBusy(false));
+        }}
+      >
+        {busy ? "Çıkarılıyor…" : "Arşivden çıkar"}
+      </Button>
     </div>
   );
 }
@@ -240,9 +277,16 @@ export function TranscriptItems({
   onEditPlan(): void;
   onEditQueued(text: string): void;
 }) {
+  // Only the last reply's error offers "Yeniden dene", and only while nothing runs or waits.
+  const busy = items.some((i) => i.kind === "working" || i.kind === "queued");
+  let lastAssistant = -1;
+  items.forEach((item, index) => {
+    if (item.kind === "assistant") lastAssistant = index;
+    else if (item.kind === "user") lastAssistant = -1;
+  });
   return (
     <>
-      {items.map((item) => {
+      {items.map((item, index) => {
         switch (item.kind) {
           case "loading":
             return (
@@ -278,6 +322,11 @@ export function TranscriptItems({
                 controller={controller}
                 onMention={onMention}
                 onEditPlan={onEditPlan}
+                onRetry={
+                  index === lastAssistant && !busy && !item.isStreaming
+                    ? () => controller.retryLast()
+                    : undefined
+                }
               />
             );
           case "event":

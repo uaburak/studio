@@ -1,12 +1,16 @@
 // The empty chat (Wecra "Chat – Boş"): Studio mark, greeting, one status line and suggestion
 // pills in the middle; the composer at the bottom. The first send creates the conversation
-// (with the brand picked in the title menu), sends the message and opens it.
-import { useLayoutEffect, useRef, useState } from "react";
-import { describeError, useApi } from "../../lib/api.ts";
+// (with the brand picked in the title menu), sends the message and opens it. A send that fails
+// after the conversation was made reuses it on the next try (its brand follows the title menu),
+// and a conversation left empty when the view goes away is archived — no empty chats remain.
+import type { Conversation } from "@studio/contract";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { type ErrorDescription, explainError, useApi } from "../../lib/api.ts";
 import { saveChoicePatch } from "../../lib/models.ts";
 import type { OutgoingMessage } from "../../lib/transcript.ts";
 import { useAppStore } from "../../state/app-store.ts";
 import { useChatDraft } from "../../state/chat-draft.ts";
+import { useOwnerName } from "../../state/owner-name.ts";
 import {
   isHostUp,
   useAccounts,
@@ -18,17 +22,18 @@ import {
   useSettings,
 } from "../../state/studio.tsx";
 import { Button } from "../ui/controls.tsx";
+import { ErrorDetail } from "../ui/error-detail.tsx";
 import { StudioMark } from "../ui/icons.tsx";
 import { COLUMN } from "./chat-view.tsx";
 import { Composer, type ComposerHandle } from "./composer.tsx";
 import { StatusLine } from "./status-line.tsx";
 
-const SUGGESTIONS = ["Bu ayın postlarını planla", "Reels fikri üret", "Haftalık raporu hazırla"];
+const SUGGESTIONS = ["Bu ayın postlarını planla", "Reels fikri üret"];
 
 export function NewChatView() {
   const api = useApi();
   const host = useHost();
-  const { settings, update } = useSettings();
+  const { update } = useSettings();
   const brands = useBrands();
   const accounts = useAccounts();
   const { presence } = useJobs();
@@ -38,11 +43,22 @@ export function NewChatView() {
   const focusSignal = useAppStore((s) => s.focusComposer);
   const updateCached = useConversationUpdater();
   const [choice, setChoice] = useAgentChoice(null);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<ErrorDescription | null>(null);
   const [busy, setBusy] = useState(false);
   const composer = useRef<ComposerHandle | null>(null);
   /** A first send that failed after the conversation was made reuses it. */
   const created = useRef<{ id: string; brandId: string | null } | null>(null);
+
+  // Leaving with a conversation that never got its first message: archive it (no empty chats).
+  useEffect(
+    () => () => {
+      const left = created.current;
+      created.current = null;
+      if (left)
+        void api.conversations.update(left.id, { status: "archived" }).catch(() => undefined);
+    },
+    [api],
+  );
 
   useLayoutEffect(() => {
     composer.current?.focus();
@@ -69,7 +85,7 @@ export function NewChatView() {
   const connected = (accounts.data ?? []).filter(
     (a) => a.brandId === currentBrandId && a.status === "connected",
   ).length;
-  const name = settings.ownerName.trim() || presence?.claude?.displayName || "Burak";
+  const name = useOwnerName();
   const up = isHostUp(host);
   const statusParts = [
     brand ? `${brand.name} seçili` : "Marka seçilmedi",
@@ -82,21 +98,32 @@ export function NewChatView() {
     setBusy(true);
     setError(null);
     try {
-      let id: string;
-      if (created.current && created.current.brandId === currentBrandId) {
-        id = created.current.id;
+      // Nothing is created for a send that cannot go: images need the chat's brand.
+      if (message.attachments.length > 0 && !currentBrandId) {
+        setError({
+          message: "Görsel göndermek için önce başlıktaki menüden bir marka seç.",
+          detail: null,
+        });
+        return false;
+      }
+      let conversation: Conversation;
+      const previous = created.current;
+      if (previous) {
+        // The empty conversation of a failed try: its brand follows the title menu.
+        conversation =
+          currentBrandId && previous.brandId !== currentBrandId
+            ? await api.conversations.update(previous.id, { brandId: currentBrandId })
+            : await api.conversations.get(previous.id);
+        created.current = { id: conversation.id, brandId: conversation.brandId };
       } else {
         const title = message.text.trim().slice(0, 60);
-        const conversation = await api.conversations.create({
+        conversation = await api.conversations.create({
           ...(currentBrandId ? { brandId: currentBrandId } : {}),
           ...(title ? { title } : {}),
         });
-        updateCached(conversation);
-        update(saveChoicePatch(choice, conversation.id));
-        created.current = { id: conversation.id, brandId: currentBrandId };
-        id = conversation.id;
+        created.current = { id: conversation.id, brandId: conversation.brandId };
       }
-      await api.conversations.messages.send(id, {
+      await api.conversations.messages.send(conversation.id, {
         ...(message.text ? { text: message.text } : {}),
         ...(message.attachments.length ? { attachments: message.attachments } : {}),
         clientMessageId: message.clientMessageId,
@@ -104,10 +131,13 @@ export function NewChatView() {
         effort: choice.effort,
       });
       created.current = null;
-      navigate({ kind: "conversation", id });
+      // Only a conversation with its first message shows in the list.
+      updateCached(conversation);
+      update(saveChoicePatch(choice, conversation.id));
+      navigate({ kind: "conversation", id: conversation.id });
       return true;
     } catch (e) {
-      setError(describeError(e));
+      setError(explainError(e));
       return false;
     } finally {
       setBusy(false);
@@ -118,7 +148,9 @@ export function NewChatView() {
     <div className="relative flex min-h-0 flex-1 flex-col">
       <div className="flex flex-1 flex-col items-center justify-center px-6 pb-24">
         <StudioMark size={44} />
-        <h1 className="mt-4 text-display font-semibold text-fg">Bugün ne üretelim, {name}?</h1>
+        <h1 className="mt-4 text-display font-semibold text-fg">
+          {name ? `Bugün ne üretelim, ${name}?` : "Bugün ne üretelim?"}
+        </h1>
         <p className="mt-2.5 text-body text-fg-2">
           {up
             ? statusParts.join(" · ")
@@ -137,7 +169,8 @@ export function NewChatView() {
       <div className={`${COLUMN} pb-2.5`}>
         {error && (
           <div className="mb-2 px-3 text-footnote text-danger" role="alert">
-            {error}
+            {error.message}
+            <ErrorDetail detail={error.detail} />
           </div>
         )}
         <Composer

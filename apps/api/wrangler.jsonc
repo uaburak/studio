@@ -55,6 +55,10 @@
     }
   ],
 
+  // Thumbnails (GET /api/assets/{id}/thumbnail). Locally Miniflare runs this binding offline
+  // with sharp (no Cloudflare account, no network); results are cached in MEDIA under thumbs/.
+  "images": { "binding": "IMAGES" },
+
   "durable_objects": {
     "bindings": [{ "name": "HUB", "class_name": "Hub" }]
   },

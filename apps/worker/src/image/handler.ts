@@ -7,16 +7,63 @@
  *   with a natural contact/drop shadow via `sharp` (`.claude/skills/product-reference-image/SKILL.md`),
  * - Automatically fills and renders `targetContentId` + `targetSlotId` when specified.
  */
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import path from "node:path";
 import { ApiError, ImageGeneratePayload } from "@studio/contract";
 import sharp from "sharp";
+import { isBudgetExceeded } from "../ai/policy.ts";
 import { geminiUsageSink } from "../ai/usage-recorder.ts";
+import { abortableSleep } from "../claude/gate.ts";
 import { GEMINI_KEY_MISSING, getGeminiApiKey } from "../gemini/json-call.ts";
 import { type GeminiUsageMetadata, sampleFromMetadata } from "../gemini/pricing.ts";
+import { GEMINI_RATE_LIMIT_TRIES, rateLimitDelayMs } from "../gemini/retry.ts";
 import { defineHandler, type JobContext, RetryableError } from "../registry.ts";
 import { type ContentRenderDeps, executeContentRender } from "../render/handler.ts";
 
 export interface ImageGenerateDeps extends ContentRenderDeps {
   imageFetch?: typeof globalThis.fetch;
+  /** Test seam: the waits between 429 retries. */
+  imageSleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
+}
+
+/**
+ * A generated picture kept on disk until its job succeeds (U7): a retried `image.generate` (the
+ * upload or the slot fill failed, the worker restarted) reuses it instead of paying Gemini again,
+ * and does not upload it twice.
+ */
+interface StoredImage {
+  mimeType: string;
+  width: number;
+  height: number;
+  model: string;
+  preserveProductLabel: boolean;
+  file: string;
+  /** Set once the upload went through. */
+  assetId?: string;
+}
+
+function resultDir(stateDir: string, jobId: string): string {
+  return path.join(stateDir, "image-results", jobId.replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 128));
+}
+
+async function loadStoredImage(
+  dir: string,
+): Promise<{ meta: StoredImage; bytes: Uint8Array } | null> {
+  try {
+    const meta = JSON.parse(await readFile(path.join(dir, "result.json"), "utf8")) as StoredImage;
+    const bytes = new Uint8Array(await readFile(path.join(dir, meta.file)));
+    return bytes.byteLength > 0 ? { meta, bytes } : null;
+  } catch {
+    return null;
+  }
+}
+
+async function saveStoredImage(dir: string, meta: StoredImage, bytes?: Uint8Array): Promise<void> {
+  await mkdir(dir, { recursive: true });
+  if (bytes) await writeFile(path.join(dir, meta.file), bytes);
+  const tmp = path.join(dir, "result.json.tmp");
+  await writeFile(tmp, JSON.stringify(meta), "utf8");
+  await rename(tmp, path.join(dir, "result.json"));
 }
 
 const SUPPORTED_INLINE_MIMES = new Set(["image/jpeg", "image/png", "image/webp"]);
@@ -307,7 +354,8 @@ export function createImageGenerateHandler(deps: ImageGenerateDeps) {
       const doFetch = deps.imageFetch ?? deps.geminiFetch ?? globalThis.fetch.bind(globalThis);
       const signal = ctx.signal;
 
-      try {
+      /** One paid Gemini call (plus the label compositing); returns the final picture. */
+      const generatePicture = async () => {
         ctx.progress(0.08, "Referans görseller hazırlanıyor");
         const refDownloads: { bytes: Uint8Array; mimeType: string }[] = [];
         for (const assetId of payload.referenceAssetIds) {
@@ -340,45 +388,71 @@ export function createImageGenerateHandler(deps: ImageGenerateDeps) {
 
         ctx.progress(0.25, `Gemini ile görsel üretiliyor (${model})`);
         const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`;
-        const res = await doFetch(url, {
-          method: "POST",
-          headers: {
-            "x-goog-api-key": apiKey,
-            "content-type": "application/json",
-          },
-          body: JSON.stringify({
-            contents: [{ role: "user", parts }],
-            generationConfig: {
-              responseModalities: ["IMAGE"],
-              imageConfig: {
-                aspectRatio: payload.aspectRatio,
-                imageSize: payload.imageSize,
-              },
+        const usageSink = geminiUsageSink(deps.aiUsage, { kind: "image", jobId: ctx.jobId });
+        let res: Response;
+        let rawBody: unknown;
+        for (let tries = 0; ; tries++) {
+          // "Bütçe dolunca dur": no paid call once the month's budget is used up (S7).
+          usageSink?.assertBudget?.();
+          res = await doFetch(url, {
+            method: "POST",
+            headers: {
+              "x-goog-api-key": apiKey,
+              "content-type": "application/json",
             },
-          }),
-          signal,
-        });
-
-        const rawBody = await res.json().catch(() => ({}));
+            body: JSON.stringify({
+              contents: [{ role: "user", parts }],
+              generationConfig: {
+                responseModalities: ["IMAGE"],
+                imageConfig: {
+                  aspectRatio: payload.aspectRatio,
+                  imageSize: payload.imageSize,
+                },
+              },
+            }),
+            signal,
+          });
+          const rawText = await res.text().catch(() => "");
+          try {
+            rawBody = JSON.parse(rawText);
+          } catch {
+            rawBody = {};
+          }
+          if (res.status !== 429) break;
+          // A per-minute quota: wait as long as Google says and ask again (U4).
+          const delay = rateLimitDelayMs(res.headers, rawText, tries);
+          if (delay === null || tries + 1 >= GEMINI_RATE_LIMIT_TRIES) break;
+          await (deps.imageSleep ?? abortableSleep)(delay, signal);
+        }
         if (!res.ok) {
           const errObj = (rawBody as { error?: { message?: string; status?: string } }).error ?? {};
           const msg = sanitizeSecret(String(errObj.message ?? `HTTP ${res.status}`), apiKey).slice(
             0,
             500,
           );
+          deps.logger.warn(`[job ${ctx.jobId}] gemini image error ${res.status}: ${msg}`);
           if (res.status >= 500 || res.status === 429) {
-            throw new RetryableError(`Gemini görsel hatası (${res.status}): ${msg}`);
+            throw new RetryableError(
+              res.status === 429
+                ? "Gemini görsel kotası doldu (çok istek); biraz sonra yeniden denenecek."
+                : "Gemini görsel servisi şu an yanıt vermiyor; yeniden denenecek.",
+            );
           }
-          throw new Error(`Gemini görsel üretimi başarısız (${res.status}): ${msg}`);
+          if (res.status === 401 || res.status === 403) {
+            throw new Error(
+              "Gemini anahtarı kabul edilmedi. Ayarlar → Yapay zekâ'dan anahtarı yeniden girin.",
+            );
+          }
+          throw new Error(
+            `Gemini görsel üretimi başarısız oldu (HTTP ${res.status}). Tarifi değiştirip yeniden deneyin.`,
+          );
         }
 
         const usage = (rawBody as { usageMetadata?: GeminiUsageMetadata; modelVersion?: string })
           .usageMetadata;
         if (usage) {
           const version = (rawBody as { modelVersion?: string }).modelVersion;
-          geminiUsageSink(deps.aiUsage, { kind: "image", jobId: ctx.jobId })?.(
-            sampleFromMetadata(version ?? model, usage),
-          );
+          usageSink?.(sampleFromMetadata(version ?? model, usage));
         }
 
         const candidate = (
@@ -397,7 +471,14 @@ export function createImageGenerateHandler(deps: ImageGenerateDeps) {
             (rawBody as { promptFeedback?: { blockReason?: string } }).promptFeedback
               ?.blockReason ??
             "yok";
-          throw new Error(`Gemini görsel döndürmedi (finishReason=${reason}).`);
+          deps.logger.warn(
+            `[job ${ctx.jobId}] gemini returned no picture (finishReason=${reason})`,
+          );
+          throw new Error(
+            reason === "SAFETY" || reason === "PROHIBITED_CONTENT" || reason === "IMAGE_SAFETY"
+              ? "Gemini bu tarifle görsel üretmedi (içerik kuralları). Tarifi değiştirip yeniden deneyin."
+              : "Gemini görsel döndürmedi. Tarifi değiştirip yeniden deneyin.",
+          );
         }
 
         const rawGeneratedBuf = Buffer.from(imagePart.inlineData.data, "base64");
@@ -426,21 +507,95 @@ export function createImageGenerateHandler(deps: ImageGenerateDeps) {
           }
         }
 
-        ctx.progress(0.8, "Görsel yükleniyor");
-        const ext =
-          finalMimeType === "image/jpeg" ? "jpg" : finalMimeType === "image/webp" ? "webp" : "png";
-        const uploaded = await deps.api.client.assets.upload(
-          {
-            brandId,
-            kind: "image",
-            source: "generated",
+        return {
+          bytes: finalBytes,
+          mimeType: finalMimeType,
+          width: finalWidth,
+          height: finalHeight,
+          preserveLabel,
+        };
+      };
+
+      const dir = resultDir(deps.stateDir, ctx.jobId);
+      try {
+        // An earlier attempt of this job may have paid for the picture already (U7).
+        const stored = await loadStoredImage(dir);
+        let finalBytes: Uint8Array;
+        let finalMimeType: string;
+        let finalWidth: number;
+        let finalHeight: number;
+        let preserveLabel: boolean;
+        let usedModel = model;
+        let assetId: string | undefined;
+        if (stored) {
+          deps.logger.info(
+            `[job ${ctx.jobId}] reusing the picture an earlier attempt generated (no second charge)`,
+          );
+          ctx.progress(0.6, "Daha önce üretilen görsel kullanılıyor (yeniden ücret yok)");
+          finalBytes = stored.bytes;
+          finalMimeType = stored.meta.mimeType;
+          finalWidth = stored.meta.width;
+          finalHeight = stored.meta.height;
+          preserveLabel = stored.meta.preserveProductLabel;
+          usedModel = stored.meta.model;
+          assetId = stored.meta.assetId;
+        } else {
+          const generated = await generatePicture();
+          finalBytes = generated.bytes;
+          finalMimeType = generated.mimeType;
+          finalWidth = generated.width;
+          finalHeight = generated.height;
+          preserveLabel = generated.preserveLabel;
+          // Kept before the upload: a failed upload is retried without paying again.
+          await saveStoredImage(
+            dir,
+            {
+              mimeType: finalMimeType,
+              width: finalWidth,
+              height: finalHeight,
+              model,
+              preserveProductLabel: preserveLabel,
+              file: "image.bin",
+            },
+            finalBytes,
+          ).catch((error: unknown) =>
+            deps.logger.warn(`could not keep the generated picture: ${(error as Error).message}`),
+          );
+        }
+
+        let uploaded: { id: string };
+        if (assetId) {
+          uploaded = { id: assetId };
+        } else {
+          ctx.progress(0.8, "Görsel yükleniyor");
+          const ext =
+            finalMimeType === "image/jpeg"
+              ? "jpg"
+              : finalMimeType === "image/webp"
+                ? "webp"
+                : "png";
+          uploaded = await deps.api.client.assets.upload(
+            {
+              brandId,
+              kind: "image",
+              source: "generated",
+              width: finalWidth,
+              height: finalHeight,
+              file: new Blob([finalBytes.slice()], { type: finalMimeType }),
+              filename: `ai-image-${Date.now()}.${ext}`,
+            },
+            { signal },
+          );
+          await saveStoredImage(dir, {
+            mimeType: finalMimeType,
             width: finalWidth,
             height: finalHeight,
-            file: new Blob([finalBytes.slice()], { type: finalMimeType }),
-            filename: `ai-image-${Date.now()}.${ext}`,
-          },
-          { signal },
-        );
+            model: usedModel,
+            preserveProductLabel: preserveLabel,
+            file: "image.bin",
+            assetId: uploaded.id,
+          }).catch(() => undefined);
+        }
 
         let filledContentId: string | undefined;
         let filledVersion: number | undefined;
@@ -463,19 +618,21 @@ export function createImageGenerateHandler(deps: ImageGenerateDeps) {
         }
 
         ctx.progress(1, "Tamamlandı");
+        await rm(dir, { recursive: true, force: true }).catch(() => undefined);
         return {
           assetId: uploaded.id,
           mimeType: finalMimeType,
           width: finalWidth,
           height: finalHeight,
-          model,
+          model: usedModel,
+          ...(stored ? { reusedGeneration: true } : {}),
           preserveProductLabel: preserveLabel,
           ...(filledContentId !== undefined ? { filledContentId } : {}),
           ...(filledVersion !== undefined ? { filledVersion } : {}),
         };
       } catch (error) {
         if (signal.aborted) throw signal.reason ?? error;
-        if (error instanceof RetryableError) throw error;
+        if (error instanceof RetryableError || isBudgetExceeded(error)) throw error;
         if (error instanceof ApiError && (error.status === undefined || error.status >= 500)) {
           throw new RetryableError(error.message);
         }

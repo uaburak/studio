@@ -31,7 +31,9 @@ export type Route =
   /** A brand's profile page, on one of its sections. */
   | { kind: "brand"; id: string; tab?: BrandTab }
   /** The posts board (wave 2A). */
-  | { kind: "posts" };
+  | { kind: "posts" }
+  /** Archived conversations: browse, open, take back. */
+  | { kind: "archive" };
 
 /** A place in the history: a route and the post opened over it (if any). */
 export interface Location {
@@ -96,6 +98,8 @@ export function routeKey(route: Route): string {
       return `brand:${route.id}/${route.tab ?? DEFAULT_BRAND_TAB}`;
     case "posts":
       return "posts";
+    case "archive":
+      return "archive";
   }
 }
 
@@ -116,6 +120,7 @@ export function parseRoute(key: string | null | undefined): Route {
     return { kind: "brand", id: rest };
   }
   if (key === "posts") return { kind: "posts" };
+  if (key === "archive") return { kind: "archive" };
   return { kind: "new" };
 }
 
@@ -142,6 +147,8 @@ export interface Toast {
   message: string;
   tone: "default" | "danger";
   action?: { label: string; run: () => void };
+  /** How long it stays (default 5 s); "Geri al" toasts stay 10 s. */
+  durationMs?: number;
 }
 
 interface AppState {
@@ -179,6 +186,8 @@ interface AppState {
   closePost(): void;
   /** Drop a deleted post from the history. */
   forgetPost(contentId: string): void;
+  /** Drop a route from the history (an archived conversation: back / forward skip it). */
+  forgetRoute(route: Route): void;
   goBack(): void;
   goForward(): void;
   toggleSidebar(): void;
@@ -279,6 +288,20 @@ export const useAppStore = create<AppState>((set, get) => ({
       forward: keep(forward),
       ...(post === contentId ? { post: null } : {}),
     });
+  },
+  forgetRoute(route) {
+    const key = routeKey(route);
+    const keep = (list: Location[]) => {
+      const out: Location[] = [];
+      for (const location of list) {
+        if (routeKey(location.route) === key) continue;
+        const last = out.at(-1);
+        if (!last || !sameLocation(last, location)) out.push(location);
+      }
+      return out;
+    };
+    const { back, forward } = get();
+    set({ back: keep(back), forward: keep(forward) });
   },
   goBack() {
     const { back, route, post, forward } = get();
@@ -389,7 +412,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   showToast(toast) {
     const id = ++toastId;
     set({ toasts: [...get().toasts, { tone: "default" as const, ...toast, id }].slice(-3) });
-    setTimeout(() => get().dismissToast(id), 5_000);
+    setTimeout(() => get().dismissToast(id), toast.durationMs ?? 5_000);
   },
   dismissToast(id) {
     set({ toasts: get().toasts.filter((t) => t.id !== id) });

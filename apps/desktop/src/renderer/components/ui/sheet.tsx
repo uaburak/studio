@@ -1,8 +1,10 @@
 // A sheet over the window (elevated surface, radius 14, like Claude's settings sheet): title, ✕,
-// content, footer; Esc or a click on the dimmed backdrop closes it.
-import { type ReactNode, useEffect, useRef } from "react";
+// content, footer; Esc or a click on the dimmed backdrop closes it. Focus moves to its first
+// field, stays inside (Tab) and goes back on close (modal.ts).
+import { type ReactNode, useRef } from "react";
 import { cn, IconButton } from "./controls.tsx";
 import { IconClose } from "./icons.tsx";
+import { useModal } from "./modal.ts";
 
 export function Sheet({
   open,
@@ -22,29 +24,7 @@ export function Sheet({
   className?: string;
 }) {
   const panel = useRef<HTMLDivElement | null>(null);
-  // Callers pass inline closures; only opening and closing (re)run the focus handling.
-  const closeRef = useRef(onClose);
-  closeRef.current = onClose;
-  useEffect(() => {
-    if (!open) return;
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
-      event.stopPropagation();
-      closeRef.current();
-    };
-    window.addEventListener("keydown", onKey, true);
-    const previous = document.activeElement as HTMLElement | null;
-    requestAnimationFrame(() => {
-      const first = panel.current?.querySelector<HTMLElement>(
-        "textarea, input, select, [data-autofocus]",
-      );
-      (first ?? panel.current)?.focus();
-    });
-    return () => {
-      window.removeEventListener("keydown", onKey, true);
-      previous?.focus?.();
-    };
-  }, [open]);
+  useModal(panel, { open, onClose, initialFocus: "textarea, input, select, [data-autofocus]" });
   if (!open) return null;
   return (
     // biome-ignore lint/a11y/noStaticElementInteractions: backdrop click closes (Esc does too)

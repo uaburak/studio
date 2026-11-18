@@ -6,8 +6,10 @@ import type { BrandProfile, Content, ConversationAlias, Job } from "@studio/cont
 import type { LintReport } from "@studio/design-kit/lint";
 import { createRenderer, isChromiumAvailable } from "@studio/design-kit/render";
 import sharp from "sharp";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it, vi } from "vitest";
 import { loadAgentSettings } from "../src/agent.ts";
+import { AiPolicy } from "../src/ai/policy.ts";
+import { ClaudeError, ClaudeUsageLimitError } from "../src/claude/errors.ts";
 import { ClaudeGate } from "../src/claude/gate.ts";
 import type { ClaudeCallOptions, ClaudeCallResult, ClaudeRunner } from "../src/claude/runner.ts";
 import { buildBrandContext, fileAssetMap, NEUTRAL_TOKENS } from "../src/generate/brand.ts";
@@ -249,6 +251,48 @@ describe("presets and slide counts", () => {
     expect(slideBounds("post", "5 slayt")).toEqual({ min: 1, max: 1 });
     expect(slideBounds("carousel", "4 slaytlık bir anlatım")).toEqual({ min: 4, max: 4 });
     expect(slideBounds("carousel", "depolama ipuçları")).toEqual({ min: 3, max: 6 });
+  });
+
+  // Slide-count requests set the count; images being uploaded / attached do not.
+  it.each([
+    ["10 slaytlık carousel", 10],
+    ["5 slayt", 5],
+    ["7 sayfalık bir anlatım", 7],
+    ["6 kartlık seri", 6],
+    ["8 görsellik carousel", 8],
+    ["5 görselli carousel", 5],
+    ["6 görsel carousel hazırla", 6],
+    ["10 görselden oluşan bir carousel", 10],
+    ["carousel 4 görsel olsun", 4],
+    ["a 7-slide carousel", 7],
+    ["7 slides about soil", 7],
+    ["5 slide'lık anlatım", 5],
+    ["Bunu 5 slaytta anlat", 5],
+    ["5 tane slayt olsun", 5],
+    ["SEKİZ değil 8 SLAYTLIK", 8],
+    ["5 slaytlık carousel ekle", 5],
+    ["10 görsel yükleyeceğim, 5 slaytlık carousel yap", 5],
+    ["3 fotoğraf ekledim, 6 kartlık carousel hazırla", 6],
+    ["5 slayt, 3 fotoğraf ekledim", 5],
+    ["2026 yılı için 5 slayt", 5],
+    ["12 slayt", 10],
+    ["1 slayt", 2],
+    ["10 görsel yükleyeceğim", null],
+    ["10 görsel yükleyeceğim, bunlardan carousel yap", null],
+    ["3 fotoğraf ekledim", null],
+    ["5 görsel gönderdim", null],
+    ["10 görseli yükledim", null],
+    ["10 tane görsel attım", null],
+    ["4 görsel paylaşacağım", null],
+    ["8 görsel var elimde", null],
+    ["4 kart ekledim", null],
+    ["5 slayt yükledim", null],
+    ["5 slides uploaded", null],
+    ["depolama ipuçları", null],
+  ] as const)("slideBounds(carousel, %j) -> %s", (brief, count) => {
+    expect(slideBounds("carousel", brief)).toEqual(
+      count === null ? { min: 3, max: 6 } : { min: count, max: count },
+    );
   });
 });
 
@@ -708,3 +752,145 @@ describe.skipIf(!chromium || process.env.STUDIO_SKIP_RENDER === "1")(
     });
   },
 );
+
+describe("Faz 4: malformed answers, Turkish errors, Claude's limit (U5, U12, S7)", () => {
+  const okRenderer: SlideRenderer = {
+    async renderAndLint() {
+      return {
+        jpeg: await jpeg(),
+        pixelWidth: 1080,
+        pixelHeight: 1350,
+        deviceScaleFactor: 1,
+        network: { blocked: [], missing: [] },
+        served: [],
+        timings: { contextMs: 1, loadMs: 1, assetsMs: 1, screenshotMs: 1, encodeMs: 1, totalMs: 5 },
+        report: report(0),
+      };
+    },
+  };
+
+  it("U5: one malformed answer is asked again once with the problem, not a failed post", async () => {
+    const { api, state } = createFakeApi({ brands: [fakeBrand()] });
+    state.contents.set("content_1", content());
+    const calls: ClaudeCallOptions[] = [];
+    const runner: ClaudeRunner = async (options) => {
+      calls.push(options);
+      if (calls.length === 1) return { ...designResult(typographic), output: { slides: [] } };
+      return designResult(typographic);
+    };
+    const handler = createContentGenerateHandler(makeDeps(api, runner, okRenderer));
+    const job = jobFor({ brief: "Ürünü tanıt.", type: "post" });
+    const out = await handler.run(job.payload as never, ctxFor(job).ctx);
+    expect(calls.map((c) => c.label)).toEqual([
+      "content-ontent_1-generate",
+      "content-ontent_1-generate-reask",
+      "content-ontent_1-revise",
+    ]);
+    const reask = calls[1]?.content[0];
+    expect(reask?.type === "text" && reask.text).toContain("YOUR PREVIOUS ANSWER WAS REJECTED");
+    expect(out).toMatchObject({ reasked: 1 });
+    expect(state.versionCreates).toHaveLength(1);
+  });
+
+  it("U5/U12: two malformed answers fail with a Turkish message (details only in the log)", async () => {
+    const { api, state } = createFakeApi({ brands: [fakeBrand()] });
+    state.contents.set("content_1", content());
+    let calls = 0;
+    const runner: ClaudeRunner = async () => {
+      calls++;
+      throw new ClaudeError("output", "content-x: no structured output (stop: end_turn)");
+    };
+    const handler = createContentGenerateHandler(makeDeps(api, runner, okRenderer));
+    const job = jobFor({ brief: "Ürünü tanıt.", type: "post" });
+    const error = await handler.run(job.payload as never, ctxFor(job).ctx).catch((e) => e);
+    expect(calls).toBe(2);
+    expect((error as Error).message).toBe("Claude'un yanıtı beklenen biçimde değildi.");
+  });
+
+  it("U12: a design that cannot be rendered says which slide in Turkish", async () => {
+    const { api, state } = createFakeApi({ brands: [fakeBrand()] });
+    state.contents.set("content_1", content());
+    const runner: ClaudeRunner = async () => designResult(typographic);
+    const broken: SlideRenderer = {
+      async renderAndLint() {
+        throw new Error("Protocol error: Target closed");
+      },
+    };
+    const deps = makeDeps(api, runner, broken);
+    deps.settings.designFixPasses = 0;
+    const handler = createContentGenerateHandler(deps);
+    const job = jobFor({ brief: "Ürünü tanıt.", type: "post" });
+    const error = await handler.run(job.payload as never, ctxFor(job).ctx).catch((e) => e);
+    expect((error as Error).message).toContain("1. slayt görsele dönüştürülemedi");
+    expect((error as Error).message).not.toMatch(/render failed|Protocol error/);
+  });
+
+  it("U12: a bad payload is refused in Turkish", async () => {
+    const { api } = createFakeApi({ brands: [fakeBrand()] });
+    const handler = createContentGenerateHandler(
+      makeDeps(api, async () => designResult(typographic), okRenderer),
+    );
+    const job = { ...jobFor({ type: "post" }), payload: { nope: true } };
+    await expect(handler.run(job.payload as never, ctxFor(job).ctx)).rejects.toThrow(
+      /Üretim isteği eksik ya da bozuk/,
+    );
+  });
+
+  it("S7 'Sor': the job waits for the owner's answer and goes on with Gemini, said on the version", async () => {
+    const { api, state } = createFakeApi({ brands: [fakeBrand()] });
+    state.contents.set("content_1", content());
+    let claudeCalls = 0;
+    const runner: ClaudeRunner = async () => {
+      claudeCalls++;
+      throw new ClaudeUsageLimitError("limit", new Date(Date.now() + 3_600_000), "message");
+    };
+    const policy = new AiPolicy();
+    const deps = makeDeps(api, runner, okRenderer, { GEMINI_API_KEY: "gem-key-123456" });
+    deps.gate = new ClaudeGate({
+      runner,
+      limitChoice: () => policy.limitChoice(),
+      maxSleepChunkMs: 50,
+    });
+    deps.aiPolicy = policy;
+    const design = {
+      slides: [{ id: "slide-1", html: typographic }],
+      caption: "Gemini açıklaması",
+      rationale: "r",
+      critique: [],
+      changes: [],
+    };
+    deps.geminiFetch = async () =>
+      new Response(
+        JSON.stringify({
+          candidates: [{ content: { parts: [{ text: JSON.stringify(design) }] } }],
+          modelVersion: "gemini-2.5-flash",
+        }),
+        { status: 200 },
+      );
+    const handler = createContentGenerateHandler(deps);
+    const job = jobFor({ brief: "Ürünü tanıt.", type: "post" });
+    const { ctx, progress } = ctxFor(job);
+    const running = handler.run(job.payload as never, ctx);
+    await vi.waitFor(() =>
+      expect(progress.some((m) => m.includes("Seçiminiz bekleniyor"))).toBe(true),
+    );
+    // The owner answers "Gemini ile devam et" (the API stores it; the worker reads it again).
+    policy.apply({
+      claudeLimit: "ask",
+      limitDecision: {
+        choice: "gemini",
+        until: new Date(Date.now() + 3_600_000).toISOString(),
+        decidedAt: new Date().toISOString(),
+      },
+      budget: { monthlyUsd: null, stopAtBudget: false, spentUsd: 0, monthStart: NOW },
+    });
+    deps.gate.wake();
+    const out = await running;
+    expect(claudeCalls).toBe(1);
+    expect(out).toMatchObject({ provider: "gemini", fallback: { reason: "claude_limit" } });
+    expect(state.versionCreates[0]?.note).toContain(
+      "Claude sınırı doldu, Gemini Flash ile üretildi.",
+    );
+    expect(progress.some((m) => m.includes("Gemini Flash ile sürüyor"))).toBe(true);
+  });
+});

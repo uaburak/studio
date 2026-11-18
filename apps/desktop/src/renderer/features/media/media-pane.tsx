@@ -1,6 +1,6 @@
 // Medya pane of the right panel (Wecra "Panel – Medya"): search, "MTM Agro · 128 görsel" with
 // "Tümü" (the library page), a 3-column grid of the brand's pictures; click → lightbox, drag into
-// the composer to attach, right-click for Önizle / Sohbete ekle / Farklı kaydet.
+// the composer to attach, right-click for Önizle / Sohbete ekle / Farklı kaydet / Sil.
 import { useMemo, useState } from "react";
 import { SearchField } from "../../components/ui/controls.tsx";
 import { IconImage } from "../../components/ui/icons.tsx";
@@ -9,6 +9,7 @@ import { describeError } from "../../lib/api.ts";
 import { useAppStore } from "../../state/app-store.ts";
 import { PaneMessage, TextLink } from "../pane-ui.tsx";
 import { usePanelBrand } from "../panel-brand.ts";
+import { useAssetDelete } from "./asset-delete.tsx";
 import { useBrandAssets } from "./media-data.ts";
 import { filterAssets, isImageAsset, mediaSummary } from "./media-model.ts";
 import { MediaTile, mediaMenu, useMediaLightbox } from "./media-views.tsx";
@@ -34,6 +35,7 @@ function MediaPaneBody({ brandId, brandName }: { brandId: string; brandName: str
   const assets = useBrandAssets(brandId);
   const [query, setQuery] = useState("");
   const menu = useContextMenu();
+  const deletion = useAssetDelete(brandId);
   const images = useMemo(() => (assets.data ?? []).filter(isImageAsset), [assets.data]);
   const shown = useMemo(() => filterAssets(images, query), [images, query]);
   const lightbox = useMediaLightbox(shown);
@@ -81,7 +83,11 @@ function MediaPaneBody({ brandId, brandName }: { brandId: string; brandName: str
               onContextMenu={(event) =>
                 menu.open(
                   event,
-                  mediaMenu(asset, () => lightbox.open(asset)),
+                  mediaMenu(
+                    asset,
+                    () => lightbox.open(asset),
+                    () => void deletion.remove(asset),
+                  ),
                 )
               }
             />
@@ -99,6 +105,7 @@ function MediaPaneBody({ brandId, brandName }: { brandId: string; brandName: str
         </p>
       )}
       {menu.element}
+      {deletion.dialog}
     </div>
   );
 }

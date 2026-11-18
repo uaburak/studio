@@ -2,7 +2,7 @@ import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import type { Content, ContentVersion, Job } from "@studio/contract";
+import { ApiError, type Content, type ContentVersion, type Job } from "@studio/contract";
 import sharp from "sharp";
 import { describe, expect, it } from "vitest";
 import { loadAgentSettings } from "../src/agent.ts";
@@ -275,5 +275,87 @@ describe("image.generate handler & product label preservation", () => {
     expect(state.versions.at(-1)?.slides[0]?.html).toMatch(
       /src="\/media\/asset_gen_1\.(png|jpg|webp)"/,
     );
+  });
+});
+
+describe("image.generate retries (U7, U4)", () => {
+  const sceneResponse = async () =>
+    new Response(
+      JSON.stringify({
+        candidates: [
+          {
+            content: {
+              parts: [
+                {
+                  inlineData: {
+                    mimeType: "image/png",
+                    data: Buffer.from(await createScenePng(400, 500)).toString("base64"),
+                  },
+                },
+              ],
+            },
+          },
+        ],
+        usageMetadata: { promptTokenCount: 10, candidatesTokenCount: 1290 },
+      }),
+      { status: 200 },
+    );
+  const payload = {
+    prompt: "Sabah güneşinde tarla",
+    aspectRatio: "4:5" as const,
+    imageSize: "1K" as const,
+    referenceAssetIds: [],
+    preserveProductLabel: false,
+  };
+
+  it("a retried job reuses the picture it paid for instead of calling Gemini again", async () => {
+    const { api, state } = createFakeApi({ brands: [fakeBrand()] });
+    let geminiCalls = 0;
+    const deps = makeDeps(api, { GEMINI_API_KEY: "secret-img-key" }, async () => {
+      geminiCalls++;
+      return sceneResponse();
+    });
+    // The first upload fails (API down): the job is retried.
+    const upload = api.client.assets.upload;
+    let uploads = 0;
+    api.client.assets.upload = (async (...args: Parameters<typeof upload>) => {
+      uploads++;
+      if (uploads === 1) throw new ApiError("service unavailable", 503, "internal_error");
+      return upload(...args);
+    }) as typeof upload;
+    const handler = createImageGenerateHandler(deps);
+    await expect(handler.run(payload, imageJobCtx(payload))).rejects.toMatchObject({
+      name: "RetryableError",
+    });
+    const out = await handler.run(payload, imageJobCtx(payload));
+    expect(geminiCalls).toBe(1);
+    expect(out).toMatchObject({ assetId: "asset_gen_1", reusedGeneration: true });
+    expect(state.uploads).toHaveLength(1);
+    // Done: the kept picture is gone.
+    const third = await handler.run(payload, imageJobCtx(payload));
+    expect(geminiCalls).toBe(2);
+    expect(third).not.toHaveProperty("reusedGeneration");
+  });
+
+  it("waits out a 429 and asks again instead of failing", async () => {
+    const { api } = createFakeApi({ brands: [fakeBrand()] });
+    const responses: (() => Promise<Response>)[] = [
+      async () =>
+        new Response(JSON.stringify({ error: { code: 429, message: "quota" } }), {
+          status: 429,
+          headers: { "retry-after": "2" },
+        }),
+      sceneResponse,
+    ];
+    const sleeps: number[] = [];
+    const deps: ImageGenerateDeps = {
+      ...makeDeps(api, { GEMINI_API_KEY: "secret-img-key" }, async () =>
+        (responses.shift() as () => Promise<Response>)(),
+      ),
+      imageSleep: async (ms) => void sleeps.push(ms),
+    };
+    const out = await createImageGenerateHandler(deps).run(payload, imageJobCtx(payload));
+    expect(out).toMatchObject({ assetId: "asset_gen_1" });
+    expect(sleeps).toEqual([2_250]);
   });
 });

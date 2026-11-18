@@ -31,6 +31,8 @@ const bridge: StudioBridge = {
   },
   notify: (notice) => ipcRenderer.invoke(IPC.notify, notice),
   onNoticeClicked: (listener) => subscribe(IPC.noticeClicked, listener),
+  rendererReady: () => ipcRenderer.send(IPC.rendererReady),
+  onAppNotice: (listener) => subscribe(IPC.appNotice, listener),
   openExternal: (url) => ipcRenderer.invoke(IPC.openExternal, url),
   onMenuCommand: (listener) => subscribe(IPC.menuCommand, listener),
   onWindowState: (listener) => subscribe(IPC.windowState, listener),

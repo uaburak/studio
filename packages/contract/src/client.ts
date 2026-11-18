@@ -6,14 +6,26 @@ import {
   type AiKeyProvider,
   type AiKeyPut,
   AiKeyState,
+  AiPreferences,
+  type AiPreferencesPut,
   AiProvidersControl,
   type AiSpendQuery,
   AiSpendSummary,
+  type ClaudeLimitDecisionCreate,
   WorkerAiCredentials,
+  WorkerAiSettings,
+  type WorkerAiSettingsQuery,
   WorkerAiUsageAck,
   type WorkerAiUsageReport,
 } from "./ai.ts";
-import { Asset, AssetList, type AssetListQuery, type AssetUploadFields } from "./asset.ts";
+import {
+  Asset,
+  AssetList,
+  type AssetListQuery,
+  type AssetUploadFields,
+  AssetUsageList,
+  assetThumbnailPath,
+} from "./asset.ts";
 import {
   Brand,
   type BrandCreate,
@@ -46,6 +58,13 @@ import {
   BrandSkillVersionList,
   type BrandSkillVersionListQuery,
 } from "./brand-skill.ts";
+import {
+  type ContentReviseRequest,
+  ContentReviseResult,
+  GenerationEstimate,
+  type GenerationEstimateQuery,
+  PurgeResult,
+} from "./bulk.ts";
 import {
   AgentRun,
   AgentRunList,
@@ -86,6 +105,7 @@ import {
   Content,
   type ContentApprove,
   type ContentCreate,
+  type ContentDeleteQuery,
   type ContentDuplicate,
   ContentList,
   type ContentListQuery,
@@ -129,6 +149,9 @@ import {
   type PlanAccept,
   type PlanGenerate,
   PlanGenerateResult,
+  type PlanItemCreate,
+  type PlanItemPatch,
+  PlanItemRemoveResult,
   PlanList,
   type PlanListQuery,
   type PlanReject,
@@ -636,6 +659,18 @@ export function createApiClient(options: ApiClientOptions = {}) {
       },
       /** URL that streams the stored bytes (usable as `<img src>`). */
       contentUrl: (id: string) => url(`/api/assets/${enc(id)}/content`),
+      /** URL of a resized copy (`width` px, rounded up to THUMBNAIL_WIDTHS; WebP). */
+      thumbnailUrl: (id: string, width: number) => url(assetThumbnailPath(id, width)),
+      /** Where the file is used; `deletable` false when a post, product or the kit needs it. */
+      usage: (id: string, init?: RequestInit) =>
+        call(AssetUsageList, `/api/assets/${enc(id)}/usage`, { init }),
+      /** Move to the trash (409 with the blocking usages as `issues` while it is used). */
+      delete: async (id: string, init?: RequestInit): Promise<void> => {
+        await send(`/api/assets/${enc(id)}`, { method: "DELETE", init });
+      },
+      /** Take it back out of the trash. */
+      restore: (id: string, init?: RequestInit) =>
+        call(Asset, `/api/assets/${enc(id)}/restore`, { method: "POST", init }),
     },
 
     contents: {
@@ -646,9 +681,26 @@ export function createApiClient(options: ApiClientOptions = {}) {
         call(Content, "/api/contents", { method: "POST", json: input, init }),
       update: (id: string, input: ContentUpdate, init?: RequestInit) =>
         call(Content, `/api/contents/${enc(id)}`, { method: "PATCH", json: input, init }),
-      delete: async (id: string, init?: RequestInit): Promise<void> => {
-        await send(`/api/contents/${enc(id)}`, { method: "DELETE", init });
+      /**
+       * Move the post to the trash ("Silinenler"; undo with `restore`). `{ permanent: true }`
+       * removes a post that is already in the trash for good.
+       */
+      delete: async (
+        id: string,
+        init?: RequestInit,
+        options?: { permanent?: boolean },
+      ): Promise<void> => {
+        const query: ContentDeleteQuery | undefined = options?.permanent
+          ? { permanent: "true" }
+          : undefined;
+        await send(`/api/contents/${enc(id)}`, { method: "DELETE", query: q(query), init });
       },
+      /** Take a post back out of the trash. */
+      restore: (id: string, init?: RequestInit) =>
+        call(Content, `/api/contents/${enc(id)}/restore`, { method: "POST", init }),
+      /** One instruction applied to many posts (N3): revision jobs, canvas posts via the chat. */
+      revise: (input: ContentReviseRequest, init?: RequestInit) =>
+        call(ContentReviseResult, "/api/contents/revise", { method: "POST", json: input, init }),
       /**
        * Approve the current version; `hash` must equal its `contentHash`. Pass
        * `{ hash, acknowledgeChecks: true }` to approve although its checks did not pass
@@ -742,6 +794,12 @@ export function createApiClient(options: ApiClientOptions = {}) {
        */
       cancel: (id: string, init?: RequestInit) =>
         call(Job, `/api/jobs/${enc(id)}/cancel`, { method: "POST", init }),
+      /**
+       * Queue a failed or cancelled job again (`RETRYABLE_JOB_TYPES`): the new job (same type,
+       * brand, content and payload; a plan item's generation goes through its plan).
+       */
+      retry: (id: string, init?: RequestInit) =>
+        call(Job, `/api/jobs/${enc(id)}/retry`, { method: "POST", init }),
       /** WebSocket URL of the live job stream (relative when baseUrl is ""). */
       streamUrl: (query?: JobStreamQuery) => wsUrl(url("/api/jobs/stream", q(query))),
       /**
@@ -866,7 +924,7 @@ export function createApiClient(options: ApiClientOptions = {}) {
         call(Conversation, `/api/conversations/${enc(id)}`, { init }),
       create: (input: ConversationCreate = {}, init?: RequestInit) =>
         call(Conversation, "/api/conversations", { method: "POST", json: input, init }),
-      /** Rename, archive (`status: "archived"`), unarchive, or set the brand once. */
+      /** Rename, archive (`status: "archived"`), unarchive, or set the brand (until the first message). */
       update: (id: string, input: ConversationUpdate, init?: RequestInit) =>
         call(Conversation, `/api/conversations/${enc(id)}`, { method: "PATCH", json: input, init }),
       messages: {
@@ -981,6 +1039,34 @@ export function createApiClient(options: ApiClientOptions = {}) {
           json: input,
           init,
         }),
+      /** Add an item at the end (accepted plans: accepted at once, with its draft post). */
+      addItem: (id: string, input: PlanItemCreate, init?: RequestInit) =>
+        call(Plan, `/api/plans/${enc(id)}/items`, { method: "POST", json: input, init }),
+      /** Edit one item (accepted plans: its draft post follows). */
+      updateItem: (id: string, itemId: string, input: PlanItemPatch, init?: RequestInit) =>
+        call(Plan, `/api/plans/${enc(id)}/items/${enc(itemId)}`, {
+          method: "PATCH",
+          json: input,
+          init,
+        }),
+      /** Remove one item (its empty draft post goes to the trash). */
+      removeItem: (id: string, itemId: string, init?: RequestInit) =>
+        call(PlanItemRemoveResult, `/api/plans/${enc(id)}/items/${enc(itemId)}`, {
+          method: "DELETE",
+          init,
+        }),
+    },
+
+    estimates: {
+      /** How long and how much N post generations will take (N4). */
+      generation: (query: GenerationEstimateQuery, init?: RequestInit) =>
+        call(GenerationEstimate, "/api/estimates/generation", { query: q(query), init }),
+    },
+
+    maintenance: {
+      /** Purge what has been in the trash longer than TRASH_RETENTION_DAYS (also runs hourly). */
+      purge: (init?: RequestInit) =>
+        call(PurgeResult, "/api/maintenance/purge", { method: "POST", init }),
     },
 
     /**
@@ -1080,11 +1166,25 @@ export function createApiClient(options: ApiClientOptions = {}) {
         call(AiSpendSummary, "/api/ai/spend", { query: q(query), init }),
       setBudget: (input: AiBudgetPut, init?: RequestInit) =>
         call(AiSpendSummary, "/api/ai/budget", { method: "PUT", json: input, init }),
+      /** Claude-limit behaviour and the monthly budget (S7). */
+      preferences: (init?: RequestInit) => call(AiPreferences, "/api/ai/preferences", { init }),
+      setPreferences: (input: AiPreferencesPut, init?: RequestInit) =>
+        call(AiPreferences, "/api/ai/preferences", { method: "PUT", json: input, init }),
+      /** Answer presence `claude.limit` ("Gemini ile devam et" / "Sınırı bekle"). */
+      decideClaudeLimit: (input: ClaudeLimitDecisionCreate, init?: RequestInit) =>
+        call(AiPreferences, "/api/ai/claude-limit/decision", {
+          method: "POST",
+          json: input,
+          init,
+        }),
     },
 
     workerAi: {
       credentials: (init?: RequestInit) =>
         call(WorkerAiCredentials, "/api/worker/ai/credentials", { init }),
+      /** Claude-limit preference, the owner's answer and the budget state (S7). */
+      settings: (query?: WorkerAiSettingsQuery, init?: RequestInit) =>
+        call(WorkerAiSettings, "/api/worker/ai/settings", { query: q(query), init }),
       reportUsage: (input: WorkerAiUsageReport, init?: RequestInit) =>
         call(WorkerAiUsageAck, "/api/worker/ai/usage", { method: "POST", json: input, init }),
     },

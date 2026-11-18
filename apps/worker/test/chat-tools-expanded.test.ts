@@ -339,7 +339,13 @@ describe("Expanded Studio Chat Agent Tools (Wave 2A)", () => {
     // `publish_now` auto-approved the in_review content after owner consent and created sched_1
     expect(state.contentApprovals).toEqual([{ id: "cnt_1", hash: "d".repeat(64) }]);
     expect(state.schedules).toHaveLength(1);
-    const consentPart = state.parts.find((p) => p.type === "consent");
+    const consentPart = state.parts.find((p) => p.type === "consent" && p.tool === "publish_now");
     expect(consentPart).toMatchObject({ tool: "publish_now", state: "allowed" });
+    // The paid AI image asked first, with its model and estimated cost (U7).
+    const imageConsent = state.parts.find(
+      (p) => p.type === "consent" && p.tool === "generate_ai_image",
+    );
+    expect(imageConsent).toMatchObject({ state: "allowed", title: "AI görsel üret (ücretli)" });
+    expect(imageConsent?.type === "consent" && imageConsent.detail).toContain("tahmini");
   });
 });

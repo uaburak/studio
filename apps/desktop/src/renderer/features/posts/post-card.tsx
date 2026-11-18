@@ -1,42 +1,60 @@
 // One card of the posts board (Wecra "Post card"): 4:5 media (render, or the placeholder),
 // title, platform · date and the status tag. Hover (or selection) shows the quick actions
-// over the media: Hızlı bakış, Açıklamayı kopyala, Çoğalt, Sil.
-import { forwardRef } from "react";
+// over the media: Hızlı bakış, Açıklamayı kopyala, Çoğalt, Sil. ⌘-click / ⇧-click pick cards for
+// the bulk bar (N1); a failed generation shows its reason and "Yeniden dene" (A3).
+// Memoized: a card draws again only when its own data (or its picked / selected state) changes.
+import { forwardRef, memo } from "react";
 import { cn, IconButton, Spinner, TagPill } from "../../components/ui/controls.tsx";
-import { IconCopy, IconDuplicate, IconEye, IconTrash } from "../../components/ui/icons.tsx";
+import {
+  IconCheck,
+  IconCopy,
+  IconDuplicate,
+  IconEye,
+  IconRetry,
+  IconTrash,
+} from "../../components/ui/icons.tsx";
 import {
   cardMetaText,
   cardState,
   deletionBlocker,
+  generationFailure,
   isActiveJob,
   type PostCard,
   renderedAssetIds,
   STATE_LABEL,
   STATE_TONE,
 } from "./board.ts";
+import { failureText } from "./failure.ts";
 import { PostMedia } from "./post-media.tsx";
 
 export interface PostCardActions {
-  open(card: PostCard, origin: DOMRect | null): void;
+  /** A plain click. `event` carries ⌘ / ⇧ (picking for the bulk bar) when there is one. */
+  open(card: PostCard, origin: DOMRect | null, event?: React.MouseEvent): void;
   /** `source`: the card's picture (the viewer zooms out of it). */
   quickLook(card: PostCard, source: Element | null): void;
   copyCaption(card: PostCard): void;
   duplicate(card: PostCard): void;
   remove(card: PostCard): void;
+  /** "Yeniden dene" of a failed generation. */
+  retry?(card: PostCard, jobId: string): void;
   contextMenu?(card: PostCard, event: React.MouseEvent): void;
 }
 
-export const PostCardView = forwardRef<
+const PostCardBody = forwardRef<
   HTMLLIElement,
   {
     card: PostCard;
     brandName?: string | undefined;
     selected?: boolean;
+    /** Picked for the bulk bar. */
+    picked?: boolean;
     actions: PostCardActions;
   }
->(function PostCardView({ card, brandName, selected = false, actions }, ref) {
+>(function PostCardView({ card, brandName, selected = false, picked = false, actions }, ref) {
   const state = cardState(card);
   const busy = isActiveJob(card.job) && state !== "generating";
+  const failure = busy ? null : generationFailure(card);
+  const reason = failure ? failureText(failure.error) : null;
   const slides = card.version?.slides.length ?? 0;
   const blocker = deletionBlocker(card.content);
   const hasRenders = renderedAssetIds(card).length > 0;
@@ -47,19 +65,21 @@ export const PostCardView = forwardRef<
       ref={ref}
       data-card-id={card.id}
       data-selected={selected || undefined}
+      data-picked={picked || undefined}
       aria-current={selected || undefined}
       onContextMenu={(event) => actions.contextMenu?.(card, event)}
       className={cn(
         "group relative flex flex-col overflow-hidden rounded-[12px] bg-field shadow-[inset_0_0_0_1px_var(--border-hairline)]",
-        "transition-shadow duration-150",
+        "transition-shadow duration-150 [content-visibility:auto] [contain-intrinsic-size:auto_360px]",
         "data-[selected]:shadow-[inset_0_0_0_1px_var(--border-hairline),0_0_0_2px_var(--bg-page),0_0_0_4px_var(--text-primary)]",
+        "data-[picked]:shadow-[inset_0_0_0_1px_var(--border-hairline),0_0_0_2px_var(--bg-page),0_0_0_4px_var(--accent-default)]",
       )}
     >
       <button
         type="button"
         tabIndex={-1}
         aria-label={`Postu aç: ${card.content.title}`}
-        onClick={(event) => actions.open(card, mediaRect(event.currentTarget))}
+        onClick={(event) => actions.open(card, mediaRect(event.currentTarget), event)}
         className="flex flex-col text-left"
       >
         <span data-media="" className="relative block aspect-[4/5] w-full">
@@ -72,6 +92,11 @@ export const PostCardView = forwardRef<
             className="absolute inset-0"
           />
           <span className="pointer-events-none absolute inset-0 bg-black/0 transition-colors duration-200 group-hover:bg-black/10" />
+          {picked && (
+            <span className="absolute top-2.5 left-2.5 flex size-5 items-center justify-center rounded-full bg-accent text-on-accent">
+              <IconCheck size={12} strokeWidth={2.5} />
+            </span>
+          )}
           {slides > 1 && (
             <span className="absolute top-2.5 right-2.5 flex h-5 items-center rounded-full bg-black/45 px-1.5 text-caption text-white transition-opacity duration-150 group-hover:opacity-0 group-data-[selected]:opacity-0">
               1/{slides}
@@ -94,6 +119,26 @@ export const PostCardView = forwardRef<
           </span>
         </span>
       </button>
+      {failure && reason && (
+        <div className="-mt-1 flex items-start gap-2 px-3 pb-3">
+          <span
+            className="line-clamp-2 min-w-0 flex-1 text-footnote text-danger"
+            title={reason.detail ?? undefined}
+          >
+            {state === "generationFailed" ? reason.text : `Son üretim başarısız: ${reason.text}`}
+          </span>
+          {actions.retry && (
+            <button
+              type="button"
+              onClick={() => actions.retry?.(card, failure.jobId)}
+              className="flex h-6 shrink-0 items-center gap-1 rounded-full bg-control px-2 text-footnote text-fg hover:bg-control-hover"
+            >
+              <IconRetry size={12} strokeWidth={1.75} />
+              Yeniden dene
+            </button>
+          )}
+        </div>
+      )}
       <div
         role="toolbar"
         aria-label="Post işlemleri"
@@ -136,3 +181,5 @@ export const PostCardView = forwardRef<
     </li>
   );
 });
+
+export const PostCardView = memo(PostCardBody);

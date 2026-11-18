@@ -149,6 +149,7 @@ export function toAsset(r: AssetRow): Asset {
     durationMs: r.durationMs,
     originalFilename: r.originalFilename,
     createdAt: iso(r.createdAt),
+    deletedAt: isoOrNull(r.deletedAt),
   };
 }
 
@@ -180,6 +181,7 @@ export function toContent(r: ContentRow, current: CurrentVersionRef | null): Con
         : null,
     createdAt: iso(r.createdAt),
     updatedAt: iso(r.updatedAt),
+    deletedAt: isoOrNull(r.deletedAt),
   };
 }
 

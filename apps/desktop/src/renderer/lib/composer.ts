@@ -68,11 +68,27 @@ export interface Draft {
   previewUrl: string;
   filename: string;
   state: DraftState;
+  /** The brand the image was (or is being) uploaded to; the API takes only the chat's brand. */
+  brandId?: string | null;
 }
 
 export function canSend(text: string, drafts: Draft[]): boolean {
   if (drafts.some((d) => d.state.kind === "uploading")) return false;
   return text.trim().length > 0 || drafts.some((d) => d.state.kind === "uploaded");
+}
+
+/**
+ * Why the message cannot go as it is (null: it can): an image that failed to upload would be
+ * dropped silently — and the text may name it with its @alias.
+ */
+export function sendProblem(text: string, drafts: Draft[]): string | null {
+  const failed = drafts.filter((d) => d.state.kind === "failed");
+  if (failed.length === 0) return null;
+  const named = failed.filter((d) => new RegExp(`@${d.alias}(?![A-Za-z0-9-])`).test(text));
+  const list = (named.length > 0 ? named : failed).map((d) => `@${d.alias}`).join(", ");
+  return named.length > 0
+    ? `${list} yüklenemedi ama mesajda geçiyor. Görseli kaldırıp yeniden ekle.`
+    : `${list} yüklenemedi. Göndermek için görseli kaldır ya da yeniden ekle.`;
 }
 
 export function makeMessage(

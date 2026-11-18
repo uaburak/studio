@@ -1,11 +1,12 @@
 // Modal sheet (Wecra "Settings sheet" look): the window dims, a rounded popover-surface panel
 // sits in the middle with a header (title + ✕), body and an optional footer of capsule buttons.
-// Esc and a click on the backdrop close it; focus moves into the panel and back on close.
-// `ConfirmDialog` is the yes / no variant (delete, publish now).
-import { type ReactNode, useEffect, useRef } from "react";
+// Esc and a click on the backdrop close it; focus moves into the panel, stays there (Tab) and
+// goes back on close (modal.ts). `ConfirmDialog` is the yes / no variant (delete, publish now).
+import { type ReactNode, useRef } from "react";
 import { createPortal } from "react-dom";
 import { Button, cn, IconButton } from "./controls.tsx";
 import { IconClose } from "./icons.tsx";
+import { useModal } from "./modal.ts";
 
 export function Dialog({
   open,
@@ -16,6 +17,7 @@ export function Dialog({
   width = 460,
   label,
   className,
+  role = "dialog",
 }: {
   open: boolean;
   title: ReactNode;
@@ -26,31 +28,11 @@ export function Dialog({
   /** Accessible name when `title` is not plain text. */
   label?: string;
   className?: string;
+  /** `alertdialog` for a question that interrupts (Ayarlar's confirmations). */
+  role?: "dialog" | "alertdialog";
 }) {
   const panel = useRef<HTMLDivElement | null>(null);
-  const closeRef = useRef(onClose);
-  closeRef.current = onClose;
-
-  useEffect(() => {
-    if (!open) return;
-    const previous = document.activeElement as HTMLElement | null;
-    requestAnimationFrame(() => {
-      const target = panel.current?.querySelector<HTMLElement>("[data-autofocus]") ?? panel.current;
-      target?.focus({ preventScroll: true });
-    });
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        event.stopPropagation();
-        event.preventDefault();
-        closeRef.current();
-      }
-    };
-    window.addEventListener("keydown", onKey, true);
-    return () => {
-      window.removeEventListener("keydown", onKey, true);
-      previous?.focus?.({ preventScroll: true });
-    };
-  }, [open]);
+  useModal(panel, { open, onClose });
 
   if (!open) return null;
   return createPortal(
@@ -61,9 +43,10 @@ export function Dialog({
         if (e.target === e.currentTarget) onClose();
       }}
     >
+      {/* biome-ignore lint/a11y/useAriaPropsSupportedByRole: dialog and alertdialog both take aria-modal */}
       <div
         ref={panel}
-        role="dialog"
+        role={role}
         aria-modal="true"
         aria-label={label ?? (typeof title === "string" ? title : undefined)}
         tabIndex={-1}
@@ -94,6 +77,7 @@ export function Dialog({
   );
 }
 
+/** The yes / no question (also Ayarlar's confirmations: features/settings/parts.tsx). */
 export function ConfirmDialog({
   open,
   title,
@@ -104,6 +88,7 @@ export function ConfirmDialog({
   busy = false,
   onConfirm,
   onClose,
+  role,
 }: {
   open: boolean;
   title: string;
@@ -114,6 +99,7 @@ export function ConfirmDialog({
   busy?: boolean;
   onConfirm(): void;
   onClose(): void;
+  role?: "dialog" | "alertdialog";
 }) {
   return (
     <Dialog
@@ -121,6 +107,7 @@ export function ConfirmDialog({
       title={title}
       onClose={onClose}
       width={420}
+      {...(role ? { role } : {})}
       footer={
         <>
           <Button variant="secondary" onClick={onClose} disabled={busy}>

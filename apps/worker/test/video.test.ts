@@ -13,26 +13,41 @@ import {
   buildReelEncodeArgs,
   buildReelVersionSlideHtml,
   captionChunks,
+  clearElevenLabsVoiceCache,
   createDefaultClipTranscriber,
+  ELEVENLABS_NO_TURKISH_VOICE,
   ElevenLabsTtsProvider,
+  type ElevenLabsVoice,
   estimateWordTimestamps,
   FFMPEG_MISSING_MESSAGE,
   type FfmpegRunner,
   generateAndRenderReel,
   inferReelRecipe,
+  MAC_TURKISH_VOICE_MISSING,
   MacSayTtsProvider,
   normalizeSpec,
   parseFfmpegProbe,
+  parseSayVoices,
   parseWhisperJson,
   REEL_MAX_FILE_BYTES,
   type ReelEngineTestSeams,
   reelVideoBitrate,
   renderExistingReelVersion,
   resolveFfmpegBin,
+  type SayCommandRunner,
   splitSentences,
   WHISPER_MISSING_NOTE,
 } from "../src/video/index.ts";
 import { createFakeApi, fakeBrand, NOW } from "./fake-api.ts";
+
+/** `say -v ?` output (macOS 26 format). */
+const SAY_VOICES = [
+  "Albert              en_US    # Hello! My name is Albert.",
+  "Eddy (Turkish (Turkey)) tr_TR    # Merhaba! Benim adım Eddy.",
+  "Fiona               en-scotland # Hello, my name is Fiona.",
+  "Yelda               tr_TR    # Merhaba, benim adım Yelda.",
+  "",
+].join("\n");
 
 function reelContent(id = "cnt_reel"): Content {
   return {
@@ -246,6 +261,7 @@ describe("voice-over and transcription", () => {
     const tts = new MacSayTtsProvider({
       ffmpeg,
       exec: async (_bin, args) => {
+        if (args[1] === "?") return { stdout: SAY_VOICES, stderr: "" };
         sayCalls.push([...args]);
         return { stdout: "", stderr: "" };
       },
@@ -256,17 +272,107 @@ describe("voice-over and transcription", () => {
       workDir: dir,
     });
     expect(sayCalls[0]?.slice(0, 2)).toEqual(["-v", "Yelda"]);
+    expect(sayCalls.every((c) => c[1] === "Yelda")).toBe(true);
     expect(res.durationMs).toBe(3000);
     expect(res.provider).toBe("mac-say:Yelda");
+    expect(res.note).toBeUndefined();
     // Sentence 1 measured 1 s of 3 s total: its words end by ~1 s.
     expect(res.words.find((w) => w.word === "önemli.")?.endMs).toBeLessThanOrEqual(1000);
     expect(res.words.find((w) => w.word === "Çinko")?.startMs).toBeGreaterThanOrEqual(1000);
+  });
+
+  it("macOS say: lists voices by locale", () => {
+    expect(parseSayVoices(SAY_VOICES)).toEqual([
+      { name: "Albert", locale: "en_US" },
+      { name: "Eddy (Turkish (Turkey))", locale: "tr_TR" },
+      { name: "Fiona", locale: "en_scotland" },
+      { name: "Yelda", locale: "tr_TR" },
+    ]);
+  });
+
+  /** `say` stand-in: answers `-v ?` with `voices`, records synthesis calls. */
+  function fakeSay(voices: string | Error, calls: string[][]): SayCommandRunner {
+    return async (_bin, args) => {
+      if (args[0] === "-v" && args[1] === "?") {
+        if (voices instanceof Error) throw voices;
+        return { stdout: voices, stderr: "" };
+      }
+      calls.push([...args]);
+      if (args[0] === "-v" && args[1] === "Missing") throw new Error("Voice `Missing' not found.");
+      return { stdout: "", stderr: "" };
+    };
+  }
+  const silentFfmpeg: FfmpegRunner = async (args) =>
+    args[1] === "-i" && args.length === 3
+      ? { stdout: new Uint8Array(), stderr: "Duration: 00:00:02.00" }
+      : { stdout: new Uint8Array(), stderr: "" };
+
+  it("macOS say: no Yelda → another Turkish voice; no Turkish voice → clear error", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "say-"));
+    const calls: string[][] = [];
+    const withoutYelda = SAY_VOICES.split("\n")
+      .filter((l) => !l.startsWith("Yelda"))
+      .join("\n");
+    const other = await new MacSayTtsProvider({
+      ffmpeg: silentFfmpeg,
+      exec: fakeSay(withoutYelda, calls),
+    }).synthesize({ text: "Bor önemli.", workDir: dir });
+    expect(calls[0]?.slice(0, 2)).toEqual(["-v", "Eddy (Turkish (Turkey))"]);
+    expect(other.provider).toBe("mac-say:Eddy (Turkish (Turkey))");
+
+    const englishOnly = "Albert              en_US    # Hello! My name is Albert.\n";
+    calls.length = 0;
+    const noTurkish = new MacSayTtsProvider({
+      ffmpeg: silentFfmpeg,
+      exec: fakeSay(englishOnly, calls),
+    });
+    const error = await noTurkish
+      .synthesize({ text: "Bor önemli.", language: "tr-TR", workDir: dir })
+      .catch((e: unknown) => e as Error);
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toBe(MAC_TURKISH_VOICE_MISSING);
+    expect((error as Error).message).toContain("Sesli İçerik → Sistem sesi → Ses Yönet…");
+    expect(calls).toEqual([]); // nothing synthesised with an English voice
+
+    // Non-Turkish text keeps working with the system voice.
+    const english = await noTurkish.synthesize({ text: "Hello.", language: "en", workDir: dir });
+    expect(calls[0]?.slice(0, 2)).toEqual(["-o", path.join(dir, "voice.aiff")]);
+    expect(english.provider).toBe("mac-say");
+  });
+
+  it("macOS say: an asked voice that is missing is reported, not silently swapped", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "say-"));
+    const calls: string[][] = [];
+    const tr = await new MacSayTtsProvider({
+      ffmpeg: silentFfmpeg,
+      exec: fakeSay(SAY_VOICES, calls),
+    }).synthesize({ text: "Bor önemli.", voice: "Cem", workDir: dir });
+    expect(tr.provider).toBe("mac-say:Yelda");
+    expect(tr.note).toContain("“Cem” sesi bu Mac'te yüklü değil; Yelda kullanıldı.");
+
+    const en = await new MacSayTtsProvider({
+      ffmpeg: silentFfmpeg,
+      exec: fakeSay(SAY_VOICES, calls),
+    }).synthesize({ text: "Hello.", voice: "Samantha", language: "en-US", workDir: dir });
+    expect(en.provider).toBe("mac-say");
+    expect(en.note).toContain("sistem sesi");
+
+    // Voices cannot be listed and the Turkish voice fails: the install hint, not English.
+    const unlisted = new MacSayTtsProvider({
+      ffmpeg: silentFfmpeg,
+      exec: fakeSay(new Error("say: no voices"), calls),
+      voice: "Missing",
+    });
+    await expect(unlisted.synthesize({ text: "Bor.", workDir: dir })).rejects.toThrow(
+      MAC_TURKISH_VOICE_MISSING,
+    );
   });
 
   it("ElevenLabs: character alignment to words, audio written to the work dir", async () => {
     const dir = mkdtempSync(path.join(tmpdir(), "el-"));
     const tts = new ElevenLabsTtsProvider({
       apiKey: "el_test_key",
+      defaultVoiceId: "voice_configured",
       fetch: async (url, init) => {
         expect(String(url)).toContain("/with-timestamps");
         expect(new Headers(init?.headers).get("xi-api-key")).toBe("el_test_key");
@@ -288,6 +394,107 @@ describe("voice-over and transcription", () => {
       { word: "ve", startMs: 400, endMs: 600 },
     ]);
     expect(res.audioPath.endsWith("voice.mp3")).toBe(true);
+    expect(res.billing).toEqual({ model: "eleven_multilingual_v2", characters: 6 });
+  });
+
+  /** ElevenLabs stand-in: `GET /v1/voices` answers `voices`, TTS calls are recorded. */
+  function fakeElevenLabs(voices: ElevenLabsVoice[], urls: string[], ttsStatus = 200) {
+    return (async (url: string | URL | Request) => {
+      urls.push(String(url));
+      if (String(url).endsWith("/v1/voices")) return new Response(JSON.stringify({ voices }));
+      if (ttsStatus !== 200) return new Response('{"detail":"voice_not_found"}', { status: 404 });
+      return new Response(
+        JSON.stringify({
+          audio_base64: Buffer.from("MP3").toString("base64"),
+          alignment: {
+            characters: ["Ç", "o", "k"],
+            character_start_times_seconds: [0, 0.1, 0.2],
+            character_end_times_seconds: [0.1, 0.2, 0.3],
+          },
+        }),
+      );
+    }) as typeof fetch;
+  }
+
+  const ACCOUNT_VOICES: ElevenLabsVoice[] = [
+    // Premade English voice: never used for Turkish text.
+    { voice_id: "premade_en", name: "Rachel", labels: { accent: "american", language: "en" } },
+    {
+      voice_id: "multi_verified",
+      name: "Multi",
+      labels: { accent: "american" },
+      verified_languages: [{ language: "en" }, { language: "tr", locale: "tr-TR" }],
+    },
+    { voice_id: "tr_native", name: "Ahmet", labels: { language: "tr", accent: "istanbul" } },
+  ];
+
+  it("ElevenLabs: no voice set → a Turkish voice from the account, cached; spend fields filled", async () => {
+    clearElevenLabsVoiceCache();
+    const dir = mkdtempSync(path.join(tmpdir(), "el-"));
+    const urls: string[] = [];
+    const tts = new ElevenLabsTtsProvider({
+      apiKey: "el_test_key",
+      modelId: "eleven_turbo_v2_5",
+      fetch: fakeElevenLabs(ACCOUNT_VOICES, urls),
+    });
+    const res = await tts.synthesize({ text: "Çok güzel", language: "tr", workDir: dir });
+    expect(urls[0]).toBe("https://api.elevenlabs.io/v1/voices");
+    expect(urls[1]).toContain("/v1/text-to-speech/tr_native/with-timestamps");
+    expect(res.billing).toEqual({ model: "eleven_turbo_v2_5", characters: 9 });
+
+    // Second reel: the voice list is not read again.
+    await tts.synthesize({ text: "Bor", workDir: dir });
+    expect(urls.filter((u) => u.endsWith("/v1/voices"))).toHaveLength(1);
+    expect(urls[2]).toContain("/tr_native/");
+
+    // Only a "verified for Turkish" voice: still fine.
+    clearElevenLabsVoiceCache();
+    urls.length = 0;
+    await new ElevenLabsTtsProvider({
+      apiKey: "el_test_key",
+      fetch: fakeElevenLabs(ACCOUNT_VOICES.slice(0, 2), urls),
+    }).synthesize({ text: "Bor", workDir: dir });
+    expect(urls[1]).toContain("/multi_verified/");
+  });
+
+  it("ElevenLabs: no Turkish voice in the account → clear Turkish error, nothing synthesised", async () => {
+    clearElevenLabsVoiceCache();
+    const dir = mkdtempSync(path.join(tmpdir(), "el-"));
+    const urls: string[] = [];
+    const tts = new ElevenLabsTtsProvider({
+      apiKey: "el_test_key",
+      fetch: fakeElevenLabs(ACCOUNT_VOICES.slice(0, 1), urls),
+    });
+    await expect(tts.synthesize({ text: "Bor", language: "tr-TR", workDir: dir })).rejects.toThrow(
+      ELEVENLABS_NO_TURKISH_VOICE,
+    );
+    expect(ELEVENLABS_NO_TURKISH_VOICE).toContain("STUDIO_ELEVENLABS_VOICE_ID");
+    expect(urls).toEqual(["https://api.elevenlabs.io/v1/voices"]);
+
+    // Other languages use a voice of that language (else any account voice).
+    const en = await tts.synthesize({ text: "Hi", language: "en", workDir: dir });
+    expect(urls.at(-1)).toContain("/premade_en/");
+    expect(en.provider).toBe("elevenlabs");
+  });
+
+  it("ElevenLabs: a found voice that stopped working is looked up again", async () => {
+    clearElevenLabsVoiceCache();
+    const dir = mkdtempSync(path.join(tmpdir(), "el-"));
+    const urls: string[] = [];
+    const broken = new ElevenLabsTtsProvider({
+      apiKey: "el_test_key",
+      fetch: fakeElevenLabs(ACCOUNT_VOICES, urls, 404),
+    });
+    await expect(broken.synthesize({ text: "Bor", workDir: dir })).rejects.toThrow(/HTTP 404/);
+    await expect(broken.synthesize({ text: "Bor", workDir: dir })).rejects.toThrow(/HTTP 404/);
+    expect(urls.filter((u) => u.endsWith("/v1/voices"))).toHaveLength(2);
+  });
+
+  it("STUDIO_ELEVENLABS_VOICE_ID has no English default", () => {
+    expect(loadAgentSettings({}).elevenLabsVoiceId).toBeUndefined();
+    expect(loadAgentSettings({ STUDIO_ELEVENLABS_VOICE_ID: "v_tr" }).elevenLabsVoiceId).toBe(
+      "v_tr",
+    );
   });
 
   it("whisper.cpp: 16 kHz WAV, word-level JSON, [music] tags dropped", async () => {

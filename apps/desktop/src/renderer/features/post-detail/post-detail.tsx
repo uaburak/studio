@@ -107,6 +107,10 @@ export function PostDetailLayer() {
 
 type OpenedOrigin = { x: number; y: number; width: number; height: number } | null;
 
+/**
+ * "Kalıcı olarak sil" of a post in the trash (Silinenler). Deleting from the board or the detail
+ * moves a post to the trash at once, with "Geri al"; only this removes it for good.
+ */
 function DeletePostDialog() {
   const deleting = usePostsStore((s) => s.deleting);
   const actions = usePostActions();
@@ -114,16 +118,16 @@ function DeletePostDialog() {
   return (
     <ConfirmDialog
       open={!!deleting}
-      title={deleting ? `“${deleting.title}” silinsin mi?` : ""}
+      title={deleting ? `“${deleting.title}” kalıcı olarak silinsin mi?` : ""}
       message="Post, tüm sürümleri ve render edilmiş görselleriyle birlikte silinir. Bu işlem geri alınamaz."
-      confirmLabel="Sil"
+      confirmLabel="Kalıcı olarak sil"
       destructive
       busy={busy}
       onClose={() => usePostsStore.getState().askDelete(null)}
       onConfirm={async () => {
         if (!deleting) return;
         setBusy(true);
-        await actions.remove(deleting);
+        await actions.purge(deleting);
         setBusy(false);
         usePostsStore.getState().askDelete(null);
       }}

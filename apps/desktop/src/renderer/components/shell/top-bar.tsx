@@ -3,6 +3,8 @@
 // tool icons (they only switch the right panel) and the panel header above the panel. Chats
 // and posts are switched from the sidebar. While a post is open on the canvas, its title area
 // and its panel's header are slots the post workspace renders into (features/post-editor/slots).
+import type { ConversationList } from "@studio/contract";
+import { type InfiniteData, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { isPageRoute, PageTitle } from "../../features/page-title.tsx";
 import { WorkspaceSlot } from "../../features/post-editor/slots.tsx";
@@ -15,7 +17,7 @@ import {
   panelWidthOf,
   useAppStore,
 } from "../../state/app-store.ts";
-import { useBrands, useConversations } from "../../state/studio.tsx";
+import { queryKeys, useBrands, useConversations } from "../../state/studio.tsx";
 import { cn, IconButton } from "../ui/controls.tsx";
 import {
   IconCalendar,
@@ -144,9 +146,15 @@ function TitleButton() {
   const [draft, setDraft] = useState("");
   const input = useRef<HTMLInputElement | null>(null);
   const lastRename = useRef(renameRequest);
+  const queryClient = useQueryClient();
   const conversation =
     route.kind === "conversation"
-      ? (conversations.data ?? []).find((c) => c.id === route.id)
+      ? ((conversations.data ?? []).find((c) => c.id === route.id) ??
+        // An archived conversation opened from the Arşiv page.
+        queryClient
+          .getQueryData<InfiniteData<ConversationList>>(queryKeys.archivedConversations)
+          ?.pages.flatMap((p) => p.items)
+          .find((c) => c.id === route.id))
       : undefined;
 
   useEffect(() => {
@@ -166,6 +174,9 @@ function TitleButton() {
     return <span className="px-2.5 text-body-lg text-fg">Bileşen galerisi</span>;
   }
   if (route.kind === "posts") return <PostsTitleButton />;
+  if (route.kind === "archive") {
+    return <span className="px-2.5 text-body-lg text-fg">Arşivlenen sohbetler</span>;
+  }
   if (isPageRoute(route)) return <PageTitle route={route} />;
 
   if (editing && conversation) {

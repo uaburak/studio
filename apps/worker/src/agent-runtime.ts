@@ -11,9 +11,15 @@
  */
 import type { spawn as nodeSpawn } from "node:child_process";
 import path from "node:path";
-import type { AiProviderStatus, ClaudeAccount, GeminiAccount } from "@studio/contract";
+import type {
+  AiProviderStatus,
+  ClaudeAccount,
+  ClaudeLimitState,
+  GeminiAccount,
+} from "@studio/contract";
 import { createRenderer, type Renderer } from "@studio/design-kit/render";
 import { type AgentSettings, claudeLogDir } from "./agent.ts";
+import { AiPolicy } from "./ai/policy.ts";
 import { AiUsageRecorder } from "./ai/usage-recorder.ts";
 import { apiBaseFromHubUrl, createStudioApi, type StudioApi } from "./api.ts";
 import { createBrandAnalyzeHandler } from "./brand/handler.ts";
@@ -103,8 +109,12 @@ export class AgentRuntime {
   readonly usagePoller: UsagePoller;
   /** Codex CLI / OpenAI API / Antigravity CLI readiness and sign-ins (`worker.providers`). */
   readonly providers: ProvidersController;
-  /** Paid AI calls (Gemini spend) to the API. */
+  /** Paid AI calls (Gemini, OpenAI, ElevenLabs spend) to the API; the budget check. */
   readonly aiUsage: AiUsageRecorder;
+  /** The owner's Claude-limit choice and budget (S7), read from the API. */
+  readonly aiPolicy: AiPolicy;
+  private readonly claudeListeners = new Set<(account: ClaudeAccount) => void>();
+  private lastLimit = "null";
 
   private current: ClaudeHealth = {
     state: "error",
@@ -205,7 +215,20 @@ export class AgentRuntime {
       }
     };
 
-    this.gate = new ClaudeGate({ runner, concurrency: settings.claudeConcurrency, logger });
+    this.aiPolicy = new AiPolicy({ logger });
+    this.gate = new ClaudeGate({
+      runner,
+      concurrency: settings.claudeConcurrency,
+      logger,
+      // S7: what a call does at the usage limit ("Sor" / "Gemini'ye geç" / "Bekle").
+      limitChoice: () => this.aiPolicy.limitChoice(),
+    });
+    // A new answer or mode: parked calls look again; the app sees the limit state.
+    this.aiPolicy.onChange(() => {
+      this.gate.wake();
+      this.emitClaude();
+    });
+    this.gate.onStatus(() => this.emitClaude());
 
     this.claudeAuth = new ClaudeAuthController({
       bin: settings.claudeBin,
@@ -258,7 +281,7 @@ export class AgentRuntime {
           parentEnv: settings.parentEnv,
         }));
 
-    this.aiUsage = new AiUsageRecorder({ api: this.api, logger });
+    this.aiUsage = new AiUsageRecorder({ api: this.api, logger, policy: this.aiPolicy });
     const hermetic = Boolean(options.selfTest);
     this.providers = new ProvidersController({
       settings,
@@ -304,6 +327,7 @@ export class AgentRuntime {
       geminiAccount: () => this.gemini,
       usage: this.usage,
       aiUsage: this.aiUsage,
+      aiPolicy: this.aiPolicy,
       providers: () => this.providers.list(),
       refreshUsage: () => void this.usagePoller.refresh(),
       mcpServer: this.mcpServer,
@@ -329,8 +353,31 @@ export class AgentRuntime {
     return this.current;
   }
 
+  /** The Claude sign-in plus, while work waits for the usage limit, the limit state (S7). */
   claudeAccount(): ClaudeAccount {
-    return this.claudeAuth.latest();
+    return { ...this.claudeAuth.latest(), limit: this.limitState() };
+  }
+
+  /** Claude's usage window is used up: when it resets, the owner's choice, who waits (S7). */
+  limitState(): ClaudeLimitState | null {
+    const status = this.gate.status();
+    if (!status.parkedUntil) return null;
+    return {
+      resetsAt: status.parkedUntil.toISOString(),
+      mode: this.aiPolicy.claudeLimitMode(),
+      decision: this.aiPolicy.limitDecision(),
+      waiting: status.parked,
+      geminiReady: Boolean(getGeminiApiKey(this.options.settings)),
+    };
+  }
+
+  /** Tell the hub when the limit state changed (presence `claude.limit`). */
+  private emitClaude(): void {
+    const limit = JSON.stringify(this.limitState());
+    if (limit === this.lastLimit) return;
+    this.lastLimit = limit;
+    const account = this.claudeAccount();
+    for (const fn of this.claudeListeners) fn(account);
   }
 
   geminiAccount(): GeminiAccount {
@@ -411,7 +458,12 @@ export class AgentRuntime {
   }
 
   onClaudeAccountChange(fn: (account: ClaudeAccount) => void): () => void {
-    return this.claudeAuth.onUpdate(fn);
+    this.claudeListeners.add(fn);
+    const off = this.claudeAuth.onUpdate(() => fn(this.claudeAccount()));
+    return () => {
+      this.claudeListeners.delete(fn);
+      off();
+    };
   }
 
   onGeminiAccountChange(fn: (account: GeminiAccount) => void): () => void {
@@ -425,6 +477,7 @@ export class AgentRuntime {
     await this.usage.load();
     await this.mcpServer.start();
     await this.refreshCredentials({ silent: true });
+    await this.refreshAiSettings();
     // Subscription usage without a model call (`claude -p /usage`), in the background.
     void this.usagePoller.refresh();
     await this.refreshGeminiStatus({ silentReannounce: true });
@@ -453,6 +506,7 @@ export class AgentRuntime {
     if (credentialsInterval > 0) {
       this.credentialsTimer = setInterval(() => {
         void this.refreshCredentials();
+        void this.refreshAiSettings();
       }, credentialsInterval);
       this.credentialsTimer.unref?.();
     }
@@ -531,6 +585,21 @@ export class AgentRuntime {
     this.providers.vaultChanged();
     await this.refreshGeminiStatus({ silentReannounce: opts.silent === true });
     if (!opts.silent && beforeChat !== this.chatAvailable()) this.onChange?.();
+  }
+
+  /**
+   * Read the owner's AI preferences again (S7): the Claude-limit choice and answer, the budget.
+   * The spend still queued here counts on top of the API's figure.
+   */
+  async refreshAiSettings(): Promise<void> {
+    try {
+      const settings = await this.api.client.workerAi.settings({
+        tzOffset: new Date().getTimezoneOffset(),
+      });
+      this.aiPolicy.apply(settings, this.aiUsage.pendingCostUsd());
+    } catch (error) {
+      this.options.logger.debug(`ai settings: not read (${(error as Error).message})`);
+    }
   }
 
   /** Handle `worker.command` `providers.status`. */

@@ -22,6 +22,7 @@ import {
   isTerminalJobStatus,
   type Job,
   MAX_MESSAGE_BYTES,
+  MAX_PLAN_ITEMS,
   MAX_TEXT_PART_BYTES,
   type Message,
   type MessagePart,
@@ -30,7 +31,11 @@ import {
   type PlanAccept,
   type PlanGenerate,
   type PlanGenerateResult,
+  type PlanGenerateSkip,
+  type PlanItemCreate,
   type PlanItemInput,
+  type PlanItemPatch,
+  type PlanItemRemoveResult,
   type PlanProposalPut,
   type PlanProposalResult,
   type PlanReject,
@@ -49,7 +54,7 @@ import {
   type UserMessageResult,
   utf8Length,
 } from "@studio/contract";
-import { and, count, desc, eq, inArray } from "drizzle-orm";
+import { and, count, desc, eq, inArray, isNull } from "drizzle-orm";
 import type { BatchItem } from "drizzle-orm/batch";
 import type { z } from "zod";
 import type { Db } from "../db/client.ts";
@@ -77,6 +82,7 @@ import {
   brands,
   contentPlans,
   contents,
+  contentVersionDocuments,
   contentVersions,
   conversationAliases,
   conversationAliasNames,
@@ -134,6 +140,14 @@ export type ChatCommand =
   | { kind: "acceptPlan"; planId: string; input: z.output<typeof PlanAccept> }
   | { kind: "rejectPlan"; planId: string; input: z.output<typeof PlanReject> }
   | { kind: "generatePlan"; planId: string; input: z.output<typeof PlanGenerate> }
+  | { kind: "addPlanItem"; planId: string; input: z.output<typeof PlanItemCreate> }
+  | {
+      kind: "updatePlanItem";
+      planId: string;
+      itemId: string;
+      input: z.output<typeof PlanItemPatch>;
+    }
+  | { kind: "removePlanItem"; planId: string; itemId: string }
   | { kind: "startRun"; runId: string; attempt: number }
   | { kind: "applyOps"; runId: string; input: z.output<typeof TurnOps> }
   | { kind: "putPlan"; runId: string; input: z.output<typeof PlanProposalPut> }
@@ -156,6 +170,9 @@ export interface ChatResults {
   acceptPlan: Plan;
   rejectPlan: Plan;
   generatePlan: PlanGenerateResult;
+  addPlanItem: Plan;
+  updatePlanItem: Plan;
+  removePlanItem: PlanItemRemoveResult;
   startRun: TurnContext;
   applyOps: TurnWriteResult;
   putPlan: PlanProposalResult;
@@ -879,6 +896,12 @@ export async function executeChat(
       return rejectPlan(change, command.planId, command.input);
     case "generatePlan":
       return generatePlan(change, command.planId, command.input);
+    case "addPlanItem":
+      return addPlanItem(change, command.planId, command.input);
+    case "updatePlanItem":
+      return updatePlanItem(change, command.planId, command.itemId, command.input);
+    case "removePlanItem":
+      return removePlanItem(change, command.planId, command.itemId);
     case "startRun":
       return startRun(change, command.runId, command.attempt);
     case "applyOps":
@@ -905,8 +928,16 @@ async function updateConversation(
   if (input.title !== undefined && input.title !== conv.title) set.title = input.title;
   if (input.status !== undefined && input.status !== conv.status) set.status = input.status;
   if (input.brandId !== undefined && input.brandId !== conv.brandId) {
+    // A conversation without messages may still move (a first send that failed before the
+    // brand was changed); once something was said, the brand stays.
     if (conv.brandId) {
-      throw conflict(`conversation ${id} already belongs to brand ${conv.brandId}`);
+      const [row] = await db
+        .select({ n: count() })
+        .from(messages)
+        .where(eq(messages.conversationId, id));
+      if ((row?.n ?? 0) > 0) {
+        throw conflict(`conversation ${id} already belongs to brand ${conv.brandId}`);
+      }
     }
     await requireActiveBrand(db, input.brandId);
     set.brandId = input.brandId;
@@ -1675,6 +1706,87 @@ async function rejectPlan(
   return loadPlan(db, planId);
 }
 
+/** Live state of an accepted item's post, for deciding what (re)generation may do. */
+interface ItemPost {
+  row: typeof contents.$inferSelect;
+  /** Current version: its number, origin and whether it was saved from the canvas. */
+  current: { version: number; origin: string; canvas: boolean } | null;
+}
+
+async function itemPosts(db: Db, contentIds: string[]): Promise<Map<string, ItemPost>> {
+  const out = new Map<string, ItemPost>();
+  if (contentIds.length === 0) return out;
+  const rows = await db
+    .select({
+      row: contents,
+      versionId: contentVersions.id,
+      version: contentVersions.version,
+      origin: contentVersions.origin,
+    })
+    .from(contents)
+    .leftJoin(contentVersions, eq(contents.currentVersionId, contentVersions.id))
+    .where(inArray(contents.id, contentIds));
+  const versionIds = rows.flatMap((r) => (r.versionId ? [r.versionId] : []));
+  const canvas = new Set(
+    versionIds.length
+      ? (
+          await db
+            .select({ versionId: contentVersionDocuments.versionId })
+            .from(contentVersionDocuments)
+            .where(inArray(contentVersionDocuments.versionId, versionIds))
+        ).map((d) => d.versionId)
+      : [],
+  );
+  for (const r of rows) {
+    out.set(r.row.id, {
+      row: r.row,
+      current:
+        r.versionId && r.version !== null && r.origin !== null
+          ? { version: r.version, origin: r.origin, canvas: canvas.has(r.versionId) }
+          : null,
+    });
+  }
+  return out;
+}
+
+/** The plan items' latest generation jobs, by id. */
+async function generationJobs(db: Db, items: PlanItemRow[]): Promise<Map<string, JobRow>> {
+  const ids = items.map((i) => i.generationJobId).filter((id): id is string => id !== null);
+  const rows = ids.length ? await db.select().from(jobs).where(inArray(jobs.id, ids)) : [];
+  return new Map(rows.map((j) => [j.id, j]));
+}
+
+/**
+ * What a generation of `item` would meet (U2): why it must not run by default, and what an
+ * explicit request needs (`force`: the post already has a design; `overwrite`: hand / AI edits
+ * or an approval would be replaced).
+ */
+function itemVerdict(
+  item: PlanItemRow,
+  post: ItemPost | undefined,
+  job: JobRow | undefined,
+): {
+  blocked: "no_content" | "generating" | "published" | null;
+  generated: boolean;
+  approved: boolean;
+  edited: boolean;
+} {
+  const none = { generated: false, approved: false, edited: false };
+  if (item.status !== "accepted" || !item.contentId || !post || post.row.deletedAt) {
+    return { blocked: "no_content", ...none };
+  }
+  if (job && !isTerminalJobStatus(job.status)) return { blocked: "generating", ...none };
+  const status = post.row.status;
+  if (status === "publishing" || status === "published") return { blocked: "published", ...none };
+  const lastFailed = job?.status === "failed" || job?.status === "cancelled";
+  return {
+    blocked: null,
+    generated: post.current !== null && !lastFailed,
+    approved: status === "approved" || status === "scheduled",
+    edited: post.current !== null && post.current.origin !== "generated",
+  };
+}
+
 async function generatePlan(
   change: Change,
   planId: string,
@@ -1685,39 +1797,74 @@ async function generatePlan(
   if (plan.status !== "accepted") {
     throw invalidTransition(`plan ${planId} is ${plan.status}; accept it before generating`);
   }
-  const jobIds = items.map((i) => i.generationJobId).filter((id): id is string => id !== null);
-  const currentJobs = jobIds.length
-    ? await db.select().from(jobs).where(inArray(jobs.id, jobIds))
-    : [];
-  const jobsById = new Map(currentJobs.map((j) => [j.id, j]));
-  const busy = (item: PlanItemRow) => {
-    const job = item.generationJobId ? jobsById.get(item.generationJobId) : undefined;
-    return job !== undefined && !isTerminalJobStatus(job.status);
-  };
+  if (input.force && !input.itemIds) {
+    throw badRequest("force needs itemIds", [
+      { path: "force", message: "name the items to regenerate in itemIds" },
+    ]);
+  }
+  const jobsById = await generationJobs(db, items);
+  const posts = await itemPosts(
+    db,
+    items.flatMap((i) => (i.status === "accepted" && i.contentId ? [i.contentId] : [])),
+  );
+  const verdictOf = (item: PlanItemRow) =>
+    itemVerdict(
+      item,
+      item.contentId ? posts.get(item.contentId) : undefined,
+      item.generationJobId ? jobsById.get(item.generationJobId) : undefined,
+    );
 
   let targets: PlanItemRow[];
+  const skipped: PlanGenerateSkip[] = [];
   if (input.itemIds) {
-    targets = input.itemIds.map((id) => {
+    const issues: { path: string; message: string }[] = [];
+    targets = input.itemIds.map((id, index) => {
       const item = items.find((i) => i.id === id);
       if (!item) throw notFound(`plan ${planId} item`, id);
-      if (item.status !== "accepted") throw conflict(`item ${id} is ${item.status}, not accepted`);
-      if (!item.contentId)
-        throw conflict(`item ${id} has no content item any more (it was deleted)`);
-      if (busy(item)) throw conflict(`item ${id} is already being generated`);
+      const path = `itemIds.${index}`;
+      // Turkish: the plan page shows these to the user.
+      const name = `“${item.title}”`;
+      if (item.status !== "accepted") {
+        issues.push({ path, message: `${name} kabul edilmiş bir plan kalemi değil.` });
+        return item;
+      }
+      const v = verdictOf(item);
+      if (v.blocked === "no_content") {
+        issues.push({ path, message: `${name} kaleminin postu silinmiş.` });
+      } else if (v.blocked === "generating") {
+        issues.push({ path, message: `${name} zaten üretiliyor.` });
+      } else if (v.blocked === "published") {
+        issues.push({ path, message: `${name} yayında ya da yayınlanıyor; yeniden üretilmez.` });
+      } else if (v.generated && !input.force) {
+        issues.push({
+          path,
+          message: `${name} zaten üretilmiş; yeniden üretmek için onay gerekiyor (force).`,
+        });
+      } else if ((v.edited || v.approved) && !input.overwriteEdits) {
+        issues.push({
+          path,
+          message: v.approved
+            ? `${name} onaylı ya da zamanlanmış: yeniden üretmek onayı kaldırır (overwriteEdits).`
+            : `${name} elle ya da yapay zekâyla düzenlenmiş: yeniden üretmek bu düzenlemelerin yerine geçer (overwriteEdits).`,
+        });
+      }
       return item;
     });
+    const first = issues[0];
+    if (first) throw new ApiProblem("conflict", first.message, issues);
   } else {
-    targets = items.filter((i) => i.status === "accepted" && i.contentId !== null && !busy(i));
+    targets = [];
+    for (const item of items) {
+      if (item.status !== "accepted") continue;
+      const v = verdictOf(item);
+      const reason: PlanGenerateSkip["reason"] | null =
+        v.blocked ??
+        (v.approved ? "approved" : v.edited ? "edited" : v.generated ? "generated" : null);
+      if (reason) skipped.push({ itemId: item.id, reason });
+      else targets.push(item);
+    }
   }
 
-  const contentIds = targets.map((t) => t.contentId as string);
-  const contentRows = contentIds.length
-    ? await db
-        .select({ row: contents, version: contentVersions.version })
-        .from(contents)
-        .leftJoin(contentVersions, eq(contents.currentVersionId, contentVersions.id))
-        .where(inArray(contents.id, contentIds))
-    : [];
   const profile = await db.query.brandProfiles.findFirst({
     where: and(eq(brandProfiles.brandId, plan.brandId), eq(brandProfiles.isCurrent, true)),
   });
@@ -1725,9 +1872,11 @@ async function generatePlan(
   const created: JobRow[] = [];
   const nextItems = items.map((item) => {
     if (!targets.includes(item)) return item;
-    const found = contentRows.find((c) => c.row.id === item.contentId);
-    if (!found) throw conflict(`item ${item.id} has no content item any more (it was deleted)`);
-    const content = found.row;
+    const post = item.contentId ? posts.get(item.contentId) : undefined;
+    if (!post) throw conflict(`item ${item.id} has no content item any more (it was deleted)`);
+    const content = post.row;
+    // A canvas version's slide HTML only shows its render: a regeneration starts afresh.
+    const baseVersion = post.current && !post.current.canvas ? post.current.version : undefined;
     const payload = ContentGeneratePayload.parse({
       brandId: plan.brandId,
       contentId: content.id,
@@ -1735,7 +1884,7 @@ async function generatePlan(
       brief: content.brief,
       type: content.type,
       targetPlatforms: content.targetPlatforms,
-      ...(found.version ? { baseVersion: found.version } : {}),
+      ...(baseVersion ? { baseVersion } : {}),
       imageSlot: item.imageSlot,
       imageBrief: item.imageBrief,
       planItem: { planId, itemId: item.id, date: item.date, pillar: item.pillar },
@@ -1789,7 +1938,239 @@ async function generatePlan(
     });
     await change.commit();
   }
-  return { plan: await loadPlan(db, planId), jobs: created.map((j): Job => toJob(j)) };
+  return {
+    plan: await loadPlan(db, planId),
+    jobs: created.map((j): Job => toJob(j)),
+    skipped,
+  };
+}
+
+// --- plan item edits (N2) -------------------------------------------------------------------
+
+const ITEM_EDITABLE_PLAN_STATUSES = ["draft", "proposed", "accepted"] as const;
+
+function assertItemsEditable(plan: PlanRow): void {
+  if (!(ITEM_EDITABLE_PLAN_STATUSES as readonly string[]).includes(plan.status)) {
+    throw invalidTransition(`plan ${plan.id} is ${plan.status}; its items cannot change`);
+  }
+}
+
+function assertItemDate(plan: PlanRow, date: string | null): void {
+  const problem = checkPlanPeriod(plan.periodStart, plan.periodEnd, [date]);
+  if (problem) throw badRequest(problem, [{ path: "date", message: problem }]);
+}
+
+/**
+ * The plan row after an item edit: an open plan's revision goes up (accepting needs the revision
+ * the user saw), an accepted plan only changes its `updatedAt`.
+ */
+function touchPlan(change: Change, plan: PlanRow): PlanRow {
+  const { db, now } = change;
+  const open = isPlanEditable(plan.status);
+  const next: PlanRow = {
+    ...plan,
+    revision: open ? plan.revision + 1 : plan.revision,
+    updatedAt: now,
+  };
+  change.add(
+    db
+      .update(contentPlans)
+      .set({ revision: next.revision, updatedAt: now })
+      .where(and(eq(contentPlans.id, plan.id), eq(contentPlans.revision, plan.revision))),
+  );
+  return next;
+}
+
+/** A new draft post for an accepted item (what accepting the plan makes). */
+function draftPostFor(
+  change: Change,
+  plan: PlanRow,
+  item: Pick<PlanItemRow, "contentType" | "title" | "brief" | "platforms">,
+): string {
+  const { db, now } = change;
+  const contentId = newId();
+  change.add(
+    db.insert(contents).values({
+      id: contentId,
+      brandId: plan.brandId,
+      type: item.contentType,
+      title: item.title,
+      brief: item.brief,
+      status: "draft",
+      targetPlatforms: item.platforms,
+      caption: "",
+      createdAt: now,
+      updatedAt: now,
+    }),
+  );
+  return contentId;
+}
+
+async function addPlanItem(
+  change: Change,
+  planId: string,
+  input: z.output<typeof PlanItemCreate>,
+): Promise<Plan> {
+  const { db, now } = change;
+  const { plan, items } = await requirePlanRows(db, planId);
+  assertItemsEditable(plan);
+  if (items.length >= MAX_PLAN_ITEMS) {
+    throw badRequest(`a plan has at most ${MAX_PLAN_ITEMS} items`, [
+      { path: "items", message: "too many items" },
+    ]);
+  }
+  assertItemDate(plan, input.date);
+  const position = items.reduce((max, i) => Math.max(max, i.position + 1), 0);
+  let row = newItemRow(planId, position, input, now);
+  if (plan.status === "accepted") {
+    await requireActiveBrand(db, plan.brandId);
+    row = { ...row, status: "accepted", contentId: draftPostFor(change, plan, row) };
+  }
+  change.add(db.insert(planItems).values(row));
+  const next = touchPlan(change, plan);
+  const nextItems = [...items, row];
+  change.emit(plan.conversationId, {
+    type: "plan.updated",
+    plan: planView(next, nextItems, await generationJobs(db, nextItems)),
+  });
+  await change.commit();
+  return loadPlan(db, planId);
+}
+
+async function updatePlanItem(
+  change: Change,
+  planId: string,
+  itemId: string,
+  input: z.output<typeof PlanItemPatch>,
+): Promise<Plan> {
+  const { db, now } = change;
+  const { plan, items } = await requirePlanRows(db, planId);
+  assertItemsEditable(plan);
+  const item = items.find((i) => i.id === itemId);
+  if (!item) throw notFound(`plan ${planId} item`, itemId);
+  if (item.status === "skipped") {
+    throw conflict(`item ${itemId} was left out when the plan was accepted`);
+  }
+  const fields = {
+    ...(input.date !== undefined ? { date: input.date } : {}),
+    ...(input.platforms !== undefined ? { platforms: input.platforms } : {}),
+    ...(input.contentType !== undefined ? { contentType: input.contentType } : {}),
+    ...(input.title !== undefined ? { title: input.title } : {}),
+    ...(input.brief !== undefined ? { brief: input.brief } : {}),
+    ...(input.pillar !== undefined ? { pillar: input.pillar } : {}),
+    ...(input.imageSlot !== undefined ? { imageSlot: input.imageSlot } : {}),
+    ...(input.imageBrief !== undefined ? { imageBrief: input.imageBrief } : {}),
+  };
+  const nextItem: PlanItemRow = { ...item, ...fields, updatedAt: now };
+  if (fields.date !== undefined) assertItemDate(plan, nextItem.date);
+
+  if (item.status === "accepted" && item.contentId) {
+    const post = (await itemPosts(db, [item.contentId])).get(item.contentId);
+    if (post && !post.row.deletedAt) {
+      const set: Partial<typeof contents.$inferInsert> = {};
+      if (fields.title !== undefined && fields.title !== post.row.title) set.title = fields.title;
+      if (fields.brief !== undefined && fields.brief !== post.row.brief) set.brief = fields.brief;
+      const samePlatforms =
+        fields.platforms === undefined ||
+        (fields.platforms.length === post.row.targetPlatforms.length &&
+          fields.platforms.every((p) => post.row.targetPlatforms.includes(p)));
+      if (!samePlatforms && fields.platforms) {
+        if (post.row.status !== "draft" && post.row.status !== "in_review") {
+          throw conflict(
+            "Onaylı ya da zamanlanmış postun platformları plandan değiştirilemez; postu açıp düzenle.",
+          );
+        }
+        set.targetPlatforms = fields.platforms;
+      }
+      if (fields.contentType !== undefined && fields.contentType !== post.row.type) {
+        if (post.current) {
+          throw conflict(
+            "Postun tasarımı var; türünü değiştirmek için yeni bir post ya da yeniden üretim gerekir.",
+          );
+        }
+        set.type = fields.contentType;
+      }
+      if (Object.keys(set).length > 0) {
+        change.add(
+          db
+            .update(contents)
+            .set({ ...set, updatedAt: now })
+            .where(eq(contents.id, item.contentId)),
+        );
+      }
+    }
+  }
+
+  change.add(
+    db
+      .update(planItems)
+      .set({ ...fields, updatedAt: now })
+      .where(eq(planItems.id, itemId)),
+  );
+  const next = touchPlan(change, plan);
+  const nextItems = items.map((i) => (i.id === itemId ? nextItem : i));
+  change.emit(plan.conversationId, {
+    type: "plan.updated",
+    plan: planView(next, nextItems, await generationJobs(db, nextItems)),
+  });
+  await change.commit();
+  return loadPlan(db, planId);
+}
+
+async function removePlanItem(
+  change: Change,
+  planId: string,
+  itemId: string,
+): Promise<PlanItemRemoveResult> {
+  const { db, now } = change;
+  const { plan, items } = await requirePlanRows(db, planId);
+  assertItemsEditable(plan);
+  const item = items.find((i) => i.id === itemId);
+  if (!item) throw notFound(`plan ${planId} item`, itemId);
+  if (isPlanEditable(plan.status) && items.length <= 1) {
+    throw badRequest("a plan needs at least one item; reject the plan instead", [
+      { path: "itemId", message: "last item" },
+    ]);
+  }
+  let trashedContentId: string | null = null;
+  if (item.contentId) {
+    const post = (await itemPosts(db, [item.contentId])).get(item.contentId);
+    const jobsById = await generationJobs(db, [item]);
+    const job = item.generationJobId ? jobsById.get(item.generationJobId) : undefined;
+    const [active] = await db
+      .select({ id: jobs.id })
+      .from(jobs)
+      .where(and(eq(jobs.contentId, item.contentId), inArray(jobs.status, ["queued", "running"])))
+      .limit(1);
+    const busy = (job && !isTerminalJobStatus(job.status)) || active !== undefined;
+    // An empty draft would only clutter the board: it goes to the trash (restorable). A post
+    // with a design stays; only the plan forgets it.
+    if (post && !post.row.deletedAt && !post.current && !busy) {
+      change.add(
+        db
+          .update(contents)
+          .set({ deletedAt: now, updatedAt: now })
+          .where(and(eq(contents.id, item.contentId), isNull(contents.deletedAt))),
+      );
+      trashedContentId = item.contentId;
+    }
+  }
+  change.add(db.delete(planItems).where(eq(planItems.id, itemId)));
+  // Keep positions 0..n-1.
+  const rest = items.filter((i) => i.id !== itemId).map((i, position) => ({ ...i, position }));
+  for (const i of rest) {
+    const before = items.find((x) => x.id === i.id);
+    if (before && before.position !== i.position) {
+      change.add(db.update(planItems).set({ position: i.position }).where(eq(planItems.id, i.id)));
+    }
+  }
+  const next = touchPlan(change, plan);
+  change.emit(plan.conversationId, {
+    type: "plan.updated",
+    plan: planView(next, rest, await generationJobs(db, rest)),
+  });
+  await change.commit();
+  return { plan: await loadPlan(db, planId), trashedContentId };
 }
 
 async function renameAlias(

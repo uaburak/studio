@@ -19,7 +19,7 @@ import {
   type Plan,
   type QuestionPart,
 } from "@studio/contract";
-import { describeError } from "../lib/api.ts";
+import { describeError, explainError } from "../lib/api.ts";
 import type { AgentChoice } from "../lib/models.ts";
 import { type OutgoingMessage, type QueuedMessage, runningStepKeys } from "../lib/transcript.ts";
 
@@ -30,10 +30,14 @@ export interface ConversationSnapshot {
   busyPlans: ReadonlySet<string>;
   busyQuestions: ReadonlySet<string>;
   busyConsents: ReadonlySet<string>;
+  /** Plans whose generation could not be started (accepted, but nothing queued): the reason. */
+  planErrors: Readonly<Record<string, string>>;
   expandedSteps: ReadonlySet<string>;
   stepStarts: Readonly<Record<string, number>>;
   isSending: boolean;
   error: string | null;
+  /** The original text behind `error` ("Ayrıntı"). */
+  errorDetail: string | null;
   /** A reply runs, or a send just started one the stream has not shown yet. */
   isReplyActive: boolean;
 }
@@ -61,11 +65,13 @@ export class ConversationController {
   private busyPlans = new Set<string>();
   private busyQuestions = new Set<string>();
   private busyConsents = new Set<string>();
+  private planErrors: Record<string, string> = {};
   private expandedSteps = new Set<string>();
   private stepStarts: Record<string, number> = {};
   private isSending = false;
   private isFlushing = false;
   private error: string | null = null;
+  private errorDetail: string | null = null;
   /** The run a send just started, until the stream shows it (busy until then: no 409). */
   private awaitingRunId: string | null = null;
   private watch: ConversationWatch | undefined;
@@ -97,10 +103,12 @@ export class ConversationController {
       busyPlans: new Set(this.busyPlans),
       busyQuestions: new Set(this.busyQuestions),
       busyConsents: new Set(this.busyConsents),
+      planErrors: this.planErrors,
       expandedSteps: new Set(this.expandedSteps),
       stepStarts: { ...this.stepStarts },
       isSending: this.isSending,
       error: this.error,
+      errorDetail: this.errorDetail,
       isReplyActive: this.isReplyActive,
     };
   }
@@ -231,7 +239,7 @@ export class ConversationController {
     if (this.isReplyActive || this.queue.length > 0) {
       this.queue = [...this.queue, { message, state: { kind: "waiting" }, sendNow: false }];
       this.deps.saveChoice(this.deps.choice());
-      this.error = null;
+      this.setError(null);
       this.emit();
       if (!this.isReplyActive) await this.flushQueue();
       return true;
@@ -245,10 +253,10 @@ export class ConversationController {
       );
       this.noteStarted(result.run);
       this.deps.saveChoice(this.deps.choice());
-      this.error = null;
+      this.setError(null);
       return true;
     } catch (error) {
-      this.error = describeError(error);
+      this.setError(error);
       return false;
     } finally {
       this.isSending = false;
@@ -275,7 +283,7 @@ export class ConversationController {
       );
       this.queue = this.queue.filter((q) => q.message.clientMessageId !== id);
       this.noteStarted(result.run);
-      this.error = null;
+      this.setError(null);
     } catch (error) {
       this.updateQueued(id, { state: { kind: "failed", error: describeError(error) } });
     } finally {
@@ -332,13 +340,41 @@ export class ConversationController {
     }
   }
 
+  /** The last message the user wrote (text and attachments), as it would be sent again. */
+  lastUserMessage(): OutgoingMessage | null {
+    const messages = this.stateValue?.messages ?? [];
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i];
+      if (m?.role !== "user") continue;
+      const text = m.parts.flatMap((p) => (p.type === "text" ? [p.text] : [])).join("\n");
+      // The assets already have their alias in this conversation: no alias is asked for again.
+      const attachments = m.parts.flatMap((p) =>
+        p.type === "attachment" ? [{ assetId: p.assetId }] : [],
+      );
+      if (!text.trim() && attachments.length === 0) return null;
+      return { clientMessageId: this.newId(), text, attachments };
+    }
+    return null;
+  }
+
+  /** Chat error's "Yeniden dene": the last user message goes out again (a new run). */
+  async retryLast(): Promise<boolean> {
+    const message = this.lastUserMessage();
+    if (!message) return false;
+    return this.send(message);
+  }
+
+  private newId(): string {
+    return this.deps.newId?.() ?? newClientMessageId();
+  }
+
   async cancelRun(): Promise<void> {
     const run = this.stateValue?.activeRun;
     if (!run) return;
     try {
       await this.client.agentRuns.cancel(run.id);
     } catch (error) {
-      this.error = describeError(error);
+      this.setError(error);
       this.emit();
     }
   }
@@ -354,9 +390,9 @@ export class ConversationController {
         consentId: consent.consentId,
         allow,
       });
-      this.error = null;
+      this.setError(null);
     } catch (error) {
-      this.error = describeError(error);
+      this.setError(error);
     } finally {
       this.busyConsents.delete(key);
       this.emit();
@@ -372,6 +408,7 @@ export class ConversationController {
     const problem = checkQuestionAnswer(question, { optionIds, text });
     if (problem) {
       this.error = problem;
+      this.errorDetail = null;
       this.emit();
       return;
     }
@@ -384,9 +421,9 @@ export class ConversationController {
         optionIds,
         ...(text?.trim() ? { text: text.trim() } : {}),
       });
-      this.error = null;
+      this.setError(null);
     } catch (error) {
-      this.error = describeError(error);
+      this.setError(error);
     } finally {
       this.busyQuestions.delete(key);
       this.emit();
@@ -395,11 +432,29 @@ export class ConversationController {
 
   async acceptAndGenerate(plan: Plan): Promise<void> {
     await this.withPlan(plan.id, async () => {
-      const choice = this.deps.choice();
       if (plan.status !== "accepted")
         await this.client.plans.accept(plan.id, { revision: plan.revision });
-      await this.client.plans.generate(plan.id, { model: choice.model, effort: choice.effort });
+      await this.generate(plan.id);
     });
+  }
+
+  /** "Yeniden dene" after a failed start of the generation: only the generate step again. */
+  async generatePlan(plan: Plan): Promise<void> {
+    await this.withPlan(plan.id, () => this.generate(plan.id));
+  }
+
+  /** Queues the plan's generation; a failure stays on the plan's card (not the general line). */
+  private async generate(planId: string): Promise<void> {
+    const choice = this.deps.choice();
+    try {
+      await this.client.plans.generate(planId, { model: choice.model, effort: choice.effort });
+      if (planId in this.planErrors) {
+        const { [planId]: _, ...rest } = this.planErrors;
+        this.planErrors = rest;
+      }
+    } catch (error) {
+      this.planErrors = { ...this.planErrors, [planId]: describeError(error) };
+    }
   }
 
   async rejectPlan(plan: Plan): Promise<void> {
@@ -412,9 +467,9 @@ export class ConversationController {
     this.emit();
     try {
       await run();
-      this.error = null;
+      this.setError(null);
     } catch (error) {
-      this.error = describeError(error);
+      this.setError(error);
     } finally {
       this.busyPlans.delete(planId);
       this.emit();
@@ -428,8 +483,20 @@ export class ConversationController {
   }
 
   clearError(): void {
-    this.error = null;
+    this.setError(null);
     this.emit();
+  }
+
+  /** The general error line (null clears it); a failure keeps its original text as detail. */
+  private setError(error: unknown): void {
+    if (error === null) {
+      this.error = null;
+      this.errorDetail = null;
+      return;
+    }
+    const { message, detail } = explainError(error);
+    this.error = message;
+    this.errorDetail = detail;
   }
 }
 
@@ -471,6 +538,19 @@ export class ConversationCache {
 
   peek(id: string): ConversationController | undefined {
     return this.controllers.get(id);
+  }
+
+  /**
+   * The host went away: every stream stops (no reconnect loop against a dead port), but the
+   * controllers stay — open views keep them and `resume` reconnects them from their last seq.
+   */
+  pause(): void {
+    for (const controller of this.controllers.values()) controller.stop();
+  }
+
+  /** The host is back: every kept conversation reconnects (resuming after its last event). */
+  resume(): void {
+    for (const controller of this.controllers.values()) controller.start();
   }
 
   clear(): void {

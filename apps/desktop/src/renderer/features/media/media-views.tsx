@@ -10,6 +10,7 @@ import {
   IconDownload,
   IconExpand,
   IconImage,
+  IconTrash,
   IconType,
   IconVideo,
 } from "../../components/ui/icons.tsx";
@@ -17,6 +18,7 @@ import type { MenuEntry } from "../../components/ui/menu.tsx";
 import { useImageZoom } from "../../components/ui/zoomable-image.tsx";
 import { assetUrl } from "../../lib/api.ts";
 import { assetDragPayload, requestComposerAttach, writeAssetDrag } from "../../lib/asset-drag.ts";
+import { tileUrl } from "../../lib/thumbnail.ts";
 import { useAppStore } from "../../state/app-store.ts";
 import { downloadName, isImageAsset, lightboxImages } from "./media-model.ts";
 
@@ -53,7 +55,12 @@ export function useMediaLightbox(assets: readonly Asset[]) {
   return { open, register };
 }
 
-export function mediaMenu(asset: Asset, preview: () => void): MenuEntry[] {
+export function mediaMenu(
+  asset: Asset,
+  preview: () => void,
+  /** "Sil": to the trash (refused while a post, product or the kit uses it). */
+  remove?: () => void,
+): MenuEntry[] {
   const image = isImageAsset(asset);
   return [
     {
@@ -77,6 +84,18 @@ export function mediaMenu(asset: Asset, preview: () => void): MenuEntry[] {
       icon: <IconDownload size={14} strokeWidth={1.5} />,
       onSelect: () => saveAsset(asset),
     },
+    ...(remove
+      ? ([
+          { type: "separator" },
+          {
+            id: "delete",
+            label: "Sil",
+            danger: true,
+            icon: <IconTrash size={14} strokeWidth={1.5} />,
+            onSelect: remove,
+          },
+        ] satisfies MenuEntry[])
+      : []),
   ];
 }
 
@@ -130,7 +149,7 @@ export function MediaTile({
     >
       {image ? (
         <img
-          src={assetUrl(asset.id)}
+          src={tileUrl(asset, 200)}
           alt=""
           loading="lazy"
           draggable={false}

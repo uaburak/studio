@@ -278,12 +278,15 @@ export const assets = sqliteTable(
     durationMs: integer("duration_ms"),
     originalFilename: text("original_filename"),
     createdAt: createdAt(),
+    /** In the trash since (0019); purged TRASH_RETENTION_DAYS later. Null = not deleted. */
+    deletedAt: integer("deleted_at", { mode: "timestamp_ms" }),
   },
   (t) => [
     uniqueIndex("assets_object_key_unique").on(t.objectKey),
     index("assets_brand_idx").on(t.brandId, t.id),
     index("assets_brand_kind_idx").on(t.brandId, t.kind, t.id),
     index("assets_sha256_idx").on(t.sha256),
+    index("assets_deleted_idx").on(t.deletedAt),
     check("assets_kind_check", oneOf(t.kind, ENUMS.assetKind)),
     check("assets_source_check", oneOf(t.source, ENUMS.assetSource)),
     check("assets_bytes_check", sql`${t.bytes} >= 0`),
@@ -377,11 +380,14 @@ export const contents = sqliteTable(
     approvedAt: integer("approved_at", { mode: "timestamp_ms" }),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
+    /** In the trash ("Silinenler") since (0019); purged TRASH_RETENTION_DAYS later. */
+    deletedAt: integer("deleted_at", { mode: "timestamp_ms" }),
   },
   (t) => [
     index("contents_brand_idx").on(t.brandId, t.id),
     index("contents_brand_status_idx").on(t.brandId, t.status, t.id),
     index("contents_status_idx").on(t.status, t.id),
+    index("contents_deleted_idx").on(t.deletedAt),
     check("contents_type_check", oneOf(t.type, ENUMS.contentType)),
     check("contents_status_check", oneOf(t.status, ENUMS.contentStatus)),
     check(
@@ -1023,9 +1029,20 @@ export const aiUsage = sqliteTable(
   ],
 );
 
-/** AI settings (single row, id `main`): the owner's monthly Gemini budget. */
+/**
+ * AI settings (single row, id `main`): the owner's monthly budget of every paid AI service (the
+ * column keeps its old Gemini name) and the S7 preferences.
+ */
 export const aiSettings = sqliteTable("ai_settings", {
   id: text("id").primaryKey(),
   geminiMonthlyBudgetUsd: real("gemini_monthly_budget_usd"),
+  /** ClaudeLimitMode (`ask` | `gemini` | `wait`); null = `ask`. */
+  claudeLimitMode: text("claude_limit_mode"),
+  /** Refuse paid calls once this month's spend reached the budget. */
+  stopAtBudget: integer("stop_at_budget", { mode: "boolean" }).notNull().default(false),
+  /** The owner's answer for the current Claude limit window (ClaudeLimitChoice); null = none. */
+  limitChoice: text("limit_choice"),
+  limitUntil: integer("limit_until", { mode: "timestamp_ms" }),
+  limitDecidedAt: integer("limit_decided_at", { mode: "timestamp_ms" }),
   updatedAt: updatedAt(),
 });

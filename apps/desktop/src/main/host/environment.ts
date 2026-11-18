@@ -2,17 +2,23 @@
 // StudioMac/Host/HostEnvironment.swift).
 //
 // Finder-launched apps get a minimal PATH (`/usr/bin:/bin:/usr/sbin:/sbin`), so the PATH is
-// read once from the user's login shell. The repo path comes from the settings: the host runs
-// the API and worker from the repo's sources (`node_modules` must be installed).
-import { spawnSync } from "node:child_process";
+// read once from the user's login shell — in the background (A11: a slow shell or `scutil` never
+// blocks the main process). The repo path comes from the settings: the host runs the API and
+// worker from the repo's sources (`node_modules` must be installed).
+import { execFile } from "node:child_process";
 import {
   accessSync,
+  closeSync,
   constants,
+  copyFileSync,
   existsSync,
-  readFileSync,
+  fstatSync,
+  openSync,
+  readSync,
   renameSync,
   rmSync,
   statSync,
+  truncateSync,
 } from "node:fs";
 import { createServer } from "node:net";
 import { homedir, networkInterfaces, userInfo } from "node:os";
@@ -75,25 +81,41 @@ export function mergePath(path: string | null, home = homedir()): string {
   return parts.join(":");
 }
 
-let cachedPath: string | undefined;
+/** stdout of a short command, "" when it fails or takes longer than `timeoutMs`. */
+export function commandOutput(
+  file: string,
+  args: string[],
+  timeoutMs: number,
+  run: typeof execFile = execFile,
+): Promise<string> {
+  return new Promise((resolve) => {
+    try {
+      run(
+        file,
+        args,
+        { encoding: "utf8", timeout: timeoutMs, killSignal: "SIGKILL", maxBuffer: 1_000_000 },
+        (_error, stdout) => resolve(typeof stdout === "string" ? stdout : ""),
+      ).stdin?.end();
+    } catch {
+      resolve("");
+    }
+  });
+}
 
-/** PATH of the user's login shell (cached), with common tool folders appended. */
-export function loginShellPath(): string {
-  if (cachedPath !== undefined) return cachedPath;
-  const shell = process.env.SHELL || "/bin/zsh";
-  let raw: string | null = null;
-  try {
+let cachedPath: Promise<string> | undefined;
+
+/** PATH of the user's login shell (read once, in the background), with tool folders appended. */
+export function loginShellPath(): Promise<string> {
+  cachedPath ??= (async () => {
+    const shell = process.env.SHELL || "/bin/zsh";
     // -l and -i: PATH is often set in .zshrc (interactive) as well as .zprofile.
-    const result = spawnSync(
+    const output = await commandOutput(
       shell,
       ["-l", "-i", "-c", `printf '${PATH_MARK_START}%s${PATH_MARK_END}' "$PATH"`],
-      { encoding: "utf8", timeout: 5_000, stdio: ["ignore", "pipe", "ignore"] },
+      5_000,
     );
-    raw = parseShellPath(result.stdout ?? "");
-  } catch {
-    raw = null;
-  }
-  cachedPath = mergePath(raw);
+    return mergePath(parseShellPath(output));
+  })();
   return cachedPath;
 }
 
@@ -191,14 +213,20 @@ export function tailText(text: string, lines = 12): string {
     .join("\n");
 }
 
-/** The last `lines` lines of a log file (reads at most the last 16 KB). */
-export function tail(file: string, lines = 12): string {
+/** The last `lines` lines of a log file (reads only its last `bytes`, never the whole file). */
+export function tail(file: string, lines = 12, bytes = 16_384): string {
+  let fd: number | undefined;
   try {
-    const buffer = readFileSync(file);
-    const slice = buffer.length > 16_384 ? buffer.subarray(buffer.length - 16_384) : buffer;
-    return tailText(slice.toString("utf8"), lines);
+    fd = openSync(file, "r");
+    const size = fstatSync(fd).size;
+    const length = Math.min(size, bytes);
+    const buffer = Buffer.alloc(length);
+    readSync(fd, buffer, 0, length, size - length);
+    return tailText(buffer.toString("utf8"), lines);
   } catch {
     return "";
+  } finally {
+    if (fd !== undefined) closeSync(fd);
   }
 }
 
@@ -213,17 +241,40 @@ export function rotate(file: string, limit = 5_000_000): void {
   }
 }
 
-/** The Mac's user-visible name ("Burak's MacBook Pro"). */
-export function computerName(): string {
+/**
+ * Rotation while a child still writes the log (its descriptor is in append mode): the content is
+ * copied to `.1` and the file is emptied in place, so the child's next line lands at its start.
+ * Returns whether the log was rotated.
+ */
+export function rotateInPlace(file: string, limit = 5_000_000): boolean {
   try {
-    const result = spawnSync("/usr/sbin/scutil", ["--get", "ComputerName"], {
-      encoding: "utf8",
-      timeout: 2_000,
-    });
-    const name = result.stdout?.trim();
-    if (name) return name;
+    if (statSync(file).size <= limit) return false;
+    copyFileSync(file, `${file}.1`);
+    truncateSync(file, 0);
+    return true;
   } catch {
-    // fall through
+    return false;
   }
-  return process.env.HOST || "Mac";
+}
+
+/** The Mac's user-visible name ("Burak's MacBook Pro"), read in the background. */
+export async function computerName(): Promise<string> {
+  const name = (await commandOutput("/usr/sbin/scutil", ["--get", "ComputerName"], 2_000)).trim();
+  return name || process.env.HOST || "Mac";
+}
+
+let cachedUserName: Promise<string> | undefined;
+
+/** The Mac user's full name ("Burak Koç"; the short login name when there is none). */
+export function macUserName(): Promise<string> {
+  cachedUserName ??= (async () => {
+    const full = (await commandOutput("/usr/bin/id", ["-F"], 2_000)).trim();
+    if (full) return full;
+    try {
+      return userInfo().username;
+    } catch {
+      return "";
+    }
+  })();
+  return cachedUserName;
 }

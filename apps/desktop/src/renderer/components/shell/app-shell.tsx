@@ -35,6 +35,7 @@ import { Lightbox } from "../chat/lightbox.tsx";
 import { NewChatView } from "../chat/new-chat-view.tsx";
 import { RightPanel } from "../panels/right-panel.tsx";
 import { ToastHost } from "../ui/popover.tsx";
+import { ArchivePage } from "./archive-page.tsx";
 import { HostBanner, SearchPalette } from "./overlays.tsx";
 import { ResizeHandle } from "./resize-handle.tsx";
 import { Sidebar } from "./sidebar.tsx";
@@ -141,6 +142,8 @@ function useCommands() {
     const offNotice = b.onNoticeClicked((route) =>
       useAppStore.getState().navigate(parseRoute(route)),
     );
+    const offAppNotice =
+      b.onAppNotice?.((message) => useAppStore.getState().showToast({ message })) ?? (() => {});
     const onKey = (event: KeyboardEvent) => {
       // A key the page used (the post canvas's ⌘[ / ⌘]) is not a shortcut of the app's.
       if (isElectron() || event.defaultPrevented) return;
@@ -184,9 +187,12 @@ function useCommands() {
     window.addEventListener("pointermove", onPointer, { passive: true, capture: true });
     // Close / quit / reload: the open post's draft is written first (E14).
     const offFlush = installAppFlush(b.lifecycle ?? null);
+    // Everything listens now: a notification click that opened the window comes after this.
+    b.rendererReady?.();
     return () => {
       offMenu();
       offNotice();
+      offAppNotice();
       offFlush();
       window.removeEventListener("pointermove", onPointer, { capture: true });
       window.removeEventListener("keydown", onKey);
@@ -258,6 +264,7 @@ export function AppShell() {
             {route.kind === "new" && <NewChatView />}
             {route.kind === "posts" && <PostsPage />}
             {route.kind === "conversation" && <ChatView key={route.id} id={route.id} />}
+            {route.kind === "archive" && <ArchivePage />}
             {route.kind === "gallery" && (
               <Suspense fallback={null}>
                 <Gallery />

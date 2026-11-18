@@ -8,16 +8,22 @@
  * and the next round continues with `previous_response_id` plus the `function_call_output`s.
  * Answers are written when a round ends (no token streaming). Errors never carry the key.
  */
-import type { RunUsage } from "@studio/contract";
+import type { OpenAiUsageSample, RunUsage } from "@studio/contract";
 import type { StudioToolExecutor, ToolJsonSchema } from "../chat/tools.ts";
 import { abortableSleep } from "../claude/gate.ts";
 import type { Effort } from "../claude/models.ts";
+import { startTurnTimer, type TurnWaits } from "../claude/turn-waits.ts";
 import type { GeminiContent } from "../gemini/api-runner.ts";
 import { classifyFailure, ProviderError } from "./cli.ts";
 
 const RESPONSES_URL = "https://api.openai.com/v1/responses";
 
-/** Newest first: the default model when STUDIO_OPENAI_MODEL is not set. */
+/**
+ * Preferred models, best first (checked on OPENAI_MODELS_CHECKED_AT against
+ * https://platform.openai.com/docs/models). Picked from the key's model list; the static list is
+ * used as is only when the key's list is unknown (empty).
+ */
+export const OPENAI_MODELS_CHECKED_AT = "2026-11-18";
 export const OPENAI_MODEL_PREFERENCE = [
   "gpt-6-sol",
   "gpt-6.1-sol",
@@ -27,9 +33,50 @@ export const OPENAI_MODEL_PREFERENCE = [
   "gpt-5.5",
 ] as const;
 
+/** Model families that are not general chat models (Responses API with function tools). */
+const NOT_GENERAL_CHAT =
+  /(?:audio|realtime|image|embedding|tts|transcribe|search|codex|instruct|moderation|whisper|dall-e|computer-use|deep-research|diarize)/;
+
+interface ChatModelRank {
+  id: string;
+  version: [number, number];
+  /** Smaller, costlier or less stable variants (mini/nano/pro/preview/chat): only when nothing else. */
+  secondary: boolean;
+  /** Dated snapshot (`-2025-08-07`): the plain alias is preferred. */
+  dated: boolean;
+}
+
+function rankChatModel(id: string): ChatModelRank | null {
+  const m = /^gpt-(\d+)(?:\.(\d+))?(o)?(?=-|$)/.exec(id);
+  if (!m || NOT_GENERAL_CHAT.test(id)) return null;
+  return {
+    id,
+    // `gpt-4o` sits between gpt-4 and gpt-4.1.
+    version: [Number(m[1]), m[2] !== undefined ? Number(m[2]) : m[3] ? 0.5 : 0],
+    secondary: /-(?:mini|nano|pro|preview|chat)(?:-|$)/.test(id),
+    dated: /-\d{4}-\d{2}-\d{2}$/.test(id),
+  };
+}
+
+/** Newest general chat model of a key's model list (`gpt-*`), undefined when it has none. */
+export function newestOpenAiChatModel(available: readonly string[]): string | undefined {
+  const ranked = available.map(rankChatModel).filter((r): r is ChatModelRank => r !== null);
+  ranked.sort(
+    (a, b) =>
+      Number(a.secondary) - Number(b.secondary) ||
+      b.version[0] - a.version[0] ||
+      b.version[1] - a.version[1] ||
+      Number(a.dated) - Number(b.dated) ||
+      a.id.length - b.id.length ||
+      a.id.localeCompare(b.id),
+  );
+  return ranked[0]?.id;
+}
+
 /**
  * The model for "GPT (OpenAI API)": STUDIO_OPENAI_MODEL, else the first preferred model the key
- * listed at its last check, else the first preferred one.
+ * listed at its last check, else the newest general chat model of that list; the static
+ * preference only when the list is empty (unknown) or names no chat model.
  */
 export function pickOpenAiModel(
   configured: string | undefined,
@@ -37,7 +84,11 @@ export function pickOpenAiModel(
 ): string {
   if (configured) return configured;
   const set = new Set(available);
-  return OPENAI_MODEL_PREFERENCE.find((m) => set.has(m)) ?? OPENAI_MODEL_PREFERENCE[0];
+  return (
+    OPENAI_MODEL_PREFERENCE.find((m) => set.has(m)) ??
+    newestOpenAiChatModel(available) ??
+    OPENAI_MODEL_PREFERENCE[0]
+  );
 }
 
 export function openAiReasoning(effort: Effort | undefined): "low" | "medium" | "high" {
@@ -102,10 +153,23 @@ export interface OpenAiTurnOptions {
   executor: StudioToolExecutor;
   onTextDelta?: (text: string) => void;
   signal?: AbortSignal;
+  /**
+   * The turn's cap on the model's own work (default 15 min); the waits (consent, ask_user,
+   * wait_jobs) do not count (U8, U1).
+   */
+  timeoutMs?: number;
+  waits?: TurnWaits;
   maxRounds?: number;
   fetch?: typeof globalThis.fetch;
   sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
+  /** Before each paid request (the monthly budget check, S7); throwing stops the turn. */
+  beforeRequest?: () => void;
+  /** Each request's tokens (spend tracking, U8). */
+  onUsage?: (sample: OpenAiUsageSample) => void;
 }
+
+/** Default cap of an OpenAI turn's own work. */
+export const OPENAI_TURN_TIMEOUT_MS = 15 * 60_000;
 
 export interface OpenAiTurnResult {
   model: string;
@@ -206,6 +270,35 @@ async function post(
 }
 
 export async function runOpenAiTurn(options: OpenAiTurnOptions): Promise<OpenAiTurnResult> {
+  // The turn had no time cap at all (U8): a hung request held the job forever.
+  const timeoutMs = options.timeoutMs ?? OPENAI_TURN_TIMEOUT_MS;
+  const timeout = new AbortController();
+  const timer = startTurnTimer({
+    timeoutMs,
+    waits: options.waits,
+    onTimeout: () =>
+      timeout.abort(
+        new ProviderError(
+          "openai",
+          "timeout",
+          `OpenAI turn: no answer after ${timeoutMs} ms of work`,
+        ),
+      ),
+  });
+  const signal = options.signal
+    ? AbortSignal.any([options.signal, timeout.signal])
+    : timeout.signal;
+  try {
+    return await runOpenAiRounds({ ...options, signal });
+  } catch (error) {
+    if (timeout.signal.aborted && !options.signal?.aborted) throw timeout.signal.reason;
+    throw error;
+  } finally {
+    timer.cancel();
+  }
+}
+
+async function runOpenAiRounds(options: OpenAiTurnOptions): Promise<OpenAiTurnResult> {
   const started = Date.now();
   const maxRounds = options.maxRounds ?? 12;
   const tools = options.executor.geminiFunctionDeclarations().map((d) => ({
@@ -235,7 +328,21 @@ export async function runOpenAiTurn(options: OpenAiTurnOptions): Promise<OpenAiT
       ...(tools.length > 0 ? { tools, tool_choice: "auto", parallel_tool_calls: false } : {}),
       ...(previousId ? { previous_response_id: previousId } : {}),
     };
+    options.beforeRequest?.();
     const res = await post(options, body);
+    if (res.usage) {
+      try {
+        options.onUsage?.({
+          model: res.model ?? options.model,
+          inputTokens: res.usage.input_tokens ?? 0,
+          cachedTokens: res.usage.input_tokens_details?.cached_tokens ?? 0,
+          outputTokens: res.usage.output_tokens ?? 0,
+          reasoningTokens: res.usage.output_tokens_details?.reasoning_tokens ?? 0,
+        });
+      } catch {
+        // spend tracking never breaks a turn
+      }
+    }
     if (res.status === "failed" || res.error?.message) {
       const msg = clean(res.error?.message ?? "OpenAI yanıtı başarısız", options.apiKey);
       throw new ProviderError("openai", classifyFailure(msg), msg);

@@ -4,6 +4,7 @@ import type { SVGProps } from "react";
 // Posts and the post editor (wave 2A).
 // Calendar, media, brand and iPhone panes (wave 2B).
 export {
+  Archive as IconArchive,
   ArrowRight as IconArrowRight,
   ArrowUp as IconArrowUp,
   Calendar as IconCalendar,

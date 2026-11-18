@@ -221,25 +221,38 @@ export async function stopLeftovers(repoPath: string, stateDir: string): Promise
     .split("\n")
     .map((s) => Number.parseInt(s, 10))
     .filter((n) => Number.isInteger(n) && n > 0);
+  let stopped = false;
   for (const pid of pids) {
-    if ((await cwdOf(pid)) === workerDir) terminate(pid);
+    if ((await cwdOf(pid)) === workerDir) {
+      terminate(pid);
+      stopped = true;
+    }
   }
   const helpers = orphanedHelpers(
     parsePs(await output("/bin/ps", ["-axo", "pid=,ppid=,command="])),
   );
-  for (const pid of helpers.dnsSd) terminate(pid);
+  for (const pid of helpers.dnsSd) {
+    terminate(pid);
+    stopped = true;
+  }
   for (const pid of helpers.cloudflared) {
-    if ((await cwdOf(pid)) === stateDir) terminate(pid);
+    if ((await cwdOf(pid)) === stateDir) {
+      terminate(pid);
+      stopped = true;
+    }
   }
   for (const pattern of leftoverPatterns(repoPath)) {
-    await new Promise<void>((resolve) => {
+    // pkill exits 0 when it signalled something, 1 when nothing matched.
+    const matched = await new Promise<boolean>((resolve) => {
       const child = spawn("/usr/bin/pkill", ["-TERM", "-f", pattern], { stdio: "ignore" });
-      child.once("exit", () => resolve());
-      child.once("error", () => resolve());
+      child.once("exit", (code) => resolve(code === 0));
+      child.once("error", () => resolve(false));
     });
+    stopped ||= matched;
   }
-  // Give them a moment to release their ports.
-  await new Promise((resolve) => setTimeout(resolve, 1_500));
+  // Give them a moment to release their ports (only when something was stopped: a normal
+  // start after a clean quit does not wait).
+  if (stopped) await new Promise((resolve) => setTimeout(resolve, 1_500));
 }
 
 // --- Remote Control ---------------------------------------------------------------------------

@@ -149,6 +149,27 @@ export interface Page<T> {
   nextCursor: string | null;
 }
 
+// --- Trash (soft delete) -------------------------------------------------------
+
+/**
+ * Deleted posts and media stay in the trash ("Silinenler") this long; the purge then removes
+ * them for good, with their stored files.
+ */
+export const TRASH_RETENTION_DAYS = 30;
+
+/**
+ * Which rows a list returns: `exclude` (default) leaves trashed ones out, `only` lists the trash,
+ * `include` both.
+ */
+export const TrashFilter = z.enum(["exclude", "only", "include"]).meta({ id: "TrashFilter" });
+export type TrashFilter = z.infer<typeof TrashFilter>;
+
+/** When a trashed row is purged (its `deletedAt` + the retention). */
+export function purgeDate(deletedAt: string | Date): Date {
+  const at = typeof deletedAt === "string" ? Date.parse(deletedAt) : deletedAt.getTime();
+  return new Date(at + TRASH_RETENTION_DAYS * 86_400_000);
+}
+
 /** Reject an update body that would change nothing. */
 export function nonEmptyUpdate(value: Record<string, unknown>): boolean {
   return Object.values(value).some((v) => v !== undefined);

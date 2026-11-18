@@ -6,18 +6,24 @@ import {
   AssetList,
   AssetListQuery,
   AssetSource,
+  AssetThumbnailQuery,
   AssetUploadFields,
+  AssetUsageList,
   assetMimeRule,
   EntityId,
   MAX_ASSET_BYTES,
+  THUMBNAILABLE_MIME_TYPES,
+  thumbnailWidth,
 } from "@studio/contract";
-import { and, desc, eq, lt, type SQL } from "drizzle-orm";
+import { and, desc, eq, isNotNull, isNull, lt, type SQL } from "drizzle-orm";
 import { createDb, type Db } from "../db/client.ts";
 import { toAsset } from "../db/mappers.ts";
 import { assets } from "../db/schema.ts";
+import { assetUsages } from "../lib/asset-usage.ts";
 import { ApiProblem, badRequest, notFound, validationProblem } from "../lib/errors.ts";
 import { newId } from "../lib/ids.ts";
 import { toPage } from "../lib/pagination.ts";
+import { thumbnailPrefix } from "../lib/purge.ts";
 import { createRouter, errors, IdParams, json } from "../lib/router.ts";
 import { requireBrand } from "./brands.ts";
 
@@ -233,15 +239,18 @@ export const assetRoutes = router
       path: "/api/assets",
       tags,
       summary: "List assets (newest first)",
+      description: "Files in the trash are left out unless `deleted` is `only` or `include`.",
       request: { query: AssetListQuery },
       responses: { 200: json(AssetList, "A page of assets."), 400: errors[400] },
     }),
     async (c) => {
-      const { limit, cursor, brandId, kind, source } = c.req.valid("query");
+      const { limit, cursor, brandId, kind, source, deleted } = c.req.valid("query");
       const where: SQL[] = [];
       if (brandId) where.push(eq(assets.brandId, brandId));
       if (kind) where.push(eq(assets.kind, kind));
       if (source) where.push(eq(assets.source, source));
+      if (deleted === "only") where.push(isNotNull(assets.deletedAt));
+      else if (deleted !== "include") where.push(isNull(assets.deletedAt));
       if (cursor) where.push(lt(assets.id, cursor));
       const rows = await createDb(c.env.DB)
         .select()
@@ -336,5 +345,159 @@ export const assetRoutes = router
 
       headers.set("content-length", String(object.size));
       return new Response(object.body, { status: 200, headers });
+    },
+  )
+  .openapi(
+    createRoute({
+      method: "get",
+      path: "/api/assets/{id}/usage",
+      tags,
+      summary: "Where an asset is used",
+      description:
+        "Post versions (rendered slides, canvas documents, pictures in slide designs), product " +
+        "photos, the brand kit and chat attachments, with Turkish labels. Uses by posts in the " +
+        "trash and chat attachments do not block a delete.",
+      request: { params: IdParams },
+      responses: { 200: json(AssetUsageList, "Its uses."), 404: errors[404] },
+    }),
+    async (c) => {
+      const db = createDb(c.env.DB);
+      const row = await requireAsset(db, c.req.valid("param").id);
+      const usages = await assetUsages(db, c.env.MEDIA, row);
+      return c.json({ assetId: row.id, usages, deletable: !usages.some((u) => u.blocking) }, 200);
+    },
+  )
+  .openapi(
+    createRoute({
+      method: "delete",
+      path: "/api/assets/{id}",
+      tags,
+      summary: "Move an asset to the trash",
+      description:
+        "Refused (409 `conflict`, one issue per use) while a post version, a product or the " +
+        "brand kit uses it (see `/usage`). The bytes stay served until the purge removes them " +
+        "TRASH_RETENTION_DAYS later. Deleting a trashed asset again is a no-op.",
+      request: { params: IdParams },
+      responses: { 204: { description: "In the trash." }, 404: errors[404], 409: errors[409] },
+    }),
+    async (c) => {
+      const db = createDb(c.env.DB);
+      const row = await requireAsset(db, c.req.valid("param").id);
+      if (row.deletedAt) return c.body(null, 204);
+      const blocking = (await assetUsages(db, c.env.MEDIA, row)).filter((u) => u.blocking);
+      if (blocking.length > 0) {
+        throw new ApiProblem(
+          "conflict",
+          `Dosya kullanılıyor: ${blocking.map((u) => u.label).join(", ")}.`,
+          blocking.map((u) => ({ path: `usage.${u.kind}`, message: u.label })),
+        );
+      }
+      await db
+        .update(assets)
+        .set({ deletedAt: new Date() })
+        .where(and(eq(assets.id, row.id), isNull(assets.deletedAt)));
+      return c.body(null, 204);
+    },
+  )
+  .openapi(
+    createRoute({
+      method: "post",
+      path: "/api/assets/{id}/restore",
+      tags,
+      summary: "Take an asset back out of the trash",
+      request: { params: IdParams },
+      responses: { 200: json(Asset, "Restored."), 404: errors[404] },
+    }),
+    async (c) => {
+      const db = createDb(c.env.DB);
+      const row = await requireAsset(db, c.req.valid("param").id);
+      if (!row.deletedAt) return c.json(toAsset(row), 200);
+      await db.update(assets).set({ deletedAt: null }).where(eq(assets.id, row.id));
+      return c.json(toAsset({ ...row, deletedAt: null }), 200);
+    },
+  )
+  .openapi(
+    createRoute({
+      method: "get",
+      path: "/api/assets/{id}/thumbnail",
+      tags,
+      summary: "A resized copy of an image (WebP)",
+      description:
+        "`w` is rounded up to THUMBNAIL_WIDTHS; the picture is never enlarged. Made once on the " +
+        "Mac (the Images binding; locally Miniflare resizes with sharp) and kept in storage " +
+        "under `thumbs/`. 415 for files that are not JPEG, PNG, WebP or GIF. When resizing " +
+        "fails the original bytes are served (`x-studio-thumbnail: original`, short cache).",
+      request: { params: IdParams, query: AssetThumbnailQuery },
+      responses: {
+        200: {
+          description: "The thumbnail (or the original, see above).",
+          content: { "image/webp": { schema: z.string().meta({ format: "binary" }) } },
+        },
+        304: { description: "Not modified." },
+        404: errors[404],
+        415: json(ApiErrorBody, "Not a picture that can be resized (`unsupported_media_type`)."),
+      },
+    }),
+    async (c) => {
+      const row = await requireAsset(createDb(c.env.DB), c.req.valid("param").id);
+      if (!(THUMBNAILABLE_MIME_TYPES as readonly string[]).includes(row.mimeType)) {
+        throw new ApiProblem(
+          "unsupported_media_type",
+          `${row.mimeType} files have no thumbnail; use /content`,
+        );
+      }
+      const width = thumbnailWidth(c.req.valid("query").w);
+      const key = `${thumbnailPrefix(row.id)}w${width}.webp`;
+      const etagOf = (value: string) => `"${row.id}-w${width}-${value}"`;
+      const thumbHeaders = (etag: string) => {
+        const headers = new Headers({
+          "content-type": "image/webp",
+          etag,
+          // A thumbnail of an asset never changes (assets are immutable).
+          "cache-control": "private, max-age=31536000, immutable",
+          "x-content-type-options": "nosniff",
+        });
+        return headers;
+      };
+
+      const cached = await c.env.MEDIA.get(key);
+      if (cached) {
+        const etag = etagOf(cached.etag);
+        if (c.req.header("if-none-match") === etag) {
+          return new Response(null, { status: 304, headers: thumbHeaders(etag) });
+        }
+        return new Response(cached.body, { status: 200, headers: thumbHeaders(etag) });
+      }
+
+      const original = await c.env.MEDIA.get(row.objectKey);
+      if (!original) throw notFound("stored object for asset", row.id);
+      try {
+        const result = await c.env.IMAGES.input(original.body)
+          .transform({ width, fit: "scale-down" })
+          .output({ format: "image/webp", quality: 80 });
+        if (!result.contentType().startsWith("image/")) {
+          throw new Error(`unexpected thumbnail type ${result.contentType()}`);
+        }
+        const bytes = await result.response().arrayBuffer();
+        if (bytes.byteLength === 0) throw new Error("empty thumbnail");
+        const stored = await c.env.MEDIA.put(key, bytes, {
+          httpMetadata: { contentType: "image/webp" },
+          customMetadata: { assetId: row.id, width: String(width) },
+        });
+        return new Response(bytes, { status: 200, headers: thumbHeaders(etagOf(stored.etag)) });
+      } catch (error) {
+        console.warn(`api: thumbnail of asset ${row.id} failed; serving the original`, error);
+        const again = await c.env.MEDIA.get(row.objectKey);
+        if (!again) throw notFound("stored object for asset", row.id);
+        return new Response(again.body, {
+          status: 200,
+          headers: {
+            "content-type": row.mimeType,
+            "cache-control": "private, max-age=60",
+            "x-content-type-options": "nosniff",
+            "x-studio-thumbnail": "original",
+          },
+        });
+      }
     },
   );

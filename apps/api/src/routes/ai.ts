@@ -6,31 +6,44 @@ import {
   AiKeyProviderParam,
   AiKeyPut,
   AiKeyState,
+  AiPreferences,
+  AiPreferencesPut,
   type AiSpendModel,
+  AiSpendProvider,
+  type AiSpendProviderTotals,
   AiSpendQuery,
   AiSpendSummary,
+  type AiSpendTotals,
   ApiErrorBody,
+  ClaudeLimitDecisionCreate,
   GEMINI_BILLING_URL,
   WorkerAiCredentials,
+  WorkerAiSettings,
+  WorkerAiSettingsQuery,
   WorkerAiUsageAck,
   WorkerAiUsageReport,
 } from "@studio/contract";
-import { and, desc, eq, gte, isNotNull, sql } from "drizzle-orm";
+import { desc, eq, gte, isNotNull, sql } from "drizzle-orm";
 import { createDb, type Db } from "../db/client.ts";
 import { aiKeys, aiUsage } from "../db/schema.ts";
 import {
   budgetState,
   checkKey,
-  loadBudget,
+  decisionUntil,
   loadKeyRow,
+  loadSettings,
   openKey,
   periodStarts,
   recordCheck,
+  roundUsd,
   saveBudget,
   saveKey,
+  saveLimitDecision,
+  savePreferences,
   sortModels,
   sumTotals,
   toKeyState,
+  toPreferences,
   toTotals,
 } from "../lib/ai-keys.ts";
 import { badRequest, conflict, notFound } from "../lib/errors.ts";
@@ -42,11 +55,16 @@ import { requireWorkerToken } from "../middleware/worker-auth.ts";
 import { hubStub } from "./jobs.ts";
 
 /*
- * AI provider keys (roadmap 7) and Gemini spend (roadmap 11).
+ * AI provider keys (roadmap 7), paid AI spend (roadmap 11, U8) and the S7 preferences.
  *
  * Keys: the Mac itself only. A key is checked with the provider's free models listing before
  * it is stored; a key the provider refuses is not stored. After a change the worker is told to
  * read the keys again (`worker.command ai.credentials`). Only the worker reads the plaintext.
+ *
+ * Preferences (S7): what happens when Claude's limit is used up (`ask` / `gemini` / `wait`), the
+ * owner's answer while it is (`/api/ai/claude-limit/decision`) and the monthly budget with
+ * "stop at budget". The worker reads them from `/api/worker/ai/settings` (after the same
+ * `ai.credentials` command).
  */
 
 const tags = ["AI"];
@@ -59,9 +77,17 @@ const router = createRouter();
 router.use("/api/ai/keys", requireLocal);
 router.use("/api/ai/keys/*", requireLocal);
 router.use("/api/ai/budget", requireLocal);
+// Anyone signed in may read the preferences; only the Mac itself changes them.
+router.use("/api/ai/preferences", async (c, next) =>
+  c.req.method === "GET" || c.req.method === "HEAD" ? next() : requireLocal(c, next),
+);
+router.use("/api/ai/claude-limit/*", requireLocal);
 router.use("/api/worker/ai/*", requireWorkerToken);
 
-/** Tell the connected worker(s) to read the keys again (best effort). */
+/**
+ * Tell the connected worker(s) to read the keys and the AI settings (`/api/worker/ai/settings`)
+ * again (best effort).
+ */
 async function notifyWorker(env: Env): Promise<void> {
   try {
     await hubStub(env).providersControl("ai.credentials");
@@ -87,44 +113,85 @@ const totalsColumns = {
   thoughtsTokens: sql<number>`sum(${aiUsage.thoughtsTokens})`,
 };
 
+/** A stored provider name as the contract knows it (rows from older workers are kept as is). */
+function spendProvider(value: string): AiSpendProvider | null {
+  const parsed = AiSpendProvider.safeParse(value);
+  return parsed.success ? parsed.data : null;
+}
+
+/** Recorded spend of every paid service since `sinceMs` (unpriced calls count 0). */
+async function spentSince(db: Db, sinceMs: number): Promise<number> {
+  const [row] = await db
+    .select({ costUsd: sql<number | null>`sum(${aiUsage.costUsd})` })
+    .from(aiUsage)
+    .where(gte(aiUsage.occurredAt, new Date(sinceMs)));
+  return roundUsd(Number(row?.costUsd ?? 0));
+}
+
+/** Paid AI spend of every recorded service (Gemini, OpenAI, ElevenLabs, ...). */
 async function spendSummary(db: Db, tzOffset: number, nowMs = Date.now()) {
   const starts = periodStarts(nowMs, tzOffset);
-  const provider = "gemini";
-  const [monthRows, todayRows, latest, budget] = await Promise.all([
+  const [monthRows, todayRows, latest, settings] = await Promise.all([
     db
-      .select({ model: aiUsage.model, ...totalsColumns })
+      .select({ provider: aiUsage.provider, model: aiUsage.model, ...totalsColumns })
       .from(aiUsage)
-      .where(and(eq(aiUsage.provider, provider), gte(aiUsage.occurredAt, new Date(starts.month))))
-      .groupBy(aiUsage.model),
+      .where(gte(aiUsage.occurredAt, new Date(starts.month)))
+      .groupBy(aiUsage.provider, aiUsage.model),
     db
       .select(totalsColumns)
       .from(aiUsage)
-      .where(and(eq(aiUsage.provider, provider), gte(aiUsage.occurredAt, new Date(starts.day)))),
+      .where(gte(aiUsage.occurredAt, new Date(starts.day))),
     db
       .select({ version: aiUsage.pricingVersion })
       .from(aiUsage)
-      .where(and(eq(aiUsage.provider, provider), isNotNull(aiUsage.pricingVersion)))
+      .where(isNotNull(aiUsage.pricingVersion))
       .orderBy(desc(aiUsage.occurredAt))
       .limit(1),
-    loadBudget(db),
+    loadSettings(db),
   ]);
+  const rows = monthRows.map((r) => ({ provider: r.provider, model: r.model, ...toTotals(r) }));
   const byModel: AiSpendModel[] = sortModels(
-    monthRows.map((r) => ({ model: r.model, ...toTotals(r) })),
+    rows.map(({ provider, ...r }) => {
+      const known = spendProvider(provider);
+      return known ? { ...r, provider: known } : r;
+    }),
+  );
+  const perProvider = new Map<AiSpendProvider, AiSpendTotals[]>();
+  for (const { provider, model: _model, ...totals } of rows) {
+    const known = spendProvider(provider);
+    if (!known) continue;
+    perProvider.set(known, [...(perProvider.get(known) ?? []), totals]);
+  }
+  const byProvider: AiSpendProviderTotals[] = sortModels(
+    [...perProvider].map(([provider, list]) => ({ provider, ...sumTotals(list) })),
   );
   const month = sumTotals(byModel);
   const today = todayRows[0] ? toTotals(todayRows[0]) : sumTotals([]);
+  const monthlyUsd = settings?.geminiMonthlyBudgetUsd ?? null;
   return AiSpendSummary.parse({
-    provider,
+    provider: "gemini",
     currency: "USD",
     today,
     month,
     byModel,
-    budget: budgetState(budget, month.costUsd),
+    byProvider,
+    budget: budgetState(monthlyUsd, month.costUsd, settings?.stopAtBudget ?? false),
     balance: { known: false, remainingUsd: null, billingUrl: GEMINI_BILLING_URL },
     pricingVersion: latest[0]?.version ?? null,
     dayStart: new Date(starts.day).toISOString(),
     monthStart: new Date(starts.month).toISOString(),
   });
+}
+
+/** Presence `claude.limit.resetsAt` (best effort: null when the hub cannot tell). */
+async function claudeResetsAt(env: Env): Promise<string | null> {
+  try {
+    const control = await hubStub(env).claudeControl();
+    return control.account?.limit?.resetsAt ?? null;
+  } catch (error) {
+    console.warn("api: could not read the Claude limit from the hub:", (error as Error).message);
+    return null;
+  }
 }
 
 export const aiRoutes = router
@@ -210,10 +277,12 @@ export const aiRoutes = router
       method: "get",
       path: "/api/ai/spend",
       tags,
-      summary: "Gemini API spend: today, this month, per model, and the monthly budget",
+      summary:
+        "Paid AI spend (Gemini, OpenAI, ElevenLabs): today, this month, per model and service",
       description:
-        "Sums the calls the worker recorded with its pricing table. The Gemini API has no " +
-        "balance endpoint, so `balance.known` is false (see `balance.billingUrl`).",
+        "Sums the calls the worker recorded with its pricing tables, across every paid service, " +
+        "and compares the month with the monthly budget. The Gemini API has no balance " +
+        "endpoint, so `balance.known` is false (see `balance.billingUrl`).",
       request: { query: AiSpendQuery },
       responses: { 200: json(AiSpendSummary, "Spend."), 400: errors[400] },
     }),
@@ -227,7 +296,8 @@ export const aiRoutes = router
       method: "put",
       path: "/api/ai/budget",
       tags,
-      summary: "Set (or clear with null) the monthly Gemini budget in USD (Mac only)",
+      summary:
+        "Set (or clear with null) the monthly budget of the paid AI services in USD (Mac only)",
       request: { body: jsonBody(AiBudgetPut) },
       responses: { 200: json(AiSpendSummary, "Saved."), 400: errors[400], 403: forbidden },
     }),
@@ -235,7 +305,113 @@ export const aiRoutes = router
       const input = c.req.valid("json");
       const db = createDb(c.env.DB);
       await saveBudget(db, input.geminiMonthlyUsd);
+      await notifyWorker(c.env);
       return c.json(await spendSummary(db, input.tzOffset), 200);
+    },
+  )
+  .openapi(
+    createRoute({
+      method: "get",
+      path: "/api/ai/preferences",
+      tags,
+      summary: "What happens when Claude's limit is used up, and the monthly AI budget (S7)",
+      description:
+        "`limitDecision` is the owner's answer for the current Claude limit window; null when " +
+        "none was given or it expired (`until` passed).",
+      responses: { 200: json(AiPreferences, "Preferences.") },
+    }),
+    async (c) => c.json(toPreferences(await loadSettings(createDb(c.env.DB))), 200),
+  )
+  .openapi(
+    createRoute({
+      method: "put",
+      path: "/api/ai/preferences",
+      tags,
+      summary: "Change the Claude-limit behaviour, the monthly budget or stop-at-budget (Mac only)",
+      description:
+        "Only the fields sent change. `monthlyBudgetUsd` is the same budget `PUT /api/ai/budget` " +
+        "sets. A new `claudeLimit` drops the answer given under the old one. The worker is told " +
+        "to read its settings again.",
+      request: { body: jsonBody(AiPreferencesPut) },
+      responses: { 200: json(AiPreferences, "Saved."), 400: errors[400], 403: forbidden },
+    }),
+    async (c) => {
+      const input = c.req.valid("json");
+      const db = createDb(c.env.DB);
+      await savePreferences(db, input);
+      await notifyWorker(c.env);
+      return c.json(toPreferences(await loadSettings(db)), 200);
+    },
+  )
+  .openapi(
+    createRoute({
+      method: "post",
+      path: "/api/ai/claude-limit/decision",
+      tags,
+      summary: "Answer the Claude limit: go on with Gemini, or wait for the reset (Mac only)",
+      description:
+        "The answer holds until `until`: by default presence `claude.limit.resetsAt` (when " +
+        "still ahead), else five hours from now. 400 when `until` is not in the future. The " +
+        "worker is told to read its settings again.",
+      request: { body: jsonBody(ClaudeLimitDecisionCreate) },
+      responses: { 200: json(AiPreferences, "Saved."), 400: errors[400], 403: forbidden },
+    }),
+    async (c) => {
+      const input = c.req.valid("json");
+      const nowMs = Date.now();
+      const untilMs =
+        input.until !== undefined
+          ? Date.parse(input.until)
+          : decisionUntil(await claudeResetsAt(c.env), nowMs);
+      if (!(untilMs > nowMs)) {
+        throw badRequest("`until` must be in the future", [
+          { path: "until", message: "must be in the future" },
+        ]);
+      }
+      const db = createDb(c.env.DB);
+      await saveLimitDecision(db, input.choice, untilMs, nowMs);
+      await notifyWorker(c.env);
+      return c.json(toPreferences(await loadSettings(db), nowMs), 200);
+    },
+  )
+  .openapi(
+    createRoute({
+      method: "get",
+      path: "/api/worker/ai/settings",
+      tags,
+      security,
+      summary: "Claude-limit behaviour, the owner's answer and the budget state (worker only)",
+      description:
+        "`budget.spentUsd` is this month's recorded spend of every paid service (unpriced calls " +
+        "count 0) from the start of the month in the worker's time zone (`tzOffset`).",
+      request: { query: WorkerAiSettingsQuery },
+      responses: {
+        200: json(WorkerAiSettings, "Settings."),
+        400: errors[400],
+        401: unauthorized,
+      },
+    }),
+    async (c) => {
+      const { tzOffset } = c.req.valid("query");
+      const db = createDb(c.env.DB);
+      const nowMs = Date.now();
+      const monthStart = periodStarts(nowMs, tzOffset).month;
+      const [settings, spentUsd] = await Promise.all([
+        loadSettings(db),
+        spentSince(db, monthStart),
+      ]);
+      const prefs = toPreferences(settings, nowMs);
+      const out: WorkerAiSettings = {
+        claudeLimit: prefs.claudeLimit,
+        limitDecision: prefs.limitDecision,
+        budget: {
+          monthlyUsd: prefs.monthlyBudgetUsd,
+          stopAtBudget: prefs.stopAtBudget,
+          spentUsd,
+          monthStart: new Date(monthStart).toISOString(),
+        },
+      };
+      return c.json(out, 200);
     },
   )
   .openapi(

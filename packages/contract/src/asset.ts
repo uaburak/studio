@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { EntityId, PageQuery, pageOf, Timestamp } from "./common.ts";
+import { EntityId, PageQuery, pageOf, Timestamp, TrashFilter } from "./common.ts";
 
 export const AssetKind = z
   .enum(["image", "video", "audio", "document", "font", "logo", "other"])
@@ -124,6 +124,12 @@ export const Asset = z
     durationMs: z.number().int().positive().nullable(),
     originalFilename: z.string().nullable(),
     createdAt: Timestamp,
+    /**
+     * Set while the file is in the trash: `POST /api/assets/{id}/restore` brings it back;
+     * `TRASH_RETENTION_DAYS` later it is purged (row and stored bytes). Its bytes are still served
+     * meanwhile (old chat messages keep showing it). Absent from older servers (= not deleted).
+     */
+    deletedAt: Timestamp.nullable().optional(),
   })
   .meta({ id: "Asset" });
 export type Asset = z.infer<typeof Asset>;
@@ -147,8 +153,92 @@ export const AssetListQuery = PageQuery.extend({
   brandId: EntityId.optional(),
   kind: AssetKind.optional(),
   source: AssetSource.optional(),
+  /** Trashed files: left out by default (`exclude`). */
+  deleted: TrashFilter.optional(),
 });
 export type AssetListQuery = z.input<typeof AssetListQuery>;
 
 export const AssetList = pageOf(Asset, "AssetList");
 export type AssetList = z.infer<typeof AssetList>;
+
+// --- where a file is used (delete safety) ---------------------------------------------
+
+/**
+ * Where an asset is used:
+ * - `version`: a post version's rendered slide (what gets published);
+ * - `editor_document`: a version's canvas document (Wecra bundle);
+ * - `slide`: pictured in a version's slide design (`/media/<id>` in its HTML);
+ * - `product`: a product photo; `brand_kit`: a logo, font or sample post of the brand kit;
+ * - `conversation`: attached in a chat (does not block deleting; the chat keeps a broken picture
+ *   once the file is purged).
+ */
+export const AssetUsageKind = z
+  .enum(["version", "editor_document", "slide", "product", "brand_kit", "conversation"])
+  .meta({ id: "AssetUsageKind" });
+export type AssetUsageKind = z.infer<typeof AssetUsageKind>;
+
+/** Usages that refuse a delete (409): the file would vanish from a post, a product or the kit. */
+export const BLOCKING_ASSET_USAGES = [
+  "version",
+  "editor_document",
+  "slide",
+  "product",
+  "brand_kit",
+] as const satisfies readonly AssetUsageKind[];
+
+export const AssetUsage = z
+  .object({
+    kind: AssetUsageKind,
+    /** True when this use refuses the delete. */
+    blocking: z.boolean(),
+    /** Turkish, e.g. "“Kış kampanyası” v3, 2. kare". */
+    label: z.string(),
+    contentId: EntityId.nullable().default(null),
+    version: z.number().int().min(1).nullable().default(null),
+    productId: EntityId.nullable().default(null),
+    conversationId: EntityId.nullable().default(null),
+  })
+  .meta({ id: "AssetUsage" });
+export type AssetUsage = z.infer<typeof AssetUsage>;
+
+export const AssetUsageList = z
+  .object({
+    assetId: EntityId,
+    usages: z.array(AssetUsage),
+    /** No blocking usage: `DELETE /api/assets/{id}` will move it to the trash. */
+    deletable: z.boolean(),
+  })
+  .meta({ id: "AssetUsageList" });
+export type AssetUsageList = z.infer<typeof AssetUsageList>;
+
+// --- thumbnails ------------------------------------------------------------------------
+
+/**
+ * Widths `GET /api/assets/{id}/thumbnail?w=` produces; a requested width is rounded up to the
+ * next one (the largest caps it), so each picture has at most this many cached sizes.
+ */
+export const THUMBNAIL_WIDTHS = [160, 240, 320, 480, 640, 960, 1280] as const;
+
+export function thumbnailWidth(requested: number): number {
+  const w = Number.isFinite(requested) ? requested : 480;
+  return THUMBNAIL_WIDTHS.find((t) => t >= w) ?? 1280;
+}
+
+/** Image types the thumbnail endpoint resizes (others answer 415). */
+export const THUMBNAILABLE_MIME_TYPES = [
+  "image/jpeg",
+  "image/png",
+  "image/webp",
+  "image/gif",
+] as const;
+
+export const AssetThumbnailQuery = z.object({
+  /** Wanted width in px (CSS width × device pixel ratio); rounded up to THUMBNAIL_WIDTHS. */
+  w: z.coerce.number().int().min(1).max(4096).default(480),
+});
+export type AssetThumbnailQuery = z.input<typeof AssetThumbnailQuery>;
+
+/** `<img src>` path of an asset's thumbnail (same origin). */
+export function assetThumbnailPath(assetId: string, width: number): string {
+  return `/api/assets/${encodeURIComponent(assetId)}/thumbnail?w=${thumbnailWidth(width)}`;
+}

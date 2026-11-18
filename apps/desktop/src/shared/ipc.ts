@@ -127,6 +127,10 @@ export const IPC = {
   settingsChanged: "settings:changed",
   notify: "notify",
   noticeClicked: "notice:clicked",
+  /** The page listens (notice clicks, app notices): what waited for it is delivered now. */
+  rendererReady: "renderer:ready",
+  /** A short message for the page to show (e.g. the window was reloaded after a crash). */
+  appNotice: "app:notice",
   openExternal: "open-external",
   menuCommand: "menu:command",
   windowState: "window:state",
@@ -152,6 +156,13 @@ export interface StudioBridge {
   };
   notify(notice: NoticeInput): Promise<void>;
   onNoticeClicked(listener: (route: string) => void): () => void;
+  /**
+   * The page's listeners are in place: a notification click that opened the window, or a notice
+   * about a reload, is delivered after this (absent outside Electron).
+   */
+  rendererReady?(): void;
+  /** Short app messages from the main process (shown as a toast). */
+  onAppNotice?(listener: (message: string) => void): () => void;
   openExternal(url: string): Promise<void>;
   onMenuCommand(listener: (command: MenuCommand) => void): () => void;
   onWindowState(listener: (state: WindowState) => void): () => void;

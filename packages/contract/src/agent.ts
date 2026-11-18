@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { ClaudeLimitChoice, ClaudeLimitMode } from "./ai.ts";
 import { EntityId, Timestamp } from "./common.ts";
 
 /*
@@ -147,6 +148,25 @@ export const ClaudeAccountStatus = z
   .meta({ id: "ClaudeAccountStatus" });
 export type ClaudeAccountStatus = z.infer<typeof ClaudeAccountStatus>;
 
+/**
+ * Claude's usage window is used up and work waits for it (S7). With mode `ask` and no `decision`
+ * the waiting jobs need the owner's answer (`POST /api/ai/claude-limit/decision`).
+ */
+export const ClaudeLimitState = z
+  .object({
+    /** When the window resets (best estimate). */
+    resetsAt: Timestamp,
+    mode: ClaudeLimitMode,
+    /** The owner's answer for this window; null = none (mode `ask`: the work waits for one). */
+    decision: ClaudeLimitChoice.nullable(),
+    /** Claude calls waiting for the reset or the answer (jobs and chat turns). */
+    waiting: z.number().int().min(0),
+    /** A Gemini key is ready, so "Gemini ile devam et" can work. */
+    geminiReady: z.boolean(),
+  })
+  .meta({ id: "ClaudeLimitState" });
+export type ClaudeLimitState = z.infer<typeof ClaudeLimitState>;
+
 /** `claude auth status` as the worker last read it (presence `claude`). */
 export const ClaudeAccount = z
   .object({
@@ -165,6 +185,8 @@ export const ClaudeAccount = z
      * The apps greet with it unless the owner typed a name. Absent from older workers.
      */
     displayName: z.string().max(80).nullable().optional(),
+    /** Set while Claude's usage window is used up and work waits (S7); absent otherwise. */
+    limit: ClaudeLimitState.nullable().optional(),
     checkedAt: Timestamp,
   })
   .meta({ id: "ClaudeAccount" });

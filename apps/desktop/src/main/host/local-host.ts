@@ -60,13 +60,14 @@ export interface HostDeps {
   stopLeftovers(repoPath: string, stateDir: string): Promise<void>;
   /** G5: copy the database before migrations. */
   snapshotDatabase(stateDir: string): void;
-  loginShellPath(): string;
+  /** May be slow (the login shell): read in the background. */
+  loginShellPath(): string | Promise<string>;
   which(tool: string, path: string): string | null;
   fileExists(path: string): boolean;
   isPortFree(port: number, address: string): Promise<boolean>;
   freePort(address: string): Promise<number | null>;
   lanAddresses(): string[];
-  computerName(): string;
+  computerName(): string | Promise<string>;
   checkRepoAccess(
     probe: string,
     onWaiting: () => void,
@@ -76,6 +77,8 @@ export interface HostDeps {
   publishRoutes(port: number, routes: MacRoutesInput): Promise<boolean>;
   tail(file: string, lines?: number): string;
   rotate(file: string): void;
+  /** Size check of a log a running child writes (copy, then empty it in place). */
+  rotateRunning?(file: string): void;
   sleep(ms: number, signal?: AbortSignal): Promise<void>;
   now(): number;
   supervisor?: SupervisorDeps;
@@ -87,6 +90,8 @@ export interface HostDeps {
   attachPollMs?: number;
   /** Interval of the LAN address and Bonjour check (Wi-Fi changes, sleep, dns-sd exits). */
   networkPollMs?: number;
+  /** Interval of the log size check while the children run. */
+  logPollMs?: number;
 }
 
 export interface MacRoutesInput {
@@ -142,6 +147,8 @@ export function buildSpecs(input: {
     STUDIO_OWNER_SECRET: input.ownerSecret,
     STUDIO_INSTANCE_ID: input.instance,
     WRANGLER_SEND_METRICS: "false",
+    // No banner: it also asks npm for a newer wrangler on every start (A11).
+    WRANGLER_HIDE_BANNER: "true",
     NO_COLOR: "1",
   };
   const migrate: ProcessSpec = {
@@ -242,6 +249,7 @@ export class LocalHost {
   private startAbort: AbortController | undefined;
   private attachAbort: AbortController | undefined;
   private networkTimer: ReturnType<typeof setInterval> | undefined;
+  private logTimer: ReturnType<typeof setInterval> | undefined;
   private publishedRoutes: string | null = null;
   private advertisedAddresses: string | null = null;
   private tunnelTarget: TunnelTarget | null = null;
@@ -363,8 +371,12 @@ export class LocalHost {
     await this.start();
   }
 
-  /** Stop the children: tunnel & worker first, then gateway and API. Cancels a start first. */
-  async stop(): Promise<void> {
+  /**
+   * Stop the children, all at once (A11: quitting took 8 s per service one after another): each
+   * gets SIGTERM, and whatever is still alive after `graceMs` is killed. Cancels a start first.
+   * `message` is shown meanwhile ("Kapatılıyor…" when the app quits).
+   */
+  async stop(options: { graceMs?: number; message?: string } = {}): Promise<void> {
     const pending = this.startPromise;
     if (pending) {
       this.startAbort?.abort();
@@ -375,13 +387,17 @@ export class LocalHost {
     this.attachAbort = undefined;
     if (this.networkTimer) clearInterval(this.networkTimer);
     this.networkTimer = undefined;
+    if (this.logTimer) clearInterval(this.logTimer);
+    this.logTimer = undefined;
     this.publishedRoutes = null;
     this.advertisedAddresses = null;
     this.tunnelTarget = null;
     this.deps.advertiser.stop();
-    for (const service of ["tunnel", "worker", "gateway", "api"] as const) {
-      await this.supervisors[service]?.stop();
+    const running = Object.values(this.supervisors).filter((s) => s !== undefined);
+    if (options.message && running.length > 0) {
+      this.status = { kind: "starting", message: options.message };
     }
+    await Promise.all(running.map((s) => s.stop(options.graceMs)));
     this.supervisors = {};
     this.phases = {};
     this.tunnelNote = null;
@@ -440,7 +456,7 @@ export class LocalHost {
     }
     const instance = secrets.loadOrCreateInstanceId(stateDir);
     this.instance = instance;
-    this.macName = deps.computerName();
+    this.macName = await deps.computerName();
     const repo = env.expandTilde(config.repoPath);
     const ownerSecret = deps.ownerSecret();
     this.redactor.add(ownerSecret);
@@ -484,7 +500,8 @@ export class LocalHost {
     }
 
     // 2. Tools and sources.
-    const path = deps.loginShellPath();
+    const path = await deps.loginShellPath();
+    if (signal.aborted) return;
     const node = deps.which("node", path);
     if (!node) return this.fail(`node bulunamadı. PATH: ${path}`);
     const claude = deps.which("claude", path);
@@ -638,6 +655,18 @@ export class LocalHost {
 
     this.status = { kind: "running" };
     this.startNetworkMonitor();
+    this.startLogMonitor();
+  }
+
+  /** Long runs: the children's logs are kept under their size limit while they write them. */
+  private startLogMonitor(): void {
+    const rotate = this.deps.rotateRunning;
+    if (!rotate) return;
+    if (this.logTimer) clearInterval(this.logTimer);
+    this.logTimer = setInterval(() => {
+      for (const name of ["api", "gateway", "worker", "tunnel"]) rotate(this.logFile(name));
+    }, this.deps.logPollMs ?? 60_000);
+    this.logTimer.unref?.();
   }
 
   private async startTunnel(config: HostConfiguration): Promise<void> {
@@ -721,7 +750,7 @@ export class LocalHost {
   routes(): MacRoutesInput | null {
     if (this.statusValue.kind !== "running") return null;
     const lan = this.lanPort === null ? [] : this.deps.lanAddresses().slice(0, 8);
-    const name = this.macName || this.deps.computerName();
+    const name = this.macName || "Mac";
     return {
       macName: name.slice(0, 120),
       macId: this.instance,
@@ -964,6 +993,7 @@ export function defaultHostDeps(input: {
     publishRoutes: (port, routes) => putRoutes(port, routes, input.ownerSecret()),
     tail: env.tail,
     rotate: (file) => env.rotate(file),
+    rotateRunning: (file) => void env.rotateInPlace(file),
     sleep,
     now: Date.now,
   };

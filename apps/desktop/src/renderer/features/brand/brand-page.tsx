@@ -349,13 +349,24 @@ function KitTab({ brand }: { brand: Brand }) {
     }, 800);
     return () => clearTimeout(timer);
   }, [dirty, problem, brandId]);
-  // Leaving the tab (or the page) right after an edit still saves it.
+  // Leaving the tab (or the page) right after an edit still saves it; the tab is gone by then,
+  // so a failure is said in a toast (with the way back to the kit).
   useEffect(
     () => () => {
       const current = draftRef.current;
       if (pending.current && current && !kitProblem(current)) {
         pending.current = false;
-        void putKit.current(brandId, current).catch(() => undefined);
+        void putKit.current(brandId, current).catch((error: unknown) =>
+          useAppStore.getState().showToast({
+            message: `Marka kitindeki son değişiklik kaydedilemedi: ${describeError(error)}`,
+            tone: "danger",
+            action: {
+              label: "Kite dön",
+              run: () =>
+                useAppStore.getState().navigate({ kind: "brand", id: brandId, tab: "kit" }),
+            },
+          }),
+        );
       }
     },
     [brandId],

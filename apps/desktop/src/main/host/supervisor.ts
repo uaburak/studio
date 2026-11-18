@@ -100,12 +100,15 @@ export class ServiceSupervisor {
     });
   }
 
-  /** Terminate the child (SIGTERM, then SIGKILL after the grace period); no relaunch. */
-  async stop(): Promise<void> {
+  /**
+   * Terminate the child (SIGTERM, then SIGKILL after the grace period — the policy's, or
+   * `graceMs` when the whole host stops under one deadline); no relaunch.
+   */
+  async stop(graceMs = this.policy.stopGraceMs): Promise<void> {
     this.stopping = true;
     this.sleepAbort.abort();
     const loop = this.loop;
-    if (this.current) await this.current.terminate(this.policy.stopGraceMs);
+    if (this.current) await this.current.terminate(graceMs);
     await loop;
     this.loop = undefined;
     this.setPhase({ kind: "stopped" });

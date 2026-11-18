@@ -24,6 +24,8 @@ import { SanitizeError, sanitizeSlideHtml } from "@studio/design-kit/sanitize";
 import { ClaudeError } from "../claude/errors.ts";
 import type { ClaudeGate, GateHooks } from "../claude/gate.ts";
 import { addUsage, type ClaudeContentBlock, type ClaudeUsage } from "../claude/runner.ts";
+import { GeminiError } from "../gemini/errors.ts";
+import type { StructuredFallback } from "../gemini/json-call.ts";
 import type { Logger } from "../log.ts";
 import { prepareModelImage } from "../media.ts";
 import type { BrandContext } from "./brand.ts";
@@ -49,8 +51,10 @@ export interface CheckedSlide {
   html: string;
   jpeg: Uint8Array | null;
   report: LintReport | null;
-  /** Render or sanitize failure. */
+  /** Render or sanitize failure (English: it goes back to the model; logs). */
   failure: string | null;
+  /** What failed, for the owner's (Turkish) message. */
+  failureKind?: "sanitize" | "render" | null;
   sanitizeFindings: number;
   renderMs: number;
 }
@@ -82,6 +86,8 @@ export interface ModelCallerResult {
   model?: string | undefined;
   provider?: "claude" | "gemini";
   usage: ClaudeUsage;
+  /** Claude was meant and Gemini answered (S7). */
+  fallback?: StructuredFallback | undefined;
 }
 
 export type DesignModelCaller = (input: ModelCallerInput) => Promise<ModelCallerResult>;
@@ -134,6 +140,28 @@ export interface PipelineResult {
   timings: { claudeMs: number; renderMs: number; totalMs: number };
   model: string | undefined;
   provider?: "claude" | "gemini";
+  /** Set when Gemini answered instead of Claude (S7): the version's note says so. */
+  fallback?: StructuredFallback;
+  /** Malformed answers asked again (U5). */
+  reasked?: number;
+}
+
+/** A design answer that is missing or does not match the schema (worth asking again once). */
+export function isMalformedDesignOutput(error: unknown): boolean {
+  return (
+    (error instanceof ClaudeError && error.code === "output") ||
+    (error instanceof GeminiError && error.code === "output")
+  );
+}
+
+/** Appended to the prompt when the previous answer was malformed (U5). */
+export function reaskNote(problem: string): string {
+  return [
+    "",
+    "IMPORTANT — YOUR PREVIOUS ANSWER WAS REJECTED:",
+    problem.slice(0, 1_500),
+    "Answer again with exactly one object that matches the output schema (every required field, the slide ids and the slide count asked for). Do not explain; return only the structured output.",
+  ].join("\n");
 }
 
 /** Preset for a content type and platform list (Instagram 4:5 feed by default). */
@@ -150,12 +178,58 @@ export function presetFor(contentType: string, platforms: readonly string[]): Pl
   return getPreset(id) ?? (getPreset("instagram-feed-portrait") as PlatformPreset);
 }
 
+/**
+ * "<n> <unit>[suffix]": slayt / slide / sayfa / kart / görsel with an optional "tane"/"adet",
+ * hyphen ("7-slide") and suffix (-lık/-lı measure, -s plural, -ta/-da, -tan/-dan).
+ */
+const SLIDE_COUNT =
+  /(?<![\p{L}\p{N}.,])(\d{1,2})\s*(?:-\s*)?(?:(?:tane|adet)\s+)?(slayt|slide|sayfa|kart|görsel)(?:['’]?(l[ıiuü]k|l[ıiuü]|s|[dt][ae]n|[dt][ae]))?(?![\p{L}\p{N}])/gu;
+/** A count followed by one of these is about files handed over, not slides. */
+const HANDED_OVER =
+  /^(?:yükl[eüi]|ekl[eiı]|gönder|yolla|ilet|paylaş|at(?:$|t[ıiuü]|ar|ac|ay|ıyor|ıca|ın)|upload|attach|sen[dt]|fotoğraf|foto|resim|image|photo|pic)/;
+const FILLER = /^(?:daha|tane|adet|kadar|bir|de|da)$/;
+
+/**
+ * The slide count a brief asks for, or null. Only a slide-count request counts ("10 slaytlık
+ * carousel", "5 slayt", "7 sayfalık", "6 kartlık", "a 7-slide carousel", "8 görsellik carousel");
+ * a number of images being uploaded or attached does not ("10 görsel yükleyeceğim",
+ * "5 görsel gönderdim", "3 fotoğraf ekledim"). "görsel" counts only with -lik/-li, before
+ * "carousel", in "-den oluşan" or before "olsun".
+ */
+export function askedSlideCount(brief: string): number | null {
+  const text = brief.replace(/İ/g, "i").toLowerCase();
+  for (const m of text.matchAll(SLIDE_COUNT)) {
+    const [whole, num, unit, rawSuffix] = m;
+    const suffix = rawSuffix ?? "";
+    // The words right after the count, up to the next number or punctuation mark.
+    const rest = /^[^.,;:!?\n\d]*/u.exec(text.slice((m.index ?? 0) + whole.length))?.[0] ?? "";
+    const next =
+      rest
+        .split(/[^\p{L}]+/u)
+        .filter(Boolean)
+        .slice(0, 3)
+        .find((w) => !FILLER.test(w)) ?? "";
+    const measure = /^l[ıiuü]k?$/.test(suffix); // "10 slaytlık", "5 görselli": an adjective
+    if (unit === "görsel") {
+      const aboutSlides =
+        measure ||
+        (suffix === "" && /^(?:carousel|karusel|karosel|kaydırmalı|slayt|olsun)/.test(next)) ||
+        (/^[dt][ae]n$/.test(suffix) && next.startsWith("oluş"));
+      if (!aboutSlides) continue;
+    } else if (!measure && HANDED_OVER.test(next)) {
+      continue;
+    }
+    return Number(num);
+  }
+  return null;
+}
+
 /** Slide count bounds: posts and stories 1; carousels what the brief says, else 3–6. */
 export function slideBounds(contentType: string, brief: string): { min: number; max: number } {
   if (contentType !== "carousel") return { min: 1, max: 1 };
-  const asked = /(\d{1,2})\s*(?:slayt|slide|sayfa|kart|görsel)/i.exec(brief);
-  if (asked?.[1]) {
-    const n = Math.min(10, Math.max(2, Number(asked[1])));
+  const asked = askedSlideCount(brief);
+  if (asked !== null) {
+    const n = Math.min(10, Math.max(2, asked));
     return { min: n, max: n };
   }
   return { min: 3, max: 6 };
@@ -176,44 +250,72 @@ export async function runDesignPipeline(input: PipelineInput): Promise<PipelineR
   let renderMs = 0;
   let model: string | undefined;
   let provider: "claude" | "gemini" | undefined;
+  let fallback: StructuredFallback | undefined;
+  let reasked = 0;
 
   const call = async (
     step: string,
     text: string,
     images: ClaudeContentBlock[],
   ): Promise<DesignOutput> => {
-    const started = Date.now();
     const schema = designJsonSchema({
       minSlides: brief.slides.min,
       maxSlides: brief.slides.max,
       critique: true,
     });
+    const invoke = async (attemptLabel: string, promptText: string) => {
+      const started = Date.now();
+      const content: ClaudeContentBlock[] = [{ type: "text", text: promptText }, ...images];
+      const result: ModelCallerResult = input.modelCaller
+        ? await input.modelCaller({ label: attemptLabel, system, content, schema, signal })
+        : await gate.call(
+            {
+              label: attemptLabel,
+              system,
+              content,
+              // One schema for every pass of a post: the StructuredOutput tool definition is part
+              // of the prompt-cache prefix, so an identical schema lets later passes read the
+              // ~20K-token system prompt from the cache instead of writing it again.
+              schema,
+              model: input.model,
+              ...(input.effort ? { effort: input.effort } : {}),
+              timeoutMs: input.timeoutMs,
+              signal,
+            },
+            input.hooks ?? {},
+          );
+      claudeMs += Date.now() - started;
+      calls++;
+      usage = addUsage(usage, result.usage);
+      model ??= result.model;
+      provider ??= result.provider ?? "claude";
+      fallback ??= result.fallback;
+      return result;
+    };
     const label = `${input.label}-${step}`;
-    const content: ClaudeContentBlock[] = [{ type: "text", text }, ...images];
-    const result: ModelCallerResult = input.modelCaller
-      ? await input.modelCaller({ label, system, content, schema, signal })
-      : await gate.call(
-          {
-            label,
-            system,
-            content,
-            // One schema for every pass of a post: the StructuredOutput tool definition is part of
-            // the prompt-cache prefix, so an identical schema lets later passes read the ~20K-token
-            // system prompt from the cache instead of writing it again.
-            schema,
-            model: input.model,
-            ...(input.effort ? { effort: input.effort } : {}),
-            timeoutMs: input.timeoutMs,
-            signal,
-          },
-          input.hooks ?? {},
-        );
-    claudeMs += Date.now() - started;
-    calls++;
-    usage = addUsage(usage, result.usage);
-    model ??= result.model;
-    provider ??= result.provider ?? "claude";
-    const parsed = DesignOutput.safeParse(result.output);
+    // One malformed answer (no structured output, schema mismatch) is asked again once with the
+    // problem attached instead of failing the post (U5).
+    let result: ModelCallerResult;
+    let retried = false;
+    try {
+      result = await invoke(label, text);
+    } catch (error) {
+      if (!isMalformedDesignOutput(error)) throw error;
+      retried = true;
+      reasked++;
+      logger.warn(
+        `[${input.label}] ${step}: malformed answer, asking again: ${(error as Error).message}`,
+      );
+      result = await invoke(`${label}-reask`, `${text}\n${reaskNote((error as Error).message)}`);
+    }
+    let parsed = DesignOutput.safeParse(result.output);
+    if (!parsed.success && !retried) {
+      reasked++;
+      const problem = `The answer did not match the output schema: ${parsed.error.message.slice(0, 1_200)}`;
+      logger.warn(`[${input.label}] ${step}: design output does not match, asking again`);
+      result = await invoke(`${label}-reask`, `${text}\n${reaskNote(problem)}`);
+      parsed = DesignOutput.safeParse(result.output);
+    }
     if (!parsed.success) {
       throw new ClaudeError(
         "output",
@@ -261,6 +363,7 @@ export async function runDesignPipeline(input: PipelineInput): Promise<PipelineR
           error instanceof SanitizeError
             ? `the HTML could not be sanitised: ${error.message}`
             : `sanitiser failed: ${(error as Error).message}`;
+        slide.failureKind = "sanitize";
         slides.push(slide);
         continue;
       }
@@ -288,6 +391,7 @@ export async function runDesignPipeline(input: PipelineInput): Promise<PipelineR
       } catch (error) {
         signal.throwIfAborted();
         slide.failure = `render failed: ${(error as Error).message.slice(0, 300)}`;
+        slide.failureKind = "render";
       }
       slide.renderMs = Date.now() - started;
       renderMs += slide.renderMs;
@@ -429,6 +533,8 @@ export async function runDesignPipeline(input: PipelineInput): Promise<PipelineR
       timings: { claudeMs, renderMs, totalMs: Date.now() - t0 },
       model,
       ...(provider ? { provider } : {}),
+      ...(fallback ? { fallback } : {}),
+      ...(reasked ? { reasked } : {}),
     };
   }
 
@@ -499,6 +605,8 @@ export async function runDesignPipeline(input: PipelineInput): Promise<PipelineR
     timings: { claudeMs, renderMs, totalMs: Date.now() - t0 },
     model,
     ...(provider ? { provider } : {}),
+    ...(fallback ? { fallback } : {}),
+    ...(reasked ? { reasked } : {}),
   };
 }
 
@@ -508,6 +616,26 @@ function normalizeSlides(output: DesignOutput, max: number): DesignOutput {
     .slice(0, max)
     .map((s, i) => ({ id: `slide-${i + 1}`, html: s.html }));
   return { ...output, slides };
+}
+
+/**
+ * The owner's (Turkish) words for slides that could not be made into pictures (U12); the
+ * technical reason stays in `failure` (logs, the model's fix prompt).
+ */
+export function slideFailureMessage(slides: readonly CheckedSlide[]): string {
+  const failed = slides
+    .map((s, i) => ({
+      n: i + 1,
+      kind: s.failureKind ?? (s.failure ? "render" : null),
+      jpeg: s.jpeg,
+    }))
+    .filter((s) => !s.jpeg);
+  const parts = failed.map((s) =>
+    s.kind === "sanitize"
+      ? `${s.n}. slaytın kodu güvenlik denetiminden geçmedi`
+      : `${s.n}. slayt görsele dönüştürülemedi`,
+  );
+  return `Tasarım tamamlanamadı: ${parts.join("; ")}. Yeniden üretmeyi deneyin; sürerse talimatı sadeleştirin.`;
 }
 
 /** Export check of the final JPEGs against the preset (size, format, aspect). */

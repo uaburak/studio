@@ -112,27 +112,8 @@ export function canRunChat(presence: WorkerPresence | null | undefined): boolean
 
 // --- jobs -------------------------------------------------------------------------------------
 
-const JOB_LABELS: Record<string, string> = {
-  "content.generate": "Post üretimi",
-  "content.render": "Görsel çıktısı",
-  "brand.analyze": "Marka analizi",
-  "brand.skill_draft": "Skill taslağı",
-  "content.check": "Kontroller",
-  "canvas.read": "Tuval okuma",
-  "canvas.apply": "Tuval düzenlemesi",
-  "image.generate": "AI görsel üretimi",
-  "schedule.publish": "Zamanlı yayın",
-  "chat.turn": "Sohbet yanıtı",
-  "demo.echo": "Deneme işi",
-};
-
-export function jobTitle(job: Job): string {
-  const payload = job.payload as Record<string, unknown>;
-  if (typeof payload.title === "string" && payload.title) return payload.title;
-  if (job.type === "demo.echo" && typeof payload.text === "string" && payload.text)
-    return payload.text;
-  return JOB_LABELS[job.type] ?? job.type;
-}
+// Job titles are shared with the main process (its notifications).
+export { jobTitle } from "../../shared/notices.ts";
 
 export function jobStatusText(status: Job["status"]): string {
   return (

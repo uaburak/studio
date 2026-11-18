@@ -1,7 +1,9 @@
 // The posts screen (Wecra "Postlar"): month with ‹ ›, post count, search, "+ Yeni post", the
 // status filters with counts, and a responsive grid of 4:5 cards — the current brand's, or
 // every brand's grouped by brand. Keys: arrows move the selection, ↩ opens, Space quick look,
-// ⌫ deletes (after confirming), ⌘D duplicates, ⌘F searches, Esc clears the selection.
+// ⌫ moves to the trash (with "Geri al"), ⌘D duplicates, ⌘F searches, ⌘A picks the month's cards,
+// Esc clears the picked cards, then the selection. ⌘-click / ⇧-click pick cards for the bulk bar
+// (N1). "Planlar" shows the month plans (N2); "Silinenler" the trash (7).
 import type { Brand } from "@studio/contract";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef } from "react";
 import {
@@ -12,7 +14,12 @@ import {
   SegmentedControl,
   Spinner,
 } from "../../components/ui/controls.tsx";
-import { IconChevronLeft, IconChevronRight, IconPlus } from "../../components/ui/icons.tsx";
+import {
+  IconChevronLeft,
+  IconChevronRight,
+  IconPlus,
+  IconTrash,
+} from "../../components/ui/icons.tsx";
 import { type MenuEntry, useContextMenu } from "../../components/ui/menu.tsx";
 import { describeError } from "../../lib/api.ts";
 import { useAppStore } from "../../state/app-store.ts";
@@ -22,6 +29,7 @@ import { usePostActions } from "./actions.ts";
 import {
   boardMonths,
   deletionBlocker,
+  generationFailure,
   groupByBrand,
   monthWithPosts,
   moveSelection,
@@ -29,12 +37,19 @@ import {
   POST_FILTERS,
   type PostCard,
   type PostFilter,
+  rangeSelection,
+  toggleSelection,
   visibleCards,
+  visibleSelection,
 } from "./board.ts";
-import { useBoard } from "./data.ts";
+import { BulkBar } from "./bulk-bar.tsx";
+import { useBoard, useTrash } from "./data.ts";
 import { addMonths, monthKeyOf, monthName, monthTitle } from "./dates.ts";
+import { PlansView } from "./plans-view.tsx";
+import type { PostCardActions } from "./post-card.tsx";
 import { PostCardView } from "./post-card.tsx";
-import { usePostsStore } from "./store.ts";
+import { type PostsView, usePostsStore } from "./store.ts";
+import { TrashView } from "./trash-view.tsx";
 
 /** Columns of a CSS grid as laid out now (arrow keys move by rows). */
 export function gridColumns(el: Element | null): number {
@@ -51,15 +66,18 @@ export function PostsPage() {
   const host = useHost();
   const currentBrandId = useAppStore((s) => s.currentBrandId);
   const allBrands = usePostsStore((s) => s.allBrands);
+  const storedMonth = usePostsStore((s) => s.month);
+  const view = usePostsStore((s) => s.view);
   const scope = allBrands ? null : currentBrandId;
-  const board = useBoard(scope, allBrands || currentBrandId !== null);
+  const enabled = allBrands || currentBrandId !== null;
+  const board = useBoard(scope, enabled && view === "board", storedMonth);
   const brandList = brands.data ?? [];
   const brandName = useCallback(
     (id: string) => brandList.find((b) => b.id === id)?.name,
     [brandList],
   );
 
-  if (!allBrands && !currentBrandId) {
+  if (!enabled) {
     return (
       <PageShell>
         <EmptyState
@@ -74,6 +92,17 @@ export function PostsPage() {
       </PageShell>
     );
   }
+  if (view === "plans") {
+    return (
+      <div className="flex min-h-0 flex-1 flex-col">
+        <div className="flex shrink-0 items-center gap-3 px-8 pt-6 pb-5">
+          <h1 className="text-title font-semibold text-fg">Postlar</h1>
+          <ViewTabs value="plans" />
+        </div>
+        <PlansView brandId={scope} brandName={brandName} />
+      </div>
+    );
+  }
   return (
     <Board
       cards={board.cards}
@@ -84,6 +113,22 @@ export function PostsPage() {
       brandName={brandName}
       grouped={allBrands}
       brandId={currentBrandId}
+      tabs
+    />
+  );
+}
+
+/** "Pano | Planlar" (N2). */
+function ViewTabs({ value }: { value: PostsView }) {
+  return (
+    <SegmentedControl<PostsView>
+      label="Görünüm"
+      value={value}
+      onChange={(v) => usePostsStore.getState().setView(v)}
+      options={[
+        { value: "board", label: "Pano" },
+        { value: "plans", label: "Planlar" },
+      ]}
     />
   );
 }
@@ -105,6 +150,7 @@ export function Board({
   brandName,
   grouped,
   brandId,
+  tabs = false,
   now = new Date(),
 }: {
   cards: PostCard[];
@@ -115,16 +161,21 @@ export function Board({
   brandName(id: string): string | undefined;
   grouped: boolean;
   brandId: string | null;
+  /** Show the Pano / Planlar switch. */
+  tabs?: boolean;
   now?: Date;
 }) {
   const storedMonth = usePostsStore((s) => s.month);
   const filter = usePostsStore((s) => s.filter);
   const query = usePostsStore((s) => s.query);
   const selectedId = usePostsStore((s) => s.selectedId);
+  const picked = usePostsStore((s) => s.picked);
+  const trashOpen = usePostsStore((s) => s.trash);
   const openedId = usePostsStore((s) => s.opened?.contentId ?? null);
   const store = usePostsStore.getState;
   const actions = usePostActions();
   const context = useContextMenu();
+  const trash = useTrash(grouped ? null : brandId);
   const months = useMemo(() => boardMonths(cards), [cards]);
   const thisMonth = monthKeyOf(now);
   const month = storedMonth ?? nearestMonth(months, thisMonth);
@@ -143,9 +194,28 @@ export function Board({
     [grouped, view.cards, brands, brandId],
   );
   const ordered = useMemo(() => groups.flatMap((g) => g.cards), [groups]);
+  const orderedIds = useMemo(() => ordered.map((c) => c.id), [ordered]);
+  const pickedVisible = useMemo(() => visibleSelection(orderedIds, picked), [orderedIds, picked]);
+  const pickedCards = useMemo(
+    () => ordered.filter((c) => pickedVisible.includes(c.id)),
+    [ordered, pickedVisible],
+  );
   const gridRef = useRef<HTMLElement | null>(null);
   const searchRef = useRef<HTMLInputElement | null>(null);
   const itemRefs = useRef(new Map<string, HTMLLIElement>());
+  // One ref callback per card, kept across renders (a new one would redraw a memoized card).
+  const refCallbacks = useRef(new Map<string, (el: HTMLLIElement | null) => void>());
+  const refFor = (id: string) => {
+    let callback = refCallbacks.current.get(id);
+    if (!callback) {
+      callback = (el) => {
+        if (el) itemRefs.current.set(id, el);
+        else itemRefs.current.delete(id);
+      };
+      refCallbacks.current.set(id, callback);
+    }
+    return callback;
+  };
 
   // The first load picks the month with the nearest posts; keep it once the owner moves.
   useEffect(() => {
@@ -160,31 +230,53 @@ export function Board({
     if (!openedId && document.activeElement === document.body) gridRef.current?.focus();
   }, [openedId]);
 
-  const cardActions = {
-    open: (card: PostCard, origin: DOMRect | null) => {
-      store().select(card.id);
-      store().open(card.id, {
+  const media = (id: string) => itemRefs.current.get(id)?.querySelector("[data-media]") ?? null;
+  const mediaRect = (id: string) => media(id)?.getBoundingClientRect() ?? null;
+
+  // The cards' actions keep their identity (memoized cards); they read the latest values here.
+  const latest = useRef({ orderedIds, actions, context });
+  latest.current = { orderedIds, actions, context };
+  const cardActions = useMemo<PostCardActions>(() => {
+    const open: PostCardActions["open"] = (card, origin, event) => {
+      const s = store();
+      if (event && (event.metaKey || event.ctrlKey)) {
+        s.setPicked(toggleSelection(s.picked, card.id), card.id);
+        s.select(card.id);
+        return;
+      }
+      if (event?.shiftKey) {
+        s.setPicked(
+          rangeSelection(latest.current.orderedIds, s.picked, s.anchorId ?? s.selectedId, card.id),
+        );
+        s.select(card.id);
+        return;
+      }
+      if (s.picked.length > 0) s.clearPicked();
+      s.select(card.id);
+      s.open(card.id, {
         origin: origin
           ? { x: origin.left, y: origin.top, width: origin.width, height: origin.height }
           : null,
       });
-    },
-    quickLook: (card: PostCard, source: Element | null) =>
-      actions.quickLook(card.content, card.version, { source }),
-    copyCaption: (card: PostCard) => void actions.copyCaption(card.content),
-    duplicate: (card: PostCard) => void actions.duplicate(card.content),
-    remove: (card: PostCard) => actions.askDelete(card.content),
-    contextMenu: (card: PostCard, event: React.MouseEvent) => {
-      store().select(card.id);
-      context.open(event, menuFor(card));
-    },
-  };
-
-  const media = (id: string) => itemRefs.current.get(id)?.querySelector("[data-media]") ?? null;
-  const mediaRect = (id: string) => media(id)?.getBoundingClientRect() ?? null;
+    };
+    return {
+      open,
+      quickLook: (card, source) =>
+        latest.current.actions.quickLook(card.content, card.version, { source }),
+      copyCaption: (card) => void latest.current.actions.copyCaption(card.content),
+      duplicate: (card) => void latest.current.actions.duplicate(card.content),
+      remove: (card) => latest.current.actions.askDelete(card.content),
+      retry: (card, jobId) => void latest.current.actions.retry(jobId, card.content.title),
+      contextMenu: (card, event) => {
+        store().select(card.id);
+        latest.current.context.open(event, menuRef.current(card));
+      },
+    };
+  }, [store]);
 
   const menuFor = (card: PostCard): MenuEntry[] => {
     const blocker = deletionBlocker(card.content);
+    const failure = generationFailure(card);
     return [
       { id: "open", label: "Aç", onSelect: () => cardActions.open(card, mediaRect(card.id)) },
       {
@@ -194,6 +286,15 @@ export function Board({
         disabled: !card.version?.slides.some((s) => s.renderedAssetId),
         onSelect: () => cardActions.quickLook(card, media(card.id)),
       },
+      ...(failure
+        ? [
+            {
+              id: "retry",
+              label: "Yeniden dene",
+              onSelect: () => cardActions.retry?.(card, failure.jobId),
+            },
+          ]
+        : []),
       { type: "separator" },
       {
         id: "caption",
@@ -210,7 +311,7 @@ export function Board({
       { type: "separator" },
       {
         id: "delete",
-        label: "Sil…",
+        label: "Sil",
         danger: true,
         disabled: !!blocker,
         ...(blocker ? { detail: blocker } : {}),
@@ -218,14 +319,19 @@ export function Board({
       },
     ];
   };
+  const menuRef = useRef(menuFor);
+  menuRef.current = menuFor;
 
   const selected = ordered.find((c) => c.id === selectedId) ?? null;
+  const selectAll = () => store().setPicked(orderedIds, orderedIds[0] ?? null);
 
   const onKeyDown = (event: React.KeyboardEvent) => {
-    if (event.target instanceof HTMLInputElement) return;
+    if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement)
+      return;
+    if (trashOpen) return;
     const plain = !event.metaKey && !event.ctrlKey && !event.altKey;
     const columns = gridColumns(gridRef.current?.querySelector("ul") ?? null);
-    const ids = ordered.map((c) => c.id);
+    const ids = orderedIds;
     const move = (offset: number) => {
       event.preventDefault();
       store().select(moveSelection(ids, selectedId, offset));
@@ -258,7 +364,10 @@ export function Board({
           }
           return;
         case "Escape":
-          if (selectedId) {
+          if (pickedVisible.length > 0) {
+            event.preventDefault();
+            store().clearPicked();
+          } else if (selectedId) {
             event.preventDefault();
             store().select(null);
           }
@@ -266,12 +375,16 @@ export function Board({
       }
     }
     if (event.metaKey && !event.altKey && !event.ctrlKey) {
-      if (event.key.toLowerCase() === "d" && selected) {
+      const key = event.key.toLowerCase();
+      if (key === "d" && selected) {
         event.preventDefault();
         cardActions.duplicate(selected);
-      } else if (event.key.toLowerCase() === "f") {
+      } else if (key === "f") {
         event.preventDefault();
         searchRef.current?.focus();
+      } else if (key === "a" && ids.length > 0) {
+        event.preventDefault();
+        selectAll();
       }
     }
   };
@@ -279,9 +392,12 @@ export function Board({
   const earlier = monthWithPosts(months, month, -1);
   const later = monthWithPosts(months, month, 1);
   const filterLabel = POST_FILTERS.find((f) => f.id === filter)?.label ?? "";
+  const trashCount = trash.data?.length ?? 0;
 
   let body: React.ReactNode;
-  if (loading && cards.length === 0) {
+  if (trashOpen) {
+    body = <TrashView brandId={grouped ? null : brandId} brandName={brandName} />;
+  } else if (loading && cards.length === 0) {
     body = (
       <div className="flex flex-1 items-center justify-center gap-2 text-body text-fg-2">
         <Spinner /> Postlar yükleniyor…
@@ -365,13 +481,11 @@ export function Board({
               {group.cards.map((card) => (
                 <PostCardView
                   key={card.id}
-                  ref={(el) => {
-                    if (el) itemRefs.current.set(card.id, el);
-                    else itemRefs.current.delete(card.id);
-                  }}
+                  ref={refFor(card.id)}
                   card={card}
                   brandName={brandName(card.content.brandId)}
                   selected={card.id === selectedId}
+                  picked={pickedVisible.includes(card.id)}
                   actions={cardActions}
                 />
               ))}
@@ -387,23 +501,28 @@ export function Board({
       <div className="flex shrink-0 flex-col gap-3 px-8 pt-6 pb-5">
         <div className="flex h-7 items-center gap-3">
           <h1 className="text-title font-semibold text-fg">Postlar</h1>
-          <div className="flex items-center gap-0.5">
-            <IconButton
-              icon={<IconChevronLeft size={14} strokeWidth={1.75} />}
-              label="Önceki ay"
-              size={24}
-              onClick={() => store().setMonth(addMonths(month, -1))}
-            />
-            <span className="min-w-[96px] text-center text-body text-fg">{monthTitle(month)}</span>
-            <IconButton
-              icon={<IconChevronRight size={14} strokeWidth={1.75} />}
-              label="Sonraki ay"
-              size={24}
-              onClick={() => store().setMonth(addMonths(month, 1))}
-            />
-          </div>
+          {tabs && <ViewTabs value="board" />}
+          {!trashOpen && (
+            <div className="flex items-center gap-0.5">
+              <IconButton
+                icon={<IconChevronLeft size={14} strokeWidth={1.75} />}
+                label="Önceki ay"
+                size={24}
+                onClick={() => store().setMonth(addMonths(month, -1))}
+              />
+              <span className="min-w-[96px] text-center text-body text-fg">
+                {monthTitle(month)}
+              </span>
+              <IconButton
+                icon={<IconChevronRight size={14} strokeWidth={1.75} />}
+                label="Sonraki ay"
+                size={24}
+                onClick={() => store().setMonth(addMonths(month, 1))}
+              />
+            </div>
+          )}
           <span className="min-w-0 flex-1 truncate text-body text-fg-2">
-            {view.monthTotal} post
+            {trashOpen ? `${trashCount} silinen post` : `${view.monthTotal} post`}
             {loading && cards.length > 0 && <span className="ml-2 text-fg-3">yenileniyor…</span>}
           </span>
           <SearchField
@@ -433,17 +552,44 @@ export function Board({
             Yeni post
           </Button>
         </div>
-        <div className="flex items-center">
-          <SegmentedControl<PostFilter>
-            label="Durum"
-            value={filter}
-            onChange={(f) => store().setFilter(f)}
-            options={POST_FILTERS.map((f) => ({
-              value: f.id,
-              label: f.label,
-              count: view.counts[f.id],
-            }))}
-          />
+        <div className="flex min-h-10 items-center gap-3">
+          {pickedVisible.length > 0 && !trashOpen ? (
+            <BulkBar picked={pickedCards} visibleCount={ordered.length} onSelectAll={selectAll} />
+          ) : (
+            <>
+              {!trashOpen && (
+                <SegmentedControl<PostFilter>
+                  label="Durum"
+                  value={filter}
+                  onChange={(f) => store().setFilter(f)}
+                  options={POST_FILTERS.map((f) => ({
+                    value: f.id,
+                    label: f.label,
+                    count: view.counts[f.id],
+                  }))}
+                />
+              )}
+              {!trashOpen && ordered.length > 1 && (
+                <Button variant="ghost" onClick={selectAll}>
+                  Tümünü seç
+                </Button>
+              )}
+              <div className="flex-1" />
+              <button
+                type="button"
+                aria-pressed={trashOpen}
+                onClick={() => store().setTrash(!trashOpen)}
+                className={cn(
+                  "flex h-7 items-center gap-1.5 rounded-full px-2.5 text-body",
+                  trashOpen ? "bg-control text-fg" : "text-fg-2 hover:bg-control hover:text-fg",
+                )}
+              >
+                <IconTrash size={13} strokeWidth={1.75} />
+                Silinenler
+                {trashCount > 0 && <span className="text-fg-3 tabular-nums">{trashCount}</span>}
+              </button>
+            </>
+          )}
         </div>
       </div>
       <section

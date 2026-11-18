@@ -27,11 +27,19 @@ import {
   type TurnContext,
 } from "@studio/contract";
 import type { AgentDeps, AgentSettings } from "../agent.ts";
+import { isBudgetExceeded } from "../ai/policy.ts";
 import { geminiUsageSink } from "../ai/usage-recorder.ts";
-import { ClaudeError, describeClaudeError, formatClock, isClaudeError } from "../claude/errors.ts";
+import {
+  ClaudeError,
+  ClaudeUsageLimitError,
+  describeClaudeError,
+  formatClock,
+  isClaudeError,
+} from "../claude/errors.ts";
 import type { AgentStreamEvent } from "../claude/events.ts";
-import type { ParkInfo } from "../claude/gate.ts";
+import { abortableSleep, type LimitChoice, type ParkInfo } from "../claude/gate.ts";
 import type { ClaudeHealth } from "../claude/health.ts";
+import { limitParkMessage } from "../claude/limit-text.ts";
 import {
   aliasOf,
   chooseModel,
@@ -43,11 +51,18 @@ import {
   readChoice,
 } from "../claude/models.ts";
 import type { ClaudeCallResult, ClaudeContentBlock } from "../claude/runner.ts";
+import { TurnWaits } from "../claude/turn-waits.ts";
 import { type UsageReport, usageFromRateLimit } from "../claude/usage.ts";
 import { buildGeminiContents, runGeminiApiTurn } from "../gemini/api-runner.ts";
 import { runGeminiCliTurn } from "../gemini/cli-runner.ts";
 import { describeGeminiError, GeminiError, isGeminiError } from "../gemini/errors.ts";
-import { GEMINI_KEY_MISSING, geminiKeySource, getGeminiApiKey } from "../gemini/json-call.ts";
+import {
+  GEMINI_KEY_MISSING,
+  geminiAliasLabel,
+  geminiKeySource,
+  getGeminiApiKey,
+  type StructuredFallback,
+} from "../gemini/json-call.ts";
 import {
   type GeminiModelAlias,
   isGeminiModelAlias,
@@ -69,6 +84,7 @@ import {
 } from "./prompt.ts";
 import { invokedSkill, type Skill, skillsNote } from "./skills.ts";
 import { StudioToolExecutor } from "./tools.ts";
+import { conversationWorkDir } from "./workdir.ts";
 import { RunClosedError, TurnWriter } from "./writer.ts";
 
 export interface ChatTurnOutputSummary extends Record<string, unknown> {
@@ -85,6 +101,10 @@ export interface ChatTurnOutputSummary extends Record<string, unknown> {
   resumedSession?: boolean;
   sessionId?: string;
   usage?: RunUsage;
+  /** The turn stopped after output (time cap, lost connection); "devam et" continues it (U1). */
+  interrupted?: boolean;
+  /** Gemini answered instead of Claude (S7). */
+  fallback?: "claude_limit" | "claude_unavailable";
 }
 
 /** Contract `RunUsage` from the CLI's numbers. */
@@ -127,6 +147,8 @@ type ResolvedRoute =
       modelId: string;
       effort: Effort;
       execution: "api" | "cli";
+      /** Claude was meant (not a Gemini model the owner picked): why Gemini answers (S7). */
+      fallback?: StructuredFallback;
     }
   | { provider: "codex"; model: string | undefined; effort: Effort }
   | { provider: "openai"; model: string; effort: Effort }
@@ -215,6 +237,11 @@ export function resolveChatRoute(input: {
   geminiAccount: GeminiAccount;
   /** Codex / OpenAI / Antigravity readiness (presence `providers`). */
   providers?: readonly AiProviderStatus[];
+  /**
+   * The owner's choice at Claude's limit (S7). Undefined: Gemini at once (the behaviour before
+   * S7; tests).
+   */
+  limitChoice?: LimitChoice | undefined;
 }): ResolvedRoute {
   const { runModel, runEffort, settings, claudeHealth, geminiAccount } = input;
   const effort: Effort = runEffort ?? (settings.effortChat as Effort | undefined) ?? DEFAULT_EFFORT;
@@ -268,24 +295,44 @@ export function resolveChatRoute(input: {
     return resolveGeminiExecution(settings.model, effort, settings, geminiAccount);
   }
 
-  if (claudeHealth.state === "ok") {
-    const choice = chooseModel(readChoice({ effort: runEffort }), {
+  const defaultClaude = (): ResolvedRoute => ({
+    provider: "claude",
+    choice: chooseModel(readChoice({ effort: runEffort }), {
       model: settings.model,
       effort: settings.effortChat,
-    });
-    return { provider: "claude", choice, explicitClaude: false };
+    }),
+    explicitClaude: false,
+  });
+
+  if (claudeHealth.state === "ok") return defaultClaude();
+
+  if (claudeHealth.state === "limited") {
+    // S7: at the limit the owner's choice decides. "Gemini'ye geç" switches with a visible note;
+    // "Sor" / "Bekle" stay on Claude: the gate parks the turn (and asks, in "Sor").
+    const choice = input.limitChoice ?? "gemini";
+    if (geminiReady && choice === "gemini") {
+      return {
+        ...(resolveGeminiExecution("gemini-flash-lite", effort, settings, geminiAccount) as Extract<
+          ResolvedRoute,
+          { provider: "gemini" }
+        >),
+        fallback: {
+          reason: "claude_limit",
+          ...(claudeHealth.resetsAt ? { resetsAt: new Date(claudeHealth.resetsAt) } : {}),
+        },
+      };
+    }
+    return defaultClaude();
   }
 
   if (geminiReady) {
-    return resolveGeminiExecution("gemini-flash-lite", effort, settings, geminiAccount);
-  }
-
-  if (claudeHealth.state === "limited") {
-    const choice = chooseModel(readChoice({ effort: runEffort }), {
-      model: settings.model,
-      effort: settings.effortChat,
-    });
-    return { provider: "claude", choice, explicitClaude: false };
+    return {
+      ...(resolveGeminiExecution("gemini-flash-lite", effort, settings, geminiAccount) as Extract<
+        ResolvedRoute,
+        { provider: "gemini" }
+      >),
+      fallback: { reason: "claude_unavailable" },
+    };
   }
 
   throw new Error(claudeHealth.message);
@@ -446,10 +493,7 @@ export function executorGrant(executor: StudioToolExecutor, label: string): McpG
   };
 }
 
-/** `<stateDir>/chat/<conversationId>`: the conversation's own folder (its Claude sessions live per folder). */
-export function conversationWorkDir(stateDir: string, conversationId: string): string {
-  return path.join(stateDir, "chat", conversationId.replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 100));
-}
+export { conversationWorkDir };
 
 async function runChatTurn(
   payload: ChatTurnPayload,
@@ -516,6 +560,9 @@ async function runChatTurn(
     }
   }
 
+  // The turn's waits for the owner / other jobs: the time cap stops and the Claude slot is
+  // free meanwhile (U1, U6).
+  const waits = new TurnWaits();
   let route: ResolvedRoute;
   try {
     route = resolveChatRoute({
@@ -525,6 +572,7 @@ async function runChatTurn(
       claudeHealth,
       geminiAccount,
       providers: deps.providers?.() ?? [],
+      limitChoice: deps.aiPolicy?.limitChoice(),
     });
   } catch (error) {
     writer.dispose();
@@ -532,6 +580,14 @@ async function runChatTurn(
     await writer.fail(message).catch(() => undefined);
     throw error instanceof Error ? error : new Error(message);
   }
+
+  /** What the turn knows when it ends early (U1): the provider and the session to continue. */
+  const state: { provider: string; model: string | undefined; sessionId: string | undefined } = {
+    provider: route.provider,
+    model: undefined,
+    sessionId: undefined,
+  };
+  let executorRef: StudioToolExecutor | undefined;
 
   try {
     let brands: Brand[] = [];
@@ -597,6 +653,9 @@ async function runChatTurn(
       aliases: context.aliases ?? [],
       signal,
       logger,
+      waits,
+      stateDir: deps.stateDir,
+      imageModel: settings.parentEnv.STUDIO_GEMINI_IMAGE_MODEL?.trim() || settings.geminiImageModel,
       generationChoice: {
         ...(claudeGenModel ? { model: claudeGenModel } : {}),
         ...(genEffort ? { effort: genEffort } : {}),
@@ -611,6 +670,7 @@ async function runChatTurn(
         : {}),
       now,
     });
+    executorRef = executor;
 
     if (route.provider === "codex") {
       ctx.progress(0.15, "Codex yanıtlıyor");
@@ -646,6 +706,7 @@ async function runChatTurn(
           images,
           onTextDelta: (text) => writer.appendText(text),
           timeoutMs: settings.claudeTimeoutMs,
+          waits,
           signal,
           ...(deps.codexSpawn ? { spawn: deps.codexSpawn } : {}),
         });
@@ -661,6 +722,7 @@ async function runChatTurn(
 
     if (route.provider === "openai") {
       ctx.progress(0.15, "OpenAI yanıtlıyor");
+      state.model = route.model;
       const contents = buildGeminiContents({
         context,
         now: now(),
@@ -677,6 +739,12 @@ async function runChatTurn(
         executor,
         onTextDelta: (text) => writer.appendText(text),
         signal,
+        // A time cap (none before U8) that stops during the waits, spend and budget (U8, S7).
+        timeoutMs: settings.claudeTimeoutMs,
+        waits,
+        beforeRequest: () => deps.aiUsage?.assertBudget(),
+        onUsage: (sample) =>
+          deps.aiUsage?.openai(sample, { kind: "chat", jobId: ctx.jobId, runId: payload.runId }),
         ...(deps.openaiFetch ? { fetch: deps.openaiFetch } : {}),
       });
       await writer.flush();
@@ -719,12 +787,36 @@ async function runChatTurn(
       }
     }
 
-    if (route.provider === "gemini") {
+    /** A Gemini answer: the owner's pick, or Claude's stand-in (with a visible note, S7). */
+    const runGemini = async (
+      gem: Extract<ResolvedRoute, { provider: "gemini" }>,
+    ): Promise<ChatTurnOutputSummary> => {
+      state.provider = "gemini";
+      state.model = gem.modelId;
       ctx.progress(0.15, "Gemini yanıtlıyor");
+      if (gem.fallback) {
+        await writer
+          .setPart({
+            type: "progress",
+            stepId: "claude-fallback",
+            label:
+              gem.fallback.reason === "claude_limit"
+                ? `Claude sınırı doldu, ${geminiAliasLabel(gem.alias)} ile yanıtlanıyor`
+                : `Claude kullanılamıyor, ${geminiAliasLabel(gem.alias)} ile yanıtlanıyor`,
+            state: "done",
+            detail:
+              gem.fallback.reason === "claude_limit"
+                ? `${gem.fallback.resetsAt ? `Claude saat ${formatClock(gem.fallback.resetsAt, now())} civarında sıfırlanır. ` : ""}Gemini ücretli API'dir; Ayarlar → Yapay zekâ'dan "Claude sınırı dolunca" seçimini değiştirebilirsiniz.`
+                : "Claude oturumu açık değil ya da hata veriyor; Ayarlar → Yapay zekâ'dan bakabilirsiniz.",
+          })
+          .catch((error: unknown) => {
+            if (error instanceof RunClosedError) throw error;
+          });
+      }
       let usedModel: string;
       let usage: RunUsage;
 
-      if (route.execution === "api") {
+      if (gem.execution === "api") {
         const apiKey = getGeminiApiKey(settings) ?? "";
         const contents = buildGeminiContents({
           context,
@@ -735,15 +827,16 @@ async function runChatTurn(
         });
         const gemRes = await runGeminiApiTurn({
           apiKey,
-          modelId: route.modelId,
-          requestedModel: route.alias,
-          effort: route.effort,
+          modelId: gem.modelId,
+          requestedModel: gem.alias,
+          effort: gem.effort,
           system: CHAT_SYSTEM_PROMPT,
           contents,
           executor,
           onTextDelta: (text) => writer.appendText(text),
           signal,
           timeoutMs: settings.claudeTimeoutMs,
+          waits,
           ...(deps.geminiFetch ? { fetch: deps.geminiFetch } : {}),
           onUsage: geminiUsageSink(deps.aiUsage, {
             kind: "chat",
@@ -754,6 +847,8 @@ async function runChatTurn(
         usedModel = gemRes.model;
         usage = gemRes.usage;
       } else {
+        // With an API key the CLI's calls are billed like the API's: the budget applies (S7).
+        if (getGeminiApiKey(settings)) deps.aiUsage?.assertBudget();
         const bridge = await startMcpBridge(executor, {
           workRoot: path.join(deps.stateDir, "mcp-work"),
           signal,
@@ -769,14 +864,15 @@ async function runChatTurn(
             bin: settings.geminiBin,
             apiKey: getGeminiApiKey(settings),
             parentEnv: settings.parentEnv,
-            modelId: route.modelId,
-            requestedModel: route.alias,
-            effort: route.effort,
+            modelId: gem.modelId,
+            requestedModel: gem.alias,
+            effort: gem.effort,
             system: CHAT_SYSTEM_PROMPT,
             prompt: promptText,
             bridge,
             onTextDelta: (text) => writer.appendText(text),
             timeoutMs: settings.claudeTimeoutMs,
+            waits,
             signal,
             ...(deps.geminiCliSpawn ? { spawn: deps.geminiCliSpawn } : {}),
           });
@@ -818,13 +914,31 @@ async function runChatTurn(
         ...brandSkillsOutput(context),
         provider: "gemini",
         model: usedModel,
-        effort: route.effort,
+        effort: gem.effort,
         usage,
+        ...(gem.fallback ? { fallback: gem.fallback.reason } : {}),
       };
-    }
+    };
+
+    if (route.provider === "gemini") return await runGemini(route);
 
     // --- Claude Code with Studio's MCP server & its own session ----------------------------
     const choice = route.choice;
+    state.model = choice.model;
+    // Claude's stand-in at the limit when the owner chooses it (S7): Gemini Flash-Lite.
+    let geminiStandIn: Extract<ResolvedRoute, { provider: "gemini" }> | null = null;
+    if (!route.explicitClaude && geminiAccount.status === "ready") {
+      try {
+        geminiStandIn = resolveGeminiExecution(
+          "gemini-flash-lite",
+          choice.effort,
+          settings,
+          geminiAccount,
+        ) as Extract<ResolvedRoute, { provider: "gemini" }>;
+      } catch {
+        geminiStandIn = null;
+      }
+    }
     const cwd = conversationWorkDir(deps.stateDir, context.conversation.id);
     const ownServer = deps.mcpServer ? undefined : new StudioMcpServer({ logger });
     const mcp = deps.mcpServer ?? (ownServer as StudioMcpServer);
@@ -833,16 +947,55 @@ async function runChatTurn(
     const mcpConfigFile = path.join(cwd, "mcp.json");
     signal.addEventListener("abort", () => mcp.revoke(token), { once: true });
 
+    // At Claude's limit (S7): a progress part says when it goes on; in "Sor" mode a consent card
+    // asks whether this answer may go on with Gemini. The answer holds for this turn.
     let parkIndex: number | null = null;
+    let limitAnswer: "gemini" | "wait" | null = null;
+    let limitCard: { consentId: string; index: number; title: string; detail: string } | null =
+      null;
+    let callSettled = false;
+    const pollLimitCard = async (card: NonNullable<typeof limitCard>) => {
+      const pollMs = Math.max(deps.consentPollIntervalMs ?? 1_000, 100);
+      while (!callSettled && !signal.aborted && limitAnswer === null) {
+        try {
+          await abortableSleep(pollMs, signal);
+          const snapshot = await api.client.workerTurns.message(payload.runId, { signal });
+          const part = snapshot.message?.parts.find(
+            (p) => p.type === "consent" && p.consentId === card.consentId,
+          );
+          if (part?.type !== "consent" || part.state === "pending") continue;
+          limitAnswer = part.state === "allowed" ? "gemini" : "wait";
+          gate.wake();
+        } catch (error) {
+          if (signal.aborted) return;
+          logger.debug(`limit card poll: ${(error as Error).message}`);
+        }
+      }
+    };
     const onPark = async (info: ParkInfo) => {
       const label = "Claude kullanım sınırı doldu";
-      const detail = `Sınır ${formatClock(info.until)} civarında sıfırlanıyor; tur bekletiliyor ve o saatte kendiliğinden devam edecek.`;
-      ctx.progress(0.1, `${label}: ${formatClock(info.until)} civarında devam edecek`);
+      const detail = limitParkMessage(info, now());
+      ctx.progress(0.1, detail);
       try {
         parkIndex = await writer.setPart(
           { type: "progress", stepId: "usage-limit", label, state: "pending", detail },
           parkIndex ?? undefined,
         );
+        if (info.choice === "ask" && info.canFallback && !limitCard && geminiStandIn) {
+          const title = "Claude sınırı doldu: bu yanıt Gemini ile sürsün mü?";
+          const cardDetail = `Claude saat ${formatClock(info.until, now())} civarında sıfırlanır. İzin verirseniz bu yanıt ${geminiAliasLabel(geminiStandIn.alias)} ile şimdi sürer (ücretli API). Reddederseniz sınır sıfırlanınca Claude ile kendiliğinden devam eder.`;
+          const consentId = `claude-limit-${payload.runId.replace(/[^A-Za-z0-9_-]/g, "").slice(-8) || "run"}`;
+          const index = await writer.setPart({
+            type: "consent",
+            consentId,
+            tool: "claude_limit",
+            title,
+            detail: cardDetail,
+            state: "pending",
+          });
+          limitCard = { consentId, index, title, detail: cardDetail };
+          void pollLimitCard(limitCard);
+        }
       } catch (error) {
         logger.warn(`could not show the park state: ${(error as Error).message}`);
       }
@@ -860,6 +1013,24 @@ async function runChatTurn(
             detail: "Sınır sıfırlandı, devam edildi.",
           },
           parkIndex,
+        )
+        .catch(() => undefined);
+    };
+    /** The limit card is no longer needed (the call went on or ended). */
+    const closeLimitCard = async () => {
+      callSettled = true;
+      if (!limitCard || limitAnswer !== null) return;
+      await writer
+        .setPart(
+          {
+            type: "consent",
+            consentId: limitCard.consentId,
+            tool: "claude_limit",
+            title: limitCard.title,
+            detail: limitCard.detail,
+            state: "expired",
+          },
+          limitCard.index,
         )
         .catch(() => undefined);
     };
@@ -894,6 +1065,7 @@ async function runChatTurn(
     const onEvent = (event: AgentStreamEvent) => {
       if (event.type === "session") {
         initSessionId = event.id;
+        state.sessionId = event.id;
         if (event.mcpProblem) {
           logger.warn(`[job ${ctx.jobId}] studio MCP server not connected: ${event.mcpProblem}`);
         }
@@ -932,6 +1104,7 @@ async function runChatTurn(
 
       const callClaude = (sessionIdToResume: string | undefined) => {
         const newSessionId = sessionIdToResume ? undefined : randomUUID();
+        state.sessionId = sessionIdToResume ?? newSessionId;
         logger.info(
           `[job ${ctx.jobId}] claude: ${sessionIdToResume ? `--resume ${sessionIdToResume}` : `--session-id ${newSessionId} (new session, last 12 messages)`}`,
         );
@@ -946,7 +1119,10 @@ async function runChatTurn(
             content,
             model: choice.model,
             effort: choice.effort,
+            // The cap counts the model's own work: the waits for the owner / other jobs do not
+            // count, and the gate slot is free during them (U1, U6).
             timeoutMs: settings.claudeTimeoutMs,
+            waits,
             signal,
             onTextDelta: (text) => {
               firstOutput();
@@ -962,31 +1138,72 @@ async function runChatTurn(
               onEvent,
             },
           },
-          { onPark, onResume },
+          {
+            onPark,
+            onResume,
+            // At the limit with nothing said yet, Gemini can take over (S7).
+            fallback: geminiStandIn !== null,
+            choice: () => limitAnswer,
+          },
         );
       };
 
       try {
-        result = await callClaude(resumeSessionId);
+        try {
+          result = await callClaude(resumeSessionId);
+        } catch (error) {
+          if (
+            resumeSessionId &&
+            !signal.aborted &&
+            !writer.written &&
+            executor.outcome.toolCalls.length === 0 &&
+            error instanceof ClaudeError &&
+            error.code === "process" &&
+            !error.details?.partial
+          ) {
+            logger.warn(
+              `[job ${ctx.jobId}] claude session ${resumeSessionId} could not be resumed (${error.message}); starting a new session with the history`,
+            );
+            resumedSession = false;
+            result = await callClaude(undefined);
+          } else {
+            throw error;
+          }
+        }
       } catch (error) {
+        await closeLimitCard();
+        // The owner's choice at the limit is Gemini and nothing was said yet: Gemini answers.
         if (
-          resumeSessionId &&
+          error instanceof ClaudeUsageLimitError &&
+          !error.details?.partial &&
+          geminiStandIn &&
           !signal.aborted &&
           !writer.written &&
-          executor.outcome.toolCalls.length === 0 &&
-          error instanceof ClaudeError &&
-          error.code === "process" &&
-          !error.details?.partial
+          executor.outcome.toolCalls.length === 0
         ) {
-          logger.warn(
-            `[job ${ctx.jobId}] claude session ${resumeSessionId} could not be resumed (${error.message}); starting a new session with the history`,
-          );
-          resumedSession = false;
-          result = await callClaude(undefined);
-        } else {
-          throw error;
+          if (parkIndex !== null) {
+            await writer
+              .setPart(
+                {
+                  type: "progress",
+                  stepId: "usage-limit",
+                  label: "Claude kullanım sınırı doldu",
+                  state: "done",
+                  detail: `${geminiAliasLabel(geminiStandIn.alias)} ile devam edildi.`,
+                },
+                parkIndex,
+              )
+              .catch(() => undefined);
+          }
+          firstOutput();
+          return await runGemini({
+            ...geminiStandIn,
+            fallback: { reason: "claude_limit", resetsAt: error.resetsAt },
+          });
         }
+        throw error;
       }
+      await closeLimitCard();
       firstOutput();
 
       await writer.flush();
@@ -1018,6 +1235,7 @@ async function runChatTurn(
         usage,
       };
     } finally {
+      callSettled = true;
       // The run is over: its token stops working and its config goes.
       mcp.revoke(token);
       await rm(mcpConfigFile, { force: true }).catch(() => undefined);
@@ -1031,23 +1249,74 @@ async function runChatTurn(
     if (error instanceof RunClosedError) {
       throw new Error(`run closed while writing: ${error.message}`);
     }
+    // U1: a turn that already wrote or called tools is never run again from the start (the same
+    // posts would be generated twice, the consent cards asked again). It ends here with a note;
+    // the next message ("devam et") continues the same Claude session (`--resume`).
+    const interrupted = interruptionOf(error, settings.claudeTimeoutMs, now());
+    const producedOutput =
+      writer.written.length > 0 ||
+      (executorRef?.outcome.toolCalls.length ?? 0) > 0 ||
+      (error as { details?: { partial?: boolean } }).details?.partial === true;
+    if (interrupted && producedOutput) {
+      logger.warn(
+        `[job ${ctx.jobId}] chat turn interrupted after output (${(error as Error).message}); ending it, "devam et" continues`,
+      );
+      try {
+        await writer.setPart({
+          type: "error",
+          message: interrupted,
+          code: "turn_interrupted",
+          retryable: false,
+        });
+        await writer.complete(
+          state.model,
+          undefined,
+          state.provider === "claude" && state.sessionId ? { id: state.sessionId } : undefined,
+        );
+      } catch (writeError) {
+        if (writeError instanceof RunClosedError) {
+          throw new Error(`run closed while writing: ${writeError.message}`);
+        }
+        await writer.fail(interrupted).catch(() => undefined);
+        throw error instanceof Error ? error : new Error(String(error));
+      }
+      ctx.progress(1, "Yarıda kaldı");
+      return {
+        runId: payload.runId,
+        action: executorRef?.outcome.action ?? "none",
+        ...(executorRef && executorRef.outcome.toolCalls.length > 0
+          ? { toolCalls: executorRef.outcome.toolCalls }
+          : {}),
+        images: [],
+        provider: state.provider as NonNullable<ChatTurnOutputSummary["provider"]>,
+        ...(state.model ? { model: state.model } : {}),
+        ...(state.sessionId && state.provider === "claude" ? { sessionId: state.sessionId } : {}),
+        interrupted: true,
+      };
+    }
+    // Nothing was said or done yet: the hub may run the turn again.
     if (isClaudeError(error) && (error.code === "transient" || error.code === "timeout")) {
       throw new RetryableError(describeClaudeError(error));
     }
     if (isGeminiError(error) && (error.code === "transient" || error.code === "timeout")) {
       throw new RetryableError(describeGeminiError(error));
     }
-    // A CLI may have written part of the answer already: only retry clean failures.
-    if (isProviderError(error) && error.code === "transient" && !writer.written) {
+    if (
+      isProviderError(error) &&
+      (error.code === "transient" || error.code === "timeout") &&
+      !writer.written
+    ) {
       throw new RetryableError(describeProviderError(error));
     }
-    const message = isClaudeError(error)
-      ? describeClaudeError(error)
-      : isGeminiError(error)
-        ? describeGeminiError(error)
-        : isProviderError(error)
-          ? describeProviderError(error)
-          : `Tur tamamlanamadı: ${(error as Error).message.slice(0, 500)}`;
+    const message = isBudgetExceeded(error)
+      ? error.message
+      : isClaudeError(error)
+        ? describeClaudeError(error)
+        : isGeminiError(error)
+          ? describeGeminiError(error)
+          : isProviderError(error)
+            ? describeProviderError(error)
+            : `Tur tamamlanamadı: ${(error as Error).message.slice(0, 500)}`;
     logger.warn(`[job ${ctx.jobId}] chat turn failed: ${(error as Error).message}`);
     await writer
       .fail(message)
@@ -1056,4 +1325,25 @@ async function runChatTurn(
       );
     throw error instanceof Error ? error : new Error(String(error));
   }
+}
+
+/**
+ * Turkish note for a turn that stopped after it had already written or called tools (U1), or
+ * null when the error is not an interruption (time cap, lost connection, limit mid-turn).
+ */
+export function interruptionOf(error: unknown, timeoutMs: number, now: Date): string | null {
+  const resume = `Şimdiye kadar yazılanlar ve yapılan işler duruyor; aynı işler yeniden başlatılmadı. Kaldığı yerden sürdürmek için "devam et" yazın.`;
+  const minutes = Math.max(1, Math.round(timeoutMs / 60_000));
+  if (error instanceof ClaudeUsageLimitError) {
+    return `Tur yarıda kaldı: Claude kullanım sınırı doldu (saat ${formatClock(error.resetsAt, now)} civarında sıfırlanır). ${resume}`;
+  }
+  const code =
+    isClaudeError(error) || isGeminiError(error) || isProviderError(error) ? error.code : null;
+  if (code === "timeout") {
+    return `Tur yarıda kaldı: yapay zekâ ${minutes} dakikalık çalışma süresinde bitiremedi (onay, soru ve üretim beklemeleri bu süreye sayılmaz). ${resume}`;
+  }
+  if (code === "transient") {
+    return `Tur yarıda kaldı: yapay zekâ servisiyle bağlantı koptu. ${resume}`;
+  }
+  return null;
 }

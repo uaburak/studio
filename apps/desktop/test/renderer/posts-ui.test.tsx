@@ -78,9 +78,10 @@ describe("chat post card", () => {
     expect(screen.getByText("v2 · İlk taslak")).toBeInTheDocument();
     const thumbs = screen.getAllByRole("button", { name: /^Slayt/ });
     expect(thumbs).toHaveLength(2);
+    // A small copy (A4), not the full render.
     expect((thumbs[1] as HTMLElement).querySelector("img")).toHaveAttribute(
       "src",
-      "/api/assets/r2/content",
+      "/api/assets/r2/thumbnail?w=160",
     );
     await userEvent.click(thumbs[0] as HTMLElement);
     expect(usePostsStore.getState().opened?.contentId).toBe("p1");
@@ -91,8 +92,20 @@ describe("chat post card", () => {
     expect(usePostsStore.getState().opened?.contentId).toBe("p1");
   });
 
-  it("says when the post is gone", () => {
-    providers(<ChatPostCard contentId="nope" note={null} />);
+  it("says when the post is gone, and only waits while the server is down", () => {
+    const first = providers(<ChatPostCard contentId="nope" note={null} />);
+    // No host: not "gone" (A10).
+    expect(screen.getByText("Post, sunucu açılınca görünecek")).toBeInTheDocument();
+    first.unmount();
+    providers(<ChatPostCard contentId="nope" note={null} />, {}, (q) => {
+      q.getQueryCache()
+        .build(q, { queryKey: postKeys.content("nope") })
+        .setState({
+          status: "error",
+          fetchStatus: "idle",
+          error: Object.assign(new Error("not found"), { status: 404 }),
+        } as never);
+    });
     expect(screen.getByText("Post bulunamadı")).toBeInTheDocument();
   });
 
@@ -182,8 +195,10 @@ describe("posts board", () => {
     expect(screen.getByText("Sonuç yok")).toBeInTheDocument();
   });
 
-  it("moves the selection with the arrows, opens with ↩ and asks before deleting", async () => {
-    renderBoard();
+  it("moves the selection with the arrows, opens with ↩ and moves to the trash with undo", async () => {
+    const remove = vi.fn(async () => undefined);
+    const restore = vi.fn(async () => content({ id: "p1" }));
+    renderBoard({ contents: { delete: remove, restore } });
     const region = screen.getByRole("region", { name: "Postlar" });
     region.focus();
     fireEvent.keyDown(region, { key: "ArrowRight" });
@@ -193,13 +208,23 @@ describe("posts board", () => {
     expect(screen.getAllByRole("listitem")[1]).toHaveAttribute("data-selected", "true");
     fireEvent.keyDown(region, { key: "Enter" });
     expect(usePostsStore.getState().opened?.contentId).toBe("p1");
+    // ⌫: to the trash at once (no question), the toast offers "Geri al" for 10 s.
     fireEvent.keyDown(region, { key: "Backspace" });
-    expect(usePostsStore.getState().deleting?.id).toBe("p1");
-    // A scheduled post cannot be deleted: a toast says why, no confirmation.
-    usePostsStore.getState().askDelete(null);
+    await waitFor(() => expect(remove).toHaveBeenCalledWith("p1"));
+    await waitFor(() =>
+      expect(useAppStore.getState().toasts.at(-1)?.message).toMatch(/Silinenler'e taşındı/),
+    );
+    const undo = useAppStore.getState().toasts.at(-1);
+    expect(undo?.durationMs).toBe(10_000);
+    expect(undo?.action?.label).toBe("Geri al");
+    expect(usePostsStore.getState().opened).toBeNull();
+    undo?.action?.run();
+    await waitFor(() => expect(restore).toHaveBeenCalledWith("p1"));
+    // A scheduled post cannot be deleted: a toast says why.
+    act(() => usePostsStore.getState().select("p1"));
     fireEvent.keyDown(region, { key: "ArrowUp" });
     fireEvent.keyDown(region, { key: "Delete" });
-    expect(usePostsStore.getState().deleting).toBeNull();
+    expect(remove).toHaveBeenCalledTimes(1);
     expect(useAppStore.getState().toasts.at(-1)?.message).toMatch(/Zamanlanmış post silinemez/);
     fireEvent.keyDown(region, { key: "Escape" });
     expect(usePostsStore.getState().selectedId).toBeNull();
@@ -209,7 +234,8 @@ describe("posts board", () => {
     const duplicate = vi.fn(async () => content({ id: "p9", title: "Hasat sonrası (kopya)" }));
     const writeText = vi.fn(async () => undefined);
     Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
-    renderBoard({ contents: { duplicate } });
+    const remove = vi.fn(async () => undefined);
+    renderBoard({ contents: { duplicate, delete: remove } });
     const first = screen.getAllByRole("listitem")[1] as HTMLElement; // p1
     const tools = within(first).getByRole("toolbar", { name: "Post işlemleri" });
     await userEvent.click(within(tools).getByRole("button", { name: "Hızlı bakış" }));
@@ -220,7 +246,7 @@ describe("posts board", () => {
     await waitFor(() => expect(duplicate).toHaveBeenCalledWith("p1"));
     expect(usePostsStore.getState().selectedId).toBe("p9");
     await userEvent.click(within(tools).getByRole("button", { name: "Sil" }));
-    expect(usePostsStore.getState().deleting?.id).toBe("p1");
+    await waitFor(() => expect(remove).toHaveBeenCalledWith("p1"));
     // The scheduled card's delete is disabled with the reason as its label.
     const scheduled = screen.getAllByRole("listitem")[0] as HTMLElement;
     expect(

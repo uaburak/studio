@@ -219,7 +219,7 @@ describe("composer", () => {
     await userEvent.type(box, "{Enter}");
     expect(onSend).toHaveBeenCalledWith(
       expect.objectContaining({ text: "merhaba\ndünya", attachments: [] }),
-      { queue: false },
+      { now: false },
     );
     expect(box).toHaveValue("");
   });
@@ -232,25 +232,31 @@ describe("composer", () => {
     expect(box).toHaveValue("kaybolmasın");
   });
 
-  it("shows stop while a reply runs and queues with ⌘↩", async () => {
+  it("shows stop while a reply runs: ↩ queues, ⌘↩ sends now (as the placeholder says)", async () => {
     const onSend = vi.fn(async () => true);
     const onStop = vi.fn();
     withApi(
       <Composer
         placeholder="x"
-        workingPlaceholder="↩ gönder, ⌘↩ sıraya al"
+        workingPlaceholder="↩ sıraya al · ⌘↩ durdurup hemen gönder"
         working
         brandId="b1"
         onSend={onSend}
         onStop={onStop}
       />,
     );
-    expect(screen.getByPlaceholderText("↩ gönder, ⌘↩ sıraya al")).toBeInTheDocument();
+    expect(
+      screen.getByPlaceholderText("↩ sıraya al · ⌘↩ durdurup hemen gönder"),
+    ).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Durdur" }));
     expect(onStop).toHaveBeenCalledOnce();
-    await userEvent.type(screen.getByRole("textbox"), "sonra{Meta>}{Enter}{/Meta}");
-    expect(onSend).toHaveBeenCalledWith(expect.objectContaining({ text: "sonra" }), {
-      queue: true,
+    await userEvent.type(screen.getByRole("textbox"), "sonra{Enter}");
+    expect(onSend).toHaveBeenLastCalledWith(expect.objectContaining({ text: "sonra" }), {
+      now: false,
+    });
+    await userEvent.type(screen.getByRole("textbox"), "hemen{Meta>}{Enter}{/Meta}");
+    expect(onSend).toHaveBeenLastCalledWith(expect.objectContaining({ text: "hemen" }), {
+      now: true,
     });
   });
 
@@ -290,7 +296,7 @@ describe("composer", () => {
     await userEvent.click(screen.getByRole("button", { name: "Gönder" }));
     expect(onSend).toHaveBeenCalledWith(
       expect.objectContaining({ attachments: [{ assetId: "asset-1", alias: "image" }] }),
-      { queue: false },
+      { now: false },
     );
   });
 

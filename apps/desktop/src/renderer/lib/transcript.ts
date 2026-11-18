@@ -49,7 +49,15 @@ export type AssistantBlock =
   | { kind: "images"; key: string; images: ChatImage[] }
   | { kind: "consent"; key: string; consent: ConsentPart; busy: boolean }
   | { kind: "question"; key: string; question: QuestionPart; busy: boolean }
-  | { kind: "plan"; key: string; planId: string; plan: Plan | null; busy: boolean }
+  | {
+      kind: "plan";
+      key: string;
+      planId: string;
+      plan: Plan | null;
+      busy: boolean;
+      /** The plan was accepted but its generation could not be started (the reason). */
+      generateError: string | null;
+    }
   | { kind: "progress"; key: string; steps: ProgressPart[] }
   | { kind: "error"; key: string; error: ErrorPart }
   | { kind: "post"; key: string; contentId: string; version: number | null; note: string | null }
@@ -140,6 +148,7 @@ export interface TranscriptInput {
   busyPlans?: ReadonlySet<string>;
   busyQuestions?: ReadonlySet<string>;
   busyConsents?: ReadonlySet<string>;
+  planErrors?: Readonly<Record<string, string>>;
   queue?: QueuedMessage[];
   /** When each running step was first seen (the working line's elapsed time). */
   stepStarts?: Readonly<Record<string, number>>;
@@ -344,6 +353,7 @@ function assistantItem(message: Message, input: TranscriptInput, isLive: boolean
           planId: part.planId,
           plan: (input.plans ?? []).find((p) => p.id === part.planId) ?? null,
           busy: (input.busyPlans ?? EMPTY_SET).has(part.planId),
+          generateError: input.planErrors?.[part.planId] ?? null,
         });
         break;
       case "error":

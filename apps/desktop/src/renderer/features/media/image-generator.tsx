@@ -2,7 +2,7 @@
 // the resolution, an optional reference picture of the brand and "keep the product label".
 // Sends an `image.generate` job; the picture shows up in the library when it is ready.
 import type { Asset } from "@studio/contract";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Button, Checkbox, cn, SegmentedControl } from "../../components/ui/controls.tsx";
 import { Sheet } from "../../components/ui/sheet.tsx";
 import { assetUrl, describeError } from "../../lib/api.ts";
@@ -39,9 +39,14 @@ export function ImageGeneratorSheet({
   });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Every submit starts a paid job: a second ⌘↩ (or click) before the first one answered must
+  // not start another (U7). The ref holds synchronously, before `busy` re-renders.
+  const inFlight = useRef(false);
   const references = assets.filter((a) => isImageAsset(a) && a.source !== "generated").slice(0, 18);
 
   const submit = async () => {
+    if (inFlight.current || !form.prompt.trim()) return;
+    inFlight.current = true;
     setBusy(true);
     setError(null);
     try {
@@ -52,6 +57,7 @@ export function ImageGeneratorSheet({
     } catch (e) {
       setError(describeError(e));
     } finally {
+      inFlight.current = false;
       setBusy(false);
     }
   };
@@ -86,7 +92,10 @@ export function ImageGeneratorSheet({
             placeholder="Örn. hasat sonrası tarlada toprak, sabah ışığı, yakın plan"
             onChange={(event) => setForm((f) => ({ ...f, prompt: event.target.value }))}
             onKeyDown={(event) => {
-              if (event.key === "Enter" && event.metaKey) void submit();
+              if (event.key === "Enter" && event.metaKey) {
+                event.preventDefault();
+                void submit();
+              }
             }}
             className="selectable resize-none rounded-[12px] bg-field px-3 py-2 text-body text-fg shadow-[inset_0_0_0_1px_var(--border-hairline)] outline-none placeholder:text-fg-3"
           />

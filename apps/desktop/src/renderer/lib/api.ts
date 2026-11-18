@@ -42,13 +42,80 @@ export function imageUrl(image: { assetId: string; url?: string | undefined }): 
   return image.url ?? assetUrl(image.assetId);
 }
 
-export function describeError(error: unknown): string {
-  if (error instanceof Error) {
-    const message = error.message.replace(/^\/api\/[^:]*: /, "");
-    if (/Failed to fetch|NetworkError|Load failed/i.test(message)) {
-      return "Studio sunucusuna ulaşılamadı.";
-    }
-    return message;
+// --- errors in plain Turkish (U12) ---------------------------------------------------------------
+
+/** What each API error code means for the user, and what to do. */
+const CODE_MESSAGES: Record<string, string> = {
+  validation_error: "Gönderilen bilgilerde bir sorun var; alanları kontrol edip tekrar dene.",
+  not_found: "Aranan kayıt bulunamadı; silinmiş olabilir. Sayfayı yenileyip tekrar dene.",
+  conflict: "Bu işlem şu anki durumla çakışıyor; sayfayı yenileyip tekrar dene.",
+  invalid_transition:
+    "Bu adım şu an yapılamaz; durum değişmiş olabilir. Sayfayı yenileyip tekrar dene.",
+  hash_mismatch: "Dosya yüklenirken bozuldu; tekrar dene.",
+  payload_too_large: "Dosya çok büyük; daha küçük bir dosya dene.",
+  unsupported_media_type: "Bu dosya türü desteklenmiyor.",
+  unauthorized: "Bu işlem için izin yok; Studio'yu yeniden başlatmayı dene.",
+  forbidden: "Bu işlem bu cihazdan yapılamaz.",
+  rate_limited: "Çok sık istek gönderildi; biraz bekleyip tekrar dene.",
+  internal_error: "Sunucuda beklenmeyen bir hata oldu; biraz sonra tekrar dene.",
+  unavailable: "Studio sunucusu hazır değil; biraz bekleyip tekrar dene.",
+};
+
+const UNREACHABLE = "Studio sunucusuna ulaşılamadı.";
+const GENERIC = "Bir şeyler ters gitti; tekrar dene.";
+
+/** Turkish letters that English server text never has: such a message is already for people. */
+const TURKISH = /[çğıöşüÇĞİÖŞÜ]/;
+
+export interface ErrorDescription {
+  /** Short, Turkish, says what to do. */
+  message: string;
+  /** The original text (server or system), for "Ayrıntı"; null when it adds nothing. */
+  detail: string | null;
+}
+
+function rawMessage(error: unknown): string {
+  const text = error instanceof Error ? error.message : String(error ?? "");
+  return text.replace(/^\/api\/[^:]*: /, "").trim();
+}
+
+function codeOf(error: unknown): string | undefined {
+  const code = (error as { code?: unknown } | null)?.code;
+  return typeof code === "string" ? code : undefined;
+}
+
+function statusOf(error: unknown): number | undefined {
+  const status = (error as { status?: unknown } | null)?.status;
+  return typeof status === "number" ? status : undefined;
+}
+
+/** The user's message for an error, and the original text for the details. */
+export function explainError(error: unknown): ErrorDescription {
+  const raw = rawMessage(error);
+  const detail = raw && raw !== "undefined" ? raw : null;
+  if (/Failed to fetch|NetworkError|Load failed|ECONNREFUSED|fetch failed/i.test(raw)) {
+    return { message: UNREACHABLE, detail: null };
   }
-  return String(error);
+  // A message written in Turkish (ours, or the API's own) is shown as it is.
+  if (detail && TURKISH.test(detail)) return { message: detail, detail: null };
+  const code = codeOf(error);
+  if (code && CODE_MESSAGES[code]) return { message: CODE_MESSAGES[code], detail };
+  const status = statusOf(error);
+  if (status === 503 || status === 502)
+    return { message: CODE_MESSAGES.unavailable as string, detail };
+  if (status !== undefined && status >= 500) {
+    return { message: CODE_MESSAGES.internal_error as string, detail };
+  }
+  if (/does not match the contract/i.test(raw)) {
+    return {
+      message: "Sunucunun yanıtı beklenen biçimde değil; Studio'yu güncelleyip tekrar dene.",
+      detail,
+    };
+  }
+  return { message: GENERIC, detail };
+}
+
+/** A short Turkish message for an error (details: `explainError`). */
+export function describeError(error: unknown): string {
+  return explainError(error).message;
 }

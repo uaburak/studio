@@ -14,6 +14,7 @@ import { ClaudeError, ClaudeUsageLimitError } from "./errors.ts";
 import { type AgentStreamEvent, newStreamParseState, parseStreamLine } from "./events.ts";
 import { classifyFailure, isRejectedStatus, type RateLimitInfo } from "./limits.ts";
 import { JsonStringFieldStream, LineSplitter } from "./stream.ts";
+import { startTurnTimer, type TurnWaits } from "./turn-waits.ts";
 
 export type ClaudeImageMediaType = "image/jpeg" | "image/png" | "image/webp" | "image/gif";
 
@@ -44,6 +45,11 @@ export interface ClaudeCallOptions {
   model?: string;
   effort?: string;
   timeoutMs?: number;
+  /**
+   * A chat turn's waits (consent, ask_user, wait_jobs): the timeout counts only the time outside
+   * them, and the gate gives the call's slot back during them.
+   */
+  waits?: TurnWaits;
   signal?: AbortSignal;
   /** Stream this top-level string field of the structured output (needs `schema`). */
   streamField?: string;
@@ -269,18 +275,28 @@ function execute(input: ExecuteInput): Promise<ClaudeCallResult> {
     const finish = (fn: () => void) => {
       if (settled) return;
       settled = true;
-      clearTimeout(timer);
+      timer.cancel();
       options.signal?.removeEventListener("abort", onAbort);
       fn();
     };
     const kill = () => stopChild(child);
-    const timer = setTimeout(() => {
-      kill();
-      finish(() =>
-        reject(new ClaudeError("timeout", `${options.label}: no result after ${timeoutMs} ms`)),
-      );
-    }, timeoutMs);
-    timer.unref?.();
+    // A chat turn's waits for the owner / other jobs do not count (U1).
+    const timer = startTurnTimer({
+      timeoutMs,
+      waits: options.waits,
+      onTimeout: () => {
+        kill();
+        finish(() =>
+          reject(
+            new ClaudeError(
+              "timeout",
+              `${options.label}: no result after ${timeoutMs} ms of work`,
+              partial ? { stderr: stderr.slice(0, 4000), partial: true } : undefined,
+            ),
+          ),
+        );
+      },
+    });
     const onAbort = () => {
       kill();
       finish(() => reject(options.signal?.reason ?? new Error("aborted")));

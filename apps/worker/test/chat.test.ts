@@ -971,7 +971,7 @@ describe("chat.turn handler (Wecra-style tools, MCP bridge & sessions)", () => {
       label: "Claude kullanım sınırı doldu",
     });
     expect(state.parts[2]).toEqual({ type: "text", text: planOutput.reply });
-    expect(progress.some(([, m]) => m?.startsWith("Claude kullanım sınırı doldu"))).toBe(true);
+    expect(progress.some(([, m]) => m?.startsWith("Claude sınırı doldu"))).toBe(true);
     expect(state.completed).toHaveLength(1);
   });
 
@@ -1055,5 +1055,137 @@ describe("splitUtf8", () => {
     const parts = splitUtf8(text, 100);
     expect(parts.join("")).toBe(text);
     for (const p of parts) expect(new TextEncoder().encode(p).byteLength).toBeLessThanOrEqual(100);
+  });
+});
+
+describe("Faz 4: interrupted turns, Claude's limit in chat, idempotent tools", () => {
+  it("U1: a turn that already wrote is not run again; it ends with a note and keeps the session", async () => {
+    const { api, state } = createFakeApi({ context: turnContext() });
+    let calls = 0;
+    const runner: ClaudeRunner = async (options) => {
+      calls++;
+      options.agent?.onEvent?.({ type: "session", id: "sess_long" });
+      options.onTextDelta?.("Planı hazırlıyorum, üretimler başladı.");
+      await new Promise((r) => setTimeout(r, 300));
+      throw new ClaudeError("timeout", "chat: no result after 900000 ms of work", {
+        partial: true,
+      });
+    };
+    const out = await createChatTurnHandler(deps(api, runner)).run(
+      { conversationId: "conv_1", runId: "run_1" },
+      jobContext().ctx,
+    );
+    expect(calls).toBe(1);
+    expect(out).toMatchObject({ interrupted: true, provider: "claude", sessionId: "sess_long" });
+    const last = state.parts.at(-1);
+    expect(last).toMatchObject({ type: "error", code: "turn_interrupted" });
+    expect(last?.type === "error" && last.message).toContain('"devam et" yazın');
+    // Completed (not failed) with the session, so "devam et" continues it with --resume.
+    expect(state.failed).toHaveLength(0);
+    expect(state.completed).toHaveLength(1);
+    expect(state.completed[0]).toMatchObject({ session: { id: "sess_long" } });
+  });
+
+  it("U1: a turn that failed before saying anything is still retried", async () => {
+    const { api, state } = createFakeApi({ context: turnContext() });
+    const runner: ClaudeRunner = async () => {
+      throw new ClaudeError("timeout", "no result");
+    };
+    await expect(
+      createChatTurnHandler(deps(api, runner)).run(
+        { conversationId: "conv_1", runId: "run_1" },
+        jobContext().ctx,
+      ),
+    ).rejects.toMatchObject({ name: "RetryableError" });
+    expect(state.completed).toHaveLength(0);
+  });
+
+  it("S7 'Sor': at the limit the chat asks; allowed, Gemini answers with a visible note", async () => {
+    const { api, state } = createFakeApi({ context: turnContext() });
+    state.assets.set("asset_photo", { bytes: await png(), contentType: "image/png" });
+    const runner: ClaudeRunner = async () => {
+      throw new ClaudeUsageLimitError(
+        "limit",
+        new Date(Date.now() + 3_600_000),
+        "rate_limit_event",
+      );
+    };
+    const d = deps(api, runner);
+    d.settings = loadAgentSettings({ GEMINI_API_KEY: "gem-key-123456" });
+    d.gate = new ClaudeGate({ runner, limitChoice: () => "ask", maxSleepChunkMs: 50 });
+    d.consentPollIntervalMs = 10;
+    d.geminiFetch = async () => {
+      const event = {
+        candidates: [{ content: { role: "model", parts: [{ text: "Gemini ile yanıt." }] } }],
+        usageMetadata: { promptTokenCount: 10, candidatesTokenCount: 4 },
+        modelVersion: "gemini-2.5-flash-lite",
+      };
+      return new Response(`data: ${JSON.stringify(event)}\r\n\r\n`, {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+      });
+    };
+    const answer = setInterval(() => {
+      const card = state.parts.find((p) => p.type === "consent" && p.state === "pending");
+      if (card?.type === "consent") state.decideConsent(card.consentId, true);
+    }, 5);
+    try {
+      const out = await createChatTurnHandler(d).run(
+        { conversationId: "conv_1", runId: "run_1" },
+        jobContext().ctx,
+      );
+      expect(out).toMatchObject({ provider: "gemini", fallback: "claude_limit" });
+    } finally {
+      clearInterval(answer);
+    }
+    expect(state.parts.find((p) => p.type === "consent")).toMatchObject({
+      tool: "claude_limit",
+      state: "allowed",
+      title: "Claude sınırı doldu: bu yanıt Gemini ile sürsün mü?",
+    });
+    expect(
+      state.parts.find((p) => p.type === "progress" && p.stepId === "claude-fallback"),
+    ).toMatchObject({ label: "Claude sınırı doldu, Gemini Flash-Lite ile yanıtlanıyor" });
+    expect(state.parts.at(-1)).toEqual({ type: "text", text: "Gemini ile yanıt." });
+    expect(state.completed).toHaveLength(1);
+  });
+
+  it("U7: the same brief twice makes one post, and a denied paid image starts no job", async () => {
+    const { api, state } = createFakeApi({ context: turnContext() });
+    const results: Record<string, unknown>[] = [];
+    const runner: ClaudeRunner = async (options) => {
+      const file = options.agent?.mcpConfigFile ?? "";
+      const brief = { brief: "Kasım hasat postu", title: "Hasat" };
+      results.push((await callMcpHttpTool(file, "generate_post", brief)).data);
+      results.push((await callMcpHttpTool(file, "generate_post", brief)).data);
+      results.push(
+        (await callMcpHttpTool(file, "generate_ai_image", { prompt: "Tarlada gün doğumu" })).data,
+      );
+      return result("Tamam.");
+    };
+    const d = deps(api, runner);
+    d.consentPollIntervalMs = 10;
+    const deny = setInterval(() => {
+      const card = state.parts.find((p) => p.type === "consent" && p.state === "pending");
+      if (card?.type === "consent") state.decideConsent(card.consentId, false);
+    }, 5);
+    try {
+      await createChatTurnHandler(d).run(
+        { conversationId: "conv_1", runId: "run_1" },
+        jobContext().ctx,
+      );
+    } finally {
+      clearInterval(deny);
+    }
+    expect(state.jobs.filter((j) => j.type === "content.generate")).toHaveLength(1);
+    expect(results[1]).toMatchObject({
+      duplicate: true,
+      contentId: results[0]?.contentId,
+      jobIds: results[0]?.jobIds,
+    });
+    expect(results[2]).toMatchObject({ allowed: false, reason: "denied_by_owner" });
+    expect(state.jobs.some((j) => j.type === "image.generate")).toBe(false);
+    const card = state.parts.find((p) => p.type === "consent" && p.tool === "generate_ai_image");
+    expect(card?.type === "consent" && card.detail).toContain("tahmini");
   });
 });

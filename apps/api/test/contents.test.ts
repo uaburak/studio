@@ -42,7 +42,15 @@ describe("contents", () => {
     const patched = await api("PATCH", `/api/contents/${content.id}`, { title: "Yeni başlık" });
     expect(Content.parse(patched.body).title).toBe("Yeni başlık");
 
+    // Delete moves it to the trash ("Silinenler"); the list leaves it out, GET still shows it.
     expect((await api("DELETE", `/api/contents/${content.id}`)).status).toBe(204);
+    expect(
+      Content.parse((await api("GET", `/api/contents/${content.id}`)).body).deletedAt,
+    ).toBeTruthy();
+    expect(
+      ContentList.parse((await api("GET", `/api/contents?brandId=${brand.id}`)).body).items,
+    ).toEqual([]);
+    expect((await api("DELETE", `/api/contents/${content.id}?permanent=true`)).status).toBe(204);
     expectError(await api("GET", `/api/contents/${content.id}`), 404, "not_found");
   });
 
@@ -381,6 +389,7 @@ describe("approval by hash", () => {
     const content = await createContent(brand.id, { type: "carousel" });
     await addVersion(content.id, { slides: [slide("a"), slide("b")] });
     expect((await api("DELETE", `/api/contents/${content.id}`)).status).toBe(204);
+    expect((await api("DELETE", `/api/contents/${content.id}?permanent=true`)).status).toBe(204);
     const left = await env.DB.prepare(
       "select count(*) as n from content_versions where content_id = ?",
     )

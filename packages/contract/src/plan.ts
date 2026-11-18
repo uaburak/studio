@@ -245,9 +245,22 @@ export const PlanReject = z
   .meta({ id: "PlanReject" });
 export type PlanReject = z.input<typeof PlanReject>;
 
+/**
+ * `POST /api/plans/{id}/generate` (U2, N3).
+ *
+ * Without `itemIds` only the items that still need a design are queued: accepted items whose post
+ * has no successful generation yet (no design), or whose last generation failed or was stopped —
+ * and never a post the user edited or approved since. Everything else comes back in `skipped`.
+ *
+ * With `itemIds` the named items are queued. An item whose post already has a design (its last
+ * generation succeeded) needs `force`; a post with hand / AI edits or an approval (it would be
+ * replaced by the new design, the approval revoked and pending schedules cancelled) needs
+ * `overwriteEdits` as well, which a client sends only after the user confirmed. Published or
+ * publishing posts are never regenerated.
+ */
 export const PlanGenerate = z
   .object({
-    /** Items to generate; omitted = every accepted item without a queued/running generation. */
+    /** Items to generate; omitted = the items that still need a design (see above). */
     itemIds: z.array(EntityId).min(1).max(MAX_PLAN_ITEMS).optional(),
     /** Extra instructions for this generation round. */
     instructions: z.string().max(4_000).optional(),
@@ -255,18 +268,86 @@ export const PlanGenerate = z
     model: AgentModel.optional(),
     /** Reasoning effort for the generation jobs; copied into each job's payload. */
     effort: AgentEffort.optional(),
+    /** With `itemIds`: regenerate items whose post already has a design. */
+    force: z.boolean().optional(),
+    /** With `force`: the user confirmed replacing edited or approved posts. */
+    overwriteEdits: z.boolean().optional(),
   })
   .meta({ id: "PlanGenerate" });
 export type PlanGenerate = z.input<typeof PlanGenerate>;
+
+/**
+ * Why an item was not queued:
+ * - `generating`: a generation is queued or running;
+ * - `generated`: its post already has a design (regenerate with `itemIds` + `force`);
+ * - `edited`: its post was edited by hand or by the AI after generation;
+ * - `approved`: its post is approved or scheduled;
+ * - `published`: its post is publishing or published;
+ * - `no_content`: its post was deleted (or the item was never accepted).
+ */
+export const PlanGenerateSkipReason = z
+  .enum(["generating", "generated", "edited", "approved", "published", "no_content"])
+  .meta({ id: "PlanGenerateSkipReason" });
+export type PlanGenerateSkipReason = z.infer<typeof PlanGenerateSkipReason>;
+
+export const PlanGenerateSkip = z
+  .object({ itemId: EntityId, reason: PlanGenerateSkipReason })
+  .meta({ id: "PlanGenerateSkip" });
+export type PlanGenerateSkip = z.infer<typeof PlanGenerateSkip>;
 
 export const PlanGenerateResult = z
   .object({
     plan: Plan,
     /** The `content.generate` jobs created now (empty when every item is already generating). */
     jobs: z.array(Job),
+    /** Accepted items left alone this round, with the reason (absent from older servers). */
+    skipped: z.array(PlanGenerateSkip).default([]),
   })
   .meta({ id: "PlanGenerateResult" });
 export type PlanGenerateResult = z.infer<typeof PlanGenerateResult>;
+
+// --- item edits (N2: the plan page) ------------------------------------------------------
+
+/**
+ * `PATCH /api/plans/{id}/items/{itemId}`: edit one item. In a draft / proposed plan this is a
+ * plan edit (the revision goes up). In an accepted plan it also updates the item's draft post
+ * (title, brief, platforms; the type only while the post has no design yet); the post's own
+ * edits are never touched otherwise. Rejected and superseded plans are final (409).
+ */
+export const PlanItemPatch = z
+  .object({
+    date: IsoDate.nullable().optional(),
+    platforms: ItemPlatforms.optional(),
+    contentType: ContentType.optional(),
+    title: ItemTitle.optional(),
+    brief: ItemBrief.optional(),
+    pillar: Pillar.nullable().optional(),
+    imageSlot: ImageSlotExpectation.optional(),
+    imageBrief: ImageBrief.nullable().optional(),
+  })
+  .refine((v) => Object.values(v).some((x) => x !== undefined), "at least one field is required")
+  .meta({ id: "PlanItemPatch" });
+export type PlanItemPatch = z.input<typeof PlanItemPatch>;
+
+/**
+ * `POST /api/plans/{id}/items`: add an item at the end. In an accepted plan it is accepted at
+ * once and gets its draft post (no generation yet).
+ */
+export const PlanItemCreate = PlanItemInput.omit({ id: true }).meta({ id: "PlanItemCreate" });
+export type PlanItemCreate = z.input<typeof PlanItemCreate>;
+
+/** `DELETE /api/plans/{id}/items/{itemId}`. */
+export const PlanItemRemoveResult = z
+  .object({
+    plan: Plan,
+    /**
+     * The item's post when it had no design yet and went to the trash with the item (restorable
+     * from "Silinenler"); a post with a design stays on the board, only the plan forgets it.
+     */
+    trashedContentId: EntityId.nullable(),
+  })
+  .meta({ id: "PlanItemRemoveResult" });
+export type PlanItemRemoveResult = z.infer<typeof PlanItemRemoveResult>;
 
 export const PlanListQuery = PageQuery.extend({
   brandId: EntityId.optional(),

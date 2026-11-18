@@ -1,58 +1,20 @@
-// Every job live (GET /api/jobs/stream): the background jobs pane, worker presence (usage ring,
-// Mac status) and notices when long work finishes.
-import {
-  type ApiClient,
-  isTerminalJobStatus,
-  type Job,
-  type JobStreamMessage,
-  type JobWatch,
-  type JobWatchStatus,
-  type WorkerPresence,
+// Every job live (GET /api/jobs/stream): the background jobs pane and worker presence (usage
+// ring, Mac status). Notifications for finished work come from the main process (A8), which
+// follows the same stream also while the window is closed.
+import type {
+  ApiClient,
+  Job,
+  JobStreamMessage,
+  JobWatch,
+  JobWatchStatus,
+  WorkerPresence,
 } from "@studio/contract";
+import { describeError } from "../lib/api.ts";
 
 export interface JobsSnapshot {
   jobs: Job[];
   presence: WorkerPresence | null;
   status: JobWatchStatus;
-}
-
-export interface JobNotice {
-  id: string;
-  title: string;
-  body: string;
-  /** Renderer route opened by a click ("c:<conversationId>"). */
-  route?: string;
-}
-
-const NOTICE_TYPES = new Set([
-  "content.generate",
-  "content.render",
-  "brand.analyze",
-  "brand.skill_draft",
-  "image.generate",
-  "schedule.publish",
-]);
-
-/** The notice for a job that just finished (null: not worth a notification). */
-export function finishedNotice(job: Job, title: string): JobNotice | null {
-  if (job.type === "chat.turn") {
-    if (job.status !== "succeeded") return null;
-    const conversationId = (job.payload as { conversationId?: unknown }).conversationId;
-    return {
-      id: `reply-${job.id}`,
-      title: "Yanıt hazır",
-      body: title,
-      ...(typeof conversationId === "string" ? { route: `c:${conversationId}` } : {}),
-    };
-  }
-  if (!NOTICE_TYPES.has(job.type) || !isTerminalJobStatus(job.status)) return null;
-  if (job.status === "cancelled") return null;
-  const ok = job.status === "succeeded";
-  return {
-    id: `job-${job.id}-${job.status}`,
-    title: ok ? `${title} bitti` : `${title} başarısız`,
-    body: ok ? "Sonuç Studio'da hazır." : (job.error ?? "Ayrıntılar Arka plan işleri'nde."),
-  };
 }
 
 export class JobsController {
@@ -115,8 +77,18 @@ export class JobsController {
     }
   }
 
-  async cancel(id: string): Promise<void> {
-    const job = await this.client.jobs.cancel(id);
-    this.apply({ type: "job.updated", job });
+  /** Called with the reason when a cancel (the stop button) failed. */
+  onCancelError: ((message: string) => void) | undefined;
+
+  /** Stop a job. Never rejects: a failure goes to `onCancelError` (a toast). */
+  async cancel(id: string): Promise<boolean> {
+    try {
+      const job = await this.client.jobs.cancel(id);
+      this.apply({ type: "job.updated", job });
+      return true;
+    } catch (error) {
+      this.onCancelError?.(`İş durdurulamadı: ${describeError(error)}`);
+      return false;
+    }
   }
 }

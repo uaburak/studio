@@ -6,15 +6,18 @@
  * executes tool calls sequentially through `StudioToolExecutor` for up to 12 rounds.
  */
 import type { Brand, RunUsage, TurnContext } from "@studio/contract";
+import { assertSinkBudget } from "../ai/usage-recorder.ts";
 import type { ChatImageNote } from "../chat/prompt.ts";
 import { buildConversationMetadataBlock, messageText } from "../chat/prompt.ts";
 import type { StudioToolExecutor, ToolJsonSchema } from "../chat/tools.ts";
 import { abortableSleep } from "../claude/gate.ts";
 import type { Effort } from "../claude/models.ts";
 import type { ClaudeContentBlock } from "../claude/runner.ts";
+import { startTurnTimer, type TurnWaits } from "../claude/turn-waits.ts";
 import { GeminiError } from "./errors.ts";
 import { type GeminiModelAlias, thinkingConfigFor } from "./models.ts";
 import { type GeminiUsageMetadata, type GeminiUsageSample, sampleFromMetadata } from "./pricing.ts";
+import { GEMINI_RATE_LIMIT_TRIES, rateLimitDelayMs } from "./retry.ts";
 
 export interface GeminiPart {
   text?: string;
@@ -118,11 +121,16 @@ export interface GeminiApiTurnOptions {
   executor: StudioToolExecutor;
   onTextDelta?: (text: string) => void;
   signal?: AbortSignal;
+  /** The turn's cap on the model's own work; the waits (consent, ask_user, wait_jobs) do not count. */
   timeoutMs?: number;
+  waits?: TurnWaits;
   maxRounds?: number;
   fetch?: typeof globalThis.fetch;
   sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
-  /** Called once per request round with its token counts (spend tracking). */
+  /**
+   * Called once per request round with its token counts (spend tracking). A sink from
+   * `geminiUsageSink` also checks the monthly budget before each round (S7).
+   */
   onUsage?: (sample: GeminiUsageSample) => void;
 }
 
@@ -240,6 +248,31 @@ function appendModelPart(target: GeminiPart[], part: GeminiPart): void {
 }
 
 export async function runGeminiApiTurn(options: GeminiApiTurnOptions): Promise<GeminiTurnResult> {
+  if (!options.timeoutMs) return runGeminiApiRounds(options);
+  // The turn's time cap (U1): stops while a tool waits for the owner or other jobs.
+  const timeout = new AbortController();
+  const timer = startTurnTimer({
+    timeoutMs: options.timeoutMs,
+    waits: options.waits,
+    onTimeout: () =>
+      timeout.abort(
+        new GeminiError("timeout", `Gemini turn: no answer after ${options.timeoutMs} ms of work`),
+      ),
+  });
+  const signal = options.signal
+    ? AbortSignal.any([options.signal, timeout.signal])
+    : timeout.signal;
+  try {
+    return await runGeminiApiRounds({ ...options, signal });
+  } catch (error) {
+    if (timeout.signal.aborted && !options.signal?.aborted) throw timeout.signal.reason;
+    throw error;
+  } finally {
+    timer.cancel();
+  }
+}
+
+async function runGeminiApiRounds(options: GeminiApiTurnOptions): Promise<GeminiTurnResult> {
   const doFetch = options.fetch ?? globalThis.fetch.bind(globalThis);
   const sleep = options.sleep ?? abortableSleep;
   const maxRounds = options.maxRounds ?? 12;
@@ -266,6 +299,8 @@ export async function runGeminiApiTurn(options: GeminiApiTurnOptions): Promise<G
 
   for (let round = 0; round < maxRounds; round++) {
     options.signal?.throwIfAborted();
+    // "Bütçe dolunca dur": no paid request once the month's budget is used up (S7).
+    assertSinkBudget(options.onUsage);
     rounds++;
 
     const requestBody: Record<string, unknown> = {
@@ -391,6 +426,7 @@ async function fetchWithRetry(
   sleep: (ms: number, signal?: AbortSignal) => Promise<void>,
 ): Promise<Response> {
   const payload = JSON.stringify(body);
+  let rateLimited = 0;
   for (let attempt = 0; ; attempt++) {
     signal?.throwIfAborted();
     let res: Response;
@@ -431,6 +467,15 @@ async function fetchWithRetry(
     if (err.code === "transient" && attempt < 2) {
       await sleep(500 * 2 ** attempt, signal);
       continue;
+    }
+    // A per-minute quota: nothing was answered yet, so waiting and asking again is safe (U4).
+    if (err.code === "rate_limit" && res.status === 429) {
+      const delay = rateLimitDelayMs(res.headers, rawText, rateLimited);
+      rateLimited++;
+      if (delay !== null && rateLimited < GEMINI_RATE_LIMIT_TRIES) {
+        await sleep(delay, signal);
+        continue;
+      }
     }
     throw err;
   }

@@ -364,6 +364,24 @@ describe("conversations", () => {
     expectError(await api("GET", "/api/conversations/missing"), 404, "not_found");
   });
 
+  it("moves a conversation without messages to another brand, never one with messages", async () => {
+    const brand = await createBrand();
+    const other = await createBrand();
+    const empty = await newConversation(brand.id);
+    const moved = await api("PATCH", `/api/conversations/${empty.id}`, { brandId: other.id });
+    expect(Conversation.parse(moved.body).brandId).toBe(other.id);
+    // The other brand's images can now be attached (the first send of a new chat).
+    const asset = await uploadAsset(other.id);
+    expect(
+      (await send(empty.id, { text: "bak", attachments: [{ assetId: asset.id }] })).status,
+    ).toBe(201);
+    expectError(
+      await api("PATCH", `/api/conversations/${empty.id}`, { brandId: brand.id }),
+      409,
+      "conflict",
+    );
+  });
+
   it("refuses chat.turn jobs on the generic job endpoint", async () => {
     const err = expectError(
       await api("POST", "/api/jobs", { type: "chat.turn", payload: {} }),

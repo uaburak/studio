@@ -145,7 +145,8 @@ export function postMenu({
     },
     {
       id: "delete",
-      label: "Sil…",
+      // To the trash at once, with "Geri al" (no question).
+      label: "Sil",
       danger: true,
       disabled: !!blocker,
       ...(blocker ? { detail: blocker } : {}),

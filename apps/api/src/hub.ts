@@ -41,6 +41,7 @@ import { type JobRow, toJob } from "./db/mappers.ts";
 import { CLOSE, HUB_TIMING, SNAPSHOT_LIMIT } from "./hub/config.ts";
 import { JobStore } from "./hub/store.ts";
 import { toProblem } from "./lib/errors.ts";
+import { purgeTrash } from "./lib/purge.ts";
 
 /** Per-socket state; survives hibernation (serializeAttachment, max 2 KB). */
 type WorkerAttachment = {
@@ -89,6 +90,9 @@ const CLAUDE_KEY = "presence:claude";
 const GEMINI_KEY = "presence:gemini";
 /** Latest `worker.providers` report (Codex / OpenAI / Antigravity), shown in presence as `providers`. */
 const PROVIDERS_KEY = "presence:providers";
+/** When the trash was last purged (ms); the alarm purges at most once per PURGE_INTERVAL_MS. */
+const PURGE_KEY = "purge:lastAt";
+const PURGE_INTERVAL_MS = 60 * 60_000;
 
 /**
  * Hub — the job dispatcher (one instance, "main").
@@ -220,6 +224,7 @@ export class Hub extends DurableObject<Env> {
       try {
         await this.sweep(Date.now());
         await this.dispatchQueued();
+        await this.purgeIfDue(Date.now());
       } finally {
         await this.scheduleAlarm();
       }
@@ -707,6 +712,26 @@ export class Hub extends DurableObject<Env> {
       changed = true;
     }
     if (changed) await this.broadcastPresence();
+  }
+
+  /**
+   * Empty the trash of what is older than the retention (P7), at most once an hour. A purge
+   * failure is logged and never breaks the sweep.
+   */
+  private async purgeIfDue(now: number): Promise<void> {
+    const last = (await this.ctx.storage.get<number>(PURGE_KEY)) ?? 0;
+    if (now - last < PURGE_INTERVAL_MS) return;
+    await this.ctx.storage.put(PURGE_KEY, now);
+    try {
+      const result = await purgeTrash(this.env, this.db, new Date(now));
+      if (result.contents + result.assets > 0) {
+        console.log(
+          `hub: purged ${result.contents} post(s), ${result.assets} file(s), ${result.objects} object(s) from the trash`,
+        );
+      }
+    } catch (error) {
+      console.warn("hub: trash purge failed", error);
+    }
   }
 
   /** The worker no longer has this running job: cancel, requeue, or give up. */

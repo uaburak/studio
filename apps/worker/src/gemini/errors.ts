@@ -1,4 +1,12 @@
-export type GeminiErrorCode = "auth" | "rate_limit" | "transient" | "timeout" | "spawn" | "api";
+export type GeminiErrorCode =
+  | "auth"
+  | "rate_limit"
+  | "transient"
+  | "timeout"
+  | "spawn"
+  /** The structured output is missing or is not valid JSON (worth asking again once). */
+  | "output"
+  | "api";
 
 export class GeminiError extends Error {
   override name = "GeminiError";
@@ -19,9 +27,11 @@ export function isGeminiError(error: unknown): error is GeminiError {
 export function describeGeminiError(error: GeminiError): string {
   switch (error.code) {
     case "auth":
-      return "Gemini kimlik doğrulaması başarısız (.env dosyasındaki GEMINI_API_KEY geçersiz ya da eksik olabilir).";
+      return "Gemini anahtarı kabul edilmedi. Ayarlar → Yapay zekâ'dan anahtarı yeniden girin.";
     case "rate_limit":
-      return "Gemini kota / hız sınırına ulaşıldı (HTTP 429). Kısa süre sonra tekrar deneyin ya da farklı bir Gemini modeli seçin.";
+      return "Gemini kota / hız sınırına ulaşıldı (birkaç kez bekleyip denendi). Biraz sonra yeniden deneyin ya da Google AI Studio'da kotanızı kontrol edin.";
+    case "output":
+      return "Gemini'nin yanıtı beklenen biçimde değildi. Yeniden deneyin.";
     case "transient":
       return "Gemini servisi şu an yanıt veremiyor (geçici ağ veya sunucu hatası). Kısa süre sonra yeniden denenecek.";
     case "timeout":
@@ -29,6 +39,6 @@ export function describeGeminiError(error: GeminiError): string {
     case "spawn":
       return "Mac'te `gemini` CLI komutu çalıştırılamadı. `.env` dosyasına `GEMINI_API_KEY` ekleyin veya Gemini CLI kurun.";
     default:
-      return `Gemini çağrısı başarısız oldu: ${error.message.slice(0, 300)}`;
+      return "Gemini çağrısı başarısız oldu. Yeniden deneyin; sürerse başka bir model seçin.";
   }
 }

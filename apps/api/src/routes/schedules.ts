@@ -35,7 +35,12 @@ import { decodeTimeCursor, encodeTimeCursor, toPage } from "../lib/pagination.ts
 import { preflightTargets } from "../lib/preflight.ts";
 import { loadPublishingSettings, publishingMode, requestSyncStatement } from "../lib/publishing.ts";
 import { createRouter, errors, IdParams, json, jsonBody } from "../lib/router.ts";
-import { approvalMatchesCurrent, type LoadedContent, loadContent } from "./contents.ts";
+import {
+  approvalMatchesCurrent,
+  assertNotTrashed,
+  type LoadedContent,
+  loadContent,
+} from "./contents.ts";
 import { createJob } from "./jobs.ts";
 import { loadSocialAccountWithToken, requireSocialAccount } from "./social-accounts.ts";
 
@@ -133,6 +138,7 @@ async function checkSchedulable(
 ) {
   const loaded = await loadContent(db, input.contentId);
   const { row: content } = loaded;
+  assertNotTrashed(content);
   const account = await requireSocialAccount(db, input.socialAccountId);
 
   const platform = input.platform ?? account.platform;

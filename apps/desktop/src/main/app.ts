@@ -26,6 +26,7 @@ import {
   type SettingsPatch,
 } from "../shared/ipc.ts";
 import { createSecretStore, safeStorageCipher, setupAccounts } from "./accounts/setup.ts";
+import { ActivityNotices, getOwnerJson, nodeActivitySocket } from "./activity-notices.ts";
 import { BackupService } from "./backup-service.ts";
 import { CanvasExecutor, nodeHubSocket } from "./canvas/executor.ts";
 import { CanvasRunnerWindow } from "./canvas/runner-window.ts";
@@ -33,7 +34,7 @@ import { DraftStore } from "./drafts.ts";
 import { RendererFlush } from "./flush.ts";
 import { FontFiles, FontLister } from "./fonts.ts";
 import { DnsSdAdvertiser } from "./host/bonjour.ts";
-import { defaultRepoPath, stateDirectory } from "./host/environment.ts";
+import { defaultRepoPath, macUserName, stateDirectory } from "./host/environment.ts";
 import { defaultHostDeps, type HostConfiguration, LocalHost } from "./host/local-host.ts";
 import { SpawnLauncher } from "./host/process.ts";
 import {
@@ -44,11 +45,13 @@ import {
   writeInstanceId,
   writeOwnerSecret,
 } from "./host/secrets.ts";
+import { installMainLog, MainLog } from "./main-log.ts";
 import { buildMenu } from "./menu.ts";
 import { NoticeLog, Notifier } from "./notifications.ts";
 import { permissionAllowed } from "./permissions.ts";
 import { APP_ORIGIN, handleAppProtocol, OWNER_HEADER } from "./protocol.ts";
 import { needsOwnerHeader, originOf } from "./protocol-paths.ts";
+import { RendererLink, watchRenderer } from "./renderer-link.ts";
 import { defaultSettings, SettingsStore } from "./settings.ts";
 
 export function startApp(): void {
@@ -58,6 +61,15 @@ export function startApp(): void {
   /** Pages that are this app (permissions, owner secret). */
   const appOrigins = [APP_ORIGIN, ...(devOrigin ? [devOrigin] : [])];
   const stateDir = stateDirectory();
+  // The app's own log (A11): warnings, errors, unhandled rejections, renderer crashes.
+  const mainLog = new MainLog(join(stateDir, "logs", "desktop.log"));
+  installMainLog(mainLog);
+  mainLog.write("info", `Studio ${app.getVersion()} açılıyor`);
+  // The Mac user's full name (the greeting's fallback), read in the background.
+  let macUser = "";
+  void macUserName().then((name) => {
+    macUser = name;
+  });
 
   const settings = new SettingsStore(
     join(stateDir, "desktop-settings.json"),
@@ -101,9 +113,15 @@ export function startApp(): void {
 
   let mainWindow: BrowserWindow | null = null;
 
-  function send(channel: string, ...args: unknown[]): void {
-    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(channel, ...args);
+  function send(channel: string, ...args: unknown[]): boolean {
+    if (!mainWindow || mainWindow.isDestroyed() || mainWindow.webContents.isDestroyed())
+      return false;
+    mainWindow.webContents.send(channel, ...args);
+    return true;
   }
+
+  /** Notice clicks and app notices reach the page only once it listens (A8 handshake). */
+  const rendererLink = new RendererLink(send);
 
   // Close / quit: the page writes the open post's draft first (E14), within a short wait.
   const rendererFlush = new RendererFlush({
@@ -126,24 +144,61 @@ export function startApp(): void {
   /** The page was asked to flush for this quit (the windows then close without asking again). */
   let flushedForQuit = false;
 
+  // Shown notifications are kept until clicked or closed: an object the garbage collector took
+  // would no longer deliver its click.
+  const shownNotices = new Set<Notification>();
   const notifier = new Notifier(
     {
       isSupported: () => Notification.isSupported(),
       show(notice, onClick) {
         const n = new Notification({ title: notice.title, body: notice.body, silent: false });
-        n.on("click", onClick);
+        shownNotices.add(n);
+        const forget = () => shownNotices.delete(n);
+        n.on("click", () => {
+          forget();
+          onClick();
+        });
+        n.on("close", forget);
+        n.on("failed", forget);
         n.show();
+        // Never more than a screenful kept.
+        if (shownNotices.size > 50) {
+          const oldest = shownNotices.values().next().value;
+          if (oldest) shownNotices.delete(oldest);
+        }
       },
     },
     new NoticeLog(join(stateDir, "desktop-notices.json")),
     () => settings.get().notificationsEnabled,
     (route) => {
       if (!mainWindow) createWindow();
+      if (mainWindow?.isMinimized()) mainWindow.restore();
       mainWindow?.show();
       mainWindow?.focus();
-      if (route) send(IPC.noticeClicked, route);
+      // A window that was just made gets the route once its page listens.
+      if (route) rendererLink.openRoute(route);
     },
   );
+
+  // Job, publish and consent notices come from here, also while the window is closed (A8).
+  const activity = new ActivityNotices({
+    target: () => {
+      const snapshot = host.snapshot();
+      const up = snapshot.status.kind === "running" || snapshot.status.kind === "attached";
+      return up && snapshot.apiPort !== null
+        ? { port: snapshot.apiPort, ownerSecret: currentOwnerSecret() }
+        : null;
+    },
+    socket: nodeActivitySocket,
+    getJson: getOwnerJson,
+    post: (notice) => void notifier.post(notice),
+    windowFocused: () =>
+      mainWindow !== null &&
+      !mainWindow.isDestroyed() &&
+      mainWindow.isVisible() &&
+      mainWindow.isFocused(),
+    log: (message) => mainLog.write("warn", message),
+  });
 
   function applyAppearance(value: DesktopSettings["appearance"]): void {
     nativeTheme.themeSource = value;
@@ -192,7 +247,15 @@ export function startApp(): void {
       },
     });
     mainWindow = window;
+    rendererLink.reset();
     window.once("ready-to-show", () => window.show());
+    // Each load (a reload too) must say it is ready before notice routes are delivered.
+    window.webContents.on("did-start-loading", () => rendererLink.reset());
+    // A crashed or hung page is reloaded, with a short notice once it is back (A11).
+    watchRenderer(window.webContents, {
+      link: rendererLink,
+      log: (message) => mainLog.write("error", message),
+    });
     const pushState = () =>
       send(IPC.windowState, { fullScreen: window.isFullScreen(), focused: window.isFocused() });
     for (const event of ["enter-full-screen", "leave-full-screen", "focus", "blur"] as const) {
@@ -300,6 +363,9 @@ export function startApp(): void {
     ipcMain.handle(IPC.notify, (_event, notice: NoticeInput) => {
       notifier.post(notice);
     });
+    ipcMain.on(IPC.rendererReady, (event) => {
+      if (mainWindow && event.sender === mainWindow.webContents) rendererLink.markReady();
+    });
     ipcMain.handle(IPC.openExternal, (_event, url: string) => {
       if (/^https?:/i.test(url)) return shell.openExternal(url);
     });
@@ -340,6 +406,7 @@ export function startApp(): void {
       secrets,
       apiPort: () => host.apiPort,
       ownerSecret: currentOwnerSecret,
+      userName: () => macUser,
       // A new or removed tunnel token restarts only the tunnel, not the jobs (A9).
       onTunnelTokenChange: () => void host.restartTunnel(),
       send,
@@ -403,9 +470,20 @@ export function startApp(): void {
     if (quitting) return;
     quitting = true;
     stopCanvasRunner();
+    activity.stop();
     try {
-      if (host.ownsChildren) await host.stop();
-      else host.releaseHostFile();
+      // All services at once, one deadline (A11: it was 8 s per service, one after another).
+      // SIGKILL after 5 s; the app goes at 7 s whatever is left (a child that cannot be reaped).
+      if (host.ownsChildren) {
+        await Promise.race([
+          host.stop({ graceMs: 5_000, message: "Kapatılıyor…" }),
+          new Promise((resolve) => setTimeout(resolve, 7_000)),
+        ]);
+      } else {
+        host.releaseHostFile();
+      }
+    } catch (error) {
+      mainLog.write("error", `shutdown: ${(error as Error).message}`);
     } finally {
       app.exit(0);
     }
@@ -434,6 +512,7 @@ export function startApp(): void {
       void shutdown();
     } else {
       stopCanvasRunner();
+      activity.stop();
       host.releaseHostFile();
     }
   });
@@ -468,5 +547,7 @@ export function startApp(): void {
     createWindow();
     void host.start();
     startCanvasRunner();
+    activity.start();
+    host.onChange(() => activity.refresh());
   });
 }

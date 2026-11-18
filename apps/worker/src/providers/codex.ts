@@ -21,6 +21,7 @@ import type { RunUsage } from "@studio/contract";
 import type { McpBridge } from "../chat/mcp-bridge.ts";
 import type { Effort } from "../claude/models.ts";
 import { LineSplitter } from "../claude/stream.ts";
+import { startTurnTimer, type TurnWaits } from "../claude/turn-waits.ts";
 import {
   buildCliEnv,
   type CmdRunner,
@@ -111,6 +112,8 @@ export interface CodexTurnOptions {
   images?: string[];
   onTextDelta?: (text: string) => void;
   timeoutMs?: number;
+  /** The turn's waits (consent, ask_user, wait_jobs): they do not count towards `timeoutMs` (U1). */
+  waits?: TurnWaits;
   signal?: AbortSignal;
   spawn?: typeof nodeSpawn;
 }
@@ -232,7 +235,7 @@ export function runCodexTurn(options: CodexTurnOptions): Promise<CodexTurnResult
     const finish = (fn: () => void) => {
       if (settled) return;
       settled = true;
-      clearTimeout(timer);
+      timer.cancel();
       options.signal?.removeEventListener("abort", onAbort);
       fn();
     };
@@ -242,13 +245,16 @@ export function runCodexTurn(options: CodexTurnOptions): Promise<CodexTurnResult
       killTimer = setTimeout(() => child.kill("SIGKILL"), KILL_GRACE_MS);
       killTimer.unref?.();
     };
-    const timer = setTimeout(() => {
-      kill();
-      finish(() =>
-        reject(new ProviderError("codex", "timeout", `codex timed out after ${timeoutMs} ms`)),
-      );
-    }, timeoutMs);
-    timer.unref?.();
+    const timer = startTurnTimer({
+      timeoutMs,
+      waits: options.waits,
+      onTimeout: () => {
+        kill();
+        finish(() =>
+          reject(new ProviderError("codex", "timeout", `codex timed out after ${timeoutMs} ms`)),
+        );
+      },
+    });
     const onAbort = () => {
       kill();
       finish(() => reject(options.signal?.reason ?? new Error("aborted")));

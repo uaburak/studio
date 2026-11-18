@@ -6,6 +6,7 @@ import {
   Platform,
   pageOf,
   Timestamp,
+  TrashFilter,
   utf8Length,
 } from "./common.ts";
 
@@ -353,6 +354,12 @@ export const Content = z
     approval: ContentApproval.nullable(),
     createdAt: Timestamp,
     updatedAt: Timestamp,
+    /**
+     * Set while the post is in the trash ("Silinenler"): `POST /api/contents/{id}/restore` brings
+     * it back; `TRASH_RETENTION_DAYS` after this moment it is purged with its files. Absent from
+     * older servers (= not deleted).
+     */
+    deletedAt: Timestamp.nullable().optional(),
   })
   .meta({ id: "Content" });
 export type Content = z.infer<typeof Content>;
@@ -439,8 +446,17 @@ export const ContentListQuery = PageQuery.extend({
   brandId: EntityId.optional(),
   status: ContentStatus.optional(),
   type: ContentType.optional(),
+  /** Trashed posts: left out by default (`exclude`), `only` lists "Silinenler". */
+  deleted: TrashFilter.optional(),
 });
 export type ContentListQuery = z.input<typeof ContentListQuery>;
+
+/**
+ * `DELETE /api/contents/{id}`: moves the post to the trash (undo with `/restore`). `permanent`:
+ * removes a post that is already in the trash for good, with its files.
+ */
+export const ContentDeleteQuery = z.object({ permanent: z.stringbool().optional() });
+export type ContentDeleteQuery = z.input<typeof ContentDeleteQuery>;
 
 export const ContentList = pageOf(Content, "ContentList");
 export type ContentList = z.infer<typeof ContentList>;

@@ -380,6 +380,32 @@ export type CanvasReadPayload = z.infer<typeof CanvasReadPayload>;
 /** Job types only the API itself creates; `POST /api/jobs` refuses them. */
 export const INTERNAL_JOB_TYPES = ["chat.turn"] as const satisfies readonly JobType[];
 
+/**
+ * Job types `POST /api/jobs/{id}/retry` queues again (a new job: same type, brand, content and
+ * payload; a plan item's generation goes through the plan, so the item follows the new job).
+ * Not `chat.turn` (the conversation retries itself) nor `schedule.publish` (publishing has its
+ * own safe retry: a second job could post twice).
+ */
+export const RETRYABLE_JOB_TYPES = [
+  "demo.echo",
+  "content.generate",
+  "content.render",
+  "brand.analyze",
+  "image.generate",
+  "brand.skill_draft",
+  "content.check",
+  "canvas.read",
+  "canvas.apply",
+] as const satisfies readonly JobType[];
+
+/** A finished job the user may queue again ("Yeniden dene"): failed or cancelled, of a retryable type. */
+export function isRetryableJob(job: Pick<Job, "type" | "status">): boolean {
+  return (
+    (RETRYABLE_JOB_TYPES as readonly string[]).includes(job.type) &&
+    (job.status === "failed" || job.status === "cancelled")
+  );
+}
+
 /** Per-type payload schemas known so far; other types accept any object. */
 export const JOB_PAYLOAD_SCHEMAS: Partial<Record<JobType, z.ZodType>> = {
   "demo.echo": DemoEchoPayload,

@@ -73,7 +73,7 @@ describe("composer takes Studio assets", () => {
         text: "bunu kullan",
         attachments: [{ assetId: "asset-tarla", alias: "image" }],
       }),
-      { queue: false },
+      { now: false },
     );
   });
 

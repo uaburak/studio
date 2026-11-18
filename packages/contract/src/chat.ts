@@ -108,7 +108,10 @@ export const ConversationUpdate = z
   .object({
     title: ConversationTitle.optional(),
     status: ConversationStatus.optional(),
-    /** Only while the conversation has no brand yet; a brand is never changed afterwards. */
+    /**
+     * Sets the brand while the conversation has none, or moves a conversation that has no
+     * messages yet; once a message was sent the brand is never changed (409 `conflict`).
+     */
     brandId: EntityId.optional(),
   })
   .refine(nonEmptyUpdate, "at least one field is required")

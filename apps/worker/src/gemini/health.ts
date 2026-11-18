@@ -5,6 +5,7 @@
  */
 import { execFile } from "node:child_process";
 import type { GeminiAccount, GeminiMode } from "@studio/contract";
+import { DEFAULT_GEMINI_MODELS } from "./models.ts";
 
 const ENV_ALLOW = ["HOME", "PATH", "USER", "LOGNAME", "TMPDIR", "LANG"] as const;
 
@@ -75,7 +76,7 @@ export async function checkGeminiHealth(
   const checkedAt = now().toISOString();
   const apiKeyConfigured = Boolean(options.apiKey && options.apiKey.trim().length > 0);
   const bin = options.bin ?? "gemini";
-  const defaultModel = options.defaultModel ?? "gemini-2.5-flash-lite";
+  const defaultModel = options.defaultModel ?? DEFAULT_GEMINI_MODELS["gemini-flash-lite"];
   const preferred = options.preferredMode ?? "auto";
   const env = buildGeminiEnv(options.parentEnv ?? {});
   const keySource = apiKeyConfigured ? (options.keySource ?? "env") : null;

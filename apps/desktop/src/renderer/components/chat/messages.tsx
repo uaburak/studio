@@ -173,12 +173,15 @@ export function AssistantMessage({
   controller,
   onMention,
   onEditPlan,
+  onRetry,
 }: {
   item: Extract<TranscriptItem, { kind: "assistant" }>;
   aliases: ConversationAlias[];
   controller: ConversationController;
   onMention(aliasId: string): void;
   onEditPlan(): void;
+  /** The last reply, nothing running: its error offers to send the last message again. */
+  onRetry?: (() => Promise<unknown>) | undefined;
 }) {
   const [copied, setCopied] = useState(false);
   const env = { aliases, onMention };
@@ -192,6 +195,7 @@ export function AssistantMessage({
           env={env}
           controller={controller}
           onEditPlan={onEditPlan}
+          onRetry={onRetry}
         />
       ))}
       {!item.isStreaming && item.copyText && (
@@ -224,12 +228,14 @@ function AssistantBlockView({
   env,
   controller,
   onEditPlan,
+  onRetry,
 }: {
   block: AssistantBlock;
   message: Extract<TranscriptItem, { kind: "assistant" }>["message"];
   env: { aliases: ConversationAlias[]; onMention(aliasId: string): void };
   controller: ConversationController;
   onEditPlan(): void;
+  onRetry?: (() => Promise<unknown>) | undefined;
 }) {
   switch (block.kind) {
     case "text":
@@ -269,12 +275,13 @@ function AssistantBlockView({
           busy={block.busy}
           controller={controller}
           onEdit={onEditPlan}
+          generateError={block.generateError}
         />
       );
     case "progress":
       return <ProgressCard steps={block.steps} />;
     case "error":
-      return <ErrorBlock error={block.error} />;
+      return <ErrorBlock error={block.error} onRetry={onRetry} />;
     case "post":
       return <ChatPostCard contentId={block.contentId} version={block.version} note={block.note} />;
     case "notice":

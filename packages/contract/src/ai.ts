@@ -128,10 +128,20 @@ export type AiProvidersControl = z.infer<typeof AiProvidersControl>;
 
 // --- spend --------------------------------------------------------------------------------------
 
+/**
+ * Services whose calls cost money and are recorded in the spend store: the AI providers plus
+ * ElevenLabs (voice-over). Clients must tolerate values they do not know.
+ */
+export const AiSpendProvider = z
+  .enum(["claude", "gemini", "codex", "openai", "antigravity", "elevenlabs"])
+  .meta({ id: "AiSpendProvider" });
+export type AiSpendProvider = z.infer<typeof AiSpendProvider>;
+
 /** One paid AI call, as the worker reports it. */
 export const AiUsageRecordInput = z
   .object({
-    provider: AiProvider,
+    /** `elevenlabs` records characters as `inputTokens`. */
+    provider: AiSpendProvider,
     /** Model id the service reported (e.g. `gemini-2.5-flash`). */
     model: z.string().trim().min(1).max(128),
     /** What the call was for: chat | generate | brand | image | transcribe | reel | other. */
@@ -175,10 +185,20 @@ export const AiSpendTotals = z
   .meta({ id: "AiSpendTotals" });
 export type AiSpendTotals = z.infer<typeof AiSpendTotals>;
 
-export const AiSpendModel = AiSpendTotals.extend({ model: z.string() }).meta({
+export const AiSpendModel = AiSpendTotals.extend({
+  model: z.string(),
+  /** Absent from older APIs (Gemini only then). */
+  provider: AiSpendProvider.optional(),
+}).meta({
   id: "AiSpendModel",
 });
 export type AiSpendModel = z.infer<typeof AiSpendModel>;
+
+/** This month's spend of one paid service. */
+export const AiSpendProviderTotals = AiSpendTotals.extend({ provider: AiSpendProvider }).meta({
+  id: "AiSpendProviderTotals",
+});
+export type AiSpendProviderTotals = z.infer<typeof AiSpendProviderTotals>;
 
 /** The owner's monthly budget and what is left of it (all null without a budget). */
 export const AiBudget = z
@@ -188,6 +208,10 @@ export const AiBudget = z
     usedPercent: z.number().min(0).nullable(),
     /** True from 80 % of the budget on. */
     warning: z.boolean(),
+    /** Paid calls are refused once the month's spend reached the budget (S7). Absent from older APIs. */
+    stopAtBudget: z.boolean().optional(),
+    /** True when `stopAtBudget` is on and the budget is used up: paid calls are refused. */
+    exhausted: z.boolean().optional(),
   })
   .meta({ id: "AiBudget" });
 export type AiBudget = z.infer<typeof AiBudget>;
@@ -195,15 +219,21 @@ export type AiBudget = z.infer<typeof AiBudget>;
 /** Gemini AI Studio billing (there is no balance endpoint; the owner checks it there). */
 export const GEMINI_BILLING_URL = "https://aistudio.google.com/usage";
 
-/** `GET /api/ai/spend`: Gemini API spend today, this month and per model (this month). */
+/**
+ * `GET /api/ai/spend`: paid AI spend (Gemini, OpenAI, ElevenLabs) today, this month, per model and
+ * per service (this month). The budget covers all of them.
+ */
 export const AiSpendSummary = z
   .object({
+    /** Kept for older clients (always `gemini`); the totals cover every paid service (`byProvider`). */
     provider: AiProvider,
     currency: z.literal("USD"),
     today: AiSpendTotals,
     month: AiSpendTotals,
     /** This month, most expensive first. */
     byModel: z.array(AiSpendModel),
+    /** This month per paid service, most expensive first (absent from older APIs). */
+    byProvider: z.array(AiSpendProviderTotals).optional(),
     budget: AiBudget,
     /** Remaining prepaid credit. The Gemini API has no balance endpoint: `known` is false. */
     balance: z.object({
@@ -226,7 +256,10 @@ export const AiSpendQuery = z.object({
 });
 export type AiSpendQuery = z.input<typeof AiSpendQuery>;
 
-/** `PUT /api/ai/budget`: null removes the budget. */
+/**
+ * `PUT /api/ai/budget`: the monthly budget of every paid AI service (the field keeps its old
+ * name); null removes the budget.
+ */
 export const AiBudgetPut = z
   .object({
     geminiMonthlyUsd: z.number().min(0).max(1_000_000).nullable(),
@@ -234,3 +267,94 @@ export const AiBudgetPut = z
   })
   .meta({ id: "AiBudgetPut" });
 export type AiBudgetPut = z.input<typeof AiBudgetPut>;
+
+// --- preferences (S7) ---------------------------------------------------------------------------
+
+/**
+ * What happens when Claude's usage window is used up (S7, Ayarlar → Yapay zekâ):
+ * - `ask` (default): the work pauses and the owner chooses "Gemini ile devam et" or "Sınırı bekle"
+ *   (a consent card in the chat; for jobs presence `claude.limit` and
+ *   `POST /api/ai/claude-limit/decision`);
+ * - `gemini`: it goes on with Gemini at once (when a Gemini key is ready), with a visible note on
+ *   the message / the post's version ("Claude sınırı doldu, Gemini Flash ile üretildi");
+ * - `wait`: it waits for the reset and shows when it goes on.
+ * A Claude model the owner picked by name is never replaced: it always waits.
+ */
+export const ClaudeLimitMode = z.enum(["ask", "gemini", "wait"]).meta({ id: "ClaudeLimitMode" });
+export type ClaudeLimitMode = z.infer<typeof ClaudeLimitMode>;
+
+export const DEFAULT_CLAUDE_LIMIT_MODE: ClaudeLimitMode = "ask";
+
+export const ClaudeLimitChoice = z.enum(["gemini", "wait"]).meta({ id: "ClaudeLimitChoice" });
+export type ClaudeLimitChoice = z.infer<typeof ClaudeLimitChoice>;
+
+/** The owner's answer while Claude is at its limit (`ask`); it holds until `until` (the reset). */
+export const ClaudeLimitDecision = z
+  .object({
+    choice: ClaudeLimitChoice,
+    until: Timestamp,
+    decidedAt: Timestamp,
+  })
+  .meta({ id: "ClaudeLimitDecision" });
+export type ClaudeLimitDecision = z.infer<typeof ClaudeLimitDecision>;
+
+/** `GET /api/ai/preferences`. */
+export const AiPreferences = z
+  .object({
+    claudeLimit: ClaudeLimitMode,
+    /** Monthly budget of the paid AI calls (Gemini, OpenAI, ElevenLabs) in USD; null = none. */
+    monthlyBudgetUsd: z.number().min(0).nullable(),
+    /** Refuse paid calls once this month's spend reached the budget ("bütçe dolunca dur"). */
+    stopAtBudget: z.boolean(),
+    /** The answer for the current Claude limit window (`ask`); null when none holds now. */
+    limitDecision: ClaudeLimitDecision.nullable(),
+    updatedAt: Timestamp.nullable(),
+  })
+  .meta({ id: "AiPreferences" });
+export type AiPreferences = z.infer<typeof AiPreferences>;
+
+/** `PUT /api/ai/preferences` (Mac only): only the fields sent change. */
+export const AiPreferencesPut = z
+  .object({
+    claudeLimit: ClaudeLimitMode.optional(),
+    monthlyBudgetUsd: z.number().min(0).max(1_000_000).nullable().optional(),
+    stopAtBudget: z.boolean().optional(),
+  })
+  .meta({ id: "AiPreferencesPut" });
+export type AiPreferencesPut = z.input<typeof AiPreferencesPut>;
+
+/** `POST /api/ai/claude-limit/decision` (Mac only): answers presence `claude.limit`. */
+export const ClaudeLimitDecisionCreate = z
+  .object({
+    choice: ClaudeLimitChoice,
+    /**
+     * Until when the answer holds (the reset). Default: presence `claude.limit.resetsAt`, else
+     * five hours from now.
+     */
+    until: Timestamp.optional(),
+  })
+  .meta({ id: "ClaudeLimitDecisionCreate" });
+export type ClaudeLimitDecisionCreate = z.input<typeof ClaudeLimitDecisionCreate>;
+
+/** `GET /api/worker/ai/settings` (worker token only): what the worker enforces. */
+export const WorkerAiSettings = z
+  .object({
+    claudeLimit: ClaudeLimitMode,
+    /** The answer that holds now (null: none, or it expired). */
+    limitDecision: ClaudeLimitDecision.nullable(),
+    budget: z.object({
+      monthlyUsd: z.number().min(0).nullable(),
+      stopAtBudget: z.boolean(),
+      /** Recorded spend of this month (every paid service) when read. */
+      spentUsd: z.number().min(0),
+      /** Start of the month in the worker's time zone (`tzOffset`). */
+      monthStart: Timestamp,
+    }),
+  })
+  .meta({ id: "WorkerAiSettings" });
+export type WorkerAiSettings = z.infer<typeof WorkerAiSettings>;
+
+export const WorkerAiSettingsQuery = z.object({
+  tzOffset: z.coerce.number().int().min(-840).max(840).default(0),
+});
+export type WorkerAiSettingsQuery = z.input<typeof WorkerAiSettingsQuery>;
