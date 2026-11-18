@@ -1,0 +1,19 @@
+// StudioWidget.appex: the home and lock screen widget (N22). WidgetKit is SwiftUI only; the
+// app itself stays UIKit.
+
+PRODUCT_NAME = StudioWidget
+PRODUCT_MODULE_NAME = StudioWidget
+PRODUCT_BUNDLE_IDENTIFIER = $(STUDIO_BUNDLE_ID).widget
+
+GENERATE_INFOPLIST_FILE = YES
+INFOPLIST_FILE = Config/StudioWidget-Info.plist
+INFOPLIST_KEY_CFBundleDisplayName = Studio
+
+APPLICATION_EXTENSION_API_ONLY = YES
+SKIP_INSTALL = YES
+LD_RUNPATH_SEARCH_PATHS = $(inherited) @executable_path/Frameworks @executable_path/../../Frameworks
+
+STUDIO_ENTITLEMENTS_YES = Config/Entitlements/StudioWidget.entitlements
+STUDIO_ENTITLEMENTS_KEYCHAIN = Config/Entitlements/StudioWidget-Keychain.entitlements
+STUDIO_ENTITLEMENTS_NO =
+CODE_SIGN_ENTITLEMENTS = $(STUDIO_ENTITLEMENTS_$(STUDIO_SHARING))

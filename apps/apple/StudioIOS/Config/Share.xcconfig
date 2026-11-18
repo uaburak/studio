@@ -1,0 +1,18 @@
+// StudioShare.appex: "Studio'ya gönder" in the share sheet (N20). UIKit.
+
+PRODUCT_NAME = StudioShare
+PRODUCT_MODULE_NAME = StudioShare
+PRODUCT_BUNDLE_IDENTIFIER = $(STUDIO_BUNDLE_ID).share
+
+GENERATE_INFOPLIST_FILE = YES
+INFOPLIST_FILE = Config/StudioShare-Info.plist
+INFOPLIST_KEY_CFBundleDisplayName = Studio
+
+APPLICATION_EXTENSION_API_ONLY = YES
+SKIP_INSTALL = YES
+LD_RUNPATH_SEARCH_PATHS = $(inherited) @executable_path/Frameworks @executable_path/../../Frameworks
+
+STUDIO_ENTITLEMENTS_YES = Config/Entitlements/StudioShare.entitlements
+STUDIO_ENTITLEMENTS_KEYCHAIN = Config/Entitlements/StudioShare-Keychain.entitlements
+STUDIO_ENTITLEMENTS_NO =
+CODE_SIGN_ENTITLEMENTS = $(STUDIO_ENTITLEMENTS_$(STUDIO_SHARING))

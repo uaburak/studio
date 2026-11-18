@@ -14,7 +14,13 @@
 		<string>_studio._tcp</string>
 	</array>
 	<key>NSPhotoLibraryUsageDescription</key>
-	<string>Sohbete ve post görsel yuvalarına fotoğraf eklemek için fotoğraf arşivine erişilir.</string>
+	<string>Sohbete, medyaya, ürünlere ve post görsel yuvalarına fotoğraf ve video eklemek için fotoğraf arşivine erişilir.</string>
+	<key>StudioBaseBundleID</key>
+	<string>$(STUDIO_BUNDLE_ID)</string>
+	<key>StudioAppGroup</key>
+	<string>group.$(STUDIO_BUNDLE_ID)</string>
+	<key>StudioAppIdentifierPrefix</key>
+	<string>$(AppIdentifierPrefix)</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>
 	<string>Post görsellerini Fotoğraflar'a kaydetmek için fotoğraf arşivine ekleme izni gerekir.</string>
 	<key>NSCameraUsageDescription</key>

@@ -11,3 +11,9 @@ INFOPLIST_KEY_UILaunchScreen_Generation = YES
 INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = UIInterfaceOrientationPortrait
 
 LD_RUNPATH_SEARCH_PATHS = $(inherited) @executable_path/Frameworks
+
+// App Group and shared Keychain group by STUDIO_SHARING (Base.xcconfig).
+STUDIO_ENTITLEMENTS_YES = Config/Entitlements/StudioIOS.entitlements
+STUDIO_ENTITLEMENTS_KEYCHAIN = Config/Entitlements/StudioIOS-Keychain.entitlements
+STUDIO_ENTITLEMENTS_NO =
+CODE_SIGN_ENTITLEMENTS = $(STUDIO_ENTITLEMENTS_$(STUDIO_SHARING))

@@ -171,6 +171,29 @@ public struct WidgetSnapshot: Codable, Sendable, Equatable {
     }
 }
 
+extension TurkishFormat {
+    /// `Bugün 14:00`, `Yarın 09:30`, `4 Kas 10:00` (the widget's publish times).
+    public static func relativeDayTime(_ date: Date, now: Date = Date(), timeZone: TimeZone = .current) -> String {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = timeZone
+        let time = String(format: "%02d:%02d", calendar.component(.hour, from: date), calendar.component(.minute, from: date))
+        if calendar.isDate(date, inSameDayAs: now) { return "Bugün \(time)" }
+        if let tomorrow = calendar.date(byAdding: .day, value: 1, to: now), calendar.isDate(date, inSameDayAs: tomorrow) { return "Yarın \(time)" }
+        return "\(shortDay(date, timeZone: timeZone)) \(time)"
+    }
+
+    /// `14:05` today, else `4 Kas 14:05` (when the widget last reached the Mac).
+    public static func clockOrDay(_ date: Date, now: Date = Date(), timeZone: TimeZone = .current) -> String {
+        let text = relativeDayTime(date, now: now, timeZone: timeZone)
+        return text.hasPrefix("Bugün ") ? String(text.dropFirst(6)) : text
+    }
+}
+
+/// The widget's kind (the app reloads it by this name).
+public enum StudioWidgetKind {
+    public static let main = "StudioWidget"
+}
+
 // MARK: - Fetch and cache
 
 public enum WidgetSnapshotFetcher {
