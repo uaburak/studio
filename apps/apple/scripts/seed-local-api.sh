@@ -1,9 +1,12 @@
 #!/bin/sh
 # Fills a LOCAL Studio API with realistic Turkish test data (MTM Agro, posts,
-# conversations) so the Mac app can be tried against the real API.
+# conversations) so the apps can be tried against an API run without the Mac app
+# (`pnpm --filter @studio/api dev`). Never the running Studio's own data.
 #
-#   STUDIO_API_URL=http://127.0.0.1:8787 apps/apple/scripts/seed-local-api.sh
+#   STUDIO_API_URL=http://127.0.0.1:8787 STUDIO_OWNER_SECRET=<value> apps/apple/scripts/seed-local-api.sh
 #
+# The API accepts the owner's requests only with its owner secret (X-Studio-Owner): start it with
+# STUDIO_OWNER_SECRET in apps/api/.dev.vars and pass the same value here as STUDIO_OWNER_SECRET.
 # Optional: STUDIO_SEED_WORKER_TOKEN = the WORKER_TOKEN of that API instance.
 # With it the script also writes assistant replies through the worker turn API
 # (/api/worker/runs/...), i.e. it plays the Mac worker's chat agent, which does
@@ -21,6 +24,9 @@ case "$API" in
   http://127.0.0.1:*|http://localhost:*) ;;
   *) echo "Refusing to seed $API: only local APIs (127.0.0.1 / localhost)." >&2; exit 1 ;;
 esac
+
+# Every request carries the owner secret (apps/api/src/middleware/access.ts).
+curl() { command curl -H "X-Studio-Owner: ${STUDIO_OWNER_SECRET:-}" "$@"; }
 
 req() { # METHOD PATH [JSON]
   if [ $# -ge 3 ]; then
@@ -44,7 +50,7 @@ echo "Seeding $API"
 MTM=$(req POST /api/brands '{"name":"MTM Agro","slug":"mtm-agro"}' | jq -r .id)
 KOC=$(req POST /api/brands '{"name":"Koç Chords","slug":"koc-chords"}' | jq -r .id)
 FINVO=$(req POST /api/brands '{"name":"Finvo"}' | jq -r .id)
-BURAK=$(req POST /api/brands '{"name":"burakkoc.net","slug":"burakkoc-net"}' | jq -r .id)
+ORNEK=$(req POST /api/brands '{"name":"ornek.com","slug":"ornek-com"}' | jq -r .id)
 
 IG=$(req POST /api/social-accounts "{\"brandId\":\"$MTM\",\"platform\":\"instagram\",\"handle\":\"mtmagro\",\"externalId\":\"17841400000000001\",\"status\":\"connected\"}" | jq -r .id)
 req POST /api/social-accounts "{\"brandId\":\"$MTM\",\"platform\":\"facebook\",\"handle\":\"MTM Agro\",\"externalId\":\"102200000000001\",\"status\":\"connected\"}" >/dev/null
@@ -130,7 +136,7 @@ fi
 
 conversation "$KOC" "Konser duyurusu" >/dev/null
 conversation "$FINVO" "Ekim raporu" >/dev/null
-conversation "$BURAK" "Portfolyo güncellemesi" >/dev/null
+conversation "$ORNEK" "Portfolyo güncellemesi" >/dev/null
 
 LANSMAN=$(conversation "$MTM" "Venta Borinc lansmanı")
 RUN=$(user_message "$LANSMAN" "Venta Borinc lansmanı için üç post hazırlayalım.")
@@ -207,4 +213,4 @@ for JOB in $(req GET "/api/jobs?type=chat.turn&status=queued&limit=100" | jq -r 
   req POST "/api/jobs/$JOB/cancel" >/dev/null
 done
 
-echo "Done: brands MTM Agro ($MTM), Koç Chords, Finvo, burakkoc.net; 12 posts; 7 conversations."
+echo "Done: brands MTM Agro ($MTM), Koç Chords, Finvo, ornek.com; 12 posts; 7 conversations."

@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import StudioKit
 
-@Suite("P3 publishing: API calls, schedule state, notices, OAuth, calendar math")
+@Suite("P3 publishing: API calls, schedule state, notices, calendar math")
 struct PublishingTests {
     private func client(_ handler: @escaping StubURLProtocol.Handler) -> (APIClient, String) {
         let host = uniqueHost()
@@ -112,7 +112,7 @@ struct PublishingTests {
         job.type = .chatTurn
         #expect(NoticePlanner.notice(for: job, previous: .running) == nil)
 
-        let soon = SocialAccount(id: "a1", brandId: "b", platform: .linkedin, handle: "Burak", status: .connected, createdAt: now, updatedAt: now,
+        let soon = SocialAccount(id: "a1", brandId: "b", platform: .linkedin, handle: "Deniz", status: .connected, createdAt: now, updatedAt: now,
                                  hasToken: true, tokenExpiresAt: now.addingTimeInterval(3 * 86_400), tokenHealth: .valid)
         let fine = SocialAccount(id: "a2", brandId: "b", platform: .facebook, handle: "MTM", status: .connected, createdAt: now, updatedAt: now,
                                  hasToken: true, tokenExpiresAt: nil, tokenHealth: .valid)
@@ -121,29 +121,6 @@ struct PublishingTests {
         #expect(notices.map(\.kind) == [.tokenExpiring, .tokenInvalid])
         #expect(notices[0].body.contains("3 gün"))
         #expect(notices[0].id == NoticePlanner.tokenNotices(accounts: [soon], now: now.addingTimeInterval(60))[0].id)
-    }
-
-    @Test func metaLoginURLsAndCallbacks() throws {
-        let url = MetaLogin.authorizeURL(appId: "123", state: "st", hasSecret: true)
-        let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
-        #expect(url.host == "www.facebook.com")
-        #expect(items.contains(URLQueryItem(name: "redirect_uri", value: "http://localhost:8793/meta/callback")))
-        #expect(items.contains(URLQueryItem(name: "response_type", value: "code")))
-        #expect(items.first { $0.name == "scope" }?.value?.contains("instagram_content_publish") == true)
-        #expect(MetaLogin.authorizeURL(appId: "123", state: "st", hasSecret: false).absoluteString.contains("response_type=token"))
-
-        let ok = MetaLogin.parseCallback(URL(string: "http://localhost:8793/meta/callback?code=AQ123&state=st")!, expectedState: "st")
-        #expect(try ok.get().code == "AQ123")
-        let implicit = MetaLogin.parseCallback(URL(string: "http://localhost:8793/meta/callback?access_token=EAAxyz&expires_in=5400&state=st")!, expectedState: "st")
-        #expect(try implicit.get() == MetaLogin.Callback(accessToken: "EAAxyz", expiresIn: 5400))
-        let wrongState = MetaLogin.parseCallback(URL(string: "http://localhost:8793/meta/callback?code=AQ&state=other")!, expectedState: "st")
-        #expect(throws: OAuthCallbackError.stateMismatch) { try wrongState.get() }
-        let denied = MetaLogin.parseCallback(URL(string: "http://localhost:8793/meta/callback?error=access_denied&error_description=Permissions+error&state=st")!, expectedState: "st")
-        #expect(throws: OAuthCallbackError.denied("Permissions error")) { try denied.get() }
-
-        let li = LinkedInLogin.authorizeURL(clientId: "li", state: "s2")
-        #expect(li.absoluteString.contains("scope=openid%20profile%20w_member_social"))
-        #expect(try LinkedInLogin.parseCallback(URL(string: "http://localhost:8793/linkedin/callback?code=LI1&state=s2")!, expectedState: "s2").get() == "LI1")
     }
 
     @Test func calendarDragMath() throws {
@@ -163,14 +140,6 @@ struct PublishingTests {
         let now = original
         let def = CalendarMath.defaultTime(on: original, now: now, calendar: cal)
         #expect(cal.component(.hour, from: def) == 10)
-    }
-
-    @Test func secretStoreRoundTrip() throws {
-        let store = InMemorySecretStore()
-        try store.save("s3cret", name: PublishingSecret.metaAppSecret)
-        #expect(try store.load(PublishingSecret.metaAppSecret) == "s3cret")
-        try store.delete(PublishingSecret.metaAppSecret)
-        #expect(try store.load(PublishingSecret.metaAppSecret) == nil)
     }
 }
 

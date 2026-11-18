@@ -1,18 +1,13 @@
-// Per-install files in the state directory. Data, the token vault and phone pairing keep working
-// whichever app runs the host.
+// Per-install files in the state directory.
 //
 // - `host-secrets.json` (0600): WORKER_TOKEN (shared by the API and the worker, 64 hex chars) and
 //   TOKEN_ENCRYPTION_KEY of the social token vault (base64 of 32 bytes), each encrypted with
 //   Electron's safeStorage (its key lives in the macOS Keychain), G10. Losing the vault key makes
 //   stored social tokens unreadable, so it is never regenerated once it exists.
-//   Before G10 both were plain 0600 files (`worker-token`, `vault-key`, shared with the AppKit
-//   app); they are read once, sealed, verified and deleted. A plain file that shows up again
-//   later (the AppKit app makes a new one when it is missing) is never used: it is moved aside as
-//   `<name>.appkit-<time>` and the sealed value wins.
-//   Without safeStorage (no Keychain access) the plain files are used as before.
+//   Without safeStorage (no Keychain access) they are plain 0600 files (`worker-token`,
+//   `vault-key`); once safeStorage works they are read once, sealed, verified and deleted.
 // - `owner-secret` (0600): STUDIO_OWNER_SECRET, proves a request comes from this app (the API's
-//   `local` principal, G1). Persistent, so a copy of the app that attaches to a running host
-//   still talks to it.
+//   `local` principal, G1). Persistent across launches.
 // - `instance-id`: HealthResponse.instance of this Mac's host (phones tell Macs apart by it).
 // - `host.json`: {apiPort, lanPort?, pid} of the app that started the children (removed when it
 //   stops them on a clean quit).
@@ -90,16 +85,11 @@ function writeSealed(dir: string, data: Record<string, string>): void {
   writeSecretFile(join(dir, SEALED_FILE), `${JSON.stringify(data, null, 2)}\n`);
 }
 
-function stamp(now: Date): string {
-  return now.toISOString().replace(/[:.]/g, "-");
-}
-
 function loadOrCreateSealed(
   dir: string,
   name: SealedName,
   generate: () => string,
   cipher: Cipher | null,
-  now: () => Date,
 ): string {
   const plainFile = join(dir, name);
   const plain = valid(readTrimmed(plainFile));
@@ -131,10 +121,8 @@ function loadOrCreateSealed(
         `Şifreli anahtar (${name}) çözülemedi. macOS Anahtar Zinciri erişimi sorduysa Studio'yu yeniden açıp “İzin Ver”i seç. Anahtar Zinciri değiştiyse Ayarlar → Gelişmiş → Yedekten geri yükle ile son yedeği geri yükle.`,
       );
     }
-    if (plain !== null) {
-      if (plain === value) rmSync(plainFile, { force: true });
-      else renameSync(plainFile, `${plainFile}.appkit-${stamp(now())}`);
-    }
+    // A plain copy beside the sealed one is never used.
+    if (plain !== null) rmSync(plainFile, { force: true });
     return value;
   }
 
@@ -151,25 +139,19 @@ function loadOrCreateSealed(
 }
 
 /** The worker token and vault key (sealed with `cipher`; see the header). */
-export function loadOrCreateHostSecrets(
-  dir: string,
-  cipher: Cipher | null,
-  now: () => Date = () => new Date(),
-): HostSecrets {
+export function loadOrCreateHostSecrets(dir: string, cipher: Cipher | null): HostSecrets {
   return {
     workerToken: loadOrCreateSealed(
       dir,
       "worker-token",
       () => randomBytes(32).toString("hex"),
       cipher,
-      now,
     ),
     vaultKey: loadOrCreateSealed(
       dir,
       "vault-key",
       () => randomBytes(32).toString("base64"),
       cipher,
-      now,
     ),
   };
 }
@@ -243,7 +225,7 @@ export function readHostFile(dir: string): HostFile | null {
   }
 }
 
-/** Same keys the AppKit app writes (`lanPort` left out when off). */
+/** `lanPort` is left out when off. */
 export function writeHostFile(dir: string, file: HostFile): void {
   mkdirSync(dir, { recursive: true });
   const body: Record<string, number> = { apiPort: file.apiPort, pid: file.pid };

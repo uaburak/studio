@@ -10,7 +10,10 @@ const ws = api.replace(/^http/, "ws");
 
 function firstFrames(url, count, timeoutMs = 5000) {
   return new Promise((resolve, reject) => {
-    const socket = new WebSocket(url);
+    // Node's WebSocket takes headers in its second argument; the API wants the owner secret.
+    const socket = new WebSocket(url, {
+      headers: { "X-Studio-Owner": process.env.STUDIO_OWNER_SECRET ?? "" },
+    });
     const frames = [];
     const timer = setTimeout(() => {
       socket.close();

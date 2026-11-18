@@ -28,7 +28,7 @@ edited in chat); its breadcrumb is plain text there too.
 
 ## Wecra's editor stack, vendored
 
-Burak's Wecra (DesignerV2, closed source) is copied into
+The owner's Wecra (DesignerV2, closed source) is copied into
 `src/renderer/vendor/wecra-editor/` by `scripts/vendor-wecra.mjs`, from DesignerV2's **git
 history** (`git archive <ref>`, never its working tree, never written back): `src/renderer/src`
 (the editor, the engine glue and the committed Wasm build, the design system, the store's browser
@@ -464,7 +464,7 @@ under that place (`on: light / dark`, by the luminance of the topmost solid fill
   engine then refuses to load still shows Wecra's own "could not be opened" message.
 - Checked headless (Chromium + SwiftShader, `?demo=post-editor`; WebGPU is off there, the engine
   runs on WebGL2): opening, the import, selection, the Design panel, ⌘S → a version with renders
-  and the bundle. The look and feel in the app is for Burak to judge.
+  and the bundle. The look and feel in the app is for the owner to judge.
 
 ## Files
 

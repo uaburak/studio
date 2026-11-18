@@ -62,7 +62,7 @@ public struct PairingClaim: Codable, Sendable, Equatable {
 /// `MacRoutes`: every way a phone may reach this Mac. Published by the Mac app, saved by the
 /// phone (in its credential) and refreshed after every connect.
 public struct MacRoutes: Codable, Sendable, Equatable, Hashable {
-    /// "Burak's MacBook Pro".
+    /// "Deniz's MacBook Pro".
     public var macName: String
     /// Host id (`HealthResponse.instance`): an address answering with another id is not this Mac.
     public var macId: String?

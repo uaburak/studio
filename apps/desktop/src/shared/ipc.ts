@@ -21,7 +21,7 @@ export type HostStatus =
   | { kind: "stopped" }
   | { kind: "starting"; message: string }
   | { kind: "running" }
-  /** Another copy of Studio (e.g. the AppKit app) already serves the API; we use it. */
+  /** Another copy of Studio already serves the API from this state folder; we use it. */
   | { kind: "attached" }
   | { kind: "error"; message: string; log: string };
 

@@ -3,8 +3,10 @@
 # seed-local-api.sh) into StudioKit's test fixtures. Read-only, except one
 # deliberately failing request per error shape.
 #
-#   STUDIO_API_URL=http://127.0.0.1:8787 apps/apple/scripts/capture-fixtures.sh
+#   STUDIO_API_URL=http://127.0.0.1:8787 STUDIO_OWNER_SECRET=<value> apps/apple/scripts/capture-fixtures.sh
 #
+# The API accepts the owner's requests only with its owner secret (X-Studio-Owner): start it with
+# STUDIO_OWNER_SECRET in apps/api/.dev.vars and pass the same value here as STUDIO_OWNER_SECRET.
 # Run it again when packages/contract changes; the decoding tests then show
 # what the Swift models must follow. Needs curl, jq and node (for the
 # WebSocket frames).
@@ -14,6 +16,9 @@ API="${STUDIO_API_URL:-http://127.0.0.1:8787}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 OUT="$HERE/../StudioKit/Tests/StudioKitTests/Fixtures"
 mkdir -p "$OUT"
+
+# Every request carries the owner secret (apps/api/src/middleware/access.ts).
+curl() { command curl -H "X-Studio-Owner: ${STUDIO_OWNER_SECRET:-}" "$@"; }
 
 get() { curl -fsS "$API$1" | jq . > "$OUT/$2.json"; echo "  $2.json"; }
 fail() { curl -sS -X "$1" "$API$2" -H 'content-type: application/json' ${3:+-d "$3"} | jq . > "$OUT/$4.json"; echo "  $4.json"; }

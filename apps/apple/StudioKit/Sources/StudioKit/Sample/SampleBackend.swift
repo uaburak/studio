@@ -1313,11 +1313,11 @@ public actor SampleBackend: ConversationService, StudioDataService {
     public func claudeLogin() async throws -> ClaudeControl {
         data.presence.claude = ClaudeAccount(
             status: .signedIn,
-            email: data.presence.claude?.email ?? "burak@burakkoc.net",
+            email: data.presence.claude?.email ?? "deniz@ornek.com",
             plan: data.presence.claude?.plan ?? "Claude Max",
             cliVersion: data.presence.claude?.cliVersion ?? "1.0.24",
             detail: "Giriş yapıldı · Claude Max",
-            displayName: data.presence.claude?.displayName ?? "Burak",
+            displayName: data.presence.claude?.displayName ?? "Deniz",
             checkedAt: now
         )
         broadcastJobs()

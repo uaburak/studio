@@ -12,10 +12,15 @@ SWIFT_STRICT_CONCURRENCY = complete
 SWIFT_EMIT_LOC_STRINGS = YES
 LOCALIZATION_PREFERS_STRING_CATALOGS = YES
 
+// The app's bundle id: the one place it is set for iOS (Info.plist and the code derive from
+// it). Override it in Config/Local.xcconfig for your own Apple team.
+STUDIO_BUNDLE_ID = net.burakkoc.studio.ios
+
 MARKETING_VERSION = 0.1.0
 CURRENT_PROJECT_VERSION = 1
 
-// Simulator builds sign ad hoc / without provisioning profile.
+// Simulator builds sign ad hoc / without provisioning profile. The Apple team id is never
+// committed: put DEVELOPMENT_TEAM in Config/Local.xcconfig (gitignored, see Local.xcconfig.example).
 CODE_SIGN_STYLE = Automatic
 CODE_SIGN_IDENTITY = -
 DEVELOPMENT_TEAM =
@@ -42,3 +47,6 @@ SWIFT_OPTIMIZATION_LEVEL[config=Debug] = -Onone
 SWIFT_OPTIMIZATION_LEVEL[config=Release] = -O
 SWIFT_COMPILATION_MODE[config=Release] = wholemodule
 ENABLE_NS_ASSERTIONS[config=Release] = NO
+
+// Per-developer settings (team id, signing, bundle id); optional and gitignored.
+#include? "Local.xcconfig"

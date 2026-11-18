@@ -1,20 +1,12 @@
 // The owner's Meta App ID and LinkedIn Client ID (not secret): `desktop-accounts.json` in the
-// state directory. Until saved here, the AppKit app's values (its user defaults) are used, so a
-// Mac that was set up there keeps working.
+// state directory.
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import { type Runner, runCommand } from "./secrets.ts";
 
 export interface AppIds {
   metaAppId: string;
   linkedInClientId: string;
 }
-
-const APPKIT_DOMAIN = "net.burakkoc.studio.mac";
-const APPKIT_KEYS: Record<keyof AppIds, string> = {
-  metaAppId: "studio.meta.appId",
-  linkedInClientId: "studio.linkedin.clientId",
-};
 
 /** Meta App IDs are digits only (AccountsModel.saveMetaApp). */
 export function validateMetaAppId(raw: string): string {
@@ -30,12 +22,7 @@ export function validateClientId(raw: string): string {
 }
 
 export class AppIdsStore {
-  private imported: Partial<AppIds> | null = null;
-
-  constructor(
-    private readonly file: string,
-    private readonly run: Runner | null = runCommand,
-  ) {}
+  constructor(private readonly file: string) {}
 
   private readFile(): Partial<AppIds> | null {
     try {
@@ -51,32 +38,9 @@ export class AppIdsStore {
     }
   }
 
-  private async appKit(): Promise<Partial<AppIds>> {
-    if (this.imported) return this.imported;
-    const out: Partial<AppIds> = {};
-    if (this.run) {
-      for (const key of Object.keys(APPKIT_KEYS) as (keyof AppIds)[]) {
-        const result = await this.run("/usr/bin/defaults", [
-          "read",
-          APPKIT_DOMAIN,
-          APPKIT_KEYS[key],
-        ]);
-        const value = result.code === 0 ? result.stdout.trim() : "";
-        if (value) out[key] = value;
-      }
-    }
-    this.imported = out;
-    return out;
-  }
-
   async get(): Promise<AppIds> {
     const saved = this.readFile() ?? {};
-    const needsImport = saved.metaAppId === undefined || saved.linkedInClientId === undefined;
-    const fallback = needsImport ? await this.appKit() : {};
-    return {
-      metaAppId: saved.metaAppId ?? fallback.metaAppId ?? "",
-      linkedInClientId: saved.linkedInClientId ?? fallback.linkedInClientId ?? "",
-    };
+    return { metaAppId: saved.metaAppId ?? "", linkedInClientId: saved.linkedInClientId ?? "" };
   }
 
   async set(patch: Partial<AppIds>): Promise<AppIds> {

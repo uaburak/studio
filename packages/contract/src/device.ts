@@ -106,7 +106,7 @@ export type PairingClaim = z.input<typeof PairingClaim>;
  */
 export const MacRoutes = z
   .object({
-    /** The Mac's name as people know it ("Burak's MacBook Pro"). */
+    /** The Mac's name as people know it ("Deniz's MacBook Pro"). */
     macName: z.string().trim().min(1).max(120),
     /** Id of the Mac host (`HealthResponse.instance`); phones skip addresses that answer with another id. */
     macId: z.string().min(1).max(128).nullable(),

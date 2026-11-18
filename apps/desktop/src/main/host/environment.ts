@@ -1,5 +1,4 @@
-// Where the host keeps its state, and how it finds node / claude (port of
-// StudioMac/Host/HostEnvironment.swift).
+// Where the host keeps its state, and how it finds node / claude.
 //
 // Finder-launched apps get a minimal PATH (`/usr/bin:/bin:/usr/sbin:/sbin`), so the PATH is
 // read once from the user's login shell — in the background (A11: a slow shell or `scutil` never
@@ -24,7 +23,7 @@ import { homedir, networkInterfaces, userInfo } from "node:os";
 import { join } from "node:path";
 import { findRepo } from "./layout.ts";
 
-/** `~/Library/Application Support/Studio` (shared with the AppKit app). */
+/** `~/Library/Application Support/Studio`. */
 export function stateDirectory(home = homedir()): string {
   return join(home, "Library", "Application Support", "Studio");
 }
@@ -249,7 +248,7 @@ export function rotateInPlace(file: string, limit = 5_000_000): boolean {
   }
 }
 
-/** The Mac's user-visible name ("Burak's MacBook Pro"), read in the background. */
+/** The Mac's user-visible name ("Deniz's MacBook Pro"), read in the background. */
 export async function computerName(): Promise<string> {
   const name = (await commandOutput("/usr/sbin/scutil", ["--get", "ComputerName"], 2_000)).trim();
   return name || process.env.HOST || "Mac";
@@ -257,7 +256,7 @@ export async function computerName(): Promise<string> {
 
 let cachedUserName: Promise<string> | undefined;
 
-/** The Mac user's full name ("Burak Koç"; the short login name when there is none). */
+/** The Mac user's full name ("Deniz Yılmaz"; the short login name when there is none). */
 export function macUserName(): Promise<string> {
   cachedUserName ??= (async () => {
     const full = (await commandOutput("/usr/bin/id", ["-F"], 2_000)).trim();

@@ -46,14 +46,18 @@ struct IOSModelTests {
 
         try tokenStore.save(DeviceCredential(
             token: "dev-tok-123", deviceId: "d-1",
-            serverURL: URL(string: "http://192.168.1.25:8791")!, serverName: "Burak MacBook Pro"))
+            serverURL: URL(string: "http://192.168.1.25:8791")!, serverName: "Deniz MacBook Pro"))
         app.settings.credentialChanged()
-        #expect(app.settings.savedCredential?.serverName == "Burak MacBook Pro")
+        #expect(app.settings.savedCredential?.serverName == "Deniz MacBook Pro")
         #expect(app.settings.makeClient().baseURL.absoluteString == "http://192.168.1.25:8791")
         // Gelişmiş → "Ek uzak adres" is one more address to try, not a switch away from the Mac's own.
         #expect(app.settings.manualRemoteURL == nil)
         app.settings.useRemoteControlURL = true
-        #expect(app.settings.manualRemoteURL?.absoluteString == "https://social.burakkoc.net")
+        // No default address: nothing to try until the owner types one.
+        #expect(app.settings.remoteURLString.isEmpty)
+        #expect(app.settings.manualRemoteURL == nil)
+        app.settings.remoteURLString = "https://studio.example.com"
+        #expect(app.settings.manualRemoteURL?.absoluteString == "https://studio.example.com")
         #expect(app.settings.makeClient().baseURL.absoluteString == "http://192.168.1.25:8791")
         app.settings.forgetPairing()
         #expect(app.settings.savedCredential == nil)
@@ -65,9 +69,9 @@ struct IOSModelTests {
         #expect(app.settings.greetingName == nil)
         try tokenStore.save(DeviceCredential(
             token: "dev-tok-456", deviceId: "d-2",
-            serverURL: URL(string: "http://192.168.1.25:8791")!, serverName: "Burak’s MacBook Pro"))
+            serverURL: URL(string: "http://192.168.1.25:8791")!, serverName: "Deniz’s MacBook Pro"))
         app.settings.credentialChanged()
-        #expect(app.settings.greetingName == "Burak")
+        #expect(app.settings.greetingName == "Deniz")
         app.settings.ownerName = "  Ayşe "
         #expect(app.settings.greetingName == "Ayşe")
         #expect(app.settings.defaults.string(forKey: IOSAppSettings.ownerNameKey) == "  Ayşe ")

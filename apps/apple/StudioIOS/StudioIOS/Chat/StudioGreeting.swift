@@ -40,8 +40,8 @@ enum StudioGreeting {
         return text(hour: hour, name: name, variant: day)
     }
 
-    /// The owner's first name from a Mac's name: "Burak MacBook Pro", "Burak’s MacBook Air",
-    /// "Burak adlı kişinin MacBook Pro’su", "MacBook Pro (Burak)". Nil when it cannot tell.
+    /// The owner's first name from a Mac's name: "Deniz MacBook Pro", "Deniz’s MacBook Air",
+    /// "Deniz adlı kişinin MacBook Pro’su", "MacBook Pro (Deniz)". Nil when it cannot tell.
     static func ownerName(fromMacName raw: String) -> String? {
         let name = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         if let open = name.firstIndex(of: "("), let close = name[open...].firstIndex(of: ")") {

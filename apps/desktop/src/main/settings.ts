@@ -10,7 +10,6 @@ import type {
   SessionState,
   SettingsPatch,
 } from "../shared/ipc.ts";
-import { DEFAULT_REMOTE_HOSTNAME } from "./host/guards.ts";
 
 export function defaultSettings(repoPath: string): DesktopSettings {
   return {
@@ -18,7 +17,8 @@ export function defaultSettings(repoPath: string): DesktopSettings {
     lanEnabled: true,
     repoPath,
     remoteControlEnabled: false,
-    remoteHostname: DEFAULT_REMOTE_HOSTNAME,
+    // No default: the owner types the tunnel's public hostname in Ayarlar → Gelişmiş.
+    remoteHostname: "",
     ownerName: "",
     appearance: "system",
     notificationsEnabled: true,

@@ -70,7 +70,7 @@ describe("social accounts", () => {
     const parsed = SocialAccountCreate.parse({
       brandId: "b",
       platform: "linkedin",
-      handle: "Burak",
+      handle: "Deniz",
     });
     expect(parsed.status).toBe("pending");
     expect(

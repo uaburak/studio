@@ -42,7 +42,8 @@ public struct KeychainDeviceTokenStore: DeviceTokenStore {
     public var service: String
     public var account: String
 
-    public init(service: String = "net.burakkoc.studio", account: String = "paired-device-token") {
+    /// `service` defaults to the app's bundle id (set once in the app's build settings).
+    public init(service: String = Bundle.main.bundleIdentifier ?? "studio", account: String = "paired-device-token") {
         self.service = service
         self.account = account
     }

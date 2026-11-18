@@ -25,10 +25,10 @@ struct PairingTests {
         #expect(pairing.client() == nil)
 
         let url = URL(string: "http://\(host):8791")!
-        let device = try await pairing.pair(baseURL: url, serverName: "Burak's Mac", code: "123 456", deviceName: "  Test iPhone ", platform: .ios)
+        let device = try await pairing.pair(baseURL: url, serverName: "Deniz's Mac", code: "123 456", deviceName: "  Test iPhone ", platform: .ios)
         #expect(device.id == "d1")
         #expect(device.platform == .ios)
-        #expect(try store.load() == DeviceCredential(token: token, deviceId: "d1", serverURL: url, serverName: "Burak's Mac"))
+        #expect(try store.load() == DeviceCredential(token: token, deviceId: "d1", serverURL: url, serverName: "Deniz's Mac"))
 
         let (claim, body) = try #require(StubURLProtocol.recorded(host: host).first)
         #expect(claim.httpMethod == "POST")
@@ -105,7 +105,7 @@ struct PairingTests {
     }
 
     @Test func keychainStoreRoundTrips() throws {
-        let store = KeychainDeviceTokenStore(service: "net.burakkoc.studio.tests", account: "device-\(UUID().uuidString)")
+        let store = KeychainDeviceTokenStore(service: "studio.tests", account: "device-\(UUID().uuidString)")
         let credential = DeviceCredential(token: "sdt_test", deviceId: "d1", serverURL: URL(string: "http://10.0.0.2:8791")!, serverName: "Mac")
         do {
             try store.save(credential)
@@ -125,8 +125,8 @@ struct PairingTests {
 
     @Test func readsTheBonjourTXTRecord() {
         let endpoint = NWEndpoint.service(name: "Studio (Mac)", type: "_studio._tcp", domain: "local.", interface: nil)
-        let found = DiscoveredStudio(serviceName: "Studio (Mac)", txt: ["name": "Burak's Mac", "api": "1", "pairing": "required"], endpoint: endpoint)
-        #expect(found.displayName == "Burak's Mac")
+        let found = DiscoveredStudio(serviceName: "Studio (Mac)", txt: ["name": "Deniz's Mac", "api": "1", "pairing": "required"], endpoint: endpoint)
+        #expect(found.displayName == "Deniz's Mac")
         #expect(found.isSupported)
         #expect(found.pairingRequired)
         let bare = DiscoveredStudio(serviceName: "Other", txt: [:], endpoint: endpoint)

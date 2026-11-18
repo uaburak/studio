@@ -91,8 +91,7 @@ export function startApp(): void {
     };
   }
 
-  // Meta / LinkedIn app secrets and the tunnel token (safeStorage; the AppKit app's Keychain
-  // items as a read-only fallback).
+  // Meta / LinkedIn app secrets and the tunnel token (safeStorage).
   const secrets = createSecretStore(stateDir);
 
   // Proves to the API that a request is this app's own (G1). Replaced by a restore.

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Vendors Wecra's editor (Burak's DesignerV2 repo, closed source) into the desktop renderer:
+// Vendors Wecra's editor (the owner's DesignerV2 repo, closed source) into the desktop renderer:
 //
 //   node apps/desktop/scripts/vendor-wecra.mjs [--repo <DesignerV2>] [--ref <git ref>] [--check]
 //

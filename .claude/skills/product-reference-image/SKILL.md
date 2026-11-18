@@ -32,7 +32,7 @@ Referansın yanında `<ad>.label.md` dökümü varsa onu kullan; yoksa çıkar.
 - **A sınıfı: birebir olmalı.** Referansta normal bakışta okunan her şey: marka,
   logo yazısı, ürün adı, alt başlık, bölüm başlıkları, kalın satırlar.
 - **B sınıfı: elden geldiğince.** Referansta zaten okunmayan ince yazılar. Bunlar
-  için birebir şartı aranmaz (Burak'ın tercihi, 2026-11-16).
+  için birebir şartı aranmaz (sahibinin tercihi, 2026-11-16).
 
 Bir uyarı: üretilen görsel 2K olduğu için referansta okunmayan ince yazı çıktıda
 okunur hale gelebilir. Telefon, doz, lisans ve tescil numarası gibi değerler çıktıda

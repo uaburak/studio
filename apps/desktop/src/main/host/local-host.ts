@@ -1,4 +1,4 @@
-// Runs the Studio back end on this Mac (port of StudioMac/Host/LocalHost.swift): the API
+// Runs the Studio back end on this Mac: the API
 // (wrangler dev / workerd, state under ~/Library/Application Support/Studio), the LAN gateway
 // and the worker, as supervised child processes. Snapshots the database and applies D1
 // migrations first, restarts crashed children with backoff, keeps logs, advertises the gateway
@@ -754,6 +754,11 @@ export class LocalHost {
       return;
     }
     const host = guards.normalizedHostname(config.remoteHostname);
+    if (!host) {
+      this.tunnelNote =
+        "Tünel adresi girilmedi: Ayarlar → Gelişmiş'te tünelin adresini (ör. studio.ornek.com) yazıp Kaydet'e tıkla.";
+      return;
+    }
     let token: string | null;
     try {
       token = await this.deps.readTunnelToken();
@@ -1074,7 +1079,8 @@ export function defaultHostDeps(input: {
         onWaiting,
         signal,
       }),
-    readTunnelToken: guards.readTunnelToken,
+    // The app passes its own secret store (app.ts); nothing else holds a token.
+    readTunnelToken: async () => null,
     publishRoutes: (port, routes) => putRoutes(port, routes, input.ownerSecret()),
     tail: env.tail,
     rotate: (file) => env.rotate(file),

@@ -1,61 +1,92 @@
 # Studio
 
-Tek kullanıcılı sosyal medya içerik stüdyosu. Mimari ve kararlar için [PLAN.md](PLAN.md), iş bölümü için [TASKS.md](TASKS.md).
+Tek kişilik sosyal medya içerik stüdyosu. Markalar için Instagram, Facebook ve LinkedIn'e post,
+carousel, story ve Reels üretir; yapay zekâ sohbetiyle planlar, tasarlar, kontrol eder, onaylatır
+ve zamanında paylaşır.
+
+Bugün üç parçadan oluşur:
+
+- **Mac uygulaması** (`apps/desktop`, Electron + React): ana yüzey. Yerel sunucuyu (API, yerel ağ
+  geçidi, worker) kendisi başlatır; veri, üretim ve render Mac'te kalır.
+- **iPhone uygulaması** (`apps/apple/StudioIOS`, UIKit): Mac'e yerel ağdan ya da Cloudflare Tunnel
+  üzerinden bağlanan uzaktan kumanda (sohbet, postlar, onay, zamanlama, bildirim).
+- **Bulut yayıncı** (`apps/cloud-publisher`, Cloudflare Worker, isteğe bağlı): Mac uyurken zamanı
+  gelen postları paylaşır. Studio'nun buluttaki tek parçası.
+
+Mimari tek sayfada: [docs/MIMARI.md](docs/MIMARI.md). Güncel durum ve açık işler:
+[docs/DENETIM-PLANI.md](docs/DENETIM-PLANI.md).
 
 ## Depo yapısı
 
-| Klasör                 | İçerik                                                                                 |
-| ---------------------- | -------------------------------------------------------------------------------------- |
-| `apps/api`             | Cloudflare Workers API (Hono), `Hub` Durable Object (WebSocket), D1 (Drizzle), R2      |
-| `apps/desktop`         | Mac uygulaması (Electron + React); yerel sunucuyu başlatır ve gözetir                  |
-| `apps/apple`           | iPhone uygulaması (`StudioIOS`), ortak Swift çekirdeği (`StudioKit`), eski `StudioMac` |
-| `apps/cloud-publisher` | Yalnızca zamanlanmış postları paylaşan Cloudflare Worker                               |
-| `apps/worker`          | Mac worker (Node): hub'a bağlanır, işleri çalıştırır                                   |
-| `packages/contract`    | Ortak zod şemaları: sağlık yanıtı, iş, worker–hub protokolü, tipli API istemcisi       |
-| `packages/design-kit`  | Tasarım kiti (şimdilik boş kabuk)                                                      |
-| `packages/publishers`  | Yayın bağdaştırıcıları (şimdilik boş kabuk)                                            |
-| `agent/`               | Üretim ajanının çalışma alanı (şimdilik yalnızca README)                               |
-
-`spikes/` pnpm çalışma alanına dahil değildir; her deneme kendi başına kurulur.
+| Klasör                 | İçerik                                                                                                         |
+| ---------------------- | -------------------------------------------------------------------------------------------------------------- |
+| `apps/desktop`         | Mac uygulaması (Electron + React); sunucuyu başlatır ve gözetir, tuval düzenleyici, paketleme                  |
+| `apps/api`             | API (Hono, Cloudflare Workers çalışma zamanı; Mac'te `wrangler dev`): D1, R2, `Hub` Durable Object, LAN geçidi |
+| `apps/worker`          | Üretim worker'ı (Node): sohbet ajanı, içerik üretimi, render, Reels, görsel, kontroller, yerel yayın           |
+| `apps/cloud-publisher` | Yalnızca zamanlanmış postları paylaşan Cloudflare Worker                                                       |
+| `apps/apple`           | iPhone uygulaması (`StudioIOS`) ve ortak Swift çekirdeği (`StudioKit`)                                         |
+| `packages/contract`    | Ortak zod şemaları ve tipli API istemcisi (TypeScript tarafının tek sözleşmesi)                                |
+| `packages/design-kit`  | Slayt HTML sözleşmesi, render ve kontrol yardımcıları                                                          |
+| `packages/publishers`  | Instagram, Facebook, LinkedIn yayın durum makineleri                                                           |
+| `agent/skills`         | Sohbet ajanının çalışma anı skill'leri                                                                         |
+| `docs/`                | Mimari, paketleme, denetim planı, yol haritası                                                                 |
+| `spikes/`              | Eski denemeler; pnpm çalışma alanına dahil değil                                                               |
 
 ## Gereksinimler
 
-- Node 24 (`.nvmrc`)
-- pnpm 12.21.0 (`package.json` → `packageManager`). Kurulum: `npm install -g pnpm@12.21.0`
-  (Corepack pnpm 12'yi henüz çalıştıramıyor.)
-
-## Kurulum
-
-```sh
-pnpm install
-pnpm --filter @studio/api db:migrate   # yerel D1 veritabanına migration uygular
-```
+- macOS (Apple Silicon), Node 24 (`.nvmrc`), pnpm 12.21.0 (`package.json` → `packageManager`;
+  kurulum: `npm install -g pnpm@12.21.0`).
+- Üretim için en az bir yapay zekâ girişi: Claude Code (`claude`), ya da Ayarlar → Yapay zekâ'dan
+  Gemini / OpenAI anahtarı. Render için Chromium (Ayarlar → Gelişmiş → Araçlar indirir), Reels için
+  `ffmpeg`. Ayrıntı: [docs/PACKAGING.md](docs/PACKAGING.md#ayrıca-kurulması-gerekenler).
+- Post tuvali için Wecra düzenleyicisinin kopyası (kapalı kaynak, git'e girmez):
+  `node apps/desktop/scripts/vendor-wecra.mjs` (DesignerV2 deposu bu deponun yanındayken; başka
+  yerdeyse `--repo <yol>`). Yoksa tip denetimi ve testler yine çalışır, tuval açılmaz.
 
 ## Çalıştırma
 
 ```sh
-pnpm dev          # Studio Mac uygulaması (yerel sunucuyu kendisi başlatır)
-pnpm dev:worker   # ayrı terminalde: Mac worker, yerel hub'a bağlanır
+pnpm install
+pnpm dev          # Mac uygulaması (geliştirme); API, geçit ve worker'ı kendisi başlatır
 ```
 
-Worker ayarları ortam değişkenlerinden okunur; liste ve varsayılanlar için `apps/worker/.env.example`.
-Yerel değişiklik gerekirse `apps/worker/.env` oluşturun (git'e girmez).
+Veri `~/Library/Application Support/Studio` altındadır; göçler her açılışta, önce yedek alınarak
+uygulanır. Yalnızca API'yi denemek için: `pnpm --filter @studio/api dev` (127.0.0.1:8787) ve ayrı
+terminalde `pnpm dev:worker`; ayrıntı [apps/worker/README.md](apps/worker/README.md).
 
-Uçtan uca kontrol (API çalışırken): `pnpm --filter @studio/worker smoke` — worker'ı başlatır,
-bir `demo.echo` işi kuyruğa koyar ve sonucun döndüğünü doğrular.
+## Paketleme
+
+```sh
+pnpm package      # apps/desktop/release/mac-arm64/Studio.app (+ zip)
+```
+
+Ad-hoc imzalı, notarize edilmemiş; imza, notarize ve güncelleme ayarları [docs/PACKAGING.md](docs/PACKAGING.md).
 
 ## Kontroller
 
 ```sh
-pnpm typecheck   # TypeScript (strict)
-pnpm lint        # Biome (lint + format denetimi); düzeltmek için: pnpm lint:fix
-pnpm test        # Vitest (API testleri Workers çalışma ortamında koşar)
-pnpm build       # web paketi, worker paketi, API için wrangler --dry-run
+pnpm typecheck   # TypeScript
+pnpm lint        # Biome; düzeltmek için: pnpm lint:fix
+pnpm test        # Vitest (API testleri workerd içinde koşar)
+swift test --package-path apps/apple/StudioKit
+xcodebuild -project apps/apple/StudioIOS/StudioIOS.xcodeproj -scheme StudioIOS \
+  -destination 'generic/platform=iOS Simulator' build-for-testing
 ```
+
+## Belgeler
+
+- [docs/MIMARI.md](docs/MIMARI.md): süreçler, portlar, veri yerleri, kimlik doğrulama, işler, yayın
+- [docs/PACKAGING.md](docs/PACKAGING.md): Studio.app paketi, alt süreçler, sağlık, imza
+- [docs/DENETIM-PLANI.md](docs/DENETIM-PLANI.md): denetim bulguları, kararlar, ilerleme
+- [docs/ROADMAP-desktop.md](docs/ROADMAP-desktop.md): masaüstü yol haritası (durumlarıyla)
+- [apps/api/README.md](apps/api/README.md), [apps/worker/README.md](apps/worker/README.md),
+  [apps/cloud-publisher/README.md](apps/cloud-publisher/README.md),
+  [apps/apple/README.md](apps/apple/README.md), [apps/desktop/docs/editor.md](apps/desktop/docs/editor.md)
+- [PLAN.md](PLAN.md): ilk plan (tarihsel)
 
 ## Notlar
 
-- Her şey yereldir. Cloudflare'de hiçbir kaynak oluşturulmadı; `wrangler deploy` ve `wrangler login` çalıştırmayın.
-- D1 şeması `apps/api/src/db/schema.ts`; migration üretmek için `pnpm --filter @studio/api db:generate`.
-- `wrangler.jsonc` değişirse tipleri yenileyin: `pnpm --filter @studio/api cf-typegen`.
+- Cloudflare'de hiçbir şey dağıtılmadı; `wrangler deploy` yalnızca bulut yayıncı için ve sahibi tarafından çalıştırılır.
+- D1 şeması `apps/api/src/db/schema.ts`; yeni göç: `pnpm --filter @studio/api db:generate --name <ad>`
+  (ardından `apps/api/src/lib/health.ts` → `LATEST_MIGRATION`).
 - Bağımlılık sürümleri `pnpm-workspace.yaml` içindeki `catalog` bölümünde tek yerden sabitlenir.

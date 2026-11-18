@@ -14,7 +14,7 @@ import {
 } from "../src/index.ts";
 import { FakeClock, FakeLinkedIn, memoryMediaReader } from "../src/testing/index.ts";
 
-const AUTHOR = "urn:li:person:burak123";
+const AUTHOR = "urn:li:person:deniz123";
 const VALID_TOKEN = "AQVsecretLinkedInAccessToken999999999999";
 const EXPIRED_TOKEN = "AQVexpiredLinkedInAccessToken00000000000";
 

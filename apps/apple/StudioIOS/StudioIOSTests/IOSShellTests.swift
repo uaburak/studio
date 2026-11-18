@@ -86,16 +86,16 @@ struct IOSShellTests {
         for (hours, period) in expected {
             for hour in hours { #expect(StudioGreeting.period(hour: hour) == period, "saat \(hour)") }
         }
-        #expect(StudioGreeting.text(hour: 8, name: "Burak") == "Günaydın, Burak")
-        #expect(StudioGreeting.text(hour: 8, name: "Burak", variant: 1) == "Güne nereden başlayalım, Burak?")
-        #expect(StudioGreeting.text(hour: 14, name: "Burak") == "İyi günler, Burak")
-        #expect(StudioGreeting.text(hour: 19, name: "Burak") == "İyi akşamlar, Burak")
+        #expect(StudioGreeting.text(hour: 8, name: "Deniz") == "Günaydın, Deniz")
+        #expect(StudioGreeting.text(hour: 8, name: "Deniz", variant: 1) == "Güne nereden başlayalım, Deniz?")
+        #expect(StudioGreeting.text(hour: 14, name: "Deniz") == "İyi günler, Deniz")
+        #expect(StudioGreeting.text(hour: 19, name: "Deniz") == "İyi akşamlar, Deniz")
         #expect(StudioGreeting.text(hour: 20, name: nil) == "İyi akşamlar")
-        #expect(StudioGreeting.text(hour: 0, name: "Burak") == "Gece mesaisi mi, Burak?")
+        #expect(StudioGreeting.text(hour: 0, name: "Deniz") == "Gece mesaisi mi, Deniz?")
         #expect(StudioGreeting.text(hour: 3, name: "  ") == "Gece mesaisi mi?")
         for hour in 0..<24 {
             for variant in 0..<4 {
-                #expect(StudioGreeting.text(hour: hour, name: "Burak", variant: variant).contains("Burak"))
+                #expect(StudioGreeting.text(hour: hour, name: "Deniz", variant: variant).contains("Deniz"))
                 let anonymous = StudioGreeting.text(hour: hour, name: nil, variant: variant)
                 #expect(!anonymous.hasSuffix(",") && !anonymous.contains(",?") && !anonymous.contains(" ,"), "\(anonymous)")
             }
@@ -104,14 +104,14 @@ struct IOSShellTests {
         calendar.timeZone = TimeZone(identifier: "Europe/Istanbul")!
         let lateNight = calendar.date(from: DateComponents(year: 2026, month: 11, day: 17, hour: 0, minute: 28))!
         #expect(StudioGreeting.period(hour: calendar.component(.hour, from: lateNight)) == .night)
-        #expect(StudioGreeting.text(at: lateNight, name: "Burak", calendar: calendar).contains("Burak"))
+        #expect(StudioGreeting.text(at: lateNight, name: "Deniz", calendar: calendar).contains("Deniz"))
 
-        #expect(StudioGreeting.ownerName(fromMacName: "Burak MacBook Pro") == "Burak")
-        #expect(StudioGreeting.ownerName(fromMacName: "Burak’s MacBook Air") == "Burak")
-        #expect(StudioGreeting.ownerName(fromMacName: "Burak's Mac mini") == "Burak")
-        #expect(StudioGreeting.ownerName(fromMacName: "Burak adlı kişinin MacBook Pro’su") == "Burak")
-        #expect(StudioGreeting.ownerName(fromMacName: "MacBook Pro (Burak)") == "Burak")
-        #expect(StudioGreeting.ownerName(fromMacName: "burak-MacBook-Pro") == "Burak")
+        #expect(StudioGreeting.ownerName(fromMacName: "Deniz MacBook Pro") == "Deniz")
+        #expect(StudioGreeting.ownerName(fromMacName: "Deniz’s MacBook Air") == "Deniz")
+        #expect(StudioGreeting.ownerName(fromMacName: "Deniz's Mac mini") == "Deniz")
+        #expect(StudioGreeting.ownerName(fromMacName: "Deniz adlı kişinin MacBook Pro’su") == "Deniz")
+        #expect(StudioGreeting.ownerName(fromMacName: "MacBook Pro (Deniz)") == "Deniz")
+        #expect(StudioGreeting.ownerName(fromMacName: "deniz-MacBook-Pro") == "Deniz")
         #expect(StudioGreeting.ownerName(fromMacName: "Studio Mac") == nil)
         #expect(StudioGreeting.ownerName(fromMacName: "MacBook Pro") == nil)
         #expect(StudioGreeting.ownerName(fromMacName: "iMac") == nil)
@@ -267,12 +267,12 @@ struct IOSShellTests {
 
     @Test func homeAndConversationChrome() async throws {
         let app = await makeApp()
-        app.settings.ownerName = "Burak"
+        app.settings.ownerName = "Deniz"
         let root = await makeRoot(app)
         let home = try #require(root.chat)
         await settle(root.view)
         #expect(!home.home.isHidden)
-        #expect(home.home.greetingLabel.text == StudioGreeting.text(at: Date(), name: "Burak"))
+        #expect(home.home.greetingLabel.text == StudioGreeting.text(at: Date(), name: "Deniz"))
         #expect(home.navigationItem.leftBarButtonItem === home.drawerItem)
         #expect(home.navigationItem.rightBarButtonItems?.count == 1)
         #expect(home.navigationItem.rightBarButtonItems?.first === home.brandItem)

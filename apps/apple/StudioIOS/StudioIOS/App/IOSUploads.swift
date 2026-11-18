@@ -5,7 +5,7 @@ import StudioKit
 /// they keep going when the user leaves the app, and are tried again after a dropped
 /// connection (Faz 6). `APIClient.uploadAsset` is unchanged for the callers.
 enum IOSUploads {
-    static let identifier = "net.burakkoc.studio.ios.uploads"
+    static let identifier = "\(Bundle.main.bundleIdentifier ?? "studio.ios").uploads"
 
     /// One per process (a background session identifier may be used once).
     static let transport = BackgroundUploadTransport(identifier: identifier)

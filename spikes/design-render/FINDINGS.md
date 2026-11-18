@@ -53,4 +53,4 @@ Düzey: sağlam kurum içi şablon. Tavanı marka profili belirliyor; gerçek po
 - `out/*/compare.jpg`: ilk deneme ve düzeltilmiş sürüm yan yana
 - `out/04-image-slot/v2-filled/`: doldurulmuş görsel yuvası
 - `CONTRACT.md`: tasarım sözleşmesi v0
-- `brand/venta/`: geçici marka profili (Burak onaylamadı; yalnızca ambalajdan türetildi)
+- `brand/venta/`: geçici marka profili (sahibi onaylamadı; yalnızca ambalajdan türetildi)

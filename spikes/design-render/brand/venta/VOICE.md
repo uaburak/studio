@@ -2,7 +2,7 @@
 
 > Status: provisional stand-in, v0.1. There are no published Venta posts to learn from yet. This is
 > inferred from the tone of the packaging label only, and must be replaced by a voice derived from real
-> posts and Burak's corrections.
+> posts and the owner's corrections.
 
 ## Audience (assumption)
 

@@ -201,7 +201,7 @@ describe("worker.claude, worker.gemini & worker.command over HubConnection", () 
       claudeProbe: async () => ({
         cliVersion: "2.1.292",
         loggedIn: claudeLoggedIn,
-        ...(claudeLoggedIn ? { email: "burak@studio.local", subscriptionType: "max" } : {}),
+        ...(claudeLoggedIn ? { email: "deniz@studio.local", subscriptionType: "max" } : {}),
       }),
       claudeLoginSpawn: (() => loginChild) as unknown as typeof import("node:child_process").spawn,
       geminiHealthCheck: async (): Promise<GeminiAccount> => ({
@@ -326,7 +326,7 @@ describe("worker.claude, worker.gemini & worker.command over HubConnection", () 
       type: "worker.claude",
       account: {
         status: "signed_in",
-        email: "burak@studio.local",
+        email: "deniz@studio.local",
         plan: "Claude Max",
       },
     });

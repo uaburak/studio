@@ -26,8 +26,7 @@ if (isSelfTest()) {
     // stdout to a pipe is asynchronous on macOS: let the report out before exiting.
     .then((code) => process.stdout.write("", () => app.exit(code)));
 } else {
-  // Chromium's own data stays in a sub folder; the host's files live next to it (shared with
-  // the AppKit app).
+  // Chromium's own data stays in a sub folder; the host's files live next to it.
   app.setPath("userData", join(stateDirectory(), "desktop"));
   // P2: crashes are written next to the logs, never uploaded.
   startCrashReporter(join(stateDirectory(), "logs", "crashes"));

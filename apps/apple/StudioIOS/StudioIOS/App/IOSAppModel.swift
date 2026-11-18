@@ -18,7 +18,8 @@ final class IOSAppSettings {
     nonisolated static let ownerNameKey = "studio.ios.ownerName"
     /// "Seni bekliyor" notices already shown (by the app or the background check), newest last.
     nonisolated static let announcedKey = "studio.ios.notices.announced"
-    nonisolated static let defaultRemoteURLString = "https://social.burakkoc.net"
+    /// A placeholder only: there is no default address, the owner types the Mac's tunnel address.
+    nonisolated static let remoteURLExample = "https://studio.ornek.com"
 
     @ObservationIgnored let defaults: UserDefaults
     @ObservationIgnored let tokenStore: any DeviceTokenStore
@@ -60,7 +61,7 @@ final class IOSAppSettings {
         self.agentStore = AgentSelectionStore(defaults: defaults, prefix: "studio.ios.agent")
         self.appearance = IOSAppearancePreference(rawValue: defaults.string(forKey: Self.appearanceKey) ?? "") ?? .system
         self.useRemoteControlURL = defaults.bool(forKey: Self.remoteEnabledKey)
-        self.remoteURLString = defaults.string(forKey: Self.remoteURLKey) ?? Self.defaultRemoteURLString
+        self.remoteURLString = defaults.string(forKey: Self.remoteURLKey) ?? ""
         self.ownerName = defaults.string(forKey: Self.ownerNameKey) ?? ""
         let launchSample = ProcessInfo.processInfo.arguments.drop { $0 != "-StudioSampleData" }.dropFirst().first?.uppercased() == "YES"
         self.useSampleData = useSampleData ?? (launchSample || defaults.bool(forKey: Self.sampleKey))

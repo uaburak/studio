@@ -1,7 +1,7 @@
 # Venta — design rules (PROVISIONAL)
 
 > Status: provisional stand-in, v0.1. Derived only from the Venta Borinc packaging photo, because no
-> published Venta/MTM Agro posts or brand kit were available. Not approved by Burak. Every rule here
+> published Venta/MTM Agro posts or brand kit were available. Not approved by the owner. Every rule here
 > should be re-derived from real posts before production.
 
 ## 1. What the packaging tells us

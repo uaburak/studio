@@ -15,9 +15,9 @@ private func health(_ instance: String?) -> Data {
 @Suite("QR pairing invite")
 struct PairingInviteTests {
     private static let full = PairingInvite(
-        macName: "Burak’s MacBook Pro & Co + 2", secret: secret,
+        macName: "Deniz’s MacBook Pro & Co + 2", secret: secret,
         expiresAt: Date(timeIntervalSince1970: 1_794_900_000), macId: "8f1c2a4e-0000-4000-8000-000000000001",
-        lanAddresses: ["192.168.1.20", "10.0.0.5"], lanPort: 8791, bonjourName: "Burak’s MacBook Pro (2)",
+        lanAddresses: ["192.168.1.20", "10.0.0.5"], lanPort: 8791, bonjourName: "Deniz’s MacBook Pro (2)",
         tunnelURL: URL(string: "https://social.example.net"))
 
     @Test func roundTripsThroughTheLink() throws {
@@ -108,7 +108,7 @@ struct QRPairingClientTests {
     @Test func pairsThroughTheFirstAddressThatAnswersAndSavesTheRoutes() async throws {
         let host = uniqueHost()
         let token = "sdt_" + String(repeating: "b", count: 43)
-        let routesJSON = #"{"macName":"Burak's MacBook Pro","macId":"mac-1","lanAddresses":["192.0.2.1"],"lanPort":8791,"bonjourName":"Burak's MacBook Pro","tunnelUrl":"https://\#(host)","updatedAt":"2026-11-16T10:00:00.000Z"}"#
+        let routesJSON = #"{"macName":"Deniz's MacBook Pro","macId":"mac-1","lanAddresses":["192.0.2.1"],"lanPort":8791,"bonjourName":"Deniz's MacBook Pro","tunnelUrl":"https://\#(host)","updatedAt":"2026-11-16T10:00:00.000Z"}"#
         let session = Self.macSession(host: host) {
             .init(status: 201, body: Data(#"{"device":\#(device),"token":"\#(token)","routes":\#(routesJSON)}"#.utf8))
         }
@@ -116,7 +116,7 @@ struct QRPairingClientTests {
         let pairing = PairingClient(store: store, session: session)
         // The LAN address (TEST-NET, no stub) does not answer; the tunnel does.
         let invite = PairingInvite(
-            macName: "Burak's MacBook Pro", secret: secret, expiresAt: .now.addingTimeInterval(600), macId: "mac-1",
+            macName: "Deniz's MacBook Pro", secret: secret, expiresAt: .now.addingTimeInterval(600), macId: "mac-1",
             lanAddresses: ["192.0.2.1"], lanPort: 8791, tunnelURL: URL(string: "https://\(host)"))
         let connector = MacConnector(probe: MacConnector.healthProbe(session: session), remoteHeadStart: .milliseconds(100))
 
@@ -127,7 +127,7 @@ struct QRPairingClientTests {
         #expect(saved.token == token)
         #expect(saved.deviceId == "d2")
         #expect(saved.serverURL.absoluteString == "https://\(host)")
-        #expect(saved.serverName == "Burak's MacBook Pro")
+        #expect(saved.serverName == "Deniz's MacBook Pro")
         #expect(saved.macId == "mac-1")
         #expect(saved.routes?.lanAddresses == ["192.0.2.1"])
         #expect(saved.routes?.tunnelUrl?.absoluteString == "https://\(host)")
@@ -235,14 +235,14 @@ struct QRPairingClientTests {
     }
 
     @Test func matchesTheBonjourServiceByIdThenName() {
-        let endpoint = NWEndpoint.service(name: "Burak's Mac", type: "_studio._tcp", domain: "local.", interface: nil)
-        let withId = DiscoveredStudio(serviceName: "Burak's Mac", txt: ["name": "Burak's Mac", "id": "mac-1"], endpoint: endpoint)
+        let endpoint = NWEndpoint.service(name: "Deniz's Mac", type: "_studio._tcp", domain: "local.", interface: nil)
+        let withId = DiscoveredStudio(serviceName: "Deniz's Mac", txt: ["name": "Deniz's Mac", "id": "mac-1"], endpoint: endpoint)
         #expect(withId.macId == "mac-1")
         #expect(withId.matches(macId: "mac-1", names: []))
-        #expect(!withId.matches(macId: "mac-2", names: ["Burak's Mac"]), "another Mac with the same name")
-        let noId = DiscoveredStudio(serviceName: "Burak's Mac (2)", txt: ["name": "Burak's Mac"], endpoint: endpoint)
-        #expect(noId.matches(macId: "mac-1", names: ["Burak's Mac"]))
-        #expect(noId.matches(macId: nil, names: ["Burak's Mac (2)"]))
+        #expect(!withId.matches(macId: "mac-2", names: ["Deniz's Mac"]), "another Mac with the same name")
+        let noId = DiscoveredStudio(serviceName: "Deniz's Mac (2)", txt: ["name": "Deniz's Mac"], endpoint: endpoint)
+        #expect(noId.matches(macId: "mac-1", names: ["Deniz's Mac"]))
+        #expect(noId.matches(macId: nil, names: ["Deniz's Mac (2)"]))
         #expect(!noId.matches(macId: nil, names: ["Other"]))
     }
 }

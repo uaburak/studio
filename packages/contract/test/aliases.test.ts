@@ -93,7 +93,7 @@ describe("mention scanning", () => {
 
   it("does not match e-mail-like strings, handles or words that go on", () => {
     expect(names("a@image")).toEqual([]);
-    expect(names("burak@image-1.com")).toEqual([]);
+    expect(names("deniz@image-1.com")).toEqual([]);
     expect(names("x.y@image")).toEqual([]);
     expect(names("https://x.com/@image")).toEqual([]);
     expect(names("@@image")).toEqual([]);

@@ -146,7 +146,7 @@ describe("Expanded Studio Chat Agent Tools (Wave 2A)", () => {
       id: "acc_li",
       brandId: "brand_1",
       platform: "linkedin",
-      handle: "Burak Koç",
+      handle: "Deniz Yılmaz",
       externalId: "urn:li:person:bkoc",
       status: "connected",
       createdAt: NOW,

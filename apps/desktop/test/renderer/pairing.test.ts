@@ -35,16 +35,16 @@ const SWIFT_VECTORS: { name: string; invite: Parameters<typeof makeInvite>[0]; u
   {
     name: "full",
     invite: {
-      macName: "Burak’s MacBook Pro & Co + 2",
+      macName: "Deniz’s MacBook Pro & Co + 2",
       secret,
       expiresAt: expiry,
       macId: "8f1c2a4e-0000-4000-8000-000000000001",
       lanAddresses: ["192.168.1.20", "10.0.0.5"],
       lanPort: 8791,
-      bonjourName: "Burak’s MacBook Pro (2)",
+      bonjourName: "Deniz’s MacBook Pro (2)",
       tunnelUrl: "https://social.example.net",
     },
-    url: "studio://pair?v=1&n=Burak%E2%80%99s%20MacBook%20Pro%20%26%20Co%20%2B%202&s=Q1w2E3r4T5y6U7i8O9p0A1s2D3f4G5h6J7k8L9z0X1c&e=1794900000&i=8f1c2a4e-0000-4000-8000-000000000001&a=192.168.1.20,10.0.0.5&p=8791&b=Burak%E2%80%99s%20MacBook%20Pro%20(2)&t=https://social.example.net",
+    url: "studio://pair?v=1&n=Deniz%E2%80%99s%20MacBook%20Pro%20%26%20Co%20%2B%202&s=Q1w2E3r4T5y6U7i8O9p0A1s2D3f4G5h6J7k8L9z0X1c&e=1794900000&i=8f1c2a4e-0000-4000-8000-000000000001&a=192.168.1.20,10.0.0.5&p=8791&b=Deniz%E2%80%99s%20MacBook%20Pro%20(2)&t=https://social.example.net",
   },
   {
     name: "minimal",
@@ -73,15 +73,15 @@ const SWIFT_VECTORS: { name: string; invite: Parameters<typeof makeInvite>[0]; u
   {
     name: "junk addresses, query in the tunnel",
     invite: {
-      macName: "Burak's MacBook Pro",
+      macName: "Deniz's MacBook Pro",
       secret,
       expiresAt: expiry,
       macId: "mac-1",
       lanAddresses: ["1.2.3.4", "999.1.1.1", "fe80::1", "abc", "01.2.3.4", "192.0.2.1"],
       lanPort: 8791,
-      tunnelUrl: "https://social.burakkoc.net/path?x=1&y=2",
+      tunnelUrl: "https://studio.ornek.com/path?x=1&y=2",
     },
-    url: "studio://pair?v=1&n=Burak's%20MacBook%20Pro&s=Q1w2E3r4T5y6U7i8O9p0A1s2D3f4G5h6J7k8L9z0X1c&e=1794900000&i=mac-1&a=1.2.3.4,192.0.2.1&p=8791&t=https://social.burakkoc.net/path?x%3D1%26y%3D2",
+    url: "studio://pair?v=1&n=Deniz's%20MacBook%20Pro&s=Q1w2E3r4T5y6U7i8O9p0A1s2D3f4G5h6J7k8L9z0X1c&e=1794900000&i=mac-1&a=1.2.3.4,192.0.2.1&p=8791&t=https://studio.ornek.com/path?x%3D1%26y%3D2",
   },
   {
     name: "characters",
@@ -301,7 +301,7 @@ function fakeApi(clock: { now: number }) {
     routes: vi.fn(async (): Promise<MacRoutes> => {
       if (state.routesMissing) throw new Error("routes not found");
       return {
-        macName: "Burak's MacBook Pro",
+        macName: "Deniz's MacBook Pro",
         macId: "mac-1",
         lanAddresses: ["192.168.1.20"],
         lanPort: 8791,
@@ -333,7 +333,7 @@ describe("pairing refresh", () => {
     expect(c.getSnapshot().phase).toEqual({ kind: "ready" });
     expect(api.createCode).toHaveBeenCalledTimes(1);
     const first = c.getSnapshot().url;
-    expect(first).toMatch(/^studio:\/\/pair\?v=1&n=Burak's%20MacBook%20Pro&s=/);
+    expect(first).toMatch(/^studio:\/\/pair\?v=1&n=Deniz's%20MacBook%20Pro&s=/);
     expect(first).toContain(
       `&e=${Math.floor((clock.now + 600_000) / 1000)}&i=mac-1&a=192.168.1.20&p=8791`,
     );

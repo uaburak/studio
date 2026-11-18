@@ -22,7 +22,7 @@ describe("Claude profile name", () => {
     const json = (account: Record<string, unknown>) => JSON.stringify({ oauthAccount: account });
     expect(profileNameFromClaudeJson(json({ fullName: "Ayşe Nur Kaya" }))).toBe("Ayşe");
     expect(profileNameFromClaudeJson(json({ displayName: "  ", fullName: "Can Öz" }))).toBe("Can");
-    expect(profileNameFromClaudeJson(json({ displayName: "Burak Koç" }))).toBe("Burak Koç");
+    expect(profileNameFromClaudeJson(json({ displayName: "Deniz Yılmaz" }))).toBe("Deniz Yılmaz");
   });
 
   it("never uses the email address and gives up without an account", () => {

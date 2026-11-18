@@ -21,8 +21,8 @@ describe("device pairing schemas", () => {
   });
 
   it("defaults the platform and trims the device name", () => {
-    const parsed = PairingClaim.parse({ code: "000001", deviceName: "  Burak'ın iPhone'u " });
-    expect(parsed).toEqual({ code: "000001", deviceName: "Burak'ın iPhone'u", platform: "other" });
+    const parsed = PairingClaim.parse({ code: "000001", deviceName: "  Deniz'in iPhone'u " });
+    expect(parsed).toEqual({ code: "000001", deviceName: "Deniz'in iPhone'u", platform: "other" });
     expect(PairingClaim.safeParse({ code: "000001", deviceName: "   " }).success).toBe(false);
   });
 
@@ -49,11 +49,11 @@ describe("device pairing schemas", () => {
 
   it("describes the Mac's routes", () => {
     const routes = {
-      macName: "Burak's MacBook Pro",
+      macName: "Deniz's MacBook Pro",
       macId: null,
       lanAddresses: ["192.168.1.20"],
       lanPort: 8791,
-      bonjourName: "Burak's MacBook Pro",
+      bonjourName: "Deniz's MacBook Pro",
       tunnelUrl: "https://social.example.net",
       updatedAt: "2026-11-16T10:00:00.000Z",
     };

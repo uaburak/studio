@@ -1,4 +1,4 @@
-// Child processes of the host (port of StudioMac/Host/ProcessLauncher.swift).
+// Child processes of the host.
 //
 // Each child runs in its own process group (detached), stdin from /dev/null, stdout+stderr
 // appended to its log file, with exactly the environment the host built (nothing else is
