@@ -224,6 +224,8 @@ export function exportBlocker(content: Content, version: ContentVersion | null):
 }
 
 let busy = false;
+/** The files the last export wrote ("Son dışa aktarımı Finder'da göster"). */
+let lastExport: string[] = [];
 
 /** Export / share / reveal with toasts (the AppKit app's status line). */
 export function usePostExport() {
@@ -253,6 +255,7 @@ export function usePostExport() {
         if (result.ok) {
           if (kind === "save") {
             const paths = result.paths;
+            lastExport = paths;
             toast(savedText(paths), {
               action: { label: "Finder'da göster", run: () => void files.reveal(paths) },
               durationMs: 10_000,
@@ -303,6 +306,11 @@ export function usePostExport() {
             : slideRequest(content, version, { format: "jpeg", slides: null }),
           "share",
         ),
+      /** Shows the last export's files in Finder. */
+      revealLast: () => {
+        if (lastExport.length > 0) void bridge().postFiles?.reveal(lastExport);
+      },
+      hasLast: () => lastExport.length > 0,
     };
   }, [api]);
 }
@@ -349,6 +357,12 @@ export function exportMenuEntries(
       onSelect: () => {
         if (version) void exporter.share(content, version);
       },
+    },
+    {
+      id: "reveal-export",
+      label: "Son dışa aktarımı Finder'da göster",
+      disabled: !exporter.hasLast(),
+      onSelect: exporter.revealLast,
     },
   ];
 }

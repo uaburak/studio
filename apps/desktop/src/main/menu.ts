@@ -77,8 +77,31 @@ export function buildMenu(
       ],
     },
     {
+      // The AppKit app's Git menu. On the post canvas ⇧⌘K / ⇧⌘P stay Wecra's (place image,
+      // pixel preview): the page marks them used and the renderer skips the command.
+      label: "Git",
+      submenu: [
+        item("Postlar", "go-posts", "Shift+Cmd+P"),
+        item("Takvim", "go-calendar", "Shift+Cmd+K"),
+        item("Medya", "go-media", "Shift+Cmd+M"),
+        { type: "separator" },
+        item("Yeni marka…", "new-brand", "Shift+Cmd+N"),
+        item("Marka ayarları", "brand-settings", "Shift+Cmd+B"),
+      ],
+    },
+    {
       label: "Pencere",
       role: "windowMenu",
+    },
+    {
+      // Not role "help": macOS would put its help search on ⇧⌘/ (the AppKit app's shortcut list).
+      label: "Yardım",
+      submenu: [
+        item("Klavye kısayolları", "help-shortcuts", "Shift+Cmd+/"),
+        item("Başlangıç rehberi…", "help-onboarding"),
+        { type: "separator" },
+        item("Studio günlüklerini göster", "help-logs"),
+      ],
     },
   ];
   return Menu.buildFromTemplate(template);

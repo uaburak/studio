@@ -10,11 +10,14 @@ interface SettingsSheetState {
   /** Bumped on every request, so asking for the shown section again still clears a search. */
   requestId: number;
   request(section: SectionId | null): void;
+  /** Yardım → Klavye kısayolları: Hakkında shows the list (and clears this). */
+  shortcutsRequested: boolean;
 }
 
 export const useSettingsSheet = create<SettingsSheetState>((set, get) => ({
   requested: null,
   requestId: 0,
+  shortcutsRequested: false,
   request(section) {
     set({ requested: section, requestId: get().requestId + 1 });
   },
@@ -27,4 +30,10 @@ export function openSettings(section?: SectionId): void {
 
 export function closeSettings(): void {
   useAppStore.getState().setSettingsOpen(false);
+}
+
+/** Yardım → Klavye kısayolları: Ayarlar → Hakkında with the shortcut list open. */
+export function openShortcuts(): void {
+  useSettingsSheet.setState({ shortcutsRequested: true });
+  openSettings("about");
 }

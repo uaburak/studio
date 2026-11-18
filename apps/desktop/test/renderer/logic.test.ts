@@ -322,6 +322,14 @@ describe("window state", () => {
     expect(k("\\")).toBe("toggle-sidebar");
     expect(k("[")).toBe("back");
     expect(k("i", { altKey: true })).toBe("toggle-panel");
+    // The AppKit app's Git and Yardım menus (⇧ keeps ⌘N / ⌘K their own).
+    expect(k("P", { shiftKey: true })).toBe("go-posts");
+    expect(k("K", { shiftKey: true })).toBe("go-calendar");
+    expect(k("M", { shiftKey: true })).toBe("go-media");
+    expect(k("N", { shiftKey: true })).toBe("new-brand");
+    expect(k("B", { shiftKey: true })).toBe("brand-settings");
+    expect(k("?", { shiftKey: true })).toBe("help-shortcuts");
+    expect(k("Z", { shiftKey: true })).toBeNull();
     expect(
       shortcutCommand({ key: "n", metaKey: false, altKey: false, ctrlKey: false, shiftKey: false }),
     ).toBeNull();

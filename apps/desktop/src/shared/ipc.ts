@@ -106,6 +106,16 @@ export type MenuCommand =
   | "forward"
   | "rename"
   | "gallery"
+  /** Git: Postlar, Takvim (⇧⌘K), Medya (⇧⌘M), Yeni marka (⇧⌘N), Marka ayarları (⇧⌘B). */
+  | "go-posts"
+  | "go-calendar"
+  | "go-media"
+  | "new-brand"
+  | "brand-settings"
+  /** Yardım: keyboard shortcuts, the first-run guide, the logs folder in Finder. */
+  | "help-shortcuts"
+  | "help-onboarding"
+  | "help-logs"
   /** Trackpad swipe (BrowserWindow "swipe") or mouse back / forward ("app-command"). */
   | "swipe-back"
   | "swipe-forward";
