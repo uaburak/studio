@@ -518,13 +518,16 @@ async function fillCanvas(
     throw new Error("Şablonun tuval belgesi yok; şablonu posttan yeniden oluşturun.");
   await requireCanvasRunner(deps, signal);
 
-  // Version 1: the template's copy (a retry of this job finds its own copy again).
+  // Version 1: the template's copy. A retry (this job again, or "Yeniden dene" as a new job)
+  // finds the copy still untouched — the template's own document — and fills it; a post that
+  // was filled or edited since is left as it is.
   let base: ContentVersion;
   if (content.currentVersion) {
     base = await deps.api.client.contents.versions.get(content.id, content.currentVersion.version, {
       signal,
     });
-    if (base.jobId !== ctx.jobId)
+    const untouchedCopy = base.editorDocument?.assetId === template.editorDocument.assetId;
+    if (base.jobId !== ctx.jobId && !untouchedCopy)
       return { version: base, jobIds: [], pending: false, fit: {}, reused: true };
   } else {
     ctx.progress(0.25, "Şablonun tuval belgesi kopyalanıyor");

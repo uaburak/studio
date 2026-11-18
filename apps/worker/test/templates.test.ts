@@ -620,6 +620,47 @@ describe("template fill: canvas", () => {
       "tuval çalıştırıcısı bağlı değil",
     );
   });
+
+  it("fills an untouched copy on a retry and leaves a post that changed since", async () => {
+    const template = canvasTemplate();
+    const copyOf = (jobId: string, assetId: string): ContentVersion => ({
+      id: "ver_copy",
+      contentId: "content_1",
+      version: 1,
+      origin: "generated",
+      contentHash: "a".repeat(64),
+      slideCount: 1,
+      note: null,
+      jobId,
+      createdAt: NOW,
+      updatedAt: NOW,
+      slides: template.slides,
+      editorDocument: { kind: "wecra", assetId, format: 2 },
+    });
+    const ref = { id: "ver_copy", version: 1, contentHash: "a".repeat(64) };
+    for (const [assetId, fills] of [
+      ["asset_doc", true],
+      ["asset_edited", false],
+    ] as const) {
+      const { api, state } = fakeApiWith(template, draft({ currentVersion: ref }));
+      state.versions.push(copyOf("job_earlier", assetId));
+      const applied = withRunner(api, state, () => canvasFacts());
+      const handler = createContentGenerateHandler(
+        makeDeps(api, async () => result({}), measuringRenderer([])),
+      );
+      const job = jobFor({
+        brief: "",
+        template: { templateId: "tpl_canvas", values: { headline: "Ekim" }, autoFit: false },
+      });
+      const out = (await handler.run(job.payload as never, ctxFor(job).ctx)) as Record<
+        string,
+        unknown
+      >;
+      expect(applied).toHaveLength(fills ? 1 : 0);
+      expect(state.versionCreates.filter((v) => v.note?.includes("kopyalandı"))).toHaveLength(0);
+      if (!fills) expect(out.reused).toBe(true);
+    }
+  });
 });
 
 describe("template helpers", () => {
