@@ -9,6 +9,10 @@
  *   no-longer-approved schedules are never published) and the state machine's state is saved
  *   before every action, so a crashed or retried publish resumes and reconciles instead of
  *   posting again.
+ * - Publish details (N13): first comment, alt texts, location, collaborators, people tags, the
+ *   Reels cover and share-to-feed go into both paths as far as the platform supports them
+ *   (`resolvePublishDetails`). A Reels cover picture needs a public URL: it rides with the cloud
+ *   order; a local publish uses the video's frame instead and says so in a warning.
  */
 import { createHash } from "node:crypto";
 import {
@@ -19,7 +23,10 @@ import {
   type CloudOrderMedia,
   type CloudPublishKind,
   missedScheduleMessage,
+  type ResolvedPublishDetails,
+  resolvePublishDetails,
   SchedulePublishPayload,
+  type ScheduleWarning,
   selectPublishKind as selectKind,
   type WorkerScheduleClaimRefusal,
   type WorkerScheduleCredentials,
@@ -33,6 +40,7 @@ import {
   PublishError,
   type PublishRequest,
   type PublishState,
+  postPublishWarnings,
   runToCompletion,
   toPublishError,
 } from "../../../../packages/publishers/src/index.ts";
@@ -101,6 +109,65 @@ function normalizeLinkedInAuthorUrn(externalId: string): string {
 function hasAiGeneratedMarker(creds: WorkerScheduleCredentials): boolean {
   if (/ai[ _-]?görsel|yapay zek[aâ]/i.test(creds.version.note ?? "")) return true;
   return creds.version.slides.some((s) => /data-ai-generated|ai-image-/i.test(s.html));
+}
+
+/** The post's publish details for this publish flow (only what the platform supports). */
+export function detailsFor(
+  creds: WorkerScheduleCredentials,
+  kind: CloudPublishKind,
+): ResolvedPublishDetails {
+  return resolvePublishDetails(
+    creds.content.publishDetails ?? null,
+    kind,
+    creds.version.slides.length,
+  );
+}
+
+/** A local publish cannot hand Instagram a cover picture (it needs a public URL). */
+const LOCAL_COVER_WARNING: ScheduleWarning = {
+  code: "REEL_COVER_SKIPPED",
+  message:
+    "Reels kapak görseli yalnızca bulut yayıncıyla gönderilebiliyor; Mac'ten yayında videonun karesi kullanıldı.",
+};
+
+/**
+ * The Reels cover picture as a JPEG (Instagram takes JPEG only, at most 8 MB), for a cloud order.
+ * Null when the post has none or it cannot be read (the frame is used then).
+ */
+async function prepareCover(
+  kind: CloudPublishKind,
+  details: ResolvedPublishDetails,
+  deps: SchedulePublishDeps,
+  signal: AbortSignal,
+): Promise<PreparedMediaAsset | null> {
+  if (kind !== "instagram.reel" || details.reelCover?.kind !== "image") return null;
+  try {
+    const dl = await deps.api.downloadAsset(details.reelCover.assetId, {
+      maxBytes: 25 * 1024 * 1024,
+      signal,
+    });
+    const out = await sharp(dl.bytes, { animated: false })
+      .resize({ width: 1080, height: 1920, fit: "cover", withoutEnlargement: false })
+      .flatten({ background: "#ffffff" })
+      .toColorspace("srgb")
+      .jpeg({ quality: 90, mozjpeg: true })
+      .toBuffer({ resolveWithObject: true });
+    const bytes = new Uint8Array(out.data.buffer, out.data.byteOffset, out.data.byteLength);
+    if (bytes.byteLength > 8 * 1024 * 1024) return null;
+    return {
+      assetId: details.reelCover.assetId,
+      mediaId: "cover.jpg",
+      kind: "image",
+      mimeType: "image/jpeg",
+      bytes,
+      sha256: sha256Hex(bytes),
+      width: out.info.width,
+      height: out.info.height,
+    };
+  } catch (error) {
+    if (signal.aborted) throw error;
+    return null;
+  }
 }
 
 /** Same rule the API preflight uses (`selectPublishKind` in the contract). */
@@ -478,16 +545,46 @@ async function pushOrder(input: {
       ? normalizeLinkedInAuthorUrn(creds.account.externalId)
       : creds.account.externalId;
 
-  const mediaDeclarations: CloudOrderMedia[] = prepared.items.map((m) => ({
-    id: m.mediaId,
-    kind: m.kind,
-    mimeType: m.mimeType,
-    bytes: m.bytes.byteLength,
-    sha256: m.sha256,
-    ...(m.width ? { width: m.width } : {}),
-    ...(m.height ? { height: m.height } : {}),
-    ...(m.durationMs ? { durationMs: m.durationMs, frameRate: 30 } : {}),
-  }));
+  const details = detailsFor(creds, kind);
+  const cover = await prepareCover(kind, details, deps, signal);
+  const pictureTags = kind === "instagram.image" || kind === "instagram.carousel";
+  const mediaDeclarations: CloudOrderMedia[] = prepared.items.map((m, i) => {
+    const altText = m.kind === "image" ? details.altTexts[i] : undefined;
+    const tags = pictureTags && m.kind === "image" ? details.userTags[i] : undefined;
+    return {
+      id: m.mediaId,
+      kind: m.kind,
+      mimeType: m.mimeType,
+      bytes: m.bytes.byteLength,
+      sha256: m.sha256,
+      ...(m.width ? { width: m.width } : {}),
+      ...(m.height ? { height: m.height } : {}),
+      ...(m.durationMs ? { durationMs: m.durationMs, frameRate: 30 } : {}),
+      ...(altText ? { altText: altText.slice(0, 1000) } : {}),
+      ...(tags?.length ? { userTags: tags } : {}),
+    };
+  });
+  if (cover) {
+    mediaDeclarations.push({
+      id: cover.mediaId,
+      kind: "image",
+      mimeType: "image/jpeg",
+      bytes: cover.bytes.byteLength,
+      sha256: cover.sha256,
+      ...(cover.width ? { width: cover.width } : {}),
+      ...(cover.height ? { height: cover.height } : {}),
+      role: "cover",
+    });
+  }
+  const reelTags = kind === "instagram.reel" ? (details.userTags[0] ?? []) : [];
+  const orderDetails = {
+    ...(details.firstComment ? { firstComment: details.firstComment } : {}),
+    ...(details.locationId ? { locationId: details.locationId } : {}),
+    ...(details.collaborators?.length ? { collaborators: details.collaborators } : {}),
+    ...(reelTags.length ? { reelUserTags: reelTags.map((t) => t.username) } : {}),
+    ...(details.reelCover?.kind === "frame" ? { thumbOffsetMs: details.reelCover.offsetMs } : {}),
+    ...(details.shareToFeed === false ? { shareToFeed: false } : {}),
+  };
 
   const orderBody: CloudOrderCreate = {
     contentId: creds.content.id,
@@ -508,6 +605,7 @@ async function pushOrder(input: {
         accessToken: creds.accessToken,
       },
     ],
+    ...(Object.keys(orderDetails).length ? { details: orderDetails } : {}),
   };
 
   const orderUrl = `${cloud.url}/v1/orders/${encodeURIComponent(scheduleId)}`;
@@ -550,7 +648,7 @@ async function pushOrder(input: {
   }
 
   let uploadedCount = 0;
-  for (const m of prepared.items) {
+  for (const m of cover ? [...prepared.items, cover] : prepared.items) {
     const mediaUrl = `${orderUrl}/media/${encodeURIComponent(m.mediaId)}`;
     const putMediaRes = await doFetch(mediaUrl, {
       method: "PUT",
@@ -767,6 +865,7 @@ export async function syncCloudPublisherOutcomes(input: {
                 attempt: Math.max(1, target.attempts),
                 externalPostId: target.postId ?? target.externalId,
                 permalink: target.permalink,
+                ...(target.warnings?.length ? { warnings: target.warnings.slice(0, 20) } : {}),
               },
               { signal: input.signal },
             )
@@ -808,7 +907,8 @@ function requestIdentity(request: PublishRequest): string {
       | "title"
       | "igUserId"
       | "pageId"
-      | "authorUrn",
+      | "authorUrn"
+      | "firstComment",
       unknown
     >
   >;
@@ -820,10 +920,11 @@ function requestIdentity(request: PublishRequest): string {
     r.message ?? null,
     r.description ?? null,
     r.title ?? null,
+    r.firstComment ?? null,
   ]);
 }
 
-function buildLocalPublishRequest(
+export function buildLocalPublishRequest(
   creds: WorkerScheduleCredentials,
   kind: CloudPublishKind,
   prepared: { items: PreparedMediaAsset[]; coverAssetId?: string },
@@ -833,14 +934,23 @@ function buildLocalPublishRequest(
   const title = creds.content.title || "Gönderi";
   const isAiGenerated = hasAiGeneratedMarker(creds) ? true : undefined;
   const externalId = creds.account.externalId ?? "";
+  const d = detailsFor(creds, kind);
+  const comment = d.firstComment ? { firstComment: d.firstComment } : {};
+  const ig = {
+    ...comment,
+    ...(d.collaborators?.length ? { collaborators: d.collaborators } : {}),
+    ...(d.locationId ? { locationId: d.locationId } : {}),
+  };
 
-  const toImageMedia = (m: PreparedMediaAsset) => ({
+  const toImageMedia = (m: PreparedMediaAsset, i = 0, opts: { tags?: boolean } = {}) => ({
     kind: "image" as const,
     url: assetContentUrl(m.assetId),
     mimeType: m.mimeType,
     bytes: m.bytes.byteLength,
     ...(m.width ? { width: m.width } : {}),
     ...(m.height ? { height: m.height } : {}),
+    ...(d.altTexts[i] ? { altText: d.altTexts[i] } : {}),
+    ...(opts.tags && d.userTags[i]?.length ? { userTags: d.userTags[i] } : {}),
   });
 
   switch (kind) {
@@ -851,14 +961,17 @@ function buildLocalPublishRequest(
         image: toImageMedia(prepared.items[0] as PreparedMediaAsset),
         ...(caption ? { caption } : {}),
         ...(isAiGenerated ? { isAiGenerated } : {}),
+        ...ig,
+        ...(d.userTags[0]?.length ? { userTags: d.userTags[0] } : {}),
       };
     case "instagram.carousel":
       return {
         kind,
         igUserId: externalId,
-        items: prepared.items.map(toImageMedia),
+        items: prepared.items.map((m, i) => toImageMedia(m, i, { tags: true })),
         ...(caption ? { caption } : {}),
         ...(isAiGenerated ? { isAiGenerated } : {}),
+        ...ig,
       };
     case "instagram.story":
       return {
@@ -883,9 +996,13 @@ function buildLocalPublishRequest(
           frameRate: 30,
         },
         ...(caption ? { caption } : {}),
-        thumbOffsetMs: 500,
-        shareToFeed: true,
+        thumbOffsetMs: d.reelCover?.kind === "frame" ? d.reelCover.offsetMs : 500,
+        shareToFeed: d.shareToFeed ?? true,
         ...(isAiGenerated ? { isAiGenerated } : {}),
+        ...ig,
+        ...(d.userTags[0]?.length
+          ? { userTags: d.userTags[0].map((t) => ({ username: t.username })) }
+          : {}),
       };
     }
     case "facebook.photo":
@@ -894,13 +1011,15 @@ function buildLocalPublishRequest(
         pageId: externalId,
         image: toImageMedia(prepared.items[0] as PreparedMediaAsset),
         ...(caption ? { caption } : {}),
+        ...comment,
       };
     case "facebook.multi_photo":
       return {
         kind,
         pageId: externalId,
-        images: prepared.items.map(toImageMedia),
+        images: prepared.items.map((m, i) => toImageMedia(m, i)),
         ...(caption ? { message: caption } : {}),
+        ...comment,
       };
     case "facebook.story":
       return {
@@ -928,6 +1047,7 @@ function buildLocalPublishRequest(
         title,
         ...(caption ? { description: caption } : {}),
         ...(kind === "facebook.reel" && isAiGenerated ? { isAiGenerated } : {}),
+        ...comment,
       };
     }
     case "linkedin.text":
@@ -947,7 +1067,7 @@ function buildLocalPublishRequest(
       return {
         kind,
         authorUrn: normalizeLinkedInAuthorUrn(externalId),
-        images: prepared.items.map(toImageMedia),
+        images: prepared.items.map((m, i) => toImageMedia(m, i)),
         ...(caption ? { commentary: caption } : {}),
       };
     case "linkedin.document": {
@@ -1252,6 +1372,9 @@ export async function publishScheduleLocally(input: {
 
     if (outcome.status === "done") {
       const externalPostId = outcome.result.postId ?? outcome.result.externalId;
+      const warnings: ScheduleWarning[] = postPublishWarnings(outcome.result.warnings);
+      if (kind === "instagram.reel" && detailsFor(creds, kind).reelCover?.kind === "image")
+        warnings.push(LOCAL_COVER_WARNING);
       outcomeRecorded = true;
       await deps.api.client.workerSchedules.outcome(
         scheduleId,
@@ -1260,6 +1383,7 @@ export async function publishScheduleLocally(input: {
           attempt,
           externalPostId,
           permalink: outcome.result.permalink,
+          ...(warnings.length ? { warnings } : {}),
         },
         init,
       );

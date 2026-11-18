@@ -21,6 +21,7 @@ import { DurableObject } from "cloudflare:workers";
 import type {
   CloudOrder,
   CloudOrderCreate,
+  CloudOrderDetails,
   CloudOrderMedia,
   CloudOrderStatus,
   CloudPublishError,
@@ -39,6 +40,7 @@ import {
   type PublishErrorData,
   type Publishers,
   type PublishState,
+  postPublishWarnings,
   type StepOutcome,
   systemClock,
   validateRequest,
@@ -89,6 +91,8 @@ type StoredMedia = CloudOrderMedia & { uploaded: boolean };
 
 type OrderRow = {
   id: string;
+  /** Publish details JSON (N13), null for none. */
+  details: string | null;
   content_id: string;
   version_id: string;
   content_hash: string;
@@ -123,6 +127,8 @@ type TargetRow = {
   permalink: string | null;
   published_at: number | null;
   error: string | null;
+  /** Warnings of a published target (N13: the first comment failed …), JSON. */
+  warnings: string | null;
   updated_at: number;
 };
 
@@ -234,6 +240,16 @@ export class Scheduler extends DurableObject<Env> {
     if (!columns.includes("not_after")) {
       ctx.storage.sql.exec("ALTER TABLE orders ADD COLUMN not_after INTEGER");
     }
+    if (!columns.includes("details")) {
+      ctx.storage.sql.exec("ALTER TABLE orders ADD COLUMN details TEXT");
+    }
+    const targetColumns = ctx.storage.sql
+      .exec<{ name: string }>("SELECT name FROM pragma_table_info('targets')")
+      .toArray()
+      .map((c) => c.name);
+    if (!targetColumns.includes("warnings")) {
+      ctx.storage.sql.exec("ALTER TABLE targets ADD COLUMN warnings TEXT");
+    }
   }
 
   private get sql() {
@@ -285,6 +301,7 @@ export class Scheduler extends DurableObject<Env> {
       title: input.title ?? null,
       isAiGenerated: input.isAiGenerated ?? false,
       media: input.media,
+      details: input.details ?? null,
     };
     // Pre-flight with placeholder URLs so content problems surface now, not at publish time.
     const issues: { path: string; message: string }[] = [];
@@ -351,6 +368,11 @@ export class Scheduler extends DurableObject<Env> {
         JSON.stringify(media),
         now,
         now,
+      );
+      this.sql.exec(
+        "UPDATE orders SET details = ? WHERE id = ?",
+        order.details ? JSON.stringify(order.details) : null,
+        id,
       );
       if (retry) {
         // Finished orders get a purge time; a retried one is live again.
@@ -665,6 +687,7 @@ export class Scheduler extends DurableObject<Env> {
             title: order.title,
             isAiGenerated: order.is_ai_generated === 1,
             media,
+            details: order.details ? (JSON.parse(order.details) as CloudOrderDetails) : null,
           },
           { kind: target.kind as CloudPublishKind, accountExternalId: target.account_external_id },
           (mediaId) => urls.get(mediaId) ?? "",
@@ -765,15 +788,17 @@ export class Scheduler extends DurableObject<Env> {
       case "done": {
         const r = out.result;
         const publishedAt = Date.parse(r.publishedAt);
+        const warnings = postPublishWarnings(r.warnings);
         this.ctx.storage.transactionSync(() => {
           this.sql.exec(
             `UPDATE targets SET status = 'published', token = NULL, next_run_at = NULL,
                external_id = ?, post_id = ?, permalink = ?, published_at = ?, error = NULL,
-               updated_at = ? WHERE order_id = ? AND id = ?`,
+               warnings = ?, updated_at = ? WHERE order_id = ? AND id = ?`,
             r.externalId,
             r.postId,
             r.permalink,
             Number.isNaN(publishedAt) ? now : publishedAt,
+            warnings.length ? JSON.stringify(warnings) : null,
             now,
             order.id,
             target.id,
@@ -997,7 +1022,11 @@ export class Scheduler extends DurableObject<Env> {
         permalink: t.permalink,
         publishedAt: isoOrNull(t.published_at),
         error: t.error ? (JSON.parse(t.error) as CloudPublishError) : null,
+        ...(t.warnings
+          ? { warnings: JSON.parse(t.warnings) as { code: string; message: string }[] }
+          : {}),
       })),
+      details: row.details ? (JSON.parse(row.details) as CloudOrderDetails) : null,
       cancelledAt: isoOrNull(row.cancelled_at),
       createdAt: iso(row.created_at),
       updatedAt: iso(row.updated_at),

@@ -25,6 +25,17 @@ const MediaMeta = {
   bytes: z.number().int().nonnegative().optional(),
 };
 
+/**
+ * An Instagram user tag. Feed images (and carousel image items) need `x` and `y` (0–1 from the
+ * top left); Reels take usernames only (positions are dropped).
+ */
+export const IgUserTag = z.object({
+  username: z.string().min(1),
+  x: z.number().min(0).max(1).optional(),
+  y: z.number().min(0).max(1).optional(),
+});
+export type IgUserTag = z.infer<typeof IgUserTag>;
+
 export const ImageMedia = z.object({
   kind: z.literal("image"),
   url: PublicUrl,
@@ -36,6 +47,8 @@ export const ImageMedia = z.object({
   ...MediaMeta,
   /** Accessibility text (Instagram feed/carousel images, Facebook photos). */
   altText: z.string().optional(),
+  /** Instagram carousel image items only: people tagged on this picture. */
+  userTags: z.array(IgUserTag).optional(),
 });
 export type ImageMedia = z.infer<typeof ImageMedia>;
 
@@ -86,12 +99,6 @@ export const DocumentMedia = z
   });
 export type DocumentMedia = z.infer<typeof DocumentMedia>;
 
-const IgUserTag = z.object({
-  username: z.string().min(1),
-  x: z.number().min(0).max(1).optional(),
-  y: z.number().min(0).max(1).optional(),
-});
-
 const IgCommon = {
   /** Instagram professional account id (IG User id). */
   igUserId: z.string().min(1),
@@ -107,6 +114,11 @@ export const InstagramImageRequest = z.object({
   collaborators: z.array(z.string().min(1)).optional(),
   locationId: z.string().min(1).optional(),
   userTags: z.array(IgUserTag).optional(),
+  /**
+   * Posted as the first comment right after publishing (a separate step: when it fails the post
+   * stays published and a warning is recorded).
+   */
+  firstComment: z.string().min(1).optional(),
 });
 
 export const InstagramCarouselRequest = z.object({
@@ -116,6 +128,11 @@ export const InstagramCarouselRequest = z.object({
   caption: z.string().optional(),
   collaborators: z.array(z.string().min(1)).optional(),
   locationId: z.string().min(1).optional(),
+  /**
+   * Posted as the first comment right after publishing (a separate step: when it fails the post
+   * stays published and a warning is recorded).
+   */
+  firstComment: z.string().min(1).optional(),
 });
 
 export const InstagramReelRequest = z.object({
@@ -134,6 +151,11 @@ export const InstagramReelRequest = z.object({
   userTags: z.array(IgUserTag).optional(),
   /** Trial Reel: shown to non-followers first. */
   trial: z.object({ graduationStrategy: z.enum(["MANUAL", "SS_PERFORMANCE"]) }).optional(),
+  /**
+   * Posted as the first comment right after publishing (a separate step: when it fails the post
+   * stays published and a warning is recorded).
+   */
+  firstComment: z.string().min(1).optional(),
 });
 
 export const InstagramStoryRequest = z.object({
@@ -150,6 +172,11 @@ export const FacebookPhotoRequest = z.object({
   ...FbCommon,
   image: ImageMedia,
   caption: z.string().optional(),
+  /**
+   * Posted as the first comment right after publishing (a separate step: when it fails the post
+   * stays published and a warning is recorded).
+   */
+  firstComment: z.string().min(1).optional(),
 });
 
 export const FacebookMultiPhotoRequest = z.object({
@@ -157,6 +184,11 @@ export const FacebookMultiPhotoRequest = z.object({
   ...FbCommon,
   images: z.array(ImageMedia),
   message: z.string().optional(),
+  /**
+   * Posted as the first comment right after publishing (a separate step: when it fails the post
+   * stays published and a warning is recorded).
+   */
+  firstComment: z.string().min(1).optional(),
 });
 
 export const FacebookVideoRequest = z.object({
@@ -165,6 +197,11 @@ export const FacebookVideoRequest = z.object({
   video: VideoMedia,
   title: z.string().optional(),
   description: z.string().optional(),
+  /**
+   * Posted as the first comment right after publishing (a separate step: when it fails the post
+   * stays published and a warning is recorded).
+   */
+  firstComment: z.string().min(1).optional(),
 });
 
 export const FacebookReelRequest = z.object({
@@ -174,6 +211,11 @@ export const FacebookReelRequest = z.object({
   title: z.string().optional(),
   description: z.string().optional(),
   isAiGenerated: z.boolean().optional(),
+  /**
+   * Posted as the first comment right after publishing (a separate step: when it fails the post
+   * stays published and a warning is recorded).
+   */
+  firstComment: z.string().min(1).optional(),
 });
 
 export const FacebookStoryRequest = z.object({
@@ -311,6 +353,8 @@ export interface PublishResult {
   reconciled: boolean;
   /** Instagram only: publishing quota as read right before publishing. */
   quota?: PublishingQuota;
+  /** Id of the first comment, when the request had one and it was posted (or found). */
+  firstCommentId?: string | null;
 }
 
 /** From `GET /{ig-user-id}/content_publishing_limit`. */

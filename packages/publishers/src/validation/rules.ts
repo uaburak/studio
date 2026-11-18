@@ -15,6 +15,12 @@ export const INSTAGRAM_LIMITS = {
   caption: { maxChars: 2200, maxHashtags: 30, maxMentions: 20 },
   altText: { maxChars: 1000 },
   collaborators: { max: 3 },
+  /** Comments follow the caption's limits (2,200 characters, 30 hashtags, 20 mentions). */
+  comment: { maxChars: 2200, maxHashtags: 30, maxMentions: 20 },
+  /** People tagged on one picture (Instagram's app limit). */
+  userTags: { maxPerMedia: 20 },
+  /** Instagram usernames: letters, numbers, dots and underscores, at most 30. */
+  username: /^[A-Za-z0-9._]{1,30}$/,
   image: {
     mimeTypes: ["image/jpeg"],
     /** "8 MB" in the spec; error 2207004 says "8 MiB". */
@@ -61,6 +67,8 @@ export const INSTAGRAM_LIMITS = {
  * - https://developers.facebook.com/docs/page-stories-api
  */
 export const FACEBOOK_LIMITS = {
+  /** A comment's message (Graph `/{object-id}/comments`); Facebook's own limit is 8,000. */
+  comment: { maxChars: 8000 },
   photo: {
     mimeTypes: ["image/jpeg", "image/bmp", "image/png", "image/gif", "image/tiff"],
     maxBytes: 10 * MiB,

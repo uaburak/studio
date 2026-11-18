@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { EntityId, MAX_PAGE_SIZE, pageOf, Timestamp } from "./common.ts";
 import { ContentHash } from "./content.ts";
+import { IG_USERNAME_RE } from "./publish-details.ts";
 
 /**
  * Cloud publisher (`apps/cloud-publisher`): the only part of Studio that runs
@@ -67,9 +68,49 @@ export const CloudOrderMedia = z
     durationMs: z.number().int().positive().optional(),
     frameRate: z.number().positive().optional(),
     altText: z.string().max(1000).optional(),
+    /**
+     * `cover`: the Instagram Reels cover picture (N13), not one of the post's media; it is sent
+     * as `cover_url`. Absent: a post medium (in display order).
+     */
+    role: z.enum(["cover"]).optional(),
+    /** Instagram: people tagged on this picture (N13; x / y 0–1 from the top left). */
+    userTags: z
+      .array(
+        z.object({
+          username: z.string().regex(IG_USERNAME_RE),
+          x: z.number().min(0).max(1).optional(),
+          y: z.number().min(0).max(1).optional(),
+        }),
+      )
+      .max(20)
+      .optional(),
   })
   .meta({ id: "CloudOrderMedia" });
 export type CloudOrderMedia = z.infer<typeof CloudOrderMedia>;
+
+/**
+ * Publish details of an order (N13). Each target uses what its platform supports (the builder
+ * leaves the rest out): first comment (Instagram, Facebook), location, collaborators, Reels
+ * people tags, cover frame and share-to-feed (Instagram). Alt texts and picture tags ride on the
+ * media; the Reels cover picture is a medium with `role: "cover"`.
+ */
+export const CloudOrderDetails = z
+  .object({
+    firstComment: z.string().min(1).max(8000).optional(),
+    locationId: z
+      .string()
+      .regex(/^\d{1,30}$/)
+      .optional(),
+    collaborators: z.array(z.string().regex(IG_USERNAME_RE)).max(3).optional(),
+    /** Instagram Reels: people tagged on the video (no position). */
+    reelUserTags: z.array(z.string().regex(IG_USERNAME_RE)).max(20).optional(),
+    /** Instagram Reels cover frame (ms); a cover picture wins over it. */
+    thumbOffsetMs: z.number().int().min(0).optional(),
+    /** Instagram Reels: also in the feed (default true). */
+    shareToFeed: z.boolean().optional(),
+  })
+  .meta({ id: "CloudOrderDetails" });
+export type CloudOrderDetails = z.infer<typeof CloudOrderDetails>;
 
 export const CloudOrderTargetInput = z
   .object({
@@ -103,8 +144,10 @@ export const CloudOrderCreate = z
     title: z.string().max(255).optional(),
     isAiGenerated: z.boolean().optional(),
     /** In display order (carousel order). Empty only when every target is `linkedin.text`. */
-    media: z.array(CloudOrderMedia).max(20),
+    media: z.array(CloudOrderMedia).max(21),
     targets: z.array(CloudOrderTargetInput).min(1).max(4),
+    /** First comment, location, collaborators … (N13). */
+    details: CloudOrderDetails.optional(),
   })
   .refine(
     (o) =>
@@ -117,6 +160,14 @@ export const CloudOrderCreate = z
   )
   .refine((o) => new Set(o.media.map((m) => m.id)).size === o.media.length, {
     message: "media ids must be unique",
+    path: ["media"],
+  })
+  .refine((o) => o.media.filter((m) => m.role !== "cover").length <= 20, {
+    message: "at most 20 post media (a cover comes on top)",
+    path: ["media"],
+  })
+  .refine((o) => o.media.filter((m) => m.role === "cover").length <= 1, {
+    message: "at most one cover",
     path: ["media"],
   })
   .refine((o) => new Set(o.targets.map((t) => t.id)).size === o.targets.length, {
@@ -179,6 +230,8 @@ export const CloudOrderTarget = z
     permalink: z.string().nullable(),
     publishedAt: Timestamp.nullable(),
     error: CloudPublishError.nullable(),
+    /** Published with warnings (N13: the first comment failed …); absent from older publishers. */
+    warnings: z.array(z.object({ code: z.string(), message: z.string() })).optional(),
   })
   .meta({ id: "CloudOrderTarget" });
 export type CloudOrderTarget = z.infer<typeof CloudOrderTarget>;
@@ -196,6 +249,8 @@ export const CloudOrder = z
     isAiGenerated: z.boolean(),
     media: z.array(CloudOrderMedia.extend({ uploaded: z.boolean() })),
     targets: z.array(CloudOrderTarget),
+    /** Absent from older publishers. */
+    details: CloudOrderDetails.nullable().optional(),
     cancelledAt: Timestamp.nullable(),
     createdAt: Timestamp,
     updatedAt: Timestamp,

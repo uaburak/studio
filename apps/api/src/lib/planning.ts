@@ -34,6 +34,10 @@ import {
   planItems,
   schedules,
 } from "../db/schema.ts";
+import { contentScores, performanceSummary } from "./insights.ts";
+
+/** Days of statistics the plan agent reads (N15). */
+const PERFORMANCE_DAYS = 120;
 
 /*
  * Planning context (N5, N6) on the server: the brand's special-day settings (and the tags its
@@ -249,6 +253,8 @@ export async function planningHistory(
     .limit(400);
 
   const ids = postRows.map((r) => r.id);
+  // N15: how each published post did (relative engagement), for the history lines.
+  const scores = await contentScores(db, brandId, new Date(fromMs - 120 * 86_400_000));
   const scheduleDay = new Map<string, string>();
   const itemOf = new Map<
     string,
@@ -307,6 +313,7 @@ export async function planningHistory(
       contentType: row.type,
       status: row.deletedAt ? null : row.status,
       reason: null,
+      ...(scores.has(row.id) && !row.deletedAt ? { performance: scores.get(row.id) } : {}),
     });
   }
 
@@ -377,10 +384,11 @@ export async function planningContext(
   period: { periodStart: string; periodEnd: string },
   exclude: HistoryExclusion = {},
 ): Promise<PlanningContext> {
-  const [settings, overrides, history] = await Promise.all([
+  const [settings, overrides, history, performance] = await Promise.all([
     loadPlanningSettings(db, brandId),
     loadOverrides(db),
     planningHistory(db, brandId, historyWindow(period.periodStart, period.periodEnd), exclude),
+    performanceSummary(db, brandId, PERFORMANCE_DAYS, new Date()),
   ]);
   return {
     brandId,
@@ -393,6 +401,7 @@ export async function planningContext(
       overrides: overrides.overrides,
     }),
     history,
+    ...(performance ? { performance } : {}),
   };
 }
 

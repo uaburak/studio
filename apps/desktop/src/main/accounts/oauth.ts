@@ -12,13 +12,23 @@ import {
 export { LINKEDIN_CALLBACK_PATH, LINKEDIN_REDIRECT_URI, META_CALLBACK_PATH, META_REDIRECT_URI };
 
 export const META_GRAPH_VERSION = "v27.0";
-/** Pages + Instagram publishing (Facebook Login). */
+/**
+ * Pages + Instagram publishing (Facebook Login), plus statistics and comments (N15, N16):
+ * `read_insights`, `pages_read_user_content`, `pages_manage_engagement`,
+ * `instagram_manage_insights`, `instagram_manage_comments`. Accounts connected before these were
+ * added keep publishing; their statistics and comments need a reconnect.
+ */
 export const META_SCOPES = [
   "pages_show_list",
   "pages_read_engagement",
   "pages_manage_posts",
   "instagram_basic",
   "instagram_content_publish",
+  "read_insights",
+  "pages_read_user_content",
+  "pages_manage_engagement",
+  "instagram_manage_insights",
+  "instagram_manage_comments",
   "business_management",
 ];
 /** Sign In with LinkedIn (OpenID Connect) + Share on LinkedIn. */

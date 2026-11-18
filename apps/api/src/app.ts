@@ -17,18 +17,22 @@ import { brandProfileRoutes } from "./routes/brand-profiles.ts";
 import { brandSkillRoutes } from "./routes/brand-skills.ts";
 import { brandRoutes } from "./routes/brands.ts";
 import { bulkRoutes } from "./routes/bulk.ts";
+import { commentRoutes } from "./routes/comments.ts";
 import { contentCheckRoutes } from "./routes/content-checks.ts";
 import { contentRoutes } from "./routes/contents.ts";
 import { conversationRoutes } from "./routes/conversations.ts";
 import { deviceRoutes, readRoutes } from "./routes/devices.ts";
 import { hubRoutes } from "./routes/hub.ts";
+import { insightRoutes } from "./routes/insights.ts";
 import { createJob, hubStub, jobRoutes } from "./routes/jobs.ts";
 import { planningRoutes } from "./routes/planning.ts";
 import { agentRunRoutes, planRoutes } from "./routes/plans.ts";
+import { publishDetailRoutes } from "./routes/publish-details.ts";
 import { publishingRoutes } from "./routes/publishing.ts";
 import { scheduleRoutes } from "./routes/schedules.ts";
 import { socialAccountRoutes } from "./routes/social-accounts.ts";
 import { templateRoutes } from "./routes/templates.ts";
+import { workerEngagementRoutes } from "./routes/worker-engagement.ts";
 import { workerRunRoutes } from "./routes/worker-runs.ts";
 import { workerScheduleRoutes } from "./routes/worker-schedules.ts";
 import { API_VERSION } from "./version.ts";
@@ -108,6 +112,9 @@ app.route("/", jobRoutes);
 app.route("/", bulkRoutes); // /api/contents/revise, /api/jobs/{id}/retry, /api/estimates/*, /api/maintenance/purge
 app.route("/", templateRoutes); // /api/templates/*, /api/brands/{id}/templates, /api/contents/{id}/repurpose (N9, N10)
 app.route("/", scheduleRoutes);
+app.route("/", publishDetailRoutes); // /api/contents/{id}/publish-details, /api/brands/{id}/publish-locations (N13)
+app.route("/", insightRoutes); // /api/contents/{id}/performance, /api/brands/{id}/performance|best-times (N15)
+app.route("/", commentRoutes); // /api/comments/* (N16)
 app.route("/", publishingRoutes); // /api/publishing/*, /api/publish-logs, /api/worker/publishing/* (P3)
 app.route("/", aiRoutes); // /api/ai/*, /api/worker/ai/* (roadmap 7 + 11)
 app.route("/", hubRoutes); // /api/hub (worker WebSocket), /api/workers/presence
@@ -120,6 +127,7 @@ app.route("/", planRoutes);
 app.route("/", planningRoutes); // /api/special-days*, /api/brands/{id}/planning-* (N5, N6)
 app.route("/", workerRunRoutes); // /api/worker/* (worker token)
 app.route("/", workerScheduleRoutes); // /api/worker/schedules/* (worker token)
+app.route("/", workerEngagementRoutes); // /api/worker/engagement/*, /api/worker/comments/* (N15, N16)
 
 // --- Devices (L1): pairing and paired-device management --------------------------
 

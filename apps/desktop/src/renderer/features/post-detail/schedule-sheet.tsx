@@ -3,9 +3,11 @@
 // publishing mode, then "Zamanla" (approving first when needed) or "Şimdi yayınla" after a
 // confirmation. Rescheduling starts from the accounts the post already waits on; unticking one
 // cancels its schedule. "Zamanlamayı iptal et" cancels without a new time.
+// N13 / N15: "Önerilen saatler" (the brand's best slots; a click sets the time) and the post's
+// "Yayın ayrıntıları" (folded; saving them rechecks the platform rules).
 import type { Content, Schedule, SchedulePreflight, SocialAccount } from "@studio/contract";
-import { readReelVersionInfo } from "@studio/contract";
-import { useQueryClient } from "@tanstack/react-query";
+import { nextSlotTime, readReelVersionInfo, slotLabel } from "@studio/contract";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Button,
@@ -19,9 +21,10 @@ import { ConfirmDialog, Dialog } from "../../components/ui/dialog.tsx";
 import { PlatformIcon } from "../../components/ui/icons.tsx";
 import { describeError, useApi } from "../../lib/api.ts";
 import { useAppStore } from "../../state/app-store.ts";
-import { invalidatePosts, storeContent, usePublishingStatus } from "../posts/data.ts";
+import { invalidatePosts, postKeys, storeContent, usePublishingStatus } from "../posts/data.ts";
 import { dateInput, dayTime, fromInputs, timeInput, timeZoneLabel } from "../posts/dates.ts";
 import { useCancelSchedule } from "./cancel-schedule.tsx";
+import { PublishDetailsSection } from "./publish-details.tsx";
 import {
   accountLabel,
   blockingReason,
@@ -38,6 +41,14 @@ import {
 } from "./schedule.ts";
 
 const NO_SCHEDULES: readonly Schedule[] = [];
+
+/** The platform best times are asked for: the post's only Instagram / Facebook platform, if one. */
+export function bestTimesPlatform(
+  content: Pick<Content, "targetPlatforms">,
+): "instagram" | "facebook" | undefined {
+  const meta = content.targetPlatforms.filter((p) => p === "instagram" || p === "facebook");
+  return meta.length === 1 ? (meta[0] as "instagram" | "facebook") : undefined;
+}
 
 const STATUS_NOTE: Partial<Record<SocialAccount["status"], string>> = {
   pending: "Bağlantı tamamlanmadı — önce Ayarlar → Hesaplar'dan bağlayın.",
@@ -125,6 +136,27 @@ export function ScheduleSheet({
   });
   const atIso = at && !dateProblem ? at.toISOString() : null;
   const selectedKey = [...selected].sort().join(",");
+  // Publish details take part in the platform rules (first comment length …).
+  const detailsKey = JSON.stringify(content.publishDetails ?? {});
+  const versionNumber = content.currentVersion?.version ?? 0;
+  const version = useQuery({
+    queryKey: postKeys.version(content.id, versionNumber),
+    queryFn: () => api.contents.versions.get(content.id, versionNumber),
+    enabled: open && versionNumber > 0,
+    staleTime: 60_000,
+  });
+  const platform = bestTimesPlatform(content);
+  const bestTimes = useQuery({
+    queryKey: ["insights", "best-times", content.brandId, platform ?? "all"],
+    queryFn: () => api.insights.bestTimes(content.brandId, platform ? { platform } : {}),
+    enabled: open,
+    staleTime: 10 * 60_000,
+  });
+  const pickSlot = (slot: { weekday: number; hour: number }) => {
+    const next = new Date(nextSlotTime(slot));
+    setDate(dateInput(next));
+    setTime(timeInput(next));
+  };
 
   // Platform rules: debounced, rechecked when the accounts or the time change.
   useEffect(() => {
@@ -157,7 +189,8 @@ export function ScheduleSheet({
         });
     }, 250);
     return () => clearTimeout(timer);
-  }, [open, api, content.id, selectedKey, atIso]);
+    // `detailsKey`: saved publish details are checked again.
+  }, [open, api, content.id, selectedKey, atIso, detailsKey]);
 
   const finish = async (result: { content: Content; schedules: unknown[] }, message: string) => {
     storeContent(queryClient, result.content);
@@ -286,6 +319,24 @@ export function ScheduleSheet({
               <span className="text-footnote text-fg-3">{timeZoneLabel()}</span>
             </div>
             {dateProblem && <span className="text-footnote text-danger">{dateProblem}</span>}
+            {bestTimes.data && bestTimes.data.suggestions.length > 0 && (
+              <div className="flex flex-col gap-1 pt-1">
+                <span className="text-footnote text-fg-2">Önerilen saatler</span>
+                <div className="flex flex-wrap gap-1.5">
+                  {bestTimes.data.suggestions.slice(0, 5).map((slot) => (
+                    <Button
+                      key={`${slot.weekday}:${slot.hour}`}
+                      size="sm"
+                      variant="secondary"
+                      onClick={() => pickSlot(slot)}
+                    >
+                      {slotLabel(slot)}
+                    </Button>
+                  ))}
+                </div>
+                <span className="text-footnote text-fg-3">{bestTimes.data.note}</span>
+              </div>
+            )}
           </div>
 
           <div className="flex flex-col gap-1.5">
@@ -358,6 +409,14 @@ export function ScheduleSheet({
               </span>
             )}
           </div>
+
+          <PublishDetailsSection
+            content={content}
+            slides={version.data?.slides ?? []}
+            collapsible
+            defaultOpen={false}
+            onSaved={(fresh) => onDone(fresh)}
+          />
 
           <p className="text-footnote text-fg-2">
             {approvalNeeded && "Önce bu sürüm onaylanacak. "}

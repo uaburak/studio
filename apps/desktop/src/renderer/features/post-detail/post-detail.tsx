@@ -77,6 +77,8 @@ import {
   PostEditor,
 } from "./editor.ts";
 import { postMenu, usePostFacts } from "./post-facts.ts";
+import { PostPerformancePanel } from "./post-performance.tsx";
+import { PublishDetailsSection } from "./publish-details.tsx";
 import { ReelEditor } from "./reel-editor.tsx";
 import { defaultScheduleDate } from "./schedule.ts";
 import { ScheduleSheet } from "./schedule-sheet.tsx";
@@ -627,6 +629,11 @@ export function EditorView({ editor, snapshot }: { editor: PostEditor; snapshot:
             {tab === "post" && (
               <div className="flex flex-col gap-4 pb-2">
                 <CaptionCard snapshot={snapshot} editor={editor} />
+                <PublishDetailsSection
+                  content={content}
+                  slides={snapshot.current?.slides ?? []}
+                  onSaved={(fresh) => editor.replaceContent(fresh)}
+                />
                 <ChecksPanel snapshot={snapshot} editor={editor} />
                 <MetaRows
                   snapshot={snapshot}
@@ -642,6 +649,7 @@ export function EditorView({ editor, snapshot }: { editor: PostEditor; snapshot:
                   mode={publishing.data?.mode ?? "local"}
                   onCancel={(s) => cancelFlow.open([s.id])}
                 />
+                <PostPerformancePanel contentId={content.id} schedules={postSchedules} />
               </div>
             )}
             {tab === "edit" &&

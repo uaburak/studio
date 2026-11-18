@@ -66,6 +66,11 @@ export const ENUMS = {
   contentSourceKind: ["story", "reel"],
   // --- media tagging (N12, 0022) ---
   assetAnalysisStatus: ["complete", "partial", "failed"],
+  // --- statistics and comment inbox (N15, N16; 0023) ---
+  postInsightStatus: ["pending", "ok", "partial", "deleted", "error"],
+  commentActionKind: ["reply", "hide", "unhide", "delete"],
+  commentActionStatus: ["pending", "sending", "done", "failed"],
+  knownLocationSource: ["page", "manual", "used"],
 } as const;
 
 /** `col in ('a', 'b')` for CHECK constraints (values are constants above, never input). */
@@ -440,6 +445,11 @@ export const contents = sqliteTable(
     sourceVersion: integer("source_version"),
     /** `ENUMS.contentSourceKind`; no CHECK (an added column), the API validates it. */
     sourceKind: text("source_kind", { enum: ENUMS.contentSourceKind }),
+    /**
+     * Publish details (N13, 0023): first comment, alt texts, location, collaborators, people tags,
+     * Reels cover (`PublishDetails` JSON). Not part of the approval.
+     */
+    publishDetails: text("publish_details", { mode: "json" }).$type<Record<string, unknown>>(),
   },
   (t) => [
     index("contents_brand_idx").on(t.brandId, t.id),
@@ -743,6 +753,15 @@ export const schedules = sqliteTable(
     publishState: text("publish_state", { mode: "json" }).$type<Record<string, unknown>>(),
     /** When the local worker claimed the schedule (or last saved its state): a stale claim is taken over. */
     claimedAt: integer("claimed_at", { mode: "timestamp_ms" }),
+    /** Platform id of the published post (0023; the statistics and comments are read with it). */
+    externalPostId: text("external_post_id"),
+    publishedAt: integer("published_at", { mode: "timestamp_ms" }),
+    /** Warnings of the publish (0023, JSON `[{ code, message }]`; the first comment failed …). */
+    publishWarnings: text("publish_warnings", { mode: "json" }).$type<
+      { code: string; message: string }[]
+    >(),
+    /** Bumped when the post's publish details change while pending (0023): re-push the order. */
+    detailsRev: integer("details_rev").notNull().default(0),
     cancelledAt: integer("cancelled_at", { mode: "timestamp_ms" }),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
@@ -753,6 +772,7 @@ export const schedules = sqliteTable(
     index("schedules_brand_time_idx").on(t.brandId, t.scheduledAt),
     index("schedules_content_idx").on(t.contentId),
     index("schedules_account_idx").on(t.socialAccountId),
+    index("schedules_published_idx").on(t.status, t.publishedAt),
     // One active schedule per content item and account.
     uniqueIndex("schedules_active_unique")
       .on(t.contentId, t.socialAccountId)
@@ -1213,6 +1233,194 @@ export const aiUsage = sqliteTable(
   (t) => [
     index("ai_usage_provider_time_idx").on(t.provider, t.occurredAt),
     index("ai_usage_job_idx").on(t.jobId),
+  ],
+);
+
+// --- statistics (N15, 0023) ------------------------------------------------------------------
+
+/**
+ * The latest statistics of one published post on one account (a published schedule), and when
+ * they are read next. `comment_count` / `comments_synced_at` belong to the comment inbox (N16):
+ * the count Meta reported last time, so unchanged posts are not read again.
+ */
+export const postInsights = sqliteTable(
+  "post_insights",
+  {
+    scheduleId: text("schedule_id")
+      .primaryKey()
+      .references(() => schedules.id, { onDelete: "cascade" }),
+    brandId: text("brand_id")
+      .notNull()
+      .references(() => brands.id),
+    contentId: text("content_id")
+      .notNull()
+      .references(() => contents.id, { onDelete: "cascade" }),
+    socialAccountId: text("social_account_id")
+      .notNull()
+      .references(() => socialAccounts.id),
+    platform: text("platform", { enum: ENUMS.platform }).notNull(),
+    externalPostId: text("external_post_id").notNull(),
+    status: text("status", { enum: ENUMS.postInsightStatus }).notNull().default("pending"),
+    /** `InsightMetrics` JSON. */
+    metrics: text("metrics", { mode: "json" })
+      .$type<Record<string, number>>()
+      .notNull()
+      .default({}),
+    note: text("note"),
+    error: text("error"),
+    /** Reads in a row that did not find the post (deleted after two). */
+    missCount: integer("miss_count").notNull().default(0),
+    syncedAt: integer("synced_at", { mode: "timestamp_ms" }),
+    /** Null: no more reads (90 days passed, or deleted). */
+    nextSyncAt: integer("next_sync_at", { mode: "timestamp_ms" }),
+    commentCount: integer("comment_count"),
+    commentsSyncedAt: integer("comments_synced_at", { mode: "timestamp_ms" }),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    index("post_insights_brand_idx").on(t.brandId),
+    index("post_insights_next_idx").on(t.nextSyncAt),
+    index("post_insights_content_idx").on(t.contentId),
+    check("post_insights_status_check", oneOf(t.status, ENUMS.postInsightStatus)),
+  ],
+);
+
+/** Every read of a post's statistics (history; the 1 h / 24 h / 72 h / daily points). */
+export const insightSnapshots = sqliteTable(
+  "insight_snapshots",
+  {
+    id: text("id").primaryKey(),
+    scheduleId: text("schedule_id")
+      .notNull()
+      .references(() => schedules.id, { onDelete: "cascade" }),
+    at: integer("at", { mode: "timestamp_ms" }).notNull(),
+    /** Hours after publishing (null when the publish time is unknown). */
+    hoursAfter: real("hours_after"),
+    metrics: text("metrics", { mode: "json" }).$type<Record<string, number>>().notNull(),
+  },
+  (t) => [index("insight_snapshots_schedule_idx").on(t.scheduleId, t.at)],
+);
+
+/** Follower count of an account per day (Türkiye time). */
+export const accountInsights = sqliteTable(
+  "account_insights",
+  {
+    socialAccountId: text("social_account_id")
+      .notNull()
+      .references(() => socialAccounts.id, { onDelete: "cascade" }),
+    /** YYYY-MM-DD. */
+    day: text("day").notNull(),
+    followers: integer("followers").notNull(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [primaryKey({ columns: [t.socialAccountId, t.day] })],
+);
+
+/**
+ * Per account: how the last statistics and comment reads went. A rate limit (`retry_at`) pauses
+ * the account; a missing permission or invalid token asks the owner to reconnect it.
+ */
+export const engagementSync = sqliteTable("engagement_sync", {
+  socialAccountId: text("social_account_id")
+    .primaryKey()
+    .references(() => socialAccounts.id, { onDelete: "cascade" }),
+  insightsSyncedAt: integer("insights_synced_at", { mode: "timestamp_ms" }),
+  commentsSyncedAt: integer("comments_synced_at", { mode: "timestamp_ms" }),
+  /** `ok` | `permission` | `auth` | `rate_limited` | `error` (the last report). */
+  status: text("status"),
+  error: text("error"),
+  retryAt: integer("retry_at", { mode: "timestamp_ms" }),
+  updatedAt: updatedAt(),
+});
+
+// --- comment inbox (N16, 0023) ----------------------------------------------------------------
+
+export const postComments = sqliteTable(
+  "post_comments",
+  {
+    id: text("id").primaryKey(),
+    brandId: text("brand_id")
+      .notNull()
+      .references(() => brands.id),
+    socialAccountId: text("social_account_id")
+      .notNull()
+      .references(() => socialAccounts.id),
+    platform: text("platform", { enum: ENUMS.platform }).notNull(),
+    scheduleId: text("schedule_id").references(() => schedules.id, { onDelete: "set null" }),
+    contentId: text("content_id").references(() => contents.id, { onDelete: "set null" }),
+    externalPostId: text("external_post_id").notNull(),
+    externalId: text("external_id").notNull(),
+    parentId: text("parent_id"),
+    parentExternalId: text("parent_external_id"),
+    author: text("author"),
+    authorId: text("author_id"),
+    text: text("text").notNull(),
+    likeCount: integer("like_count"),
+    hidden: integer("hidden", { mode: "boolean" }).notNull().default(false),
+    /** Written by the account itself (our replies, the first comment). */
+    own: integer("own", { mode: "boolean" }).notNull().default(false),
+    /** Platform time (or first seen when Meta does not say). */
+    createdAt: createdAt(),
+    firstSeenAt: integer("first_seen_at", { mode: "timestamp_ms" }).notNull(),
+    readAt: integer("read_at", { mode: "timestamp_ms" }),
+    deletedAt: integer("deleted_at", { mode: "timestamp_ms" }),
+    /** "Yanıt öner" draft (never sent by itself). */
+    suggestion: text("suggestion"),
+    suggestionAt: integer("suggestion_at", { mode: "timestamp_ms" }),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    uniqueIndex("post_comments_external_unique").on(t.platform, t.externalId),
+    index("post_comments_brand_idx").on(t.brandId, t.createdAt),
+    index("post_comments_schedule_idx").on(t.scheduleId),
+    index("post_comments_content_idx").on(t.contentId),
+    index("post_comments_parent_idx").on(t.parentId),
+    index("post_comments_unread_idx").on(t.brandId, t.readAt),
+    check("post_comments_platform_check", oneOf(t.platform, ENUMS.platform)),
+  ],
+);
+
+/** Replies, hides and deletes waiting for the worker (it holds the tokens). */
+export const commentActions = sqliteTable(
+  "comment_actions",
+  {
+    id: text("id").primaryKey(),
+    commentId: text("comment_id")
+      .notNull()
+      .references(() => postComments.id, { onDelete: "cascade" }),
+    kind: text("kind", { enum: ENUMS.commentActionKind }).notNull(),
+    text: text("text"),
+    status: text("status", { enum: ENUMS.commentActionStatus }).notNull().default("pending"),
+    attempts: integer("attempts").notNull().default(0),
+    externalId: text("external_id"),
+    error: text("error"),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    index("comment_actions_status_idx").on(t.status, t.createdAt),
+    index("comment_actions_comment_idx").on(t.commentId),
+    check("comment_actions_kind_check", oneOf(t.kind, ENUMS.commentActionKind)),
+    check("comment_actions_status_check", oneOf(t.status, ENUMS.commentActionStatus)),
+  ],
+);
+
+/** Known Instagram locations of a brand (N13): its Pages with an address, entered, used. */
+export const publishLocations = sqliteTable(
+  "publish_locations",
+  {
+    brandId: text("brand_id")
+      .notNull()
+      .references(() => brands.id, { onDelete: "cascade" }),
+    locationId: text("location_id").notNull(),
+    name: text("name").notNull(),
+    source: text("source", { enum: ENUMS.knownLocationSource }).notNull(),
+    lastUsedAt: integer("last_used_at", { mode: "timestamp_ms" }),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.brandId, t.locationId] }),
+    check("publish_locations_source_check", oneOf(t.source, ENUMS.knownLocationSource)),
   ],
 );
 

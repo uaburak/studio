@@ -10,8 +10,10 @@
 import {
   type PreflightIssue,
   PUBLIC_URL_PUBLISH_KINDS,
+  type PublishDetails,
   type PublishingMode,
   type PublishKindName,
+  publishDetailIssues,
   type SchedulePreflightTarget,
   selectPublishKind,
 } from "@studio/contract";
@@ -41,6 +43,8 @@ export interface PreflightContent {
   title: string;
   caption: string | null;
   slides: PreflightSlide[];
+  /** N13: first comment, location, tags … (checked per platform). */
+  publishDetails?: PublishDetails | null;
 }
 
 const FAKE_ORIGIN = "https://media.studio.invalid";
@@ -260,6 +264,26 @@ export async function preflightTargets(args: {
     for (const issue of report.warnings) {
       if (NOISE.has(issue.code)) continue;
       warnings.push({ code: issue.code, path: issue.path, message: issue.message });
+    }
+
+    // N13: what the publish details ask for on this platform.
+    const details = args.content.publishDetails ?? null;
+    const detailIssues = publishDetailIssues(details, kind, args.content.slides.length, {
+      videoDurationMs: videoId ? (meta.get(videoId)?.durationMs ?? null) : null,
+    });
+    errors.push(...detailIssues.errors);
+    warnings.push(...detailIssues.warnings);
+    if (
+      args.mode === "local" &&
+      kind === "instagram.reel" &&
+      details?.reelCover?.kind === "image"
+    ) {
+      warnings.push({
+        code: "REEL_COVER_NEEDS_CLOUD",
+        path: "publishDetails.reelCover",
+        message:
+          "Kapak görselini Instagram herkese açık bir adresten indirir; Mac'ten yayında videonun ilk karesi kullanılacak. Kapak görseli için bulut yayıncıyı kurun ya da videodan bir kare seçin.",
+      });
     }
 
     if (

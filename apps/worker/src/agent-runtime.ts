@@ -41,6 +41,8 @@ import {
 } from "./claude/usage.ts";
 import { readCliUsage, UsagePoller } from "./claude/usage-cli.ts";
 import type { WorkerConfig } from "./config.ts";
+import { createCommentsSuggestHandler } from "./engagement/suggest.ts";
+import { createCommentsSyncHandler, createInsightsSyncHandler } from "./engagement/sync.ts";
 import { checkGeminiHealth } from "./gemini/health.ts";
 import { geminiKeySource, getGeminiApiKey } from "./gemini/json-call.ts";
 import { type ContentGenerateDeps, createContentGenerateHandler } from "./generate/handler.ts";
@@ -63,12 +65,17 @@ import {
   type VisionHelper,
 } from "./vision/helper.ts";
 
-/** `media.analyze` runs without AI: Vision on the Mac (colours and shape even without it). */
+/**
+ * `media.analyze` runs without AI: Vision on the Mac (colours and shape even without it).
+ * `insights.sync` / `comments.sync` only read Meta (N15, N16); `comments.suggest` needs AI.
+ */
 export const ALWAYS_JOB_TYPES = [
   "content.render",
   "schedule.publish",
   "content.check",
   "media.analyze",
+  "insights.sync",
+  "comments.sync",
 ] as const;
 export const AI_JOB_TYPES = [
   "chat.turn",
@@ -76,6 +83,7 @@ export const AI_JOB_TYPES = [
   "brand.analyze",
   "image.generate",
   "brand.skill_draft",
+  "comments.suggest",
 ] as const;
 export const CLAUDE_JOB_TYPES = AI_JOB_TYPES;
 
@@ -474,7 +482,10 @@ export class AgentRuntime {
       .register("image.generate", createImageGenerateHandler(this.deps))
       .register("brand.skill_draft", createBrandSkillDraftHandler(this.deps))
       .register("content.check", createContentCheckHandler(this.deps))
-      .register("media.analyze", createMediaAnalyzeHandler({ ...this.deps, vision: this.vision }));
+      .register("media.analyze", createMediaAnalyzeHandler({ ...this.deps, vision: this.vision }))
+      .register("insights.sync", createInsightsSyncHandler(this.deps))
+      .register("comments.sync", createCommentsSyncHandler(this.deps))
+      .register("comments.suggest", createCommentsSuggestHandler(this.deps));
   }
 
   /**

@@ -9,6 +9,7 @@ import {
   TrashFilter,
   utf8Length,
 } from "./common.ts";
+import { PublishDetails } from "./publish-details.ts";
 
 export const ContentType = z
   .enum(["post", "carousel", "story", "reel"])
@@ -377,6 +378,11 @@ export const Content = z
     templateId: EntityId.nullable().optional(),
     /** The post this one was converted from (N10; null: none; absent from older servers). */
     source: ContentSource.nullable().optional(),
+    /**
+     * First comment, alt texts, location, collaborators, people tags, Reels cover (N13; null:
+     * none; absent from older servers). Set with `PUT /api/contents/{id}/publish-details`.
+     */
+    publishDetails: PublishDetails.nullable().optional(),
   })
   .meta({ id: "Content" });
 export type Content = z.infer<typeof Content>;

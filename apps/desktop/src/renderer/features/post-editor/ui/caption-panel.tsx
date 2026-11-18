@@ -1,5 +1,7 @@
 // The edit panel's Açıklama tab: the caption per platform (one text, each platform's limit and its feed
-// preview cut), hashtags as chips with the platform's limit, first comment and alt text.
+// preview cut), hashtags as chips with the platform's limit, then the publish details (N13: first
+// comment, alt texts, location, collaborators, people tags) and, once published, the post's
+// statistics (N15).
 import type { Platform } from "@studio/contract";
 import { useEffect, useMemo, useState } from "react";
 import { Button, cn } from "../../../components/ui/controls.tsx";
@@ -13,6 +15,9 @@ import {
   splitCaption,
 } from "../../post-detail/caption.ts";
 import { type EditorSnapshot, isLocked, type PostEditor } from "../../post-detail/editor.ts";
+import { PostPerformancePanel } from "../../post-detail/post-performance.tsx";
+import { PublishDetailsSection } from "../../post-detail/publish-details.tsx";
+import { useContentSchedules } from "../../posts/data.ts";
 import { PostLinks } from "../../posts/post-links.tsx";
 import { Body, Section } from "./fields.tsx";
 
@@ -47,6 +52,7 @@ export function CaptionPanel({
   const [tagInput, setTagInput] = useState("");
   const [dirty, setDirty] = useState(false);
   const locked = isLocked(content);
+  const schedules = useContentSchedules(content.id);
 
   useEffect(() => {
     if (dirty) return;
@@ -186,27 +192,14 @@ export function CaptionPanel({
           )}
         </Body>
       </Section>
-      <Section title="İlk yorum">
-        <Body>
-          <input
-            aria-label="İlk yorum"
-            disabled
-            placeholder="Yayın hattı ilk yorumu henüz göndermiyor"
-            className="h-7 w-full rounded-full bg-field px-3 text-body text-fg-3 outline-none"
-          />
-        </Body>
-      </Section>
-      <Section title="Alternatif metin">
-        <Body>
-          <textarea
-            aria-label="Alternatif metin"
-            disabled
-            rows={2}
-            placeholder="Kare başına alternatif metin: yayıncılar destekliyor, içerik modeli henüz saklamıyor"
-            className="w-full resize-none rounded-[14px] bg-field px-3 py-1.5 text-body text-fg-3 outline-none"
-          />
-        </Body>
-      </Section>
+      <div className="flex flex-col gap-4 border-t border-hairline px-4 py-3">
+        <PublishDetailsSection
+          content={content}
+          slides={snapshot.current?.slides ?? []}
+          onSaved={(fresh) => editor.replaceContent(fresh)}
+        />
+        <PostPerformancePanel contentId={content.id} schedules={schedules.data ?? []} />
+      </div>
       {dirty && !locked && (
         <div className="sticky bottom-0 flex justify-end gap-2 border-t border-hairline bg-page px-4 py-2.5">
           <Button

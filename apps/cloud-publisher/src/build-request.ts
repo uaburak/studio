@@ -5,9 +5,13 @@
  * the publisher itself, so LinkedIn media also names the file's media id as
  * an upload source: the scheduler's media reader serves the bytes straight
  * from storage (no request from this Worker to its own public URL).
+ *
+ * Publish details (N13) come with the order: the first comment (Instagram, Facebook), location,
+ * collaborators, people tags, Reels cover / frame and share-to-feed (Instagram). Each kind takes
+ * what it supports. A medium with `role: "cover"` is the Reels cover picture, not a post medium.
  */
 
-import type { CloudOrderMedia, CloudPublishKind } from "@studio/contract";
+import type { CloudOrderDetails, CloudOrderMedia, CloudPublishKind } from "@studio/contract";
 import type {
   AnyMedia,
   DocumentMedia,
@@ -27,6 +31,7 @@ export interface RequestInput {
   title: string | null;
   isAiGenerated: boolean;
   media: CloudOrderMedia[];
+  details?: CloudOrderDetails | null;
 }
 
 export interface TargetInput {
@@ -43,12 +48,13 @@ function meta(m: CloudOrderMedia) {
   };
 }
 
-function image(m: CloudOrderMedia, url: string): ImageMedia {
+function image(m: CloudOrderMedia, url: string, opts: { tags?: boolean } = {}): ImageMedia {
   return {
     kind: "image",
     url,
     ...meta(m),
     ...(m.altText ? { altText: m.altText } : {}),
+    ...(opts.tags && m.userTags?.length ? { userTags: m.userTags } : {}),
   };
 }
 
@@ -77,8 +83,8 @@ function stored(img: ImageMedia, m: CloudOrderMedia): ImageMedia {
   return { ...img, source: { type: "upload", key: m.id } };
 }
 
-const any = (m: CloudOrderMedia, url: string): AnyMedia =>
-  m.kind === "image" ? image(m, url) : video(m, url);
+const any = (m: CloudOrderMedia, url: string, opts: { tags?: boolean } = {}): AnyMedia =>
+  m.kind === "image" ? image(m, url, opts) : video(m, url);
 
 /**
  * `urlOf(mediaId)` gives the public URL of each file. Single-media kinds use
@@ -91,6 +97,13 @@ export function buildRequest(
 ): PublishRequest {
   const caption = order.caption ?? undefined;
   const authorUrn = target.accountExternalId;
+  const d = order.details ?? {};
+  const comment = d.firstComment ? { firstComment: d.firstComment } : {};
+  const igExtras = {
+    ...comment,
+    ...(d.collaborators?.length ? { collaborators: d.collaborators } : {}),
+    ...(d.locationId ? { locationId: d.locationId } : {}),
+  };
   if (target.kind === "linkedin.text") {
     return {
       kind: "linkedin.text",
@@ -99,7 +112,9 @@ export function buildRequest(
     };
   }
 
-  const [first] = order.media;
+  const cover = order.media.find((m) => m.role === "cover");
+  const media = order.media.filter((m) => m.role !== "cover");
+  const [first] = media;
   if (!first) throw new Error("order has no media");
   const firstUrl = urlOf(first.id);
   const ai = order.isAiGenerated ? { isAiGenerated: true } : {};
@@ -108,14 +123,23 @@ export function buildRequest(
 
   switch (target.kind) {
     case "instagram.image":
-      return { kind: target.kind, igUserId, image: image(first, firstUrl), caption, ...ai };
+      return {
+        kind: target.kind,
+        igUserId,
+        image: image(first, firstUrl),
+        caption,
+        ...ai,
+        ...igExtras,
+        ...(first.userTags?.length ? { userTags: first.userTags } : {}),
+      };
     case "instagram.carousel":
       return {
         kind: target.kind,
         igUserId,
-        items: order.media.map((m) => any(m, urlOf(m.id))),
+        items: media.map((m) => any(m, urlOf(m.id), { tags: true })),
         caption,
         ...ai,
+        ...igExtras,
       };
     case "instagram.reel":
       return {
@@ -123,19 +147,30 @@ export function buildRequest(
         igUserId,
         video: video(first, firstUrl),
         caption,
-        shareToFeed: true,
+        shareToFeed: d.shareToFeed ?? true,
         ...ai,
+        ...igExtras,
+        ...(d.reelUserTags?.length
+          ? { userTags: d.reelUserTags.map((username) => ({ username })) }
+          : {}),
+        // A cover picture wins over a frame (Meta ignores the frame then).
+        ...(cover
+          ? { coverUrl: urlOf(cover.id) }
+          : d.thumbOffsetMs !== undefined
+            ? { thumbOffsetMs: d.thumbOffsetMs }
+            : {}),
       };
     case "instagram.story":
       return { kind: target.kind, igUserId, media: any(first, firstUrl), ...ai };
     case "facebook.photo":
-      return { kind: target.kind, pageId, image: image(first, firstUrl), caption };
+      return { kind: target.kind, pageId, image: image(first, firstUrl), caption, ...comment };
     case "facebook.multi_photo":
       return {
         kind: target.kind,
         pageId,
-        images: order.media.map((m) => image(m, urlOf(m.id))),
+        images: media.map((m) => image(m, urlOf(m.id))),
         message: caption,
+        ...comment,
       };
     case "facebook.video":
       return {
@@ -144,6 +179,7 @@ export function buildRequest(
         video: video(first, firstUrl),
         title: order.title ?? undefined,
         description: caption,
+        ...comment,
       };
     case "facebook.reel":
       return {
@@ -153,6 +189,7 @@ export function buildRequest(
         title: order.title ?? undefined,
         description: caption,
         ...ai,
+        ...comment,
       };
     case "facebook.story":
       return { kind: target.kind, pageId, media: any(first, firstUrl), ...ai };
@@ -167,7 +204,7 @@ export function buildRequest(
       return {
         kind: target.kind,
         authorUrn,
-        images: order.media.map((m) => stored(image(m, urlOf(m.id)), m)),
+        images: media.map((m) => stored(image(m, urlOf(m.id)), m)),
         ...(caption !== undefined ? { commentary: caption } : {}),
       };
     case "linkedin.document":

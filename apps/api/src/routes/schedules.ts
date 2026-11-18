@@ -33,6 +33,7 @@ import { ApiProblem, badRequest, conflict, invalidTransition, notFound } from ".
 import { newId } from "../lib/ids.ts";
 import { decodeTimeCursor, encodeTimeCursor, toPage } from "../lib/pagination.ts";
 import { preflightTargets } from "../lib/preflight.ts";
+import { readPublishDetails } from "../lib/publish-details.ts";
 import { loadPublishingSettings, publishingMode, requestSyncStatement } from "../lib/publishing.ts";
 import { createRouter, errors, IdParams, json, jsonBody } from "../lib/router.ts";
 import {
@@ -110,7 +111,13 @@ export async function runPreflight(
   }
   const targets = await preflightTargets({
     db,
-    content: { type: content.type, title: content.title, caption: content.caption, slides },
+    content: {
+      type: content.type,
+      title: content.title,
+      caption: content.caption,
+      slides,
+      publishDetails: readPublishDetails(content.publishDetails),
+    },
     accounts,
     mode,
     allowPrivateMedia: env.STUDIO_ALLOW_PRIVATE_MEDIA_URLS === "1",

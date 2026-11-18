@@ -21,6 +21,12 @@ export const ACTIVE_SCHEDULE_STATUSES = [
 export const ScheduleDelivery = z.enum(["local", "cloud"]).meta({ id: "ScheduleDelivery" });
 export type ScheduleDelivery = z.infer<typeof ScheduleDelivery>;
 
+/** Something that did not go through although the post is live (e.g. the first comment, N13). */
+export const ScheduleWarning = z
+  .object({ code: z.string().max(80), message: z.string().max(1000) })
+  .meta({ id: "ScheduleWarning" });
+export type ScheduleWarning = z.infer<typeof ScheduleWarning>;
+
 export const Schedule = z
   .object({
     id: EntityId,
@@ -47,6 +53,17 @@ export const Schedule = z
     cloudSyncedAt: Timestamp.nullable().optional(),
     /** Last error of the publishing path (failed outcome, cloud push error), Turkish. */
     lastError: z.string().nullable().optional(),
+    /** Platform id of the published post (IG media, FB post / video; absent from older servers). */
+    externalPostId: z.string().nullable().optional(),
+    /** When it was published (absent from older servers). */
+    publishedAt: Timestamp.nullable().optional(),
+    /** Warnings of the publish (N13: the first comment failed …). */
+    warnings: z.array(ScheduleWarning).optional(),
+    /**
+     * Bumped when the post's publish details change while the schedule is pending, so an order
+     * already in the cloud publisher is pushed again (N13).
+     */
+    detailsRevision: z.number().int().min(0).optional(),
     cancelledAt: Timestamp.nullable(),
     createdAt: Timestamp,
     updatedAt: Timestamp,
@@ -184,6 +201,8 @@ export const WorkerScheduleOutcome = z
     permalink: z.string().max(2000).nullable().optional(),
     error: z.string().max(4000).nullable().optional(),
     accountNeedsReauth: z.boolean().default(false),
+    /** `published` with warnings (the first comment could not be posted …). */
+    warnings: z.array(ScheduleWarning).max(20).optional(),
   })
   .meta({ id: "WorkerScheduleOutcome" });
 export type WorkerScheduleOutcome = z.input<typeof WorkerScheduleOutcome>;

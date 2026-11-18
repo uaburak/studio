@@ -16,6 +16,7 @@ import {
   SPECIAL_DAY_TONE_GUIDE,
   type SpecialDay,
   similarLabel,
+  WEEKDAY_TR,
 } from "@studio/contract";
 import { asData } from "../prompt-data.ts";
 
@@ -130,9 +131,55 @@ function postLine(e: PlanningHistoryEntry): string {
     e.pillar ?? "-",
     clip(e.title, 90),
     e.hook ? `kanca: "${clip(e.hook, 110)}"` : "",
+    e.performance ? `etkileşim ${idx(e.performance.index)}` : "",
   ]
     .filter(Boolean)
     .join(" | ");
+}
+
+const pct = (v: number | null | undefined) =>
+  v === null || v === undefined ? "?" : `%${(v * 100).toFixed(1).replace(".", ",")}`;
+const idx = (v: number) => `${v.toFixed(2).replace(".", ",")}×`;
+
+/**
+ * N15: what worked (statistics read from Instagram / Facebook). Relative engagement: 1 = the
+ * brand's typical post. Empty when nothing was read yet.
+ */
+export function performanceLines(ctx: PlanningContext): string[] {
+  const p = ctx.performance;
+  if (!p || p.posts === 0) return [];
+  const out = [
+    `Yayın performansı (${p.from} – ${p.to}, istatistiği okunan ${p.posts} post; ortalama erişim ${p.avgReach ?? "?"}, etkileşim oranı ${pct(p.avgEngagementRate)}; 1,00× = markanın tipik postu):`,
+  ];
+  if (p.pillars.length)
+    out.push(
+      `- Sütunlar: ${p.pillars.map((g) => `${asData(g.name)} ${idx(g.index)} (${g.posts})`).join(", ")}`,
+    );
+  if (p.formats.length)
+    out.push(
+      `- Türler: ${p.formats.map((g) => `${g.type} ${idx(g.index)} (${g.posts})`).join(", ")}`,
+    );
+  if (p.top.length)
+    out.push(
+      "- En iyi gidenler:",
+      ...p.top.map(
+        (t) =>
+          `  - ${asData(`${clip(t.title, 80)}${t.hook ? ` | kanca: "${clip(t.hook, 100)}"` : ""}`)} (${t.type}, ${idx(t.index)})`,
+      ),
+    );
+  if (p.weak.length)
+    out.push(
+      "- Zayıf kalanlar (bu açıyı tekrarlama):",
+      ...p.weak.map((t) => `  - ${asData(clip(t.title, 80))} (${t.type}, ${idx(t.index)})`),
+    );
+  if (p.bestSlots.length)
+    out.push(
+      `- İyi giden saatler: ${p.bestSlots.map((s) => `${WEEKDAY_TR[s.weekday]} ${String(s.hour).padStart(2, "0")}:00`).join(", ")}`,
+    );
+  out.push(
+    "Planı bu sonuçlara göre ağırlıklandır: iyi giden sütun ve türlere daha çok yer ver, zayıf açıları değiştir; tarihleri iyi giden saatlere yakın düşün. Tek bir postun başarısına göre bütün planı kurma.",
+  );
+  return out;
 }
 
 /** `<gecmis_ozeti>`: the brand's posts, plans and rejections of the last months. */
@@ -159,7 +206,7 @@ export function historyBlock(ctx: PlanningContext): string {
     }).${posts.length ? ` Sütunlar: ${countBy(posts, (p) => p.pillar ?? "belirsiz")}. Türler: ${countBy(posts, (p) => p.contentType)}.` : ""}`,
   ];
   if (posts.length) {
-    lines.push("Postlar (tarih | durum | tür | sütun | konu | kanca):");
+    lines.push("Postlar (tarih | durum | tür | sütun | konu | kanca | yayınlandıysa etkileşim):");
     lines.push(...posts.slice(0, MAX_HISTORY_LINES).map((p) => `- ${asData(postLine(p))}`));
     if (posts.length > MAX_HISTORY_LINES) {
       lines.push(`- … ve ${posts.length - MAX_HISTORY_LINES} eski post daha`);
@@ -189,6 +236,7 @@ export function historyBlock(ctx: PlanningContext): string {
     );
   }
   if (history.truncated) lines.push("(Liste kısaltıldı; daha eski kayıtlar var.)");
+  lines.push(...performanceLines(ctx));
   lines.push(
     "Bu kancaları ve konuları tekrarlama: yeni kalemlerin konusu ve açılış cümlesi bunlardan belirgin biçimde farklı olsun. Sütun dengesini bu dağılıma göre kur (az kullanılan sütunlara ağırlık ver, aynı sütunu art arda koyma). Reddedilen ve silinen konuları kullanıcı istemedikçe yeniden önerme.",
     "</gecmis_ozeti>",

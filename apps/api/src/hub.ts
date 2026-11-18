@@ -41,6 +41,7 @@ import { type JobRow, toJob } from "./db/mappers.ts";
 import { CLOSE, HUB_TIMING, SNAPSHOT_LIMIT } from "./hub/config.ts";
 import { JobStore } from "./hub/store.ts";
 import { toProblem } from "./lib/errors.ts";
+import { dueEngagementJobs, insertQueuedJob } from "./lib/insights.ts";
 import { purgeTrash } from "./lib/purge.ts";
 
 /** Per-socket state; survives hibernation (serializeAttachment, max 2 KB). */
@@ -90,6 +91,10 @@ const CLAUDE_KEY = "presence:claude";
 const GEMINI_KEY = "presence:gemini";
 /** Latest `worker.providers` report (Codex / OpenAI / Antigravity), shown in presence as `providers`. */
 const PROVIDERS_KEY = "presence:providers";
+/** When the alarm last looked for due statistics / comment reads (ms), and queued comments. */
+const ENGAGEMENT_CHECK_KEY = "engagement:checkedAt";
+const COMMENTS_QUEUED_KEY = "engagement:commentsQueuedAt";
+const ENGAGEMENT_CHECK_MS = 5 * 60_000;
 /** When the trash was last purged (ms); the alarm purges at most once per PURGE_INTERVAL_MS. */
 const PURGE_KEY = "purge:lastAt";
 const PURGE_INTERVAL_MS = 60 * 60_000;
@@ -225,6 +230,7 @@ export class Hub extends DurableObject<Env> {
         await this.sweep(Date.now());
         await this.dispatchQueued();
         await this.purgeIfDue(Date.now());
+        await this.queueEngagementIfDue(Date.now());
       } finally {
         await this.scheduleAlarm();
       }
@@ -718,6 +724,31 @@ export class Hub extends DurableObject<Env> {
    * Empty the trash of what is older than the retention (P7), at most once an hour. A purge
    * failure is logged and never breaks the sweep.
    */
+  /**
+   * N15 / N16: while the worker is connected (the alarm runs then), queue `insights.sync` when a
+   * post's statistics are due and `comments.sync` every 15 minutes or when replies wait. Looked
+   * at every 5 minutes at most; never two of a type.
+   */
+  private async queueEngagementIfDue(now: number): Promise<void> {
+    if (this.workerSockets().length === 0) return;
+    const last = (await this.ctx.storage.get<number>(ENGAGEMENT_CHECK_KEY)) ?? 0;
+    if (now - last < ENGAGEMENT_CHECK_MS) return;
+    await this.ctx.storage.put(ENGAGEMENT_CHECK_KEY, now);
+    try {
+      const lastComments = (await this.ctx.storage.get<number>(COMMENTS_QUEUED_KEY)) ?? 0;
+      const due = await dueEngagementJobs(this.db, new Date(now), lastComments);
+      if (due.insights) {
+        await this.onJobCreated(await insertQueuedJob(this.db, "insights.sync", {}, new Date(now)));
+      }
+      if (due.comments) {
+        await this.ctx.storage.put(COMMENTS_QUEUED_KEY, now);
+        await this.onJobCreated(await insertQueuedJob(this.db, "comments.sync", {}, new Date(now)));
+      }
+    } catch (error) {
+      console.warn("hub: engagement sync check failed", error);
+    }
+  }
+
   private async purgeIfDue(now: number): Promise<void> {
     const last = (await this.ctx.storage.get<number>(PURGE_KEY)) ?? 0;
     if (now - last < PURGE_INTERVAL_MS) return;
