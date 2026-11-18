@@ -19,6 +19,13 @@ import { and, desc, eq, isNotNull, isNull, lt, type SQL } from "drizzle-orm";
 import { createDb, type Db } from "../db/client.ts";
 import { toAsset } from "../db/mappers.ts";
 import { assets } from "../db/schema.ts";
+import {
+  assetWithAnalysis,
+  isAnalyzable,
+  queueMediaAnalysis,
+  searchAssets,
+  withAnalyses,
+} from "../lib/asset-analysis.ts";
 import { assetUsages } from "../lib/asset-usage.ts";
 import { ApiProblem, badRequest, notFound, validationProblem } from "../lib/errors.ts";
 import { newId } from "../lib/ids.ts";
@@ -224,7 +231,11 @@ router.post("/api/assets", async (c) => {
       })
       .returning();
     if (!row) throw new Error("insert returned no row");
-    return c.json(toAsset(row), 201);
+    // N12: the Mac reads a new picture (tags, text, colours) right away. Never fails the upload.
+    if (isAnalyzable(row) && (row.source === "upload" || row.source === "ingested")) {
+      await queueMediaAnalysis(c.env, { brandId: row.brandId, reason: "upload" });
+    }
+    return c.json({ ...toAsset(row), analysis: null }, 201);
   } catch (err) {
     // Do not leave an orphaned object behind if the metadata write failed.
     await c.env.MEDIA.delete(objectKey).catch(() => undefined);
@@ -239,27 +250,41 @@ export const assetRoutes = router
       path: "/api/assets",
       tags,
       summary: "List assets (newest first)",
-      description: "Files in the trash are left out unless `deleted` is `only` or `include`.",
+      description:
+        "Files in the trash are left out unless `deleted` is `only` or `include`. Each picture " +
+        "carries what Vision read in it (`analysis`, N12). `q` searches the file name, kind, " +
+        "Turkish tags (and Vision's English identifiers), the text on the picture, its colours " +
+        "and the AI caption; every word must match, Turkish-insensitive.",
       request: { query: AssetListQuery },
       responses: { 200: json(AssetList, "A page of assets."), 400: errors[400] },
     }),
     async (c) => {
-      const { limit, cursor, brandId, kind, source, deleted } = c.req.valid("query");
+      const { limit, cursor, brandId, kind, source, deleted, q } = c.req.valid("query");
       const where: SQL[] = [];
       if (brandId) where.push(eq(assets.brandId, brandId));
       if (kind) where.push(eq(assets.kind, kind));
       if (source) where.push(eq(assets.source, source));
       if (deleted === "only") where.push(isNotNull(assets.deletedAt));
       else if (deleted !== "include") where.push(isNull(assets.deletedAt));
+      const db = createDb(c.env.DB);
+      if (q?.trim()) {
+        return c.json(await searchAssets(db, { where, q, limit, cursor }), 200);
+      }
       if (cursor) where.push(lt(assets.id, cursor));
-      const rows = await createDb(c.env.DB)
+      const rows = await db
         .select()
         .from(assets)
         .where(and(...where))
         .orderBy(desc(assets.id))
         .limit(limit + 1);
+      const page = toPage(
+        rows,
+        limit,
+        (r) => r,
+        (r) => r.id,
+      );
       return c.json(
-        toPage(rows, limit, toAsset, (r) => r.id),
+        { items: await withAnalyses(db, page.items), nextCursor: page.nextCursor },
         200,
       );
     },
@@ -274,8 +299,9 @@ export const assetRoutes = router
       responses: { 200: json(Asset, "The asset."), 404: errors[404] },
     }),
     async (c) => {
-      const row = await requireAsset(createDb(c.env.DB), c.req.valid("param").id);
-      return c.json(toAsset(row), 200);
+      const db = createDb(c.env.DB);
+      const row = await requireAsset(db, c.req.valid("param").id);
+      return c.json(await assetWithAnalysis(db, row), 200);
     },
   )
   .openapi(
@@ -411,9 +437,9 @@ export const assetRoutes = router
     async (c) => {
       const db = createDb(c.env.DB);
       const row = await requireAsset(db, c.req.valid("param").id);
-      if (!row.deletedAt) return c.json(toAsset(row), 200);
+      if (!row.deletedAt) return c.json(await assetWithAnalysis(db, row), 200);
       await db.update(assets).set({ deletedAt: null }).where(eq(assets.id, row.id));
-      return c.json(toAsset({ ...row, deletedAt: null }), 200);
+      return c.json(await assetWithAnalysis(db, { ...row, deletedAt: null }), 200);
     },
   )
   .openapi(

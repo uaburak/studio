@@ -1,7 +1,8 @@
 // "AI ile görsel üret" (port of StudioMac's AI image sheet): the description, the aspect ratio,
-// the resolution, an optional reference picture of the brand and "keep the product label".
+// the resolution, an optional reference picture of the brand and "keep the product label" (U9:
+// where the product goes, its size, the label's exact text).
 // Sends an `image.generate` job; the picture shows up in the library when it is ready.
-import type { Asset } from "@studio/contract";
+import type { Asset, ProductPosition } from "@studio/contract";
 import { useRef, useState } from "react";
 import { Button, Checkbox, cn, SegmentedControl } from "../../components/ui/controls.tsx";
 import { Sheet } from "../../components/ui/sheet.tsx";
@@ -15,6 +16,9 @@ import {
   type ImageRequestForm,
   type ImageSize,
   isImageAsset,
+  PRODUCT_POSITIONS,
+  PRODUCT_SIZES,
+  type ProductSize,
 } from "./media-model.ts";
 
 export function ImageGeneratorSheet({
@@ -181,6 +185,48 @@ export function ImageGeneratorSheet({
         >
           Ürün etiketini bozmadan koru
         </Checkbox>
+        {form.preserveProductLabel && form.referenceAssetId !== null && (
+          <div className="flex flex-col gap-3 rounded-[12px] p-3 shadow-[inset_0_0_0_1px_var(--border-hairline)]">
+            <p className="text-footnote text-fg-3">
+              Yapay zekâ yalnızca sahneyi çizer; gerçek ürün fotoğrafı kesilip yerleştirilir ve
+              etiket son görselde yeniden okunup kontrol edilir.
+            </p>
+            <div className="flex flex-wrap items-center gap-x-6 gap-y-3">
+              <div className="flex flex-col gap-1.5">
+                <span className="text-footnote text-fg-2">Ürünün yeri</span>
+                <SegmentedControl
+                  label="Ürünün yeri"
+                  value={form.productPosition ?? "auto"}
+                  onChange={(value: ProductPosition) =>
+                    setForm((f) => ({ ...f, productPosition: value }))
+                  }
+                  options={PRODUCT_POSITIONS.map((p) => ({ value: p.value, label: p.label }))}
+                />
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <span className="text-footnote text-fg-2">Boyu</span>
+                <SegmentedControl
+                  label="Ürünün boyu"
+                  value={form.productSize ?? "medium"}
+                  onChange={(value: ProductSize) => setForm((f) => ({ ...f, productSize: value }))}
+                  options={PRODUCT_SIZES.map((s) => ({ value: s.value, label: s.label }))}
+                />
+              </div>
+            </div>
+            <label className="flex flex-col gap-1.5">
+              <span className="text-footnote text-fg-2">
+                Etiket metni (isteğe bağlı, birebir; fotoğraftan okumaktan güvenilirdir)
+              </span>
+              <textarea
+                value={form.labelText ?? ""}
+                rows={3}
+                placeholder={"Örn. VENTA BORİNÇ\nGÜBRE 25 KG"}
+                onChange={(event) => setForm((f) => ({ ...f, labelText: event.target.value }))}
+                className="selectable resize-none rounded-[12px] bg-field px-3 py-2 text-body text-fg shadow-[inset_0_0_0_1px_var(--border-hairline)] outline-none placeholder:text-fg-3"
+              />
+            </label>
+          </div>
+        )}
         {error && (
           <p className="text-footnote text-danger" role="alert">
             {error}

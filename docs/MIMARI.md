@@ -101,7 +101,8 @@ yeniden deneme, iptal). Türler (`packages/contract/src/job.ts`):
 | `content.generate`            | Post / carousel / story / Reels üretimi (eleştiri turu ve kontrollerle); şablondan doldurma (N9), post → story / Reels dönüştürme (N10) |
 | `content.render`              | HTML slaytları Chromium ile JPEG / PNG / PDF'e, Reels'i MP4'e                                                                           |
 | `content.check`               | Üretim kontrolleri (taşma, güvenli alan, kontrast, yasaklı kelime, marka uyumu…) ve düzeltme                                            |
-| `image.generate`              | Yapay zekâ görseli (Gemini / OpenAI)                                                                                                    |
+| `image.generate`              | Yapay zekâ görseli (Gemini / OpenAI); ürün etiketi korumalı birleştirme ve doğrulama (U9)                                               |
+| `media.analyze`               | Yüklenen görselleri Mac'te Apple Vision ile etiketleme: etiket, yazı, renk, benzerlik (N12)                                             |
 | `brand.analyze`               | Marka kiti ve örneklerden marka profili                                                                                                 |
 | `brand.skill_draft`           | Geçmiş postlardan marka skill taslağı                                                                                                   |
 | `schedule.publish`            | Mac'ten yerel yayın (Meta, LinkedIn)                                                                                                    |

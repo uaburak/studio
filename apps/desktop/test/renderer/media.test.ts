@@ -1,6 +1,7 @@
 import type { Asset } from "@studio/contract";
 import { describe, expect, it, vi } from "vitest";
 import {
+  analysisTooltip,
   assetMeta,
   downloadName,
   filterAssets,
@@ -9,6 +10,8 @@ import {
   lightboxImages,
   mediaCounts,
   mediaSummary,
+  tileDetail,
+  topTags,
 } from "../../src/renderer/features/media/media-model.ts";
 import {
   assetDragPayload,
@@ -193,5 +196,101 @@ describe("AI image request", () => {
         preserveProductLabel: false,
       }),
     ).toEqual({ ok: false, reason: "Görseli tarif eden bir metin yaz." });
+  });
+
+  it("sends the product's place, size and label text only for a label-preserving picture (U9)", () => {
+    const base = {
+      prompt: "tarla",
+      aspectRatio: "4:5" as const,
+      imageSize: "2K" as const,
+      referenceAssetId: "ref",
+      preserveProductLabel: true,
+      productPosition: "bottom-left" as const,
+      productSize: "large" as const,
+      labelText: "  VENTA BORİNÇ\nGÜBRE 25 KG ",
+    };
+    expect(imageRequestPayload(base)).toEqual({
+      ok: true,
+      payload: {
+        prompt: "tarla",
+        aspectRatio: "4:5",
+        imageSize: "2K",
+        referenceAssetIds: ["ref"],
+        preserveProductLabel: true,
+        productPosition: "bottom-left",
+        productScale: 0.78,
+        labelText: "VENTA BORİNÇ\nGÜBRE 25 KG",
+      },
+    });
+    const defaults = imageRequestPayload({
+      ...base,
+      productPosition: "auto",
+      productSize: "medium",
+      labelText: " ",
+    });
+    expect(defaults.ok && defaults.payload).toEqual({
+      prompt: "tarla",
+      aspectRatio: "4:5",
+      imageSize: "2K",
+      referenceAssetIds: ["ref"],
+      preserveProductLabel: true,
+    });
+    const off = imageRequestPayload({ ...base, preserveProductLabel: false });
+    expect(off.ok && off.payload).not.toHaveProperty("labelText");
+  });
+});
+
+describe("media tagging and search (N12)", () => {
+  const tagged = (id: string, labels: string[], over: Partial<Asset> = {}): Asset =>
+    asset(id, {
+      analysis: {
+        status: "complete",
+        tags: labels.map((label, i) => ({ id: `tag_${i}`, label, confidence: 0.9 - i * 0.1 })),
+        text: id === "bag" ? "VENTA BORİNÇ" : "",
+        colors: [{ hex: "#2f7d32", share: 0.6, name: "yeşil" }],
+        orientation: "portrait",
+        aspectRatio: 0.8,
+        isCutout: id === "bag",
+        isLogoLike: false,
+        caption: null,
+        hasFeaturePrint: true,
+        note: null,
+        analyzedAt: "2026-11-19T10:00:00.000Z",
+      },
+      ...over,
+    });
+
+  it("searches what Vision read: Turkish tags, the text on the picture, colours, cutouts", () => {
+    const all = [tagged("field", ["tarla", "buğday"]), tagged("bag", ["çuval"]), asset("plain")];
+    expect(filterAssets(all, "bugday").map((a) => a.id)).toEqual(["field"]);
+    expect(filterAssets(all, "borinç").map((a) => a.id)).toEqual(["bag"]);
+    expect(filterAssets(all, "dekupe").map((a) => a.id)).toEqual(["bag"]);
+    expect(
+      filterAssets(all, "yeşil dikey")
+        .map((a) => a.id)
+        .sort(),
+    ).toEqual(["bag", "field"]);
+    expect(filterAssets(all, "plain").map((a) => a.id)).toEqual(["plain"]);
+  });
+
+  it("offers the most common tags as chips and shows the first tags under a tile", () => {
+    const all = [
+      tagged("a", ["tarla", "buğday"]),
+      tagged("b", ["tarla"]),
+      tagged("c", ["çuval", "tarla"]),
+      asset("d"),
+    ];
+    expect(topTags(all)).toEqual([
+      { label: "tarla", count: 3 },
+      { label: "buğday", count: 1 },
+      { label: "çuval", count: 1 },
+    ]);
+    expect(topTags(all, 1)).toEqual([{ label: "tarla", count: 3 }]);
+    expect(tileDetail(all[0] as Asset)).toBe("1080×1350 · tarla, buğday");
+    expect(tileDetail(asset("d"))).toBe("1080×1350 · 2,4 MB");
+    expect(analysisTooltip(tagged("bag", ["çuval"]))).toBe(
+      "Etiketler: çuval\nYazı: VENTA BORİNÇ\nRenkler: yeşil",
+    );
+    expect(analysisTooltip(asset("d"))).toBeUndefined();
   });
 });

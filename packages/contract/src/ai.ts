@@ -308,6 +308,12 @@ export const AiPreferences = z
     stopAtBudget: z.boolean(),
     /** The answer for the current Claude limit window (`ask`); null when none holds now. */
     limitDecision: ClaudeLimitDecision.nullable(),
+    /**
+     * N12: also describe each new picture with the AI (Gemini, paid; within the budget). Off by
+     * default (absent from older servers = off); tags, text and colours are read on the Mac for
+     * free either way.
+     */
+    mediaCaptions: z.boolean().optional(),
     updatedAt: Timestamp.nullable(),
   })
   .meta({ id: "AiPreferences" });
@@ -319,6 +325,7 @@ export const AiPreferencesPut = z
     claudeLimit: ClaudeLimitMode.optional(),
     monthlyBudgetUsd: z.number().min(0).max(1_000_000).nullable().optional(),
     stopAtBudget: z.boolean().optional(),
+    mediaCaptions: z.boolean().optional(),
   })
   .meta({ id: "AiPreferencesPut" });
 export type AiPreferencesPut = z.input<typeof AiPreferencesPut>;
@@ -350,6 +357,8 @@ export const WorkerAiSettings = z
       /** Start of the month in the worker's time zone (`tzOffset`). */
       monthStart: Timestamp,
     }),
+    /** N12: describe new pictures with the AI (see `AiPreferences.mediaCaptions`; absent = off). */
+    mediaCaptions: z.boolean().optional(),
   })
   .meta({ id: "WorkerAiSettings" });
 export type WorkerAiSettings = z.infer<typeof WorkerAiSettings>;

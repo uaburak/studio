@@ -2,6 +2,7 @@ export * from "./agent.ts";
 export * from "./ai.ts";
 export * from "./ai-pricing.ts";
 export * from "./asset.ts";
+export * from "./asset-analysis.ts";
 export * from "./brand.ts";
 export * from "./brand-kit.ts";
 export * from "./brand-product.ts";

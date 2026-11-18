@@ -139,6 +139,13 @@ export const ITEMS = {
     "Açıkken aylık bütçe dolunca ücretli yapay zekâ çağrıları yapılmaz.",
     "bütçe limit durdur engelle ücretli",
   ),
+  mediaCaptions: item(
+    "usage.mediaCaptions",
+    "usage",
+    "Görsellere yapay zekâ açıklaması",
+    "Yüklenen görseller Mac'te ücretsiz etiketlenir (Apple Vision). Açıkken Gemini her yeni görsele kısa bir Türkçe açıklama da yazar: ücretli, aylık bütçeyi aşmaz.",
+    "medya etiket açıklama görsel arama vision",
+  ),
   geminiCredit: item(
     "usage.geminiCredit",
     "usage",

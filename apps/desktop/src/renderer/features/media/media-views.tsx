@@ -1,6 +1,6 @@
 // Media building blocks shared by the Medya pane and the library page: square thumbnails
 // (hover dim, AI badge), click → the image viewer, drag into the composer, right-click menu
-// (Önizle, Sohbete ekle, Farklı kaydet…).
+// (Önizle, Benzerleri, Sohbete ekle, Farklı kaydet…), tag chips (N12).
 import type { Asset } from "@studio/contract";
 import { cn } from "../../components/ui/controls.tsx";
 import {
@@ -10,6 +10,7 @@ import {
   IconDownload,
   IconExpand,
   IconImage,
+  IconLayers,
   IconTrash,
   IconType,
   IconVideo,
@@ -20,7 +21,7 @@ import { assetUrl } from "../../lib/api.ts";
 import { assetDragPayload, requestComposerAttach, writeAssetDrag } from "../../lib/asset-drag.ts";
 import { tileUrl } from "../../lib/thumbnail.ts";
 import { useAppStore } from "../../state/app-store.ts";
-import { downloadName, isImageAsset, lightboxImages } from "./media-model.ts";
+import { analysisTooltip, downloadName, isImageAsset, lightboxImages } from "./media-model.ts";
 
 /** Save an asset's bytes through the browser download (Electron asks where). */
 export function saveAsset(asset: Asset): void {
@@ -60,6 +61,8 @@ export function mediaMenu(
   preview: () => void,
   /** "Sil": to the trash (refused while a post, product or the kit uses it). */
   remove?: () => void,
+  /** "Benzerleri" (N12): the pictures that look like this one. */
+  similar?: () => void,
 ): MenuEntry[] {
   const image = isImageAsset(asset);
   return [
@@ -70,6 +73,17 @@ export function mediaMenu(
       disabled: !image,
       onSelect: preview,
     },
+    ...(similar
+      ? ([
+          {
+            id: "similar",
+            label: "Benzerleri",
+            icon: <IconLayers size={14} strokeWidth={1.5} />,
+            disabled: !image,
+            onSelect: similar,
+          },
+        ] satisfies MenuEntry[])
+      : []),
     {
       id: "chat",
       label: "Sohbete ekle",
@@ -97,6 +111,45 @@ export function mediaMenu(
         ] satisfies MenuEntry[])
       : []),
   ];
+}
+
+/**
+ * The library's most common Turkish tags (what Vision read, N12) as chips: a click searches for
+ * the tag, a second click clears it.
+ */
+export function TagChips({
+  tags,
+  query,
+  onQuery,
+}: {
+  tags: readonly { label: string; count: number }[];
+  query: string;
+  onQuery(next: string): void;
+}) {
+  if (tags.length === 0) return null;
+  const current = query.trim().toLocaleLowerCase("tr-TR");
+  return (
+    <fieldset className="m-0 flex min-w-0 flex-wrap gap-1.5 border-0 p-0" aria-label="Etiketler">
+      {tags.map((tag) => {
+        const active = current === tag.label.toLocaleLowerCase("tr-TR");
+        return (
+          <button
+            key={tag.label}
+            type="button"
+            aria-pressed={active}
+            title={`${tag.count} görsel`}
+            onClick={() => onQuery(active ? "" : tag.label)}
+            className={cn(
+              "inline-flex h-6 items-center rounded-full px-2.5 text-footnote transition-colors",
+              active ? "bg-accent-subtle text-accent-text" : "bg-control text-fg-2 hover:text-fg",
+            )}
+          >
+            {tag.label}
+          </button>
+        );
+      })}
+    </fieldset>
+  );
 }
 
 function KindGlyph({ asset }: { asset: Asset }) {
@@ -137,7 +190,7 @@ export function MediaTile({
       }}
       onClick={onOpen}
       onContextMenu={onContextMenu}
-      title={name || undefined}
+      title={[name, analysisTooltip(asset)].filter(Boolean).join("\n") || undefined}
       aria-label={image ? `Görseli aç${name ? `: ${name}` : ""}` : name || "Dosya"}
       data-asset={asset.id}
       className={cn(

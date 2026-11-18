@@ -8,6 +8,8 @@ import {
   type ApiClient,
   ApiError,
   type Asset,
+  type AssetAnalysisPut,
+  assetMatchesQuery,
   type Brand,
   type BrandCheckSettings,
   BrandCheckSettingsPut,
@@ -27,9 +29,12 @@ import {
   type ContentVersionUpdate,
   type Conversation,
   type ConversationAlias,
+  decodeFeaturePrint,
   defaultCheckSettings,
   type ErrorIssue,
   emptyBrandKit,
+  featureDistance,
+  featureSimilarity,
   type Job,
   type JobCreate,
   type Message,
@@ -89,6 +94,10 @@ export interface FakeApiState {
   publishing?: FakePublishingState;
   jobs: Job[];
   assetRecords: Asset[];
+  /** N12: analyses the worker stored (`workerAssets.putAnalysis`), by asset id. */
+  analyses: Map<string, AssetAnalysisPut>;
+  /** N12: `assets.backfillAnalysis` calls. */
+  backfills: unknown[];
   uploads: {
     brandId: string;
     kind?: string;
@@ -214,6 +223,8 @@ export function createFakeApi(init: Partial<FakeApiState> = {}): {
     scheduleOutcomes: [],
     jobs: [],
     assetRecords: [],
+    analyses: new Map(),
+    backfills: [],
     uploads: [],
     contentUpdates: [],
     conversationUpdates: [],
@@ -238,6 +249,29 @@ export function createFakeApi(init: Partial<FakeApiState> = {}): {
     },
     ...init,
   };
+
+  /** An asset as the API returns it: with the analysis the worker stored (N12). */
+  function withAnalysis(a: Asset): Asset {
+    const put = state.analyses.get(a.id);
+    if (!put) return { ...a, analysis: a.analysis ?? null };
+    return {
+      ...a,
+      analysis: {
+        status: put.status,
+        tags: put.tags ?? [],
+        text: put.text ?? "",
+        colors: put.colors ?? [],
+        orientation: put.orientation ?? null,
+        aspectRatio: put.aspectRatio ?? null,
+        isCutout: put.isCutout ?? false,
+        isLogoLike: put.isLogoLike ?? false,
+        caption: put.caption ?? null,
+        hasFeaturePrint: Boolean(put.featurePrint),
+        note: put.note ?? null,
+        analyzedAt: NOW,
+      },
+    };
+  }
 
   const applyOp = (op: TurnOp) => {
     if (op.op === "text.delta") {
@@ -1016,15 +1050,41 @@ export function createFakeApi(init: Partial<FakeApiState> = {}): {
       },
     },
     assets: {
-      list: async (query?: { brandId?: string; kind?: string; source?: string }) => ({
-        items: state.assetRecords.filter(
-          (a) =>
-            (!query?.brandId || a.brandId === query.brandId) &&
-            (!query?.kind || a.kind === query.kind) &&
-            (!query?.source || a.source === query.source),
-        ),
+      list: async (query?: { brandId?: string; kind?: string; source?: string; q?: string }) => ({
+        items: state.assetRecords
+          .map(withAnalysis)
+          .filter(
+            (a) =>
+              (!query?.brandId || a.brandId === query.brandId) &&
+              (!query?.kind || a.kind === query.kind) &&
+              (!query?.source || a.source === query.source) &&
+              (!query?.q || assetMatchesQuery(a, query.q)),
+          ),
         nextCursor: null,
       }),
+      similar: async (id: string, query?: { limit?: number }) => {
+        const own = state.analyses.get(id)?.featurePrint;
+        if (!own) {
+          return { assetId: id, items: [], note: "Bu görsel henüz okunmadı." };
+        }
+        const target = decodeFeaturePrint(own.data);
+        const self = state.assetRecords.find((a) => a.id === id);
+        const items = state.assetRecords
+          .filter((a) => a.id !== id && a.brandId === self?.brandId)
+          .map((a) => {
+            const fp = state.analyses.get(a.id)?.featurePrint;
+            const distance = fp ? featureDistance(target, decodeFeaturePrint(fp.data)) : Infinity;
+            return { asset: withAnalysis(a), distance, similarity: featureSimilarity(distance) };
+          })
+          .filter((i) => Number.isFinite(i.distance))
+          .sort((x, y) => x.distance - y.distance)
+          .slice(0, query?.limit ?? 12);
+        return { assetId: id, items, note: null };
+      },
+      backfillAnalysis: async (input?: unknown) => {
+        state.backfills.push(input ?? {});
+        return { pending: 0, queued: false, jobId: null };
+      },
       get: async (id: string) => {
         const a = state.assetRecords.find((x) => x.id === id);
         if (!a) throw new ApiError("asset not found", 404, "not_found");
@@ -1069,6 +1129,26 @@ export function createFakeApi(init: Partial<FakeApiState> = {}): {
         };
         state.assetRecords.push(assetRecord);
         return assetRecord;
+      },
+    },
+    workerAssets: {
+      /** Pictures without an analysis (or `partial` ones when asked), newest last. */
+      pending: async (query?: { brandId?: string; limit?: number; includePartial?: string }) => ({
+        items: state.assetRecords
+          .filter((a) => a.kind === "image" || a.kind === "logo")
+          .filter((a) => !query?.brandId || a.brandId === query.brandId)
+          .filter((a) => {
+            const stored = state.analyses.get(a.id);
+            return !stored || (query?.includePartial === "true" && stored.status === "partial");
+          })
+          .slice(0, query?.limit ?? 20)
+          .map(withAnalysis),
+      }),
+      putAnalysis: async (id: string, input: AssetAnalysisPut) => {
+        const a = state.assetRecords.find((x) => x.id === id);
+        if (!a) throw new ApiError("asset not found", 404, "not_found");
+        state.analyses.set(id, input);
+        return withAnalysis(a);
       },
     },
     conversations: {

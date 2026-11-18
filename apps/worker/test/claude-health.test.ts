@@ -168,6 +168,7 @@ describe("AgentRuntime announcements", () => {
       "content.render",
       "schedule.publish",
       "content.check",
+      "media.analyze",
     ]);
     expect(r.versionSuffix()).toBe("+claude.unauthenticated");
 
@@ -178,6 +179,7 @@ describe("AgentRuntime announcements", () => {
       "content.render",
       "schedule.publish",
       "content.check",
+      "media.analyze",
       "chat.turn",
       "content.generate",
       "brand.analyze",
@@ -195,6 +197,7 @@ describe("AgentRuntime announcements", () => {
       "content.render",
       "schedule.publish",
       "content.check",
+      "media.analyze",
       "chat.turn",
       "content.generate",
       "brand.analyze",
@@ -205,7 +208,12 @@ describe("AgentRuntime announcements", () => {
 
     // An auth error seen by a real job takes AI types off again while keeping non-AI types.
     r.markUnauthenticated("401");
-    expect(r.capabilities([])).toEqual(["content.render", "schedule.publish", "content.check"]);
+    expect(r.capabilities([])).toEqual([
+      "content.render",
+      "schedule.publish",
+      "content.check",
+      "media.analyze",
+    ]);
     await r.stop();
   });
 });
@@ -250,6 +258,7 @@ describe("worker with an agent runtime", () => {
         "content.render",
         "schedule.publish",
         "content.check",
+        "media.analyze",
         "chat.turn",
         "content.generate",
         "brand.analyze",
@@ -278,7 +287,13 @@ describe("worker with an agent runtime", () => {
     second?.simulateOpen();
     expect(second?.sent[0]).toMatchObject({
       type: "hello",
-      capabilities: ["demo.echo", "content.render", "schedule.publish", "content.check"],
+      capabilities: [
+        "demo.echo",
+        "content.render",
+        "schedule.publish",
+        "content.check",
+        "media.analyze",
+      ],
       workerVersion: "0.1.0+claude.unauthenticated",
     });
     expect(second?.sent.some((m) => m.type === "worker.usage")).toBe(true);

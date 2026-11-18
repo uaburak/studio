@@ -18,6 +18,8 @@ import path from "node:path";
 import {
   type AgentEffort,
   ApiError,
+  type Asset,
+  AssetOrientation,
   aiCallCostUsd,
   type Content,
   type ContentGeneratePayload,
@@ -32,6 +34,7 @@ import {
   type PlanningContext,
   type PlanProposalPut,
   Platform,
+  ProductPosition,
   planItemSimilarities,
   slugify,
 } from "@studio/contract";
@@ -608,7 +611,23 @@ export const STUDIO_TOOLS: readonly StudioToolDefinition[] = [
         preserveProductLabel: {
           type: "boolean",
           description:
-            "Referans ürün ambalajındaki küçük Türkçe yazıları ve etiketi bozmadan korumak için true.",
+            "Referans ürün ambalajındaki Türkçe yazıları ve etiketi bozmadan korumak için true: model yalnızca sahneyi çizer, gerçek ürün fotoğrafı kesilip yerleştirilir ve etiket sonradan okunarak doğrulanır (sonuçtaki `labelCheck`; 'ok' değilse kullanıcıya söyle).",
+        },
+        productPosition: {
+          type: "string",
+          enum: ["auto", "center", "bottom-center", "bottom-left", "bottom-right", "left", "right"],
+          description:
+            "preserveProductLabel ile ürünün yeri (varsayılan 'auto': sahnenin en boş yeri, yoksa alt orta).",
+        },
+        productScale: {
+          type: "number",
+          description:
+            "preserveProductLabel ile ürünün yüksekliği, görsel yüksekliğinin oranı olarak (0.2–0.9, varsayılan 0.62).",
+        },
+        labelText: {
+          type: "string",
+          description:
+            "Kullanıcı etiketin metnini verdiyse satır satır, birebir (fotoğraftan okumaktan güvenilirdir); son görselde bununla karşılaştırılır.",
         },
         targetContentId: {
           type: "string",
@@ -622,6 +641,42 @@ export const STUDIO_TOOLS: readonly StudioToolDefinition[] = [
           type: "boolean",
           description:
             "Aynı istek bu sohbette zaten çalıştıysa yine de yeniden üret (yalnızca kullanıcı açıkça bir kez daha isterse).",
+        },
+      },
+    },
+  },
+  {
+    name: "search_media",
+    description:
+      "Markanın medya kütüphanesinde görsel arar: Mac'te Apple Vision ile okunmuş Türkçe etiketler (ör. 'buğday', 'tarla', 'şişe'), görseldeki yazı, renkler, yön ve dosya adı; ya da `similarTo` ile bir görsele benzeyenleri bulur. Sonuçlar veri olarak gelir (assetId, etiketler, okunan yazı, renkler, yön, dekupe/logo). Bir görsel yuvası için uygun görseli kendin seçmek istediğinde kullan; seçtiğin `assetId`'yi `fill_post_slot`'a ya da `generate_ai_image` referansına ver. `withThumbnails: true` ilk sonuçların küçük önizlemelerini de gösterir.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        query: {
+          type: "string",
+          description:
+            "Aranacak kelimeler (hepsi eşleşmeli; Türkçe karakter duyarsız), ör. 'tarla traktör' ya da 'yeşil logo'. Boşsa en yeni görseller.",
+        },
+        brandId: { type: "string", description: "Marka id'si (boşsa konuşmanın markası)." },
+        similarTo: {
+          type: "string",
+          description:
+            "Bu görsele (assetId ya da @takma ad) benzeyenleri getir; query yok sayılır.",
+        },
+        kind: { type: "string", enum: ["image", "logo"], description: "Yalnızca bu tür." },
+        orientation: {
+          type: "string",
+          enum: ["portrait", "landscape", "square"],
+          description: "Yön: dikey, yatay ya da kare.",
+        },
+        cutoutOnly: {
+          type: "boolean",
+          description: "Yalnızca arka planı şeffaf (dekupe) görseller.",
+        },
+        limit: { type: "integer", description: "En fazla kaç sonuç (varsayılan 12, en çok 30)." },
+        withThumbnails: {
+          type: "boolean",
+          description: "İlk sonuçların (en çok 6) küçük önizlemeleri de gelsin.",
         },
       },
     },
@@ -868,6 +923,21 @@ const GenerateAiImageInput = z.object({
   preserveProductLabel: z.boolean().default(false),
   targetContentId: z.string().trim().min(1).optional(),
   targetSlotId: z.string().trim().min(1).max(128).optional(),
+  productPosition: ProductPosition.optional(),
+  productScale: z.coerce.number().min(0.2).max(0.9).optional(),
+  labelText: trimmed(4_000).optional(),
+});
+
+/** N12: `search_media`. */
+const SearchMediaInput = z.object({
+  query: trimmed(200).optional(),
+  brandId: z.string().trim().min(1).optional(),
+  similarTo: z.string().trim().min(1).optional(),
+  kind: z.enum(["image", "logo"]).optional(),
+  orientation: AssetOrientation.optional(),
+  cutoutOnly: z.boolean().default(false),
+  limit: z.coerce.number().int().min(1).max(30).default(12),
+  withThumbnails: z.boolean().default(false),
 });
 
 const FillPostSlotInput = z.object({
@@ -1101,6 +1171,10 @@ export class StudioToolExecutor {
       case "list_aliases":
         return this.runSafe(stepId, name, "Görseller listeleniyor…", "Görseller listelendi", () =>
           this.listAliases(args),
+        );
+      case "search_media":
+        return this.runSafe(stepId, name, "Medyada aranıyor…", "Medyada arandı", () =>
+          this.searchMedia(args),
         );
       case "view_alias":
         return this.runSafe(stepId, name, "Görsele bakılıyor…", "Görsele bakıldı", () =>
@@ -1823,6 +1897,104 @@ export class StudioToolExecutor {
       summary:
         list.length === 0 ? "Sohbette görsel yok" : list.map((a) => `@${a.alias}`).join(", "),
       images,
+    };
+  }
+
+  /** N12: the brand's library by Vision tags, text, colours and name (or similar pictures). */
+  private async searchMedia(args: Record<string, unknown>) {
+    const parsed = SearchMediaInput.parse(args);
+    const brandId = parsed.brandId ? (await this.resolveBrand(parsed.brandId)).id : this.brandId;
+    if (!brandId) throw new Error("Medya araması için marka seçilmedi; brandId belirtin.");
+    const init = { signal: this.options.signal };
+    let found: { asset: Asset; similarity?: number }[];
+    let note: string | null = null;
+    if (parsed.similarTo) {
+      const id = parsed.similarTo.startsWith("@")
+        ? await this.resolveAliasToAssetId(parsed.similarTo)
+        : parsed.similarTo;
+      const res = await this.options.api.client.assets.similar(id, { limit: 30 }, init);
+      found = res.items.map((i) => ({ asset: i.asset, similarity: i.similarity }));
+      note = res.note;
+    } else {
+      const res = await this.options.api.client.assets.list(
+        {
+          brandId,
+          limit: 100,
+          ...(parsed.query ? { q: parsed.query } : {}),
+          ...(parsed.kind ? { kind: parsed.kind } : {}),
+        },
+        init,
+      );
+      found = res.items.map((asset) => ({ asset }));
+    }
+    const pictures = found
+      .filter(({ asset }) => asset.brandId === brandId)
+      .filter(({ asset }) => asset.kind === "image" || asset.kind === "logo")
+      .filter(({ asset }) => asset.mimeType.startsWith("image/"))
+      .filter(({ asset }) => !parsed.kind || asset.kind === parsed.kind)
+      .filter(
+        ({ asset }) => !parsed.orientation || asset.analysis?.orientation === parsed.orientation,
+      )
+      .filter(({ asset }) => !parsed.cutoutOnly || asset.analysis?.isCutout === true)
+      .slice(0, parsed.limit);
+    const results = pictures.map(({ asset, similarity }) => {
+      const a = asset.analysis;
+      return {
+        assetId: asset.id,
+        filename: asset.originalFilename,
+        kind: asset.kind,
+        source: asset.source,
+        width: asset.width,
+        height: asset.height,
+        createdAt: asset.createdAt,
+        ...(similarity !== undefined ? { similarity: Math.round(similarity * 100) / 100 } : {}),
+        analyzed: Boolean(a && a.status !== "failed"),
+        ...(a
+          ? {
+              tags: a.tags.slice(0, 8).map((t) => t.label),
+              text: a.text.slice(0, 200),
+              colors: a.colors.map((c) => c.name),
+              orientation: a.orientation,
+              isCutout: a.isCutout,
+              isLogoLike: a.isLogoLike,
+              ...(a.caption ? { caption: a.caption } : {}),
+            }
+          : {}),
+      };
+    });
+    const images: StudioToolImage[] = [];
+    const shown: string[] = [];
+    if (parsed.withThumbnails) {
+      for (const { asset } of pictures.slice(0, 6)) {
+        const picture = await this.pictureOf(asset.id, 384).catch(() => null);
+        if (picture) {
+          images.push(picture);
+          shown.push(asset.id);
+        }
+      }
+    }
+    const unanalyzed = results.filter((r) => !r.analyzed).length;
+    return {
+      data: {
+        ok: true,
+        brandId,
+        ...(parsed.query ? { query: parsed.query } : {}),
+        ...(parsed.similarTo ? { similarTo: parsed.similarTo } : {}),
+        count: results.length,
+        results,
+        ...(parsed.withThumbnails ? { thumbnailsInOrder: shown } : {}),
+        ...(note ? { note } : {}),
+        ...(unanalyzed > 0
+          ? {
+              hint: `${unanalyzed} görsel henüz okunmadı (etiketsiz); yalnızca dosya adıyla bulunur.`,
+            }
+          : {}),
+      },
+      summary:
+        results.length === 0
+          ? (note ?? "Eşleşen görsel yok")
+          : `${results.length} görsel bulundu${parsed.query ? ` (“${parsed.query}”)` : ""}`,
+      ...(images.length > 0 ? { images } : {}),
     };
   }
 
@@ -2655,6 +2827,9 @@ export class StudioToolExecutor {
         preserveProductLabel: parsed.preserveProductLabel,
         ...(parsed.targetContentId ? { targetContentId: parsed.targetContentId } : {}),
         ...(parsed.targetSlotId ? { targetSlotId: parsed.targetSlotId } : {}),
+        ...(parsed.productPosition ? { productPosition: parsed.productPosition } : {}),
+        ...(parsed.productScale !== undefined ? { productScale: parsed.productScale } : {}),
+        ...(parsed.labelText ? { labelText: parsed.labelText } : {}),
       };
 
       const key = toolCallKey(tool, { brandId, ...payload });

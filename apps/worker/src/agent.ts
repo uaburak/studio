@@ -15,6 +15,7 @@ import type { UsageTracker } from "./claude/usage.ts";
 import { type GeminiModelAlias, liveGeminiModels } from "./gemini/models.ts";
 import type { Logger } from "./log.ts";
 import type { StudioMcpServer } from "./mcp/server.ts";
+import type { VisionHelper } from "./vision/helper.ts";
 
 const AgentEnv = z.object({
   /** `0` runs the worker without the AI-backed job types (demo/smoke only). */
@@ -232,6 +233,11 @@ export interface AgentDeps {
   aiPolicy?: AiPolicy;
   /** Codex CLI / OpenAI API / Antigravity CLI readiness (`worker.providers`). */
   providers?: () => AiProviderStatus[];
+  /**
+   * Apple Vision on this Mac (`studio-vision`, N12 / U9): tagging, OCR, cutouts. Absent (tests):
+   * treated as not installed.
+   */
+  vision?: VisionHelper;
   /** Test seams for Gemini, publishers & consent polling. */
   geminiFetch?: typeof globalThis.fetch;
   geminiCliSpawn?: typeof nodeSpawn;

@@ -16,6 +16,7 @@ export const JOB_LABELS: Record<string, string> = {
   "schedule.publish": "Zamanlı yayın",
   "chat.turn": "Sohbet yanıtı",
   "demo.echo": "Deneme işi",
+  "media.analyze": "Görsel etiketleme",
 };
 
 export interface JobLike {
@@ -25,6 +26,17 @@ export interface JobLike {
   payload: unknown;
   brandId?: string | undefined;
   error?: string | undefined;
+  /** The result (only read loosely: e.g. a product picture's label check, U9). */
+  output?: unknown;
+}
+
+/** U9: the label check of a finished product picture when it is not "ok" (its Turkish message). */
+export function labelWarning(job: Pick<JobLike, "type" | "output">): string | null {
+  if (job.type !== "image.generate") return null;
+  const check = (job.output as { labelCheck?: { status?: unknown; message?: unknown } } | null)
+    ?.labelCheck;
+  if (!check || check.status === "ok" || typeof check.message !== "string") return null;
+  return check.message;
 }
 
 export function jobTitle(job: Pick<JobLike, "type" | "payload">): string {
@@ -101,10 +113,17 @@ export function finishedNotice(job: JobLike, title: string): NoticeInput | null 
       ...(route ? { route } : {}),
     };
   }
+  const warning = ok ? labelWarning(job) : null;
   return {
     id: `job-${job.id}-${job.status}`,
-    title: ok ? `${title} bitti` : `${title} başarısız`,
-    body: ok ? "Sonuç Studio'da hazır." : (job.error ?? "Ayrıntılar Arka plan işleri'nde."),
+    title: ok
+      ? warning
+        ? `${title} bitti, etiketi kontrol et`
+        : `${title} bitti`
+      : `${title} başarısız`,
+    body: ok
+      ? (warning ?? "Sonuç Studio'da hazır.")
+      : (job.error ?? "Ayrıntılar Arka plan işleri'nde."),
     ...(route ? { route } : {}),
   };
 }

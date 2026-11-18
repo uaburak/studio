@@ -39,6 +39,7 @@ Studio.app/Contents/
   Resources/host/              sunucu, depodan bağımsız — ~250 MB
     manifest.json              sürüm, son göç, Chromium sürümü
     bin/node-shim.cjs          Node alt süreçlerine önce yüklenir
+    bin/studio-vision          Apple Vision yardımcısı (apps/vision-helper, swift build -c release)
     api/index.js, wrangler.json, migrations/   API'nin derlenmiş Worker paketi + D1 göçleri
     gateway/lan-gateway.mjs    yerel ağ geçidi
     worker/main.js             worker, esbuild ile düz JS (tsx yok)
@@ -63,6 +64,12 @@ klasörü" geri dönüşü kaldırıldı; ikisi de yoksa sunucu açıkça hata v
 | Geçit  | `apps/api/scripts/lan-gateway.mjs`                                                               | `host/gateway/lan-gateway.mjs`                                                                                                                                                       |
 | Worker | `node --env-file-if-exists=<depo>/.env --import tsx src/main.ts` (cwd `apps/worker`)             | `host/worker/main.js` (cwd `<durum>/worker`), `.env` okunmaz, `STUDIO_SKILLS_DIR=host/agent/skills`                                                                                  |
 | Tünel  | PATH'teki `cloudflared`                                                                          | aynı                                                                                                                                                                                 |
+
+Görsel yardımcısı (`studio-vision`, Apple Vision; etiketleme N12 ve etiket koruma U9): worker
+önce `STUDIO_VISION_HELPER`'a, sonra kendi yanındaki `host/bin/studio-vision`'a (paket), sonra
+depodaki `apps/vision-helper/.build/release/studio-vision`'a bakar. Geliştirmede bir kez
+`swift build -c release --package-path apps/vision-helper` gerekir; `build-host.mjs` paket için
+derler (Xcode yoksa uyarır, paket onsuz çıkar ve özellikler bunu Türkçe söyler).
 
 Veri yeri değişmez: `~/Library/Application Support/Studio` (`api/state/v3/…` düzeni aynı;
 veritabanı, R2 ve Durable Object dosyaları geliştirme ve paket arasında ortak). Göçten önce

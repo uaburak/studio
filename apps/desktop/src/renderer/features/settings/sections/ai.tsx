@@ -665,7 +665,48 @@ export function UsageSection() {
         ))
       )}
       <AiSpendRows />
+      <MediaCaptionsRow />
     </Pane>
+  );
+}
+
+/** N12: "Görsellere yapay zekâ açıklaması" (off by default; paid, within the budget). */
+function MediaCaptionsRow() {
+  const api = useApi();
+  const up = isHostUp(useHost());
+  const queryClient = useQueryClient();
+  const prefs = useAiPreferences();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const on = prefs.data?.mediaCaptions ?? false;
+  const change = async (next: boolean) => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      queryClient.setQueryData<AiPreferences>(
+        aiPreferencesKey,
+        await api.ai.setPreferences({ mediaCaptions: next }),
+      );
+    } catch (e) {
+      setError(describeError(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <Row
+      item={ITEMS.mediaCaptions}
+      detail={error ?? ITEMS.mediaCaptions.detail}
+      detailTone={error ? "danger" : "default"}
+    >
+      <Switch
+        label={ITEMS.mediaCaptions.title}
+        checked={on}
+        disabled={!up || busy}
+        onChange={(next) => void change(next)}
+      />
+    </Row>
   );
 }
 

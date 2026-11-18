@@ -9,6 +9,7 @@ import { hostComponents } from "./lib/health.ts";
 import { createRouter } from "./lib/router.ts";
 import { accessControl, authenticate } from "./middleware/access.ts";
 import { aiRoutes } from "./routes/ai.ts";
+import { assetAnalysisRoutes } from "./routes/asset-analysis.ts";
 import { assetRoutes } from "./routes/assets.ts";
 import { brandKitRoutes } from "./routes/brand-kits.ts";
 import { brandProductRoutes } from "./routes/brand-products.ts";
@@ -100,6 +101,7 @@ app.route("/", brandProductRoutes);
 app.route("/", brandSkillRoutes);
 app.route("/", socialAccountRoutes);
 app.route("/", assetRoutes);
+app.route("/", assetAnalysisRoutes); // /api/assets/{id}/similar, backfill, /api/worker/assets/* (N12)
 app.route("/", contentRoutes);
 app.route("/", contentCheckRoutes); // /api/contents/{id}/checks, /api/brands/{id}/check-settings (roadmap 13)
 app.route("/", jobRoutes);

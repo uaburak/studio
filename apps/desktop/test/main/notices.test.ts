@@ -19,7 +19,12 @@ import {
   watchRenderer,
 } from "../../src/main/renderer-link.ts";
 import { IPC, type NoticeInput } from "../../src/shared/ipc.ts";
-import { finishedNotice, noticeRoute, waitingNotice } from "../../src/shared/notices.ts";
+import {
+  finishedNotice,
+  JOB_LABELS,
+  noticeRoute,
+  waitingNotice,
+} from "../../src/shared/notices.ts";
 
 // --- the job stream ---------------------------------------------------------------------------
 
@@ -311,6 +316,29 @@ describe("notice texts", () => {
     expect(waitingNotice("c", "", "m", { type: "consent", consentId: "k", state: "allowed" })).toBe(
       null,
     );
+  });
+
+  it("says when a product picture's label did not check out (U9)", () => {
+    const message = "Etiketteki 1 satır son görselde okunamadı ya da farklı: “GÜBRE 25 KG”.";
+    expect(
+      finishedNotice(
+        {
+          ...job({ type: "image.generate", status: "succeeded" }),
+          output: { labelCheck: { status: "mismatch", message } },
+        },
+        "AI görsel üretimi",
+      ),
+    ).toMatchObject({ title: "AI görsel üretimi bitti, etiketi kontrol et", body: message });
+    expect(
+      finishedNotice(
+        {
+          ...job({ type: "image.generate", status: "succeeded" }),
+          output: { labelCheck: { status: "ok", message: "Etiket doğrulandı" } },
+        },
+        "AI görsel üretimi",
+      ),
+    ).toMatchObject({ title: "AI görsel üretimi bitti", body: "Sonuç Studio'da hazır." });
+    expect(JOB_LABELS["media.analyze"]).toBe("Görsel etiketleme");
   });
 });
 

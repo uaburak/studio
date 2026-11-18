@@ -20,7 +20,7 @@ import { type VaultEnv, vaultReady } from "./token-vault.ts";
  * The last migration this build ships (`migrations/`). A test keeps it equal to the folder's
  * last file, so a new migration without this bump fails CI instead of reporting "behind".
  */
-export const LATEST_MIGRATION = "0021_planning.sql";
+export const LATEST_MIGRATION = "0022_media_tags.sql";
 
 export interface MigrationLevel {
   applied: number;
