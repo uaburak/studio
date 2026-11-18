@@ -517,7 +517,7 @@ enum ChatViews {
     }
 
     static func attachmentThumb(_ attachment: AttachmentPart, size: CGFloat, context: ChatCellContext) -> UIView {
-        let image = IOSAssetImageView(store: context.images, assetId: attachment.assetId, cornerRadius: 14)
+        let image = IOSAssetImageView(store: context.images, assetId: attachment.assetId, cornerRadius: 14, displayWidth: size * 1.6)
         let control = UIControl()
         control.translatesAutoresizingMaskIntoConstraints = false
         control.addSubview(image)

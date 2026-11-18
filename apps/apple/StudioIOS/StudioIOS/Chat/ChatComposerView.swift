@@ -480,7 +480,7 @@ final class ChatComposerView: UIView, UITextViewDelegate {
             config.contentInsets = NSDirectionalEdgeInsets(top: 4, leading: 4, bottom: 4, trailing: 12)
             if let draft = composer.draft(alias: candidate.alias) {
                 config.image = Self.round(draft.thumbnail, side: 28)
-            } else if let assetId = candidate.assetId, let image = model.app.images.image(assetId) {
+            } else if let assetId = candidate.assetId, let image = model.app.images.image(assetId, width: 160) {
                 config.image = Self.round(image, side: 28)
             } else {
                 config.image = UIImage(systemName: "photo")
@@ -493,7 +493,7 @@ final class ChatComposerView: UIView, UITextViewDelegate {
             }
             let button = UIButton(configuration: config, primaryAction: UIAction { [weak self] _ in self?.choose(candidate) })
             button.accessibilityLabel = "@\(candidate.alias) an"
-            if let assetId = candidate.assetId { model.app.images.load(assetId) }
+            if let assetId = candidate.assetId { model.app.images.load(assetId, width: 160) }
             suggestionsStack.addArrangedSubview(button)
         }
     }

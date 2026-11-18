@@ -229,7 +229,8 @@ final class IOSPostsViewController: UIViewController, UICollectionViewDelegate {
         guard let indexPath = indexPaths.first, let id = dataSource.itemIdentifier(for: indexPath), let card = model.card(id) else { return nil }
         let source = collectionView.cellForItem(at: indexPath)
         return UIContextMenuConfiguration(identifier: id as NSString, previewProvider: { [weak self] in
-            guard let self, let rendered = card.renderedAssetIds.first, let image = self.app.images.image(rendered) else { return nil }
+            guard let self, let rendered = card.renderedAssetIds.first,
+                  let image = self.app.images.image(rendered) ?? self.app.images.image(rendered, width: 640) else { return nil }
             let preview = UIViewController()
             let imageView = UIImageView(image: image)
             imageView.contentMode = .scaleAspectFit
@@ -376,8 +377,10 @@ final class PostsHeaderView: UIView {
 // MARK: - Card
 
 final class PostGridCell: UICollectionViewCell {
+    /// About how wide a card is on an iPhone (two columns), in points: grids load thumbnails.
+    static let displayWidth: CGFloat = 200
     private let artboard = UIView()
-    private let imageView = IOSAssetImageView(store: nil, cornerRadius: 0)
+    private let imageView = IOSAssetImageView(store: nil, cornerRadius: 0, displayWidth: PostGridCell.displayWidth)
     private let placeholder = UIStackView()
     private let eyebrow = UILabel.studio("", size: 10, weight: .bold, color: IOSTheme.accent, style: .caption2)
     private let titleLabel = UILabel.studio("", size: 16, weight: .heavy, lines: 4, style: .headline)
