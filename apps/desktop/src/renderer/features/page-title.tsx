@@ -1,17 +1,22 @@
-// The top bar's title on the Takvim / Medya / Markalar / Marka profili pages: the page and
-// its brand.
+// The top bar's title on the Takvim / Medya / Markalar / Marka profili / Performans / Yorumlar
+// pages: the page and its brand.
 import type { Route } from "../state/app-store.ts";
 import { useBrands } from "../state/studio.tsx";
 import { usePanelBrand } from "./panel-brand.ts";
 
-type PageRoute = Extract<Route, { kind: "calendar" | "media" | "brands" | "brand" }>;
+type PageRoute = Extract<
+  Route,
+  { kind: "calendar" | "media" | "brands" | "brand" | "performance" | "comments" }
+>;
 
 export function isPageRoute(route: Route): route is PageRoute {
   return (
     route.kind === "calendar" ||
     route.kind === "media" ||
     route.kind === "brands" ||
-    route.kind === "brand"
+    route.kind === "brand" ||
+    route.kind === "performance" ||
+    route.kind === "comments"
   );
 }
 
@@ -20,6 +25,8 @@ const TITLES: Record<PageRoute["kind"], string> = {
   media: "Medya",
   brands: "Markalar",
   brand: "Marka profili",
+  performance: "Performans",
+  comments: "Yorumlar",
 };
 
 export function PageTitle({ route }: { route: PageRoute }) {

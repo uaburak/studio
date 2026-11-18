@@ -34,7 +34,11 @@ export type Route =
   /** The posts board (wave 2A). */
   | { kind: "posts" }
   /** Archived conversations: browse, open, take back. */
-  | { kind: "archive" };
+  | { kind: "archive" }
+  /** The current brand's statistics (N15). */
+  | { kind: "performance" }
+  /** The current brand's comment inbox (N16). */
+  | { kind: "comments" };
 
 /** A place in the history: a route and the post opened over it (if any). */
 export interface Location {
@@ -101,6 +105,10 @@ export function routeKey(route: Route): string {
       return "posts";
     case "archive":
       return "archive";
+    case "performance":
+      return "performance";
+    case "comments":
+      return "comments";
   }
 }
 
@@ -122,6 +130,8 @@ export function parseRoute(key: string | null | undefined): Route {
   }
   if (key === "posts") return { kind: "posts" };
   if (key === "archive") return { kind: "archive" };
+  if (key === "performance") return { kind: "performance" };
+  if (key === "comments") return { kind: "comments" };
   return { kind: "new" };
 }
 

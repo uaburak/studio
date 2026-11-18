@@ -4,6 +4,8 @@
 // the user's (dragged by the inner edge, see app-shell).
 import type { Brand, Conversation } from "@studio/contract";
 import { type ReactNode, useMemo } from "react";
+import { useUnreadComments } from "../../features/comments/comments-data.ts";
+import { UnreadBadge } from "../../features/comments/unread-badge.tsx";
 import { WorkspaceSlot } from "../../features/post-editor/slots.tsx";
 import { useWorkspaceStore } from "../../features/post-editor/workspace-store.ts";
 import { SIDEBAR_WIDTH, useAppStore } from "../../state/app-store.ts";
@@ -13,9 +15,11 @@ import { cn, IconButton, WorkingDots } from "../ui/controls.tsx";
 import {
   IconArchive,
   IconCalendar,
+  IconChart,
   IconChevronDown,
   IconChevronLeft,
   IconChevronRight,
+  IconComments,
   IconEllipsis,
   IconGrid,
   IconImage,
@@ -266,6 +270,7 @@ export function Sidebar({ width = SIDEBAR_WIDTH }: { width?: number }) {
   const brands = useBrands();
   const conversations = useConversations();
   const actions = useConversationActions();
+  const unreadComments = useUnreadComments(currentBrandId);
   const groups = useMemo(
     () =>
       groupConversations(
@@ -316,6 +321,19 @@ export function Sidebar({ width = SIDEBAR_WIDTH }: { width?: number }) {
           label="Medya"
           selected={route.kind === "media"}
           onClick={() => navigate({ kind: "media" })}
+        />
+        <SidebarRow
+          icon={<IconChart size={16} strokeWidth={1.5} />}
+          label="Performans"
+          selected={route.kind === "performance"}
+          onClick={() => navigate({ kind: "performance" })}
+        />
+        <SidebarRow
+          icon={<IconComments size={16} strokeWidth={1.5} />}
+          label="Yorumlar"
+          selected={route.kind === "comments"}
+          onClick={() => navigate({ kind: "comments" })}
+          trailing={<UnreadBadge count={unreadComments} />}
         />
         <SidebarRow
           icon={<IconTag size={16} strokeWidth={1.5} />}

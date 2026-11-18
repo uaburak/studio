@@ -77,6 +77,7 @@ import {
   PostEditor,
 } from "./editor.ts";
 import { postMenu, usePostFacts } from "./post-facts.ts";
+import { PostPerformancePanel } from "./post-performance.tsx";
 import { ReelEditor } from "./reel-editor.tsx";
 import { defaultScheduleDate } from "./schedule.ts";
 import { ScheduleSheet } from "./schedule-sheet.tsx";
@@ -642,6 +643,7 @@ export function EditorView({ editor, snapshot }: { editor: PostEditor; snapshot:
                   mode={publishing.data?.mode ?? "local"}
                   onCancel={(s) => cancelFlow.open([s.id])}
                 />
+                <PostPerformancePanel contentId={content.id} schedules={postSchedules} />
               </div>
             )}
             {tab === "edit" &&

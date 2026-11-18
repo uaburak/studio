@@ -53,6 +53,9 @@ const CalendarPage = lazy(() => import("../../features/calendar/calendar-page.ts
 const MediaPage = lazy(() => import("../../features/media/media-page.tsx"));
 const BrandPage = lazy(() => import("../../features/brand/brand-page.tsx"));
 const BrandsPage = lazy(() => import("../../features/brand/brands-page.tsx"));
+// Statistics and the comment inbox (N15, N16).
+const PerformancePage = lazy(() => import("../../features/performance/performance-page.tsx"));
+const CommentsPage = lazy(() => import("../../features/comments/comments-page.tsx"));
 
 /** The centre keeps at least this much room when a side panel is dragged wider. */
 export const MIN_CENTER_WIDTH = 420;
@@ -338,10 +341,14 @@ export function AppShell() {
             {(route.kind === "calendar" ||
               route.kind === "media" ||
               route.kind === "brands" ||
-              route.kind === "brand") && (
+              route.kind === "brand" ||
+              route.kind === "performance" ||
+              route.kind === "comments") && (
               <Suspense fallback={null}>
                 {route.kind === "calendar" && <CalendarPage />}
                 {route.kind === "media" && <MediaPage />}
+                {route.kind === "performance" && <PerformancePage />}
+                {route.kind === "comments" && <CommentsPage />}
                 {route.kind === "brands" && <BrandsPage />}
                 {route.kind === "brand" && (
                   <BrandPage
