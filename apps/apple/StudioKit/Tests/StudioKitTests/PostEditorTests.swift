@@ -136,7 +136,7 @@ struct PostEditorTests {
     }
 
     @Test func postListFilterSeparatesApprovedScheduledAndPublished() {
-        #expect(PostListFilter.allCases.map(\.label) == ["Tümü", "Hazır", "Görsel bekliyor", "Onaylandı", "Zamanlandı", "Yayınlandı"])
+        #expect(PostListFilter.allCases.map(\.label) == ["Tümü", "Hazır", "Görsel bekliyor", "Onaylandı", "Zamanlandı", "Yayınlandı", "Hata"])
         #expect(PostListFilter.approved.matches(.approved) && !PostListFilter.approved.matches(.scheduled))
         #expect(PostListFilter.scheduled.matches(.publishing))
         #expect(PostListFilter.published.matches(.published))
