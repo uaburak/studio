@@ -28,9 +28,16 @@
   // type, independent of whether a .dev.vars file exists.
   //
   // TOKEN_ENCRYPTION_KEY: the token vault's per-install key (src/lib/token-vault.ts).
-  // The Mac app generates it on first run (~/Library/Application Support/Studio/vault-key,
-  // 0600) and passes it through the environment; by hand: put it in .dev.vars.
-  "secrets": { "required": ["WORKER_TOKEN", "TOKEN_ENCRYPTION_KEY"] },
+  // The Mac app generates it on first run (kept encrypted with Electron safeStorage in
+  // ~/Library/Application Support/Studio/host-secrets.json) and passes it through the
+  // environment; by hand: put it in .dev.vars.
+  //
+  // STUDIO_OWNER_SECRET: proves a request comes from the desktop app itself (the `local`
+  // principal, src/middleware/access.ts). The Mac app keeps it in
+  // ~/Library/Application Support/Studio/owner-secret (0600) and passes it through the
+  // environment (never on a command line). Without it nothing counts as the Mac: a
+  // hand-started API then only serves the worker and paired devices.
+  "secrets": { "required": ["WORKER_TOKEN", "TOKEN_ENCRYPTION_KEY", "STUDIO_OWNER_SECRET"] },
 
   "d1_databases": [
     {

@@ -87,6 +87,13 @@ Veriler ve üretim Mac'te. `StudioMac` açılınca (`studio.host.enabled`, varsa
   `node` ve `claude` oradan bulunur. Depo yolu Ayarlar → Mac sunucusu → "Depo klasörü" (varsayılan: uygulamanın derlendiği
   depo, yoksa `~/Desktop/Burak/Code/Studio`); orada `pnpm install` yapılmış olmalı. **Node, wrangler ve worker'ın uygulama
   paketine gömülmesi sonraki adım.**
+- **Electron uygulamasıyla birlikte kullanım (G1, G10, 2026-11):** API artık yalnızca 127.0.0.1'den gelen isteği Mac
+  saymaz; masaüstü uygulamasının sahip anahtarını (`X-Studio-Owner`, `STUDIO_OWNER_SECRET`) ister. StudioMac bu anahtarı
+  vermez ve göndermez, bu yüzden onun başlattığı sunucuda Mac'e özel her istek `401` alır ve Electron uygulaması ona
+  bağlanmaz ("başka bir uygulama tarafından açılmış" der). Electron uygulaması ayrıca `vault-key` ve `worker-token`
+  dosyalarını safeStorage ile şifreleyip (`host-secrets.json`) siler; StudioMac açılırsa yeni bir `vault-key` üretir ve
+  kayıtlı hesap token'larını çözemez (Electron uygulaması kendi şifreli anahtarını kullanmaya devam eder, yeni dosyayı
+  `vault-key.appkit-<zaman>` olarak kenara koyar). StudioMac'te sunucuyu başlatmayın; uygulama emekliye ayrılıyor (S2).
 - **TOKEN_ENCRYPTION_KEY (P3):** token kasası anahtarı; ilk açılışta 32 rastgele bayt üretilip `vault-key` dosyasına (0600) yazılır,
   API'ye yalnızca ortam değişkeniyle verilir. Silinirse kayıtlı hesap token'ları çözülemez (hesaplar yeniden bağlanır).
 - **WORKER_TOKEN:** ilk açılışta rastgele üretilir, Anahtar Zinciri'nde (`net.burakkoc.studio` / `local-worker-token`)

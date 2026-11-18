@@ -8,6 +8,7 @@
  *
  * Usage (API started separately with its own --persist-to and WORKER_TOKEN):
  *   STUDIO_E2E_API=http://127.0.0.1:8797 STUDIO_WORKER_TOKEN=<test token> \
+ *   STUDIO_OWNER_SECRET=<the API's --var STUDIO_OWNER_SECRET> \
  *   STUDIO_E2E_STATE=/tmp/a4-worker-state pnpm --filter @studio/worker e2e
  * Options: STUDIO_E2E_ITEMS (default 3), STUDIO_E2E_OUT (default docs/e2e).
  */
@@ -23,6 +24,7 @@ import {
   type PlanItem,
 } from "@studio/contract";
 import sharp from "sharp";
+import { OwnerWebSocket, ownerFetch, requireOwnerSecret } from "./owner.ts";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const WORKER_DIR = path.resolve(HERE, "..");
@@ -46,7 +48,8 @@ if (/:8787\b/.test(apiBase)) {
   process.exit(2);
 }
 
-const api = createApiClient({ baseUrl: apiBase });
+requireOwnerSecret();
+const api = createApiClient({ baseUrl: apiBase, fetch: ownerFetch, WebSocket: OwnerWebSocket });
 const t0 = Date.now();
 const transcript: string[] = [];
 const log = (line: string) => {
@@ -304,7 +307,7 @@ async function main() {
       );
       for (const [i, slide] of version.slides.entries()) {
         if (!slide.renderedAssetId) continue;
-        const res = await fetch(api.assets.contentUrl(slide.renderedAssetId));
+        const res = await ownerFetch(api.assets.contentUrl(slide.renderedAssetId));
         const name = `${n + 1}-${item?.contentType ?? content.type}-slide-${i + 1}.jpg`;
         writeFileSync(path.join(outDir, name), new Uint8Array(await res.arrayBuffer()));
         tiles.push({ file: path.join(outDir, name), label: `${n + 1}.${i + 1} ${content.title}` });

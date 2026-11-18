@@ -143,10 +143,11 @@ export class Hub extends DurableObject<Env> {
       const jobId = url.searchParams.get("jobId") ?? undefined;
       const brandId = url.searchParams.get("brandId") ?? undefined;
       const tag = jobId ? `job:${jobId}` : brandId ? `brand:${brandId}` : "all";
+      const device = deviceTags(url);
       await this.serial(async () => {
         // Inside the serial queue: no update can slip in between the
         // snapshot query and the socket joining the broadcast set.
-        this.ctx.acceptWebSocket(server, ["client", tag]);
+        this.ctx.acceptWebSocket(server, ["client", tag, ...device]);
         server.serializeAttachment({ role: "client", connectedAt: now } satisfies ClientAttachment);
         const rows = await this.store.recent(
           { ...(jobId ? { jobId } : {}), ...(brandId ? { brandId } : {}) },
@@ -167,7 +168,11 @@ export class Hub extends DurableObject<Env> {
       const afterRaw = url.searchParams.get("after");
       const after = afterRaw === null ? undefined : Number(afterRaw);
       // Mark the socket before any await so an early frame is never mistaken for a worker's.
-      this.ctx.acceptWebSocket(server, ["conversation", `conv:${conversationId}`]);
+      this.ctx.acceptWebSocket(server, [
+        "conversation",
+        `conv:${conversationId}`,
+        ...deviceTags(url),
+      ]);
       server.serializeAttachment({
         role: "conversation",
         connectedAt: now,
@@ -221,6 +226,22 @@ export class Hub extends DurableObject<Env> {
   }
 
   // --- RPC (called from the Worker) ---------------------------------------------
+
+  /**
+   * A paired device was revoked: close its job and conversation streams, which authenticated
+   * only when they were opened (G8). Returns how many were closed.
+   */
+  async closeDeviceSockets(deviceId: string): Promise<number> {
+    const sockets = this.ctx.getWebSockets(`device:${deviceId}`);
+    for (const ws of sockets) {
+      try {
+        ws.close(CLOSE.revoked, "device revoked");
+      } catch {
+        // already closing
+      }
+    }
+    return sockets.length;
+  }
 
   /** The API inserted a queued job: tell watchers and try to dispatch it. */
   async jobCreated(jobId: string): Promise<void> {
@@ -922,6 +943,12 @@ export class Hub extends DurableObject<Env> {
     this.chain = run.catch((error: unknown) => console.error("hub: operation failed", error));
     return run;
   }
+}
+
+/** `device:<id>` when a paired device opened the stream (set by the Worker route, not the client). */
+function deviceTags(url: URL): string[] {
+  const device = url.searchParams.get("device");
+  return device ? [`device:${device}`] : [];
 }
 
 function attachmentOf(ws: WebSocket): Attachment {

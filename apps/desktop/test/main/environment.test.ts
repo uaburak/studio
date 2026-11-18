@@ -17,15 +17,19 @@ import {
   checkRepoAccess,
   migrationTimeoutMessage,
   normalizedHostname,
+  orphanedHelpers,
   parseLsofCwd,
+  parsePs,
   protectedFolder,
   tunnelArguments,
+  tunnelEnvironment,
 } from "../../src/main/host/guards.ts";
 import {
+  loadOrCreateHostSecrets,
   loadOrCreateInstanceId,
-  loadOrCreateVaultKey,
-  loadOrCreateWorkerToken,
+  loadOrCreateOwnerSecret,
   readHostFile,
+  removeHostFile,
   writeHostFile,
 } from "../../src/main/host/secrets.ts";
 import { NoticeLog, Notifier } from "../../src/main/notifications.ts";
@@ -123,17 +127,34 @@ describe("environment", () => {
 });
 
 describe("secrets and host.json (shared with the AppKit app)", () => {
-  it("creates 0600 secrets once and reuses them", () => {
+  it("without safeStorage creates 0600 plain secrets once and reuses them", () => {
     const dir = mkdtempSync(join(tmpdir(), "state-"));
-    const token = loadOrCreateWorkerToken(dir);
-    expect(token).toMatch(/^[0-9a-f]{64}$/);
-    expect(loadOrCreateWorkerToken(dir)).toBe(token);
+    const first = loadOrCreateHostSecrets(dir, null);
+    expect(first.workerToken).toMatch(/^[0-9a-f]{64}$/);
+    expect(Buffer.from(first.vaultKey, "base64")).toHaveLength(32);
+    expect(loadOrCreateHostSecrets(dir, null)).toEqual(first);
     expect(statSync(join(dir, "worker-token")).mode & 0o777).toBe(0o600);
-    const key = loadOrCreateVaultKey(dir);
-    expect(Buffer.from(key, "base64")).toHaveLength(32);
-    expect(loadOrCreateVaultKey(dir)).toBe(key);
+    expect(statSync(join(dir, "vault-key")).mode & 0o777).toBe(0o600);
     const id = loadOrCreateInstanceId(dir);
     expect(loadOrCreateInstanceId(dir)).toBe(id);
+  });
+
+  it("keeps a persistent 0600 owner secret", () => {
+    const dir = mkdtempSync(join(tmpdir(), "state-"));
+    const secret = loadOrCreateOwnerSecret(dir);
+    expect(secret).toMatch(/^[0-9a-f]{64}$/);
+    expect(loadOrCreateOwnerSecret(dir)).toBe(secret);
+    expect(statSync(join(dir, "owner-secret")).mode & 0o777).toBe(0o600);
+  });
+
+  it("removes host.json only while it names this app", () => {
+    const dir = mkdtempSync(join(tmpdir(), "state-"));
+    writeHostFile(dir, { apiPort: 8790, pid: 77 });
+    removeHostFile(dir, 78);
+    expect(readHostFile(dir)).not.toBeNull();
+    removeHostFile(dir, 77);
+    expect(readHostFile(dir)).toBeNull();
+    removeHostFile(dir, 77); // no file: no error
   });
 
   it("writes host.json like the AppKit app (lanPort left out when off)", () => {
@@ -189,15 +210,16 @@ describe("guards", () => {
 
   it("builds cloudflared arguments", () => {
     expect(normalizedHostname(" https://social.example.com/ ")).toBe("social.example.com");
+    // The token never goes on the command line (G2): only TUNNEL_TOKEN in the environment.
     expect(tunnelArguments("tok", "x", "http://127.0.0.1:8791")).toEqual([
       "tunnel",
       "--no-autoupdate",
       "run",
-      "--token",
-      "tok",
       "--url",
       "http://127.0.0.1:8791",
     ]);
+    expect(tunnelEnvironment(" tok ")).toEqual({ TUNNEL_TOKEN: "tok" });
+    expect(tunnelEnvironment(null)).toEqual({});
     expect(tunnelArguments(null, "", "http://127.0.0.1:1")).toEqual([
       "tunnel",
       "--no-autoupdate",
@@ -206,6 +228,22 @@ describe("guards", () => {
       "http://127.0.0.1:1",
       "social.burakkoc.net",
     ]);
+  });
+
+  it("finds the dns-sd and cloudflared a crashed app left behind (and nothing else)", () => {
+    const ps = [
+      "    1     0 /sbin/launchd",
+      "  501     1 /usr/bin/dns-sd -R Burak's Mac _studio._tcp local 8791 name=Burak api=1",
+      "  502  4242 /usr/bin/dns-sd -R Burak's Mac _studio._tcp local 8791 name=Burak api=1",
+      "  503     1 /usr/bin/dns-sd -B _airplay._tcp",
+      "  504     1 /opt/homebrew/bin/cloudflared tunnel --no-autoupdate run --url http://127.0.0.1:8791",
+      "  505   900 /opt/homebrew/bin/cloudflared tunnel --no-autoupdate run --url http://127.0.0.1:8791",
+      "  506     1 /opt/homebrew/bin/cloudflared tunnel login",
+      "garbage line",
+    ].join("\n");
+    const entries = parsePs(ps);
+    expect(entries).toHaveLength(7);
+    expect(orphanedHelpers(entries)).toEqual({ dnsSd: [501], cloudflared: [504] });
   });
 
   it("parses lsof cwd output", () => {

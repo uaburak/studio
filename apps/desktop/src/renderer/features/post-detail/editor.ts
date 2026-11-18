@@ -198,6 +198,8 @@ export interface EditorOptions {
   workerOnline?: () => boolean;
   /** The content or its current version changed (keep lists and caches in step). */
   onChange?: (content: Content, current: ContentVersion | null) => void;
+  /** The post was approved (its status changed for the board and the calendar). */
+  onApproved?: (content: Content) => void;
 }
 
 export class JobWaitError extends Error {}
@@ -445,6 +447,8 @@ export class PostEditor {
       this.s.content.type === "reel" ||
       isLocked(this.s.content) ||
       !version.slides.some((sl) => sl.layers == null || sl.renderedAssetId == null) ||
+      // An approved version's renders are frozen (the API refuses to replace them).
+      (hasApproval(this.s.content) && version.slides.every((sl) => sl.renderedAssetId != null)) ||
       this.measured.has(version.id) ||
       this.s.activity.kind !== "idle" ||
       !(this.options.workerOnline?.() ?? false)
@@ -992,6 +996,7 @@ export class PostEditor {
       const content = await this.api.contents.approve(this.s.content.id, hash);
       this.set({ content, error: null, notice: "Onaylandı." });
       this.options.onChange?.(content, this.s.current);
+      this.options.onApproved?.(content);
       return true;
     } catch (e) {
       this.set({ error: describeError(e) });

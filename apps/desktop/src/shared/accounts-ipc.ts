@@ -93,6 +93,12 @@ export interface AppInfo {
   logsDir: string;
 }
 
+/** Outcome of Yedekle / Yedekten geri yükle (`message` is shown as is; empty when cancelled). */
+export interface BackupResult {
+  status: "done" | "cancelled" | "failed";
+  message: string;
+}
+
 export interface SystemBridge {
   info(): Promise<AppInfo>;
   /** Opens the data or logs folder in Finder (fixed targets only). */
@@ -101,6 +107,13 @@ export interface SystemBridge {
     has(): Promise<boolean>;
     save(token: string): Promise<SaveResult<true>>;
     forget(): Promise<void>;
+  };
+  /** Absent in an app started before backups existed. */
+  backup?: {
+    /** Save dialog → a zip of the data and keys (the host pauses for a moment). */
+    create(): Promise<BackupResult>;
+    /** Open dialog → the backup replaces the current data (the current one is kept aside). */
+    restore(): Promise<BackupResult>;
   };
 }
 
@@ -123,6 +136,8 @@ export const ACCOUNTS_IPC = {
   tunnelHas: "system:tunnel-has",
   tunnelSave: "system:tunnel-save",
   tunnelForget: "system:tunnel-forget",
+  backupCreate: "system:backup-create",
+  backupRestore: "system:backup-restore",
 } as const;
 
 // --- OAuth constants shared by main (flow) and renderer (setup guides) ---------------------------

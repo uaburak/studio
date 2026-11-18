@@ -6,8 +6,12 @@
  * Keyed by the deps object, so each worker runtime (and each test) has its own.
  */
 
+import { ApiError, DEFAULT_MAX_LATENESS_MINUTES } from "@studio/contract";
 import type { AgentSettings } from "../agent.ts";
 import type { StudioApi } from "../api.ts";
+
+/** Maximum lateness when the API does not say (S6: 2 hours). */
+export const DEFAULT_MAX_LATENESS_MS = DEFAULT_MAX_LATENESS_MINUTES * 60_000;
 
 export interface CloudPublisherConfig {
   url: string;
@@ -23,7 +27,12 @@ interface SharedState {
    * the one already reported.
    */
   reported: Map<string, string>;
-  config: { value: CloudPublisherConfig | null; syncRequestedAt: string | null; at: number } | null;
+  config: {
+    value: CloudPublisherConfig | null;
+    syncRequestedAt: string | null;
+    maxLatenessMs: number;
+    at: number;
+  } | null;
 }
 
 const shared = new WeakMap<object, SharedState>();
@@ -62,20 +71,37 @@ export function envCloudPublisherConfig(deps: ConfigDeps): CloudPublisherConfig 
   return { url: url.replace(/\/+$/, ""), token };
 }
 
+export interface ResolvedPublishingConfig {
+  cloud: CloudPublisherConfig | null;
+  syncRequestedAt: string | null;
+  maxLatenessMs: number;
+  /**
+   * Set when the publishing path is unknown (the API says the cloud publisher is set but
+   * unreadable, or the API could not be asked yet): publish nothing this round. Falling back
+   * to local publishing would publish what the cloud publisher also holds.
+   */
+  unavailable: string | null;
+}
+
 /**
  * The effective cloud publisher: the environment wins (development, tests), otherwise
- * what the Mac saved through the API. Cached for `maxAgeMs`; `null` = publish locally.
+ * what the Mac saved through the API. Cached for `maxAgeMs`; `cloud: null` = publish locally.
  */
 export async function resolveCloudPublisherConfig(
   deps: ConfigDeps,
   opts: { maxAgeMs?: number; signal?: AbortSignal; now?: number } = {},
-): Promise<{ cloud: CloudPublisherConfig | null; syncRequestedAt: string | null }> {
+): Promise<ResolvedPublishingConfig> {
   const fromEnv = envCloudPublisherConfig(deps);
   const state = cloudState(deps);
   const now = opts.now ?? Date.now();
   const maxAge = opts.maxAgeMs ?? 5_000;
   if (state.config && now - state.config.at < maxAge) {
-    return { cloud: fromEnv ?? state.config.value, syncRequestedAt: state.config.syncRequestedAt };
+    return {
+      cloud: fromEnv ?? state.config.value,
+      syncRequestedAt: state.config.syncRequestedAt,
+      maxLatenessMs: state.config.maxLatenessMs,
+      unavailable: null,
+    };
   }
   try {
     const remote = await deps.api.client.workerPublishing.config(
@@ -84,13 +110,47 @@ export async function resolveCloudPublisherConfig(
     const value = remote.cloud
       ? { url: remote.cloud.url.replace(/\/+$/, ""), token: remote.cloud.token }
       : null;
-    state.config = { value, syncRequestedAt: remote.syncRequestedAt, at: now };
-    return { cloud: fromEnv ?? value, syncRequestedAt: remote.syncRequestedAt };
-  } catch {
-    // Older API, or not reachable: keep the last known value.
+    const maxLatenessMs = remote.maxLatenessMs ?? DEFAULT_MAX_LATENESS_MS;
+    state.config = { value, syncRequestedAt: remote.syncRequestedAt, maxLatenessMs, at: now };
     return {
-      cloud: fromEnv ?? state.config?.value ?? null,
-      syncRequestedAt: state.config?.syncRequestedAt ?? null,
+      cloud: fromEnv ?? value,
+      syncRequestedAt: remote.syncRequestedAt,
+      maxLatenessMs,
+      unavailable: null,
+    };
+  } catch (error) {
+    if (fromEnv) {
+      return {
+        cloud: fromEnv,
+        syncRequestedAt: state.config?.syncRequestedAt ?? null,
+        maxLatenessMs: state.config?.maxLatenessMs ?? DEFAULT_MAX_LATENESS_MS,
+        unavailable: null,
+      };
+    }
+    // The cloud publisher is set but its token cannot be read: never publish locally then.
+    if (error instanceof ApiError && error.status === 409) {
+      state.config = null;
+      return {
+        cloud: null,
+        syncRequestedAt: null,
+        maxLatenessMs: DEFAULT_MAX_LATENESS_MS,
+        unavailable: error.message.replace(/^\/api\/[^:]*:\s*/, ""),
+      };
+    }
+    // Not reachable right now: keep the last known value; without one, wait.
+    if (state.config) {
+      return {
+        cloud: state.config.value,
+        syncRequestedAt: state.config.syncRequestedAt,
+        maxLatenessMs: state.config.maxLatenessMs,
+        unavailable: null,
+      };
+    }
+    return {
+      cloud: null,
+      syncRequestedAt: null,
+      maxLatenessMs: DEFAULT_MAX_LATENESS_MS,
+      unavailable: "Yayın ayarları okunamadı; bu tur yayın yapılmadı.",
     };
   }
 }

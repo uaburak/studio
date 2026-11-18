@@ -8,6 +8,7 @@ import { spawn } from "node:child_process";
 import { appendFileSync, closeSync, mkdirSync, openSync } from "node:fs";
 import { constants } from "node:os";
 import { dirname } from "node:path";
+import { redactSecrets } from "./redact.ts";
 
 export interface ProcessSpec {
   name: string;
@@ -53,13 +54,15 @@ function killGroup(pid: number, signal: NodeJS.Signals): void {
   }
 }
 
+/** The header line of a child's log: never the secrets (they travel in the environment). */
+export function logHeader(spec: Pick<ProcessSpec, "name" | "executable" | "args">): string {
+  return `${spec.name}: ${redactSecrets([spec.executable, ...spec.args].join(" "))}`;
+}
+
 export class SpawnLauncher implements ProcessLauncher {
   launch(spec: ProcessSpec): RunningProcess {
     mkdirSync(dirname(spec.logFile), { recursive: true });
-    appendFileSync(
-      spec.logFile,
-      `\n=== ${stamp()} ${spec.name}: ${[spec.executable, ...spec.args].join(" ")}\n`,
-    );
+    appendFileSync(spec.logFile, `\n=== ${stamp()} ${logHeader(spec)}\n`);
     const fd = openSync(spec.logFile, "a");
     let child: ReturnType<typeof spawn>;
     try {
@@ -72,11 +75,13 @@ export class SpawnLauncher implements ProcessLauncher {
     } catch (error) {
       closeSync(fd);
       throw new LaunchError(`${spec.name} başlatılamadı: ${(error as Error).message}`);
-    } finally {
-      // The child has its own copy of the descriptor.
     }
+    // The child has its own copy of the descriptor.
     closeSync(fd);
     if (child.pid === undefined) {
+      // Spawning failed (ENOENT, EACCES, …): Node reports it later as an "error" event, which
+      // would crash the app without a listener.
+      child.once("error", () => undefined);
       throw new LaunchError(`${spec.name} başlatılamadı: ${spec.executable} çalıştırılamıyor`);
     }
     return new SpawnedProcess(child, spec);

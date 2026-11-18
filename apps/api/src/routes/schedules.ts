@@ -33,7 +33,7 @@ import { ApiProblem, badRequest, conflict, invalidTransition, notFound } from ".
 import { newId } from "../lib/ids.ts";
 import { decodeTimeCursor, encodeTimeCursor, toPage } from "../lib/pagination.ts";
 import { preflightTargets } from "../lib/preflight.ts";
-import { loadPublishingSettings, publishingMode } from "../lib/publishing.ts";
+import { loadPublishingSettings, publishingMode, requestSyncStatement } from "../lib/publishing.ts";
 import { createRouter, errors, IdParams, json, jsonBody } from "../lib/router.ts";
 import { approvalMatchesCurrent, type LoadedContent, loadContent } from "./contents.ts";
 import { createJob } from "./jobs.ts";
@@ -114,16 +114,21 @@ export async function runPreflight(
   return { mode, targets, contentErrors };
 }
 
-/** Insert one schedule (shared by create and publish-now); throws the API's usual errors. */
-async function insertSchedule(
+interface ScheduleInput {
+  contentId: string;
+  socialAccountId: string;
+  platform?: string | undefined;
+  scheduledAt: Date;
+}
+
+/**
+ * Every check a new schedule must pass, platform rules (preflight) included; nothing is
+ * written. Throws the API's usual errors.
+ */
+async function checkSchedulable(
   db: Db,
   env: Env,
-  input: {
-    contentId: string;
-    socialAccountId: string;
-    platform?: string | undefined;
-    scheduledAt: Date;
-  },
+  input: ScheduleInput,
   opts: { immediate: boolean },
 ) {
   const loaded = await loadContent(db, input.contentId);
@@ -151,7 +156,8 @@ async function insertSchedule(
   if (!statusIn(content.status, SCHEDULABLE_STATUSES)) {
     throw invalidTransition(`content is ${content.status}; only approved content can be scheduled`);
   }
-  if (!approvalMatchesCurrent(loaded) || !loaded.current) {
+  const current = loaded.current;
+  if (!approvalMatchesCurrent(loaded) || !current) {
     throw new ApiProblem("hash_mismatch", "the approval does not match the current version");
   }
 
@@ -164,7 +170,16 @@ async function insertSchedule(
       target.errors.map((e) => ({ path: e.path || "content", message: e.message })),
     );
   }
+  return { content, current, account };
+}
 
+/** Insert one schedule (shared by create and publish-now) after `checkSchedulable`. */
+async function writeSchedule(
+  db: Db,
+  checked: Awaited<ReturnType<typeof checkSchedulable>>,
+  scheduledAt: Date,
+) {
+  const { content, current, account } = checked;
   const now = new Date();
   const markScheduled = db
     .update(contents)
@@ -186,14 +201,19 @@ async function insertSchedule(
       db
         .update(schedules)
         .set({
-          versionId: loaded.current.id,
-          contentHash: loaded.current.contentHash,
-          scheduledAt: input.scheduledAt,
+          versionId: current.id,
+          contentHash: current.contentHash,
+          scheduledAt,
           status: "pending",
           permalink: null,
           delivery: null,
           cloudSyncedAt: null,
           lastError: null,
+          // The same design keeps the local publisher's state, so the retry resumes and
+          // reconciles with the platform (the failed try may have posted after all); a new
+          // design starts from scratch.
+          ...(failed.contentHash === current.contentHash ? {} : { publishState: null }),
+          claimedAt: null,
           cancelledAt: null,
           updatedAt: now,
         })
@@ -213,9 +233,9 @@ async function insertSchedule(
       brandId: content.brandId,
       platform: account.platform,
       socialAccountId: account.id,
-      versionId: loaded.current.id,
-      contentHash: loaded.current.contentHash,
-      scheduledAt: input.scheduledAt,
+      versionId: current.id,
+      contentHash: current.contentHash,
+      scheduledAt,
       status: "pending",
       createdAt: now,
       updatedAt: now,
@@ -223,6 +243,16 @@ async function insertSchedule(
     markScheduled,
   ]);
   return requireSchedule(db, id);
+}
+
+/** Insert one schedule; throws the API's usual errors. */
+async function insertSchedule(
+  db: Db,
+  env: Env,
+  input: ScheduleInput,
+  opts: { immediate: boolean },
+) {
+  return writeSchedule(db, await checkSchedulable(db, env, input, opts), input.scheduledAt);
 }
 
 export const scheduleRoutes = createRouter()
@@ -349,7 +379,8 @@ export const scheduleRoutes = createRouter()
       summary: "Publish approved content now on accounts (schedule + schedule.publish job)",
       description:
         "Creates a schedule a few seconds from now per account and queues a `schedule.publish` " +
-        "job for each. With a cloud publisher the worker hands it to the cloud at once.",
+        "job for each. With a cloud publisher the worker hands it to the cloud at once. Every " +
+        "account is checked (platform rules included) before any schedule is created.",
       request: { body: jsonBody(PublishNowInput) },
       responses: {
         201: json(PublishNowResult, "Created."),
@@ -361,19 +392,25 @@ export const scheduleRoutes = createRouter()
     async (c) => {
       const input = c.req.valid("json");
       const db = createDb(c.env.DB);
+      const accountIds = [...new Set(input.socialAccountIds)];
+      const scheduledAt = new Date(Date.now() + 5_000);
+      // Every account passes every check before anything is queued: a refusal on the second
+      // account must not leave the first one publishing.
+      const checked = [];
+      for (const accountId of accountIds) {
+        checked.push(
+          await checkSchedulable(
+            db,
+            c.env,
+            { contentId: input.contentId, socialAccountId: accountId, scheduledAt },
+            { immediate: true },
+          ),
+        );
+      }
       const created = [];
       const jobs = [];
-      for (const accountId of [...new Set(input.socialAccountIds)]) {
-        const row = await insertSchedule(
-          db,
-          c.env,
-          {
-            contentId: input.contentId,
-            socialAccountId: accountId,
-            scheduledAt: new Date(Date.now() + 5_000),
-          },
-          { immediate: true },
-        );
+      for (const ok of checked) {
+        const row = await writeSchedule(db, ok, scheduledAt);
         created.push(toSchedule(row));
         jobs.push(
           await createJob(
@@ -461,7 +498,8 @@ export const scheduleRoutes = createRouter()
       summary: "Cancel a pending schedule",
       description:
         "Only `pending` schedules can be cancelled. When the content has no other active " +
-        "schedule it returns from `scheduled` to `approved`.",
+        "schedule it returns from `scheduled` to `approved`. Asks the worker for an immediate " +
+        "sync, so an order already at the cloud publisher is cancelled there right away.",
       request: { params: IdParams },
       responses: { 200: json(Schedule, "Cancelled."), 404: errors[404], 409: errors[409] },
     }),
@@ -501,6 +539,7 @@ export const scheduleRoutes = createRouter()
               ),
             ),
           ),
+        requestSyncStatement(db, now),
       ];
       await db.batch(stmts);
       return c.json(toSchedule(await requireSchedule(db, id)), 200);

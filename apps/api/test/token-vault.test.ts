@@ -244,11 +244,15 @@ describe("mappers & worker schedule status transitions", () => {
       delivery: "local",
       cloudSyncedAt: null,
       lastError: null,
+      publishState: { phase: "done" },
+      claimedAt: null,
       cancelledAt: null,
       createdAt: now,
       updatedAt: now,
     });
     expect(sched.permalink).toBe("https://www.linkedin.com/feed/update/urn:li:share:1/");
+    // The local publisher's saved state stays inside the API.
+    expect(Object.keys(sched)).not.toContain("publishState");
 
     const log = toPublishLog({
       id: "l-1",
@@ -281,10 +285,10 @@ describe("mappers & worker schedule status transitions", () => {
   });
 
   it("registers all new social-account and worker-schedule routes in OpenAPI 3.1 and enforces auth", async () => {
-    const fakeEnv = { WORKER_TOKEN: "wtok-123" } as unknown as Env;
+    const fakeEnv = { WORKER_TOKEN: "wtok-123", STUDIO_OWNER_SECRET: "owner-1" } as unknown as Env;
     const docRes = await app.fetch(
-      new Request("http://studio.test/api/openapi.json", {
-        headers: { "CF-Connecting-IP": "127.0.0.1" },
+      new Request("http://127.0.0.1:8790/api/openapi.json", {
+        headers: { "CF-Connecting-IP": "127.0.0.1", "X-Studio-Owner": "owner-1" },
       }),
       fakeEnv,
     );
@@ -304,7 +308,7 @@ describe("mappers & worker schedule status transitions", () => {
 
     // Non-local unauthenticated caller is rejected on requireLocal routes (401)
     const nonLocalRes = await app.fetch(
-      new Request("http://studio.test/api/social-accounts/meta/discover", {
+      new Request("http://127.0.0.1:8790/api/social-accounts/meta/discover", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ brandId: "b-1", userAccessToken: "12345678" }),
@@ -315,8 +319,8 @@ describe("mappers & worker schedule status transitions", () => {
 
     // Local caller without worker token is rejected on /api/worker/schedules/due (401)
     const noWorkerTokenRes = await app.fetch(
-      new Request("http://studio.test/api/worker/schedules/due", {
-        headers: { "CF-Connecting-IP": "127.0.0.1" },
+      new Request("http://127.0.0.1:8790/api/worker/schedules/due", {
+        headers: { "CF-Connecting-IP": "127.0.0.1", "X-Studio-Owner": "owner-1" },
       }),
       fakeEnv,
     );

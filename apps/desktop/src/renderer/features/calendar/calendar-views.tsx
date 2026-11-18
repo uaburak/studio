@@ -1,19 +1,23 @@
 // Calendar building blocks shared by the Takvim pane and the full calendar page (Wecra
-// "Panel – Takvim"): status tags, the month grid with dots, agenda rows, schedule drag & drop.
+// "Panel – Takvim"): status tags, the month grid with dots, agenda rows, schedule drag & drop,
+// cancelling a pending schedule.
 import { type DragEvent, type ReactNode, useState } from "react";
-import { cn } from "../../components/ui/controls.tsx";
+import { cn, IconButton } from "../../components/ui/controls.tsx";
 import {
   IconChevronLeft,
   IconChevronRight,
+  IconClose,
   IconImage,
   IconReel,
   PlatformIcon,
 } from "../../components/ui/icons.tsx";
+import { CancelScheduleDialog } from "../post-detail/cancel-schedule.tsx";
 import {
   type CalendarEntry,
   type DayKey,
   type DaySummary,
   type EntryKind,
+  entryCancelLabel,
   type MonthKey,
   monthGrid,
   monthTitle,
@@ -266,4 +270,45 @@ export function AgendaRow({
       <StatusTag tone={entry.tone}>{entry.status}</StatusTag>
     </div>
   );
+}
+
+// --- cancelling a pending schedule ------------------------------------------------------------------
+
+/** "Zamanlamayı iptal et" on a calendar row (pending schedules only). */
+export function CancelEntryButton({
+  entry,
+  onCancel,
+}: {
+  entry: CalendarEntry;
+  onCancel(entry: CalendarEntry): void;
+}) {
+  if (!entry.canCancel || !entry.scheduleId) return null;
+  return (
+    <IconButton
+      icon={<IconClose size={12} strokeWidth={1.75} />}
+      label="Zamanlamayı iptal et"
+      size={24}
+      onClick={(event) => {
+        event.stopPropagation();
+        onCancel(entry);
+      }}
+    />
+  );
+}
+
+/** The confirmation behind `CancelEntryButton`: `ask(entry)` and the dialog to render. */
+export function useCancelEntry() {
+  const [entry, setEntry] = useState<CalendarEntry | null>(null);
+  const dialog = (
+    <CancelScheduleDialog
+      open={entry !== null && entry.scheduleId !== null}
+      title={entry?.title ?? ""}
+      contentId={entry?.contentId ?? ""}
+      targets={
+        entry?.scheduleId ? [{ scheduleId: entry.scheduleId, label: entryCancelLabel(entry) }] : []
+      }
+      onClose={() => setEntry(null)}
+    />
+  );
+  return { ask: (e: CalendarEntry) => setEntry(e), dialog };
 }

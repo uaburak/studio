@@ -140,7 +140,9 @@ export type ScheduleState =
   | { kind: "publishing" }
   | { kind: "published"; permalink: string | null }
   | { kind: "failed"; reason: string }
-  | { kind: "cancelled" };
+  | { kind: "cancelled" }
+  /** A state this version does not know yet (the server may add one): shown, not acted on. */
+  | { kind: "other" };
 
 export function scheduleState(schedule: Schedule, mode: PublishingMode): ScheduleState {
   switch (schedule.status) {
@@ -156,8 +158,10 @@ export function scheduleState(schedule: Schedule, mode: PublishingMode): Schedul
       return { kind: "published", permalink: schedule.permalink ?? null };
     case "failed":
       return { kind: "failed", reason: schedule.lastError ?? "Yayın başarısız oldu." };
-    default:
+    case "cancelled":
       return { kind: "cancelled" };
+    default:
+      return { kind: "other" };
   }
 }
 
@@ -177,6 +181,8 @@ export function scheduleLabel(state: ScheduleState): string {
       return "Hata";
     case "cancelled":
       return "İptal edildi";
+    case "other":
+      return "Bilinmeyen durum";
   }
 }
 
@@ -209,6 +215,9 @@ export function canMove(state: ScheduleState): boolean {
     state.kind === "waitingOnMac" || state.kind === "sendingToCloud" || state.kind === "inCloud"
   );
 }
+
+/** Only pending schedules can be cancelled (the API refuses the rest). */
+export const canCancel = canMove;
 
 // --- entries --------------------------------------------------------------------------------------
 
@@ -244,6 +253,8 @@ export interface CalendarEntry {
   scheduledAt: number | null;
   /** A pending schedule: it can be dragged onto another day. */
   canMove: boolean;
+  /** A pending schedule: it can be cancelled ("Zamanlamayı iptal et"). */
+  canCancel: boolean;
   /** Failed / refused: waiting on the owner. */
   needsOwner: boolean;
 }
@@ -296,6 +307,7 @@ function scheduleTone(state: ScheduleState): { tone: StatusTone; kind: EntryKind
         ? { tone: "danger", kind: "error" }
         : { tone: "accent", kind: "scheduled" };
     case "cancelled":
+    case "other":
       return { tone: "neutral", kind: "planned" };
     default:
       return { tone: "accent", kind: "scheduled" };
@@ -367,6 +379,7 @@ export function buildEntries(input: EntriesInput): CalendarEntry[] {
       scheduleId: schedule.id,
       scheduledAt: at,
       canMove: canMove(state),
+      canCancel: canCancel(state),
       needsOwner: needsOwner(state),
     });
   }
@@ -405,6 +418,7 @@ export function buildEntries(input: EntriesInput): CalendarEntry[] {
       scheduleId: null,
       scheduledAt: null,
       canMove: false,
+      canCancel: false,
       needsOwner: content.status === "failed",
     });
   }
@@ -524,6 +538,21 @@ export function withMovedSchedule(
 ): Schedule[] {
   const iso = new Date(target).toISOString();
   return schedules.map((s) => (s.id === id ? { ...s, scheduledAt: iso } : s));
+}
+
+// --- cancelling ---------------------------------------------------------------------------------
+
+/** What "Zamanlamayı iptal et" names for a calendar row ("Instagram · @mtmagro · 18 Kas 10:00"). */
+export function entryCancelLabel(
+  entry: Pick<CalendarEntry, "platform" | "handle" | "day" | "time">,
+): string {
+  return [
+    entry.platform ? PLATFORM_LABEL[entry.platform] : null,
+    entry.handle,
+    `${shortDay(entry.day)} ${entry.time}`,
+  ]
+    .filter(Boolean)
+    .join(" · ");
 }
 
 // --- drag payload ---------------------------------------------------------------------------------

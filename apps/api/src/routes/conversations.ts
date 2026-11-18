@@ -75,6 +75,9 @@ conversationRoutes.get("/api/conversations/:id/stream", async (c) => {
   const target = new URL("https://hub.internal/conversations");
   target.searchParams.set("conversationId", id);
   if (query.data.after !== undefined) target.searchParams.set("after", String(query.data.after));
+  // A device's sockets are tagged so revoking the device closes them (G8).
+  const principal = c.get("principal");
+  if (principal?.kind === "device") target.searchParams.set("device", principal.deviceId);
   return hubStub(c.env).fetch(target.toString(), { headers: c.req.raw.headers });
 });
 

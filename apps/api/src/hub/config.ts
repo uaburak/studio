@@ -26,4 +26,6 @@ export const CLOSE = {
   unsupportedProtocol: 4000,
   superseded: 4002,
   stale: 4003,
+  /** The device behind a client stream was revoked (routes/devices.ts). */
+  revoked: 4004,
 } as const;

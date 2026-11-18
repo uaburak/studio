@@ -1,6 +1,7 @@
 // Takvim pane of the right panel (Wecra "Panel – Takvim"): the month with a dot per kind of post
 // (problems first), the selected day's agenda (time, platform, title, status), drag a pending
-// schedule onto another day to move it, "Takvimi aç →" opens the full calendar.
+// schedule onto another day to move it or cancel it from its row, "Takvimi aç →" opens the
+// full calendar.
 import { useEffect, useMemo, useRef, useState } from "react";
 import { IconCalendar } from "../../components/ui/icons.tsx";
 import { describeError } from "../../lib/api.ts";
@@ -21,7 +22,13 @@ import {
   nearestActiveMonth,
   sameMonth,
 } from "./calendar-model.ts";
-import { AgendaRow, MiniMonth, MonthHeader } from "./calendar-views.tsx";
+import {
+  AgendaRow,
+  CancelEntryButton,
+  MiniMonth,
+  MonthHeader,
+  useCancelEntry,
+} from "./calendar-views.tsx";
 
 export function CalendarPane() {
   const brandId = usePanelBrandId();
@@ -40,6 +47,7 @@ function CalendarPaneBody({ brandId }: { brandId: string }) {
   const navigate = useAppStore((s) => s.navigate);
   const data = useCalendarData(brandId);
   const reschedule = useReschedule(brandId);
+  const cancel = useCancelEntry();
   const today = dayKey(new Date());
   const [month, setMonth] = useState<MonthKey>(() => monthOf(today));
   const [selected, setSelected] = useState<string | null>(today);
@@ -98,18 +106,22 @@ function CalendarPaneBody({ brandId }: { brandId: string }) {
           {agenda.length > 0 && (
             <div className="flex flex-col">
               {agenda.map((entry) => (
-                <AgendaRow
-                  key={entry.id}
-                  entry={entry}
-                  onOpen={(e, rect) =>
-                    openPost(e.contentId, {
-                      x: rect.left,
-                      y: rect.top,
-                      width: rect.width,
-                      height: rect.height,
-                    })
-                  }
-                />
+                <div key={entry.id} className="flex items-center gap-1">
+                  <div className="min-w-0 flex-1">
+                    <AgendaRow
+                      entry={entry}
+                      onOpen={(e, rect) =>
+                        openPost(e.contentId, {
+                          x: rect.left,
+                          y: rect.top,
+                          width: rect.width,
+                          height: rect.height,
+                        })
+                      }
+                    />
+                  </div>
+                  <CancelEntryButton entry={entry} onCancel={cancel.ask} />
+                </div>
               ))}
             </div>
           )}
@@ -118,6 +130,7 @@ function CalendarPaneBody({ brandId }: { brandId: string }) {
       <div className="pt-1">
         <TextLink onClick={() => navigate({ kind: "calendar" })}>Takvimi aç →</TextLink>
       </div>
+      {cancel.dialog}
     </div>
   );
 }

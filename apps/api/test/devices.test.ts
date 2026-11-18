@@ -5,22 +5,24 @@ import {
   type DeviceList,
   HealthResponse,
   type MacRoutes,
+  PAIRING_MAX_CODE_TRIES,
   PAIRING_MAX_FAILURES_PER_CLIENT,
+  PAIRING_MAX_FAILURES_TOTAL,
   PAIRING_SECRET_TTL_MS,
   type PairingCode,
   type PairingResult,
 } from "@studio/contract";
 import { beforeEach, describe, expect, it } from "vitest";
-import { BASE } from "./helpers.ts";
+import { BASE, LOCAL, OWNER_SECRET } from "./helpers.ts";
 
 /*
  * Access control and device pairing (task L1). Requests are built by hand so
  * every header is explicit:
- *  - LOCAL: what Miniflare sets for a request from this Mac (127.0.0.1),
+ *  - LOCAL: what Miniflare sets for a request from this Mac (127.0.0.1) plus
+ *    the desktop app's owner secret,
  *  - LAN: what the LAN gateway sets for a phone (peer address + marker).
  */
 
-const LOCAL = { "CF-Connecting-IP": "127.0.0.1" };
 let lanCounter = 0;
 /** A distinct LAN client per call site, so rate limits do not leak between tests. */
 const lan = (ip = `10.0.${Math.floor(lanCounter / 250)}.${(lanCounter++ % 250) + 1}`) => ({
@@ -75,7 +77,14 @@ beforeEach(async () => {
 describe("access control matrix", () => {
   it("lets the Mac itself in without a token", async () => {
     expect((await call("GET", "/api/brands", LOCAL)).status).toBe(200);
-    expect((await call("GET", "/api/brands", { "CF-Connecting-IP": "::1" })).status).toBe(200);
+    expect(
+      (
+        await call("GET", "/api/brands", {
+          "CF-Connecting-IP": "::1",
+          "X-Studio-Owner": OWNER_SECRET,
+        })
+      ).status,
+    ).toBe(200);
   });
 
   it("rejects a LAN request without a token, with the contract error and a Bearer challenge", async () => {
@@ -112,6 +121,42 @@ describe("access control matrix", () => {
     const after = await call<ApiErrorBody>("GET", "/api/brands", phone);
     expect(after.status).toBe(401);
     expect(after.body.error.code).toBe("unauthorized");
+  });
+
+  it("closes a revoked device's open job and conversation streams", async () => {
+    const { device, token } = await pair("Akış telefonu");
+    const other = await pair("Diğer telefon");
+    const conversation = await call<{ id: string }>("POST", "/api/conversations", LOCAL, {});
+    expect(conversation.status, JSON.stringify(conversation.body)).toBe(201);
+
+    async function open(path: string, deviceToken: string) {
+      const res = await exports.default.fetch(`${BASE}${path}`, {
+        headers: { ...lan(), ...bearer(deviceToken), Upgrade: "websocket" },
+      });
+      expect(res.status).toBe(101);
+      const ws = res.webSocket;
+      if (!ws) throw new Error("no webSocket");
+      const closed = new Promise<number>((resolve) =>
+        ws.addEventListener("close", (event) => resolve(event.code)),
+      );
+      ws.accept();
+      return { ws, closed };
+    }
+    const jobs = await open("/api/jobs/stream", token);
+    const chat = await open(`/api/conversations/${conversation.body.id}/stream`, token);
+    const bystander = await open("/api/jobs/stream", other.token);
+    let bystanderClosed = false;
+    void bystander.closed.then(() => {
+      bystanderClosed = true;
+    });
+
+    expect((await call("POST", `/api/devices/${device.id}/revoke`, LOCAL)).status).toBe(200);
+    const timeout = (ms: number) =>
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("not closed")), ms));
+    expect(await Promise.race([jobs.closed, timeout(2000)])).toBe(4004);
+    expect(await Promise.race([chat.closed, timeout(2000)])).toBe(4004);
+    expect(bystanderClosed).toBe(false);
+    bystander.ws.close(1000, "done");
   });
 
   it("keeps health and the claim endpoint public", async () => {
@@ -218,27 +263,108 @@ describe("pairing", () => {
     expect(limited.body.error.code).toBe("rate_limited");
     expect(Number(limited.headers.get("Retry-After"))).toBeGreaterThan(0);
 
-    // Another client is not blocked by this one (below the global cap).
+    // Another client is not blocked by this one (below the code's tries and the global cap).
     expect(
       (await call("POST", "/api/pairing/claim", lan("10.9.9.10"), { code, deviceName: "ok" }))
         .status,
     ).toBe(201);
   });
 
-  it("caps failed attempts across all clients", async () => {
-    const code = await newCode();
-    const wrong = code === "000000" ? "000001" : "000000";
-    for (let i = 0; i < 20; i++) {
-      await call("POST", "/api/pairing/claim", lan(`10.8.0.${i + 1}`), {
+  it("kills a code after too many wrong tries; its QR secret and the next code still work", async () => {
+    const offer = await newOffer();
+    const wrong = offer.code === "000000" ? "000001" : "000000";
+    for (let i = 0; i < PAIRING_MAX_CODE_TRIES; i++) {
+      const res = await call("POST", "/api/pairing/claim", lan(`10.7.0.${i + 1}`), {
         code: wrong,
         deviceName: "x",
       });
+      expect(res.status).toBe(401);
     }
-    const res = await call("POST", "/api/pairing/claim", lan("10.8.1.1"), {
+    // The right code no longer works (it looks wrong, not rate-limited)…
+    const dead = await call<ApiErrorBody>("POST", "/api/pairing/claim", lan("10.7.1.1"), {
+      code: offer.code,
+      deviceName: "x",
+    });
+    expect(dead.status).toBe(401);
+    expect(dead.body.error.code).toBe("unauthorized");
+    // …the QR secret of the same offer does…
+    expect(
+      (
+        await call("POST", "/api/pairing/claim", lan("10.7.1.2"), {
+          secret: offer.secret,
+          deviceName: "QR",
+        })
+      ).status,
+    ).toBe(201);
+    // …and so does the next code the Mac shows.
+    const next = await newCode();
+    expect(
+      (await call("POST", "/api/pairing/claim", lan("10.7.1.3"), { code: next, deviceName: "y" }))
+        .status,
+    ).toBe(201);
+  });
+
+  it("lets no more than the allowed tries reach a code, even in a concurrent burst", async () => {
+    const code = await newCode();
+    const wrong = code === "000000" ? "000001" : "000000";
+    const burst = await Promise.all(
+      Array.from({ length: PAIRING_MAX_CODE_TRIES + 5 }, (_, i) =>
+        call("POST", "/api/pairing/claim", lan(`10.6.0.${i + 1}`), {
+          code: wrong,
+          deviceName: "x",
+        }),
+      ),
+    );
+    for (const res of burst) expect(res.status).toBe(401);
+    const right = await call("POST", "/api/pairing/claim", lan("10.6.1.1"), {
       code,
       deviceName: "x",
     });
+    expect(right.status).toBe(401);
+  });
+
+  it("caps failed code attempts across all clients, but never QR secret claims", async () => {
+    const offer = await newOffer();
+    const now = Date.now();
+    const insert = env.DB.prepare(
+      "insert into pairing_failures (id, client_ip, created_at) values (?, ?, ?)",
+    );
+    await env.DB.batch(
+      Array.from({ length: PAIRING_MAX_FAILURES_TOTAL }, (_, i) =>
+        insert.bind(
+          `flood-${now}-${i}`,
+          `10.8.${Math.floor(i / 250)}.${(i % 250) + 1}`,
+          now - 1000,
+        ),
+      ),
+    );
+    const res = await call<ApiErrorBody>("POST", "/api/pairing/claim", lan("10.8.9.1"), {
+      code: offer.code,
+      deviceName: "x",
+    });
     expect(res.status).toBe(429);
+    expect(res.body.error.code).toBe("rate_limited");
+    // Nobody can lock out the QR path: the secret cannot be guessed, so it is never limited.
+    const qr = await call<PairingResult>("POST", "/api/pairing/claim", lan("10.8.9.2"), {
+      secret: offer.secret,
+      deviceName: "QR",
+    });
+    expect(qr.status, JSON.stringify(qr.body)).toBe(201);
+  });
+
+  it("does not count wrong QR secrets as failures", async () => {
+    await newOffer();
+    for (let i = 0; i < PAIRING_MAX_FAILURES_PER_CLIENT + 2; i++) {
+      const res = await call("POST", "/api/pairing/claim", lan("10.5.5.5"), {
+        secret: "A".repeat(43),
+        deviceName: "x",
+      });
+      expect(res.status).toBe(401);
+    }
+    const code = await newCode();
+    expect(
+      (await call("POST", "/api/pairing/claim", lan("10.5.5.5"), { code, deviceName: "x" })).status,
+    ).toBe(201);
   });
 });
 

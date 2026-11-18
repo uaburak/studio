@@ -12,6 +12,7 @@
  * results and the raw stream of turn 1 (sanitized, as a parser fixture) under STUDIO_E2E_OUT.
  *
  *   STUDIO_E2E_API=http://127.0.0.1:8797 STUDIO_WORKER_TOKEN=<test token> \
+ *   STUDIO_OWNER_SECRET=<the API's --var STUDIO_OWNER_SECRET> \
  *   STUDIO_E2E_STATE=$S/worker STUDIO_E2E_OUT=$S/out pnpm --filter @studio/worker exec tsx scripts/e2e-agent.ts
  */
 import { type ChildProcess, spawn } from "node:child_process";
@@ -20,6 +21,7 @@ import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { computeContentHash, createApiClient, type Message } from "@studio/contract";
+import { OwnerWebSocket, ownerFetch, requireOwnerSecret } from "./owner.ts";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const WORKER_DIR = path.resolve(HERE, "..");
@@ -41,7 +43,8 @@ if (/:(8787|8790|8791)\b/.test(apiBase)) {
   process.exit(2);
 }
 
-const api = createApiClient({ baseUrl: apiBase });
+requireOwnerSecret();
+const api = createApiClient({ baseUrl: apiBase, fetch: ownerFetch, WebSocket: OwnerWebSocket });
 const t0 = Date.now();
 const transcript: string[] = [];
 const log = (line: string) => {

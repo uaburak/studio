@@ -109,15 +109,24 @@ API sahibin Mac'inde çalışır: Mac uygulaması `wrangler dev`'i `127.0.0.1:87
 **Neden geçit:** Miniflare `CF-Connecting-IP`'yi soketten yalnızca istemci göndermediyse yazar; ağdaki biri
 `CF-Connecting-IP: 127.0.0.1` gönderip "yerel" görünebilirdi (denendi). Bu yüzden workerd yalnızca `127.0.0.1`'i dinler;
 geçit başlığı gerçek karşı adresle **ezer** ve `X-Studio-Gateway: 1` ekler. Bu işareti taşıyan istek, karşı adresi
-`127.0.0.1` olsa bile (ör. ileride aynı Mac'teki tünel bağlayıcısı) asla yerel sayılmaz. L3'te tünel geçide bağlanmalı,
-doğrudan workerd'ye değil.
+`127.0.0.1` olsa bile (ör. aynı Mac'teki tünel bağlayıcısı) asla yerel sayılmaz. Tünel geçide bağlanır, doğrudan
+workerd'ye değil. Karşı adres loopback ise (tünel bağlayıcısı) geçit Cloudflare'in yazdığı istemci adresini korur, böylece
+eşleştirme sınırları tünel istemcilerini birbirinden ayırır.
+
+**Neden sahip anahtarı (G1):** Mac'te tarayıcıda açık bir web sayfası da `127.0.0.1`'e istek atabilir (metin gövdeli
+POST, WebSocket; DNS rebinding ile başka adla). Bu yüzden `local` olmak için loopback yetmez; hepsi gerekir: geçit
+işareti yok, `CF-Connecting-IP` loopback, istek adresi (Host) `127.0.0.1` / `localhost` / `[::1]`, `Origin` varsa
+`studio://app` ya da loopback bir sayfa, ve `X-Studio-Owner` başlığı `STUDIO_OWNER_SECRET`'e eşit. Anahtarı masaüstü
+uygulaması üretir (`~/Library/Application Support/Studio/owner-secret`, 0600), API'ye yalnızca ortam değişkeniyle verir
+ve yalnızca ana süreç ekler (`studio://` vekili, sayfanın kendi API istekleri ve WebSocket'leri için webRequest kancası,
+kendi doğrudan çağrıları). Anahtar yapılandırılmamışsa hiçbir istek yerel sayılmaz.
 
 **Kim girebilir** (`/api/*`, `accessControl`):
 
 | İstek                                                                | Sonuç                                                      |
 | -------------------------------------------------------------------- | ---------------------------------------------------------- |
 | `GET /api/health`, `POST /api/pairing/claim`                         | herkese açık (claim hız sınırlı)                           |
-| Bu Mac'ten doğrudan (`CF-Connecting-IP` loopback, geçit işareti yok) | `local`: her şey                                           |
+| Masaüstü uygulamasının kendisi (yukarıdaki beş koşul)                | `local`: her şey                                           |
 | `Authorization: Bearer <WORKER_TOKEN>`                               | `worker` (`/api/hub` ve `/api/worker/*` ayrıca bunu ister) |
 | `Authorization: Bearer <cihaz anahtarı>` (eşleşmiş, iptal edilmemiş) | `device`; `last_seen_at` en fazla dakikada bir yazılır     |
 | diğer her şey (adres bilinmiyorsa da)                                | `401 unauthorized`, `WWW-Authenticate: Bearer`             |
@@ -133,16 +142,21 @@ cihaz ya da worker anahtarıyla `403 forbidden`. Yeni hata kodları: `unauthoriz
    rastgele baytın base64url'i; sunucu yalnızca SHA-256'sını tutar, anahtar bir kez gösterilir. Kod koşullu bir
    `UPDATE … WHERE used_at IS NULL AND expires_at > now` ile harcanır (yarışta ikinci istek kaybeder).
    Yanlış, süresi dolmuş ya da kullanılmış kod aynı yanıtı alır: `401 unauthorized`.
-3. Hız sınırı: son 10 dakikada aynı adresten 5, tüm adreslerden toplam 20 başarısız deneme olunca her claim (doğru kod
-   dahil) `429 rate_limited` + `Retry-After` alır. 1 000 000 olasılığa karşı 10 dakikada en fazla 20 tahmin.
-4. `POST /api/devices/{id}/revoke` anahtarı anında geçersiz kılar (kayıt `revokedAt` ile listede kalır).
+3. Tahmin sınırı (G9): yalnızca kod tahmin edilebilir; QR sırrı (32 rastgele bayt) hiç sayılmaz ve sınırlanmaz, kimse
+   QR ile eşleştirmeyi kilitleyemez. Her kod denemesi önce kaydedilir ve aynı D1 batch'inde (transaction) sayılır:
+   etkin teklifin kodu `PAIRING_MAX_CODE_TRIES` (10) denemeden sonra ölür (QR sırrı çalışmaya devam eder); son 10
+   dakikada aynı adresten 5 ya da tüm adreslerden 100 başarısız kod denemesi olunca kod denemeleri `429 rate_limited` +
+   `Retry-After` alır.
+4. `POST /api/devices/{id}/revoke` anahtarı anında geçersiz kılar ve cihazın açık iş ve sohbet akışlarını (WebSocket)
+   kapatır (kod 4004); kayıt `revokedAt` ile listede kalır.
 
 Tablolar (`0006_devices`): `devices` (ad, platform, `token_hash` benzersiz, son görülme, iptal), `pairing_codes`
 (kod hash'i, bitiş, kullanım, cihaz), `pairing_failures` (adres, zaman; pencere dışındakiler her claim'de silinir).
 
 `GET /api/health` isteğe bağlı `instance` alanı taşır (`STUDIO_INSTANCE_ID`, Mac uygulaması verir): uygulama kendi çalışan
 kopyasını elle başlatılmış bir API'den ayırıp ona bağlanır. `wrangler.jsonc` `vars` içinde boş varsayılanla tanımlı;
-ortam değişkeni onu ezer. Elle `pnpm dev` ile çalışırken her şey eskisi gibidir (istekler 127.0.0.1'den gelir).
+ortam değişkeni onu ezer. Elle `pnpm dev` ile çalışırken `.dev.vars` içine `STUDIO_OWNER_SECRET` koyup istekte
+`X-Studio-Owner` gönderin (ya da worker anahtarını kullanın); yalnızca 127.0.0.1'den gelmek artık yetmez.
 
 ## İş kuyruğu ve Hub (F1-6)
 
@@ -435,7 +449,7 @@ indirgeyici `state.aliases`'ı tutar (snapshot'tan alır, `conversation.updated.
 ## Yayın, hesaplar ve token kasası (P3)
 
 - **Token kasası** (`src/lib/token-vault.ts`): AES-256-GCM, anahtar `TOKEN_ENCRYPTION_KEY` (kurulum başına rastgele;
-  Mac uygulaması `~/Library/Application Support/Studio/vault-key` dosyasında 0600 olarak üretir ve API'ye yalnızca
+  Mac uygulaması üretir ve Electron safeStorage ile şifreli saklar (`host-secrets.json`), API'ye yalnızca
   ortam değişkeniyle verir; elle çalıştırırken `.dev.vars`). Gömülü yedek anahtar **yok**: anahtar yoksa token yazma
   `409` ile reddedilir. Eski (P3 öncesi, `WORKER_TOKEN`/sabit değerden türetilmiş) satırlar `key_version = 1`; anahtar
   geldiğinde ilk `GET /api/publishing/status` ya da token okumasında yeni anahtarla yeniden şifrelenir (`key_version = 2`),
@@ -477,7 +491,7 @@ pnpm --filter @studio/api test
 ```
 
 Testler `@cloudflare/vitest-plugin` ile workerd içinde koşar. `test/apply-migrations.ts` her çalıştırmada tüm migration'ları
-test D1'ine uygular; R2 ve Durable Object da yerelde taklit edilir. Testlerde `WORKER_TOKEN` değeri `vitest.config.ts` içinde verilir. Testlerin soketi olmadığı için istekler `test/helpers.ts` → `localFetch` ile `CF-Connecting-IP: 127.0.0.1` taşır (Mac'in kendisi gibi).
+test D1'ine uygular; R2 ve Durable Object da yerelde taklit edilir. Testlerde `WORKER_TOKEN` değeri `vitest.config.ts` içinde verilir. Testlerin soketi olmadığı için istekler `test/helpers.ts` → `localFetch` ile `CF-Connecting-IP: 127.0.0.1` ve sahip anahtarını (`STUDIO_OWNER_SECRET`, `vitest.config.ts`) taşır (Mac'in kendisi gibi); `access.test.ts` yabancı Origin, eksik anahtar ve yanlış Host durumlarını dener.
 Dosyalar: `api.test.ts` (sağlık, OpenAPI, şema, hub), `devices` (erişim matrisi: yerel, geçitten sahte 127.0.0.1, adres yok, worker anahtarı, cihaz anahtarı, iptal edilmiş anahtar, WebSocket; eşleştirme: mutlu yol, süresi dolmuş/tekrar kullanılan/yerine yenisi gelen kod, adres başına ve toplam hız sınırı, yalnızca hash saklanması), `brands`, `brand-profiles`, `assets`, `contents` (onay hash kuralı dahil),
 `jobs-schedules`, `hub` (yetkilendirme, bağlanınca dağıtım, öncelik/FIFO/kapasite, kiralama dolması ve yeniden kuyruk,
 en fazla deneme, heartbeat, tekrarlanan mesajlar, iptal, kopukken üretilen sonuç, Hub yeniden başlaması ve tahliye,

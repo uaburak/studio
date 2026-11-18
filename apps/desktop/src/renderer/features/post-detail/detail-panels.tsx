@@ -246,10 +246,13 @@ export function PublishHistory({
   schedules,
   accounts,
   mode,
+  onCancel,
 }: {
-  schedules: Schedule[];
+  schedules: readonly Schedule[];
   accounts: SocialAccount[];
   mode: PublishingMode;
+  /** "Zamanlamayı iptal et" on a pending row. */
+  onCancel?(schedule: Schedule): void;
 }) {
   const visible = [...schedules]
     .filter((s) => s.status !== "cancelled")
@@ -266,6 +269,7 @@ export function PublishHistory({
             account={accounts.find((a) => a.id === s.socialAccountId)}
             mode={mode}
             last={i === visible.length - 1}
+            {...(onCancel ? { onCancel } : {})}
           />
         ))}
       </div>
@@ -278,11 +282,13 @@ function ScheduleRow({
   account,
   mode,
   last,
+  onCancel,
 }: {
   schedule: Schedule;
   account: SocialAccount | undefined;
   mode: PublishingMode;
   last: boolean;
+  onCancel?(schedule: Schedule): void;
 }) {
   const [open, setOpen] = useState(false);
   const display = scheduleDisplay(schedule, mode);
@@ -309,6 +315,13 @@ function ScheduleRow({
       </button>
       {open && (
         <div className="flex flex-col gap-1 px-3 pt-0.5 pb-2.5 pl-[38px]">
+          {onCancel && schedule.status === "pending" && (
+            <span>
+              <Button variant="ghost" size="sm" onClick={() => onCancel(schedule)}>
+                Zamanlamayı iptal et
+              </Button>
+            </span>
+          )}
           {schedule.permalink && (
             <a
               href={schedule.permalink}

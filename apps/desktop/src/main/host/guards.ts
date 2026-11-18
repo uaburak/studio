@@ -157,11 +157,64 @@ export function parseLsofCwd(text: string): string | null {
   return line ? line.slice(1) : null;
 }
 
+export interface PsEntry {
+  pid: number;
+  ppid: number;
+  command: string;
+}
+
+/** `ps -axo pid=,ppid=,command=` output → entries. */
+export function parsePs(text: string): PsEntry[] {
+  const entries: PsEntry[] = [];
+  for (const line of text.split("\n")) {
+    const match = /^\s*(\d+)\s+(\d+)\s+(.*)$/.exec(line);
+    if (match) {
+      entries.push({ pid: Number(match[1]), ppid: Number(match[2]), command: match[3] ?? "" });
+    }
+  }
+  return entries;
+}
+
+/**
+ * Helpers a crashed app left behind: its Bonjour registration (`dns-sd -R … _studio._tcp`) and
+ * its tunnel connector (`cloudflared tunnel … run`), both re-parented to launchd (ppid 1). A
+ * cloudflared also has to run in `stateDir` (checked by the caller), so the owner's own
+ * tunnels are never touched.
+ */
+export function orphanedHelpers(entries: PsEntry[]): { dnsSd: number[]; cloudflared: number[] } {
+  const orphans = entries.filter((e) => e.ppid === 1 && e.pid > 1);
+  return {
+    dnsSd: orphans
+      .filter(
+        (e) => e.command.startsWith("/usr/bin/dns-sd -R ") && e.command.includes(" _studio._tcp "),
+      )
+      .map((e) => e.pid),
+    cloudflared: orphans
+      .filter((e) => /(^|\/)cloudflared tunnel --no-autoupdate run( |$)/.test(e.command))
+      .map((e) => e.pid),
+  };
+}
+
+function terminate(pid: number): void {
+  try {
+    process.kill(pid, "SIGTERM");
+  } catch {
+    // gone
+  }
+}
+
+async function cwdOf(pid: number): Promise<string | null> {
+  return parseLsofCwd(
+    await output("/usr/sbin/lsof", ["-a", "-p", String(pid), "-d", "cwd", "-Fn"]),
+  );
+}
+
 /**
  * Stops this repo's API, gateway and worker processes that outlived their app (matched by
- * their full paths inside the repo, so nothing else is touched).
+ * their full paths inside the repo, so nothing else is touched), and the app's orphaned
+ * `dns-sd` and `cloudflared` (see `orphanedHelpers`).
  */
-export async function stopLeftovers(repoPath: string): Promise<void> {
+export async function stopLeftovers(repoPath: string, stateDir: string): Promise<void> {
   const workerDir = `${repoPath}/apps/worker`;
   // The worker runs as `tsx src/main.ts` inside apps/worker: match its working directory.
   const pids = (await output("/usr/bin/pgrep", ["-f", "tsx src/main.ts"]))
@@ -169,16 +222,14 @@ export async function stopLeftovers(repoPath: string): Promise<void> {
     .map((s) => Number.parseInt(s, 10))
     .filter((n) => Number.isInteger(n) && n > 0);
   for (const pid of pids) {
-    const cwd = parseLsofCwd(
-      await output("/usr/sbin/lsof", ["-a", "-p", String(pid), "-d", "cwd", "-Fn"]),
-    );
-    if (cwd === workerDir) {
-      try {
-        process.kill(pid, "SIGTERM");
-      } catch {
-        // gone
-      }
-    }
+    if ((await cwdOf(pid)) === workerDir) terminate(pid);
+  }
+  const helpers = orphanedHelpers(
+    parsePs(await output("/bin/ps", ["-axo", "pid=,ppid=,command="])),
+  );
+  for (const pid of helpers.dnsSd) terminate(pid);
+  for (const pid of helpers.cloudflared) {
+    if ((await cwdOf(pid)) === stateDir) terminate(pid);
   }
   for (const pattern of leftoverPatterns(repoPath)) {
     await new Promise<void>((resolve) => {
@@ -203,15 +254,18 @@ export function normalizedHostname(raw: string): string {
   return clean.length === 0 ? DEFAULT_REMOTE_HOSTNAME : clean;
 }
 
-/** Command-line arguments passed to `cloudflared`. */
+/**
+ * Command-line arguments passed to `cloudflared`. With a token, the token itself travels only
+ * as `TUNNEL_TOKEN` in the environment (`tunnelEnvironment`): a command line is visible to
+ * every process on the Mac (`ps`) and was written to tunnel.log's header.
+ */
 export function tunnelArguments(
   token: string | null,
   hostname: string,
   localTargetURL: string,
 ): string[] {
-  const trimmed = token?.trim();
-  if (trimmed) {
-    return ["tunnel", "--no-autoupdate", "run", "--token", trimmed, "--url", localTargetURL];
+  if (token?.trim()) {
+    return ["tunnel", "--no-autoupdate", "run", "--url", localTargetURL];
   }
   return [
     "tunnel",
@@ -221,6 +275,12 @@ export function tunnelArguments(
     localTargetURL,
     normalizedHostname(hostname),
   ];
+}
+
+/** The environment that carries the tunnel token (`cloudflared tunnel run` reads TUNNEL_TOKEN). */
+export function tunnelEnvironment(token: string | null): Record<string, string> {
+  const trimmed = token?.trim();
+  return trimmed ? { TUNNEL_TOKEN: trimmed } : {};
 }
 
 /** The tunnel token the AppKit app keeps in the Keychain (read only when Remote Control is on). */

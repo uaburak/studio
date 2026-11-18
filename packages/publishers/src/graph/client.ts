@@ -57,6 +57,10 @@ export interface RetryPolicy {
   maxInlineWaitMs: number;
 }
 
+/** One Graph call gives up after this long; a call with a body (upload) after `DEFAULT_UPLOAD_TIMEOUT_MS`. */
+export const DEFAULT_TIMEOUT_MS = 60_000;
+export const DEFAULT_UPLOAD_TIMEOUT_MS = 10 * 60_000;
+
 export const DEFAULT_RETRY: RetryPolicy = {
   maxAttempts: 4,
   baseDelayMs: 1_000,
@@ -73,6 +77,12 @@ export interface GraphClientOptions {
   random?: Random;
   logger?: Logger;
   retry?: Partial<RetryPolicy>;
+  /**
+   * Per-call timeouts (ms). A call that times out is a network error: an idempotent one is
+   * retried, a non-idempotent one goes back to the state machine, which reconciles first.
+   */
+  timeoutMs?: number;
+  uploadTimeoutMs?: number;
   /**
    * When set, every call carrying an access token also sends
    * `appsecret_proof` (HMAC-SHA256 of the token keyed by the app secret).
@@ -130,6 +140,8 @@ export class GraphClient {
   private readonly logger: Logger;
   private readonly retry: RetryPolicy;
   private readonly appSecret: string | undefined;
+  private readonly timeoutMs: number;
+  private readonly uploadTimeoutMs: number;
   private readonly proofCache = new Map<string, string>();
 
   constructor(options: GraphClientOptions = {}) {
@@ -142,6 +154,8 @@ export class GraphClient {
     this.logger = options.logger ?? noopLogger;
     this.retry = { ...DEFAULT_RETRY, ...options.retry };
     this.appSecret = options.appSecret;
+    this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    this.uploadTimeoutMs = options.uploadTimeoutMs ?? DEFAULT_UPLOAD_TIMEOUT_MS;
   }
 
   async get<T>(
@@ -188,6 +202,11 @@ export class GraphClient {
 
     for (let attempt = 1; ; attempt++) {
       const init = this.buildInit(req);
+      init.signal = AbortSignal.timeout(
+        req.body !== undefined || req.multipart !== undefined
+          ? this.uploadTimeoutMs
+          : this.timeoutMs,
+      );
       const started = this.clock.now();
       let response: Response;
       try {

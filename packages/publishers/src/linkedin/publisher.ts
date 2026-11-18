@@ -8,10 +8,19 @@
  *   document      init_upload (POST /rest/documents?action=initializeUpload)
  *                 -> upload_binary (PUT uploadUrl, PDF) -> create_post
  *   video         init_upload (POST /rest/videos?action=initializeUpload)
- *                 -> upload_binary (PUT parts + optional finalizeUpload) -> create_post
+ *                 -> upload_binary (PUT parts + optional finalizeUpload)
+ *                 -> wait_video (GET /rest/videos/{urn} until AVAILABLE) -> create_post
+ *
+ * `create_post` is not idempotent on LinkedIn's side. A post call whose answer was lost
+ * (timeout, network error, 5xx) may have created the post, so before posting again the
+ * machine looks for it among the author's recent posts, and a "duplicate" refusal that names
+ * the existing post is taken as that post (reconciled) instead of a failure.
+ *
+ * Commentary is sent in LinkedIn's "little text format": reserved characters are escaped and
+ * `#hashtags` become hashtag templates, so `( ) [ ] @ * _` in a caption cannot cut it short.
  *
  * All LinkedIn REST calls carry `Authorization: Bearer <token>`,
- * `LinkedIn-Version: 202604`, and `X-Restli-Protocol-Version: 2.0.0`.
+ * `LinkedIn-Version: LINKEDIN_API_VERSION`, and `X-Restli-Protocol-Version: 2.0.0`.
  */
 
 import { PublishError, publishError } from "../errors.ts";
@@ -22,6 +31,8 @@ import {
   fail,
   initialBase,
   iso,
+  normaliseText,
+  PollSignal,
   type Publisher,
   type PublisherDeps,
   readRange,
@@ -40,10 +51,23 @@ import { redact } from "../redact.ts";
 import { type FetchLike, globalFetch, type Logger, noopLogger } from "../runtime.ts";
 import { validateRequest } from "../validation/index.ts";
 
+/**
+ * The one `LinkedIn-Version` header value (YYYYMM) every LinkedIn call sends.
+ *
+ * LinkedIn supports each monthly version for about a year, then answers 426 ("version no
+ * longer supported"): 202604 is expected to stop working around April 2027. Before that,
+ * move this to a newer version (read the LinkedIn Posts/Images/Videos/Documents changelogs)
+ * and rerun the tests; both runtimes can also override it without a release
+ * (`STUDIO_LINKEDIN_VERSION` for the Mac worker, `LINKEDIN_VERSION` for the cloud publisher).
+ */
 export const LINKEDIN_API_VERSION = "202604";
 export const DEFAULT_LINKEDIN_BASE_URL = "https://api.linkedin.com";
 
-export type LinkedInPhase = "init_upload" | "upload_binary" | "create_post";
+/** LinkedIn REST calls give up after this long; binary uploads after `LINKEDIN_UPLOAD_TIMEOUT_MS`. */
+export const LINKEDIN_TIMEOUT_MS = 60_000;
+export const LINKEDIN_UPLOAD_TIMEOUT_MS = 10 * 60_000;
+
+export type LinkedInPhase = "init_upload" | "upload_binary" | "wait_video" | "create_post";
 
 export interface LinkedInUploadPart {
   uploadUrl: string;
@@ -65,6 +89,12 @@ export interface LinkedInState
   uploads: LinkedInUploadSlot[];
   externalId: string | null;
   publishedAt: number | null;
+  /**
+   * `POST /rest/posts` calls sent so far (saved with the step's result, also when the call
+   * failed). Above zero, an earlier call may have created the post although its answer was
+   * lost: the next try first looks for it. Absent in states saved by older versions.
+   */
+  postCalls?: number;
 }
 
 export interface LinkedInPublisherOptions {
@@ -72,6 +102,42 @@ export interface LinkedInPublisherOptions {
   version?: string | undefined;
   fetch?: FetchLike | undefined;
   logger?: Logger | undefined;
+  /** Per-call timeouts (ms); defaults `LINKEDIN_TIMEOUT_MS` / `LINKEDIN_UPLOAD_TIMEOUT_MS`. */
+  timeoutMs?: number | undefined;
+  uploadTimeoutMs?: number | undefined;
+}
+
+// --- little text format (commentary) -------------------------------------------------
+
+/** Characters LinkedIn's "little text format" reserves; escaped with a backslash. */
+const LITTLE_TEXT_RESERVED = /[\\|{}@[\]()<>#*_~]/g;
+/** `#tag` at a word start, letters and digits only (Turkish letters included). */
+const HASHTAG = /(^|[^\p{L}\p{N}_])#([\p{L}\p{N}]+)(?![\p{L}\p{N}_])/gu;
+
+function escapeLittleText(text: string): string {
+  return text.replace(LITTLE_TEXT_RESERVED, (ch) => `\\${ch}`);
+}
+
+/**
+ * Plain caption -> LinkedIn commentary ("little text format"): every reserved character is
+ * escaped so it shows as typed (an unescaped `(`, `[` or `@` can cut the text short or start a
+ * mention), and `#hashtags` become `{hashtag|\#|tag}` templates so they stay hashtags.
+ */
+export function toLittleText(caption: string): string {
+  let out = "";
+  let last = 0;
+  for (const m of caption.matchAll(HASHTAG)) {
+    const start = (m.index ?? 0) + (m[1]?.length ?? 0);
+    out += escapeLittleText(caption.slice(last, start));
+    out += `{hashtag|\\#|${m[2]}}`;
+    last = start + 1 + (m[2]?.length ?? 0);
+  }
+  return out + escapeLittleText(caption.slice(last));
+}
+
+/** `urn:li:share:…` / `urn:li:ugcPost:…` named in a LinkedIn "duplicate" refusal. */
+function duplicatePostUrn(text: string): string | null {
+  return /urn:li:(?:share|ugcPost):[A-Za-z0-9_-]+/.exec(text)?.[0] ?? null;
 }
 
 interface LinkedInRestResponse<T> {
@@ -126,6 +192,8 @@ export class LinkedInPublisher implements Publisher<LinkedInRequest, LinkedInSta
   readonly version: string;
   private readonly fetchImpl: FetchLike;
   private readonly logger: Logger;
+  private readonly timeoutMs: number;
+  private readonly uploadTimeoutMs: number;
 
   constructor(
     private readonly deps: PublisherDeps,
@@ -135,6 +203,8 @@ export class LinkedInPublisher implements Publisher<LinkedInRequest, LinkedInSta
     this.version = options.version ?? LINKEDIN_API_VERSION;
     this.fetchImpl = options.fetch ?? globalFetch;
     this.logger = options.logger ?? noopLogger;
+    this.timeoutMs = options.timeoutMs ?? LINKEDIN_TIMEOUT_MS;
+    this.uploadTimeoutMs = options.uploadTimeoutMs ?? LINKEDIN_UPLOAD_TIMEOUT_MS;
   }
 
   validate(request: unknown) {
@@ -150,6 +220,7 @@ export class LinkedInPublisher implements Publisher<LinkedInRequest, LinkedInSta
       uploads: Array.from({ length: slotCount(request) }, emptySlot),
       externalId: null,
       publishedAt: null,
+      postCalls: 0,
     };
   }
 
@@ -258,11 +329,11 @@ export class LinkedInPublisher implements Publisher<LinkedInRequest, LinkedInSta
         if (!slot?.assetUrn) fail("INVALID_STATE", "Yükleme yuvası hazır değil.");
 
         if (req.kind === "linkedin.image") {
-          await this.uploadImage(slot, req.image, token);
+          await this.uploadImage(slot, req.image, ctx, token);
         } else if (req.kind === "linkedin.multi_image") {
           const img = req.images[index];
           if (!img) fail("INVALID_STATE", "Görsel bulunamadı.");
-          await this.uploadImage(slot, img, token);
+          await this.uploadImage(slot, img, ctx, token);
         } else if (req.kind === "linkedin.document") {
           await this.uploadDocument(slot, req.document, ctx, token);
         } else if (req.kind === "linkedin.video") {
@@ -270,46 +341,153 @@ export class LinkedInPublisher implements Publisher<LinkedInRequest, LinkedInSta
         }
 
         if (s.uploads.every((u) => u.uploaded)) {
-          s.phase = "create_post";
+          s.phase = req.kind === "linkedin.video" ? "wait_video" : "create_post";
         }
         return;
       }
 
+      case "wait_video": {
+        // A post that points at a video LinkedIn is still processing is refused (or shows
+        // nothing): wait until the video is AVAILABLE.
+        const urn = s.uploads[0]?.assetUrn;
+        if (!urn) fail("INVALID_STATE", "Video URN bulunamadı.");
+        const res = await this.rest<{ status?: string }>(
+          "GET",
+          `/rest/videos/${encodeURIComponent(urn)}`,
+          token,
+        );
+        const status = res.data?.status;
+        if (status === "AVAILABLE") {
+          s.phase = "create_post";
+          return;
+        }
+        if (status === "PROCESSING_FAILED") {
+          fail("MEDIA_REJECTED", "LinkedIn videoyu işleyemedi; video dosyasını kontrol edin.", {
+            action: "fix_content",
+          });
+        }
+        throw new PollSignal("video");
+      }
+
       case "create_post": {
         s.intentAt ??= this.deps.clock.now();
+        const earlierCalls = s.postCalls ?? 0;
+        if (earlierCalls > 0) {
+          // An earlier call may have created the post although its answer was lost.
+          const existing = await this.findPublishedPost(s, token);
+          if (existing) {
+            this.finish(s, existing, true);
+            return;
+          }
+        }
         const body = this.buildPostBody(s);
-        const res = await this.rest<{ id?: string }>("POST", "/rest/posts", token, body);
+        // Counted before the call: saved with this step's result even when the call fails.
+        s.postCalls = earlierCalls + 1;
+        const res = await this.restAllowing<{ id?: string }>(
+          "POST",
+          "/rest/posts",
+          token,
+          body,
+          422,
+        );
+        if (res.status === 422) {
+          const urn = duplicatePostUrn(res.text);
+          if (!urn || !/duplicate/i.test(res.text)) {
+            throw this.httpFailure(422, res.headers, res.text, "POST /rest/posts", token);
+          }
+          // LinkedIn refuses the same content twice and names the post that already has it:
+          // that is ours when an earlier call's answer was lost (or the media is ours).
+          if (earlierCalls === 0) {
+            s.warnings.push({
+              code: "LINKEDIN_DUPLICATE_LINKED",
+              message:
+                "LinkedIn bu içeriği bu hesapta zaten paylaşılmış buldu; o gönderi bağlandı.",
+            });
+          }
+          this.finish(s, urn, true);
+          return;
+        }
         const urn =
           res.headers.get("x-restli-id")?.trim() ||
           (typeof res.data?.id === "string" ? res.data.id.trim() : "");
         if (!urn) {
           fail("GRAPH_ERROR", "LinkedIn gönderi kimliği (x-restli-id) döndürmedi.");
         }
-        const now = this.deps.clock.now();
-        s.externalId = urn;
-        s.publishedAt = now;
-        const result: PublishResult = {
-          platform: "linkedin",
-          kind: req.kind,
-          externalId: urn,
-          postId: urn,
-          permalink: linkedinPermalink(urn),
-          publishedAt: iso(now),
-          warnings: s.warnings,
-          reconciled: false,
-        };
-        s.result = result;
-        s.phase = "done";
+        this.finish(s, urn, false);
         return;
       }
     }
+  }
+
+  private finish(s: LinkedInState, urn: string, reconciled: boolean) {
+    const now = this.deps.clock.now();
+    s.externalId = urn;
+    s.publishedAt = now;
+    const result: PublishResult = {
+      platform: "linkedin",
+      kind: s.request.kind,
+      externalId: urn,
+      postId: urn,
+      permalink: linkedinPermalink(urn),
+      publishedAt: iso(now),
+      warnings: s.warnings,
+      reconciled,
+    };
+    s.result = result;
+    s.phase = "done";
+  }
+
+  /**
+   * The post an earlier, unanswered `create_post` may have made: among the author's recent
+   * posts, one created after the intent with the same commentary (and our media). Best
+   * effort: reading posts needs a permission a personal profile may not grant; any error
+   * means "not found" and the duplicate check of the next call is the safety net.
+   */
+  private async findPublishedPost(s: LinkedInState, token: string): Promise<string | null> {
+    const req = s.request;
+    const since = (s.intentAt ?? s.createdAt) - this.deps.options.reconcileSkewMs;
+    const commentary = normaliseText(toLittleText(req.commentary ?? ""));
+    const mediaIds = new Set(
+      s.uploads.map((u) => u.assetUrn).filter((u): u is string => typeof u === "string"),
+    );
+    let elements: {
+      id?: string;
+      commentary?: string;
+      createdAt?: number;
+      content?: {
+        media?: { id?: string };
+        multiImage?: { images?: { id?: string }[] };
+      };
+    }[];
+    try {
+      const res = await this.rest<{ elements?: typeof elements }>(
+        "GET",
+        `/rest/posts?author=${encodeURIComponent(req.authorUrn)}&q=author&count=10&sortBy=LAST_MODIFIED`,
+        token,
+      );
+      elements = res.data?.elements ?? [];
+    } catch {
+      return null;
+    }
+    const found = elements.find((p) => {
+      if (typeof p.id !== "string") return false;
+      if (typeof p.createdAt === "number" && p.createdAt < since) return false;
+      if (normaliseText(p.commentary) !== commentary) return false;
+      if (mediaIds.size === 0) return true;
+      const ids = [
+        p.content?.media?.id,
+        ...(p.content?.multiImage?.images ?? []).map((i) => i.id),
+      ].filter((v): v is string => typeof v === "string");
+      return ids.some((id) => mediaIds.has(id));
+    });
+    return found?.id ?? null;
   }
 
   private buildPostBody(s: LinkedInState): Record<string, unknown> {
     const req = s.request;
     const base: Record<string, unknown> = {
       author: req.authorUrn,
-      commentary: req.commentary ?? "",
+      commentary: toLittleText(req.commentary ?? ""),
       visibility: "PUBLIC",
       distribution: {
         feedDistribution: "MAIN_FEED",
@@ -381,8 +559,20 @@ export class LinkedInPublisher implements Publisher<LinkedInRequest, LinkedInSta
     }
   }
 
-  private async uploadImage(slot: LinkedInUploadSlot, img: ImageMedia, token: string) {
+  private async uploadImage(
+    slot: LinkedInUploadSlot,
+    img: ImageMedia,
+    ctx: StepContext,
+    token: string,
+  ) {
     if (!slot.uploadUrl) fail("INVALID_STATE", "Görsel yükleme adresi bulunamadı.");
+    if (img.source?.type === "upload" && ctx.media) {
+      // The caller has the bytes (the cloud publisher's storage): no download of its own URL.
+      const bytes = await this.readBytes(ctx, img.source.key, 0, img.bytes);
+      await this.putBinary(slot.uploadUrl, bytes, img.mimeType ?? "image/jpeg", token);
+      slot.uploaded = true;
+      return;
+    }
     const fetched = await this.fetchSourceBytes(img.url, token);
     await this.putBinary(
       slot.uploadUrl,
@@ -391,6 +581,26 @@ export class LinkedInPublisher implements Publisher<LinkedInRequest, LinkedInSta
       token,
     );
     slot.uploaded = true;
+  }
+
+  /**
+   * Bytes from the caller's MediaReader as one buffer: uploads are sent with a known length
+   * (a stream body would go out chunked, which upload URLs may refuse).
+   */
+  private async readBytes(
+    ctx: StepContext,
+    key: string,
+    offset: number,
+    length: number | undefined,
+  ): Promise<Uint8Array<ArrayBuffer>> {
+    const body =
+      length !== undefined && length > 0
+        ? await readRange(ctx, key, offset, length)
+        : await (async () => {
+            if (!ctx.media) fail("MEDIA_SOURCE_MISSING", "Medya okunamadı (MediaReader yok).");
+            return (await ctx.media.read(key, { offset })) as BodyInit;
+          })();
+    return new Uint8Array(await new Response(body).arrayBuffer());
   }
 
   private async uploadDocument(
@@ -402,7 +612,7 @@ export class LinkedInPublisher implements Publisher<LinkedInRequest, LinkedInSta
     if (!slot.uploadUrl) fail("INVALID_STATE", "PDF yükleme adresi bulunamadı.");
     let body: BodyInit;
     if (doc.source?.type === "upload") {
-      body = await readRange(ctx, doc.source.key, 0, doc.bytes ?? 0);
+      body = await this.readBytes(ctx, doc.source.key, 0, doc.bytes);
     } else {
       const url = doc.url ?? (doc.source?.type === "url" ? doc.source.url : undefined);
       if (!url) fail("MEDIA_SOURCE_MISSING", "PDF kaynağı belirtilmedi.");
@@ -428,7 +638,7 @@ export class LinkedInPublisher implements Publisher<LinkedInRequest, LinkedInSta
         const length = part.lastByte - part.firstByte + 1;
         const body: BodyInit =
           video.source.type === "upload"
-            ? await readRange(ctx, video.source.key, part.firstByte, length)
+            ? await this.readBytes(ctx, video.source.key, part.firstByte, length)
             : (urlBytes as Uint8Array<ArrayBuffer>).slice(part.firstByte, part.lastByte + 1);
         const headers = await this.putBinary(
           part.uploadUrl,
@@ -454,7 +664,7 @@ export class LinkedInPublisher implements Publisher<LinkedInRequest, LinkedInSta
     if (!slot.uploadUrl) fail("INVALID_STATE", "Video yükleme adresi bulunamadı.");
     const body: BodyInit =
       video.source.type === "upload"
-        ? await readRange(ctx, video.source.key, 0, video.bytes ?? 0)
+        ? await this.readBytes(ctx, video.source.key, 0, video.bytes)
         : (await this.fetchSourceBytes(video.source.url, token)).bytes;
     await this.putBinary(slot.uploadUrl, body, video.mimeType ?? "video/mp4", token);
     slot.uploaded = true;
@@ -475,7 +685,10 @@ export class LinkedInPublisher implements Publisher<LinkedInRequest, LinkedInSta
   ): Promise<{ bytes: Uint8Array<ArrayBuffer>; contentType: string | null }> {
     let res: Response;
     try {
-      res = await this.fetchImpl(url, { method: "GET" });
+      res = await this.fetchImpl(url, {
+        method: "GET",
+        signal: AbortSignal.timeout(this.uploadTimeoutMs),
+      });
     } catch (err) {
       const detail = redact(err instanceof Error ? err.message : String(err), [token]);
       throw new PublishError({
@@ -529,7 +742,12 @@ export class LinkedInPublisher implements Publisher<LinkedInRequest, LinkedInSta
     if (this.isLinkedInHost(uploadUrl)) {
       headers.set("Authorization", `Bearer ${token}`);
     }
-    const init: RequestInit & { duplex?: "half" } = { method: "PUT", headers, body };
+    const init: RequestInit & { duplex?: "half" } = {
+      method: "PUT",
+      headers,
+      body,
+      signal: AbortSignal.timeout(this.uploadTimeoutMs),
+    };
     if (body instanceof ReadableStream) init.duplex = "half";
 
     const started = this.deps.clock.now();
@@ -561,6 +779,18 @@ export class LinkedInPublisher implements Publisher<LinkedInRequest, LinkedInSta
     token: string,
     json?: unknown,
   ): Promise<LinkedInRestResponse<T>> {
+    const res = await this.restAllowing<T>(method, pathWithQuery, token, json);
+    return { data: res.data, status: res.status, headers: res.headers };
+  }
+
+  /** A REST call; a non-2xx answer throws, except `allowStatus`, which is returned as is. */
+  private async restAllowing<T>(
+    method: "GET" | "POST",
+    pathWithQuery: string,
+    token: string,
+    json?: unknown,
+    allowStatus?: number,
+  ): Promise<LinkedInRestResponse<T> & { text: string }> {
     const url = `${this.baseUrl}${pathWithQuery.startsWith("/") ? pathWithQuery : `/${pathWithQuery}`}`;
     const parsedUrl = new URL(url);
     const label = `${method} ${parsedUrl.host}${parsedUrl.pathname}`;
@@ -569,7 +799,7 @@ export class LinkedInPublisher implements Publisher<LinkedInRequest, LinkedInSta
       "LinkedIn-Version": this.version,
       "X-Restli-Protocol-Version": "2.0.0",
     });
-    const init: RequestInit = { method, headers };
+    const init: RequestInit = { method, headers, signal: AbortSignal.timeout(this.timeoutMs) };
     if (json !== undefined) {
       headers.set("Content-Type", "application/json");
       init.body = JSON.stringify(json);
@@ -587,13 +817,13 @@ export class LinkedInPublisher implements Publisher<LinkedInRequest, LinkedInSta
     const text = await res.text();
     const data = parseJson(text);
     const ms = this.deps.clock.now() - started;
-    if (res.ok) {
+    if (res.ok || res.status === allowStatus) {
       this.logger({
         level: "debug",
         event: "linkedin.request",
         data: { request: label, status: res.status, ms },
       });
-      return { data: data as T, status: res.status, headers: res.headers };
+      return { data: data as T, status: res.status, headers: res.headers, text };
     }
 
     throw this.httpFailure(res.status, res.headers, text, label, token, data);

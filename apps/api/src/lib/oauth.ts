@@ -21,6 +21,18 @@ export const META_INSTAGRAM_SCOPES = [
   "pages_read_engagement",
 ] as const;
 
+/** Meta / LinkedIn calls from the API give up after this long (the owner is waiting). */
+export const OAUTH_FETCH_TIMEOUT_MS = 30_000;
+
+/** `fetch` that aborts after `OAUTH_FETCH_TIMEOUT_MS` unless the caller passed a signal. */
+function withTimeout(doFetch: typeof fetch): typeof fetch {
+  return ((input: RequestInfo | URL, init?: RequestInit) =>
+    doFetch(input, {
+      ...init,
+      signal: init?.signal ?? AbortSignal.timeout(OAUTH_FETCH_TIMEOUT_MS),
+    })) as typeof fetch;
+}
+
 function redactSecrets(text: string, secrets: readonly (string | undefined)[]): string {
   let out = text;
   for (const s of secrets) {
@@ -45,7 +57,7 @@ export async function exchangeMetaLongLivedToken(args: {
   baseUrl?: string | undefined;
   now?: number;
 }): Promise<{ accessToken: string; expiresAt: Date | null }> {
-  const doFetch = args.fetch ?? globalThis.fetch.bind(globalThis);
+  const doFetch = withTimeout(args.fetch ?? globalThis.fetch.bind(globalThis));
   const base = (args.baseUrl ?? META_GRAPH_BASE_URL).replace(/\/+$/, "");
   const url = new URL(`${base}/${META_GRAPH_VERSION}/oauth/access_token`);
   url.searchParams.set("grant_type", "fb_exchange_token");
@@ -101,7 +113,7 @@ export async function discoverMetaPages(args: {
   baseUrl?: string | undefined;
   maxPages?: number;
 }): Promise<MetaDiscoveredPage[]> {
-  const doFetch = args.fetch ?? globalThis.fetch.bind(globalThis);
+  const doFetch = withTimeout(args.fetch ?? globalThis.fetch.bind(globalThis));
   const base = (args.baseUrl ?? META_GRAPH_BASE_URL).replace(/\/+$/, "");
   const out: MetaDiscoveredPage[] = [];
   let after: string | undefined;
@@ -203,7 +215,7 @@ export async function exchangeMetaCode(args: {
   now?: number;
   fetch?: typeof fetch;
 }): Promise<{ accessToken: string; expiresAt: Date | null }> {
-  const doFetch = args.fetch ?? globalThis.fetch.bind(globalThis);
+  const doFetch = withTimeout(args.fetch ?? globalThis.fetch.bind(globalThis));
   const url = new URL(`${args.baseUrl}/${META_GRAPH_VERSION}/oauth/access_token`);
   url.searchParams.set("client_id", args.appId);
   url.searchParams.set("client_secret", args.appSecret);
@@ -240,7 +252,7 @@ export async function readMetaGrantedScopes(args: {
   baseUrl: string;
   fetch?: typeof fetch;
 }): Promise<string[] | null> {
-  const doFetch = args.fetch ?? globalThis.fetch.bind(globalThis);
+  const doFetch = withTimeout(args.fetch ?? globalThis.fetch.bind(globalThis));
   try {
     const res = await doFetch(`${args.baseUrl}/${META_GRAPH_VERSION}/me/permissions`, {
       headers: { Authorization: `OAuth ${args.userAccessToken}` },
@@ -321,7 +333,7 @@ export async function exchangeLinkedInCode(args: {
   personUrn: string;
   name: string;
 }> {
-  const doFetch = args.fetch ?? globalThis.fetch.bind(globalThis);
+  const doFetch = withTimeout(args.fetch ?? globalThis.fetch.bind(globalThis));
   const secrets = [args.clientSecret, args.code];
   const form = new URLSearchParams({
     grant_type: "authorization_code",
@@ -381,7 +393,7 @@ export async function readLinkedInMember(args: {
   apiBase: string;
   fetch?: typeof fetch;
 }): Promise<{ personUrn: string; name: string } | "invalid" | null> {
-  const doFetch = args.fetch ?? globalThis.fetch.bind(globalThis);
+  const doFetch = withTimeout(args.fetch ?? globalThis.fetch.bind(globalThis));
   try {
     const res = await doFetch(`${args.apiBase}/v2/userinfo`, {
       headers: { Authorization: `Bearer ${args.accessToken}` },

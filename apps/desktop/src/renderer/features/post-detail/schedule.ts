@@ -1,8 +1,9 @@
 // The schedule sheet's rules (pure, tested without views) and its submit: local date and time,
 // accounts of the post's brand on its platforms, platform rules (preflight), approve first
 // when needed (with the verified hash), one schedule per account (an account the post already
-// waits on moves to the new time), publish now. Port of the Mac's ScheduleSheetModel and
-// StudioKit's PublishingDomain.
+// waits on moves to the new time, an account the owner unticked is cancelled), publish now,
+// and cancelling pending schedules. Port of the Mac's ScheduleSheetModel and StudioKit's
+// PublishingDomain.
 import {
   type ApiClient,
   type Content,
@@ -17,7 +18,7 @@ import {
 } from "@studio/contract";
 import type { TagTone } from "../../components/ui/controls.tsx";
 import { PLATFORM_LABEL } from "../posts/board.ts";
-import { localDate } from "../posts/dates.ts";
+import { localDate, shortDayTime } from "../posts/dates.ts";
 
 /** The API refuses times in the past; the earliest it accepts with a margin. */
 export function earliestSchedule(now: Date = new Date()): Date {
@@ -71,8 +72,22 @@ export function schedulableAccounts(
   );
 }
 
-/** Preselected: the connected ones. */
-export function defaultAccountIds(accounts: readonly SocialAccount[]): string[] {
+/** Pending schedules: the only ones that can still be moved or cancelled. */
+export function pendingSchedules(schedules: readonly Schedule[]): Schedule[] {
+  return schedules.filter((s) => s.status === "pending");
+}
+
+/**
+ * Preselected: the accounts the post already waits on (rescheduling moves those), else the
+ * connected ones.
+ */
+export function defaultAccountIds(
+  accounts: readonly SocialAccount[],
+  schedules: readonly Schedule[] = [],
+): string[] {
+  const waiting = new Set(pendingSchedules(schedules).map((s) => s.socialAccountId));
+  const scheduled = accounts.filter((a) => waiting.has(a.id)).map((a) => a.id);
+  if (scheduled.length > 0) return scheduled;
   return accounts.filter((a) => a.status === "connected").map((a) => a.id);
 }
 
@@ -184,6 +199,9 @@ export function scheduleDisplay(schedule: Schedule, mode: PublishingMode): Sched
       };
     case "cancelled":
       return { label: "İptal edildi", detail: null, tone: "neutral" };
+    default:
+      // A state this version does not know yet (the server may add one).
+      return { label: "Bilinmeyen durum", detail: null, tone: "neutral" };
   }
 }
 
@@ -191,7 +209,7 @@ export function scheduleDisplay(schedule: Schedule, mode: PublishingMode): Sched
 
 export type ScheduleApi = {
   contents: Pick<ApiClient["contents"], "get" | "approve">;
-  schedules: Pick<ApiClient["schedules"], "list" | "create" | "update" | "publishNow">;
+  schedules: Pick<ApiClient["schedules"], "list" | "create" | "update" | "cancel" | "publishNow">;
 };
 
 export class SubmitError extends Error {
@@ -216,18 +234,28 @@ async function approveIfNeeded(
 
 /**
  * Approve when needed, then one schedule per account at `date` (UTC on the wire). An account
- * the post already waits on moves to the new time instead of getting a second schedule.
+ * the post already waits on moves to the new time instead of getting a second schedule; a
+ * pending schedule on an account the owner unticked is cancelled, so it does not go out at the
+ * old time. `offeredAccountIds` are the accounts the sheet showed: pending schedules on other
+ * accounts (not shown, so not unticked) are left alone.
  */
 export async function submitSchedule(
   api: ScheduleApi,
-  input: { content: Content; hash: string | null; accountIds: readonly string[]; date: Date },
-): Promise<{ schedules: Schedule[]; content: Content }> {
+  input: {
+    content: Content;
+    hash: string | null;
+    accountIds: readonly string[];
+    date: Date;
+    offeredAccountIds?: readonly string[];
+  },
+): Promise<{ schedules: Schedule[]; cancelled: Schedule[]; content: Content }> {
   await approveIfNeeded(api, input.content, input.hash);
   const created: Schedule[] = [];
+  const cancelled: Schedule[] = [];
   try {
     const waiting = (
       await api.schedules.list({ contentId: input.content.id, status: "pending", limit: 100 })
-    ).items;
+    ).items.filter((s) => s.status === "pending");
     const scheduledAt = input.date.toISOString();
     for (const accountId of [...input.accountIds].sort()) {
       const pending = waiting.find((s) => s.socialAccountId === accountId);
@@ -241,11 +269,69 @@ export async function submitSchedule(
             }),
       );
     }
+    const keep = new Set(input.accountIds);
+    const offered = input.offeredAccountIds ? new Set(input.offeredAccountIds) : null;
+    for (const s of waiting) {
+      if (keep.has(s.socialAccountId)) continue;
+      if (offered && !offered.has(s.socialAccountId)) continue;
+      cancelled.push(await api.schedules.cancel(s.id));
+    }
   } catch (e) {
     throw new SubmitError(e instanceof Error ? e.message : String(e), created);
   }
   const content = await api.contents.get(input.content.id);
-  return { schedules: created, content };
+  return { schedules: created, cancelled, content };
+}
+
+// --- cancel -----------------------------------------------------------------------------------
+
+/** One pending schedule offered for cancelling ("Instagram · @mtmagro · 20 Kas 10:00"). */
+export interface CancelTarget {
+  scheduleId: string;
+  label: string;
+}
+
+export function cancelTargets(
+  schedules: readonly Schedule[],
+  accounts: readonly SocialAccount[],
+): CancelTarget[] {
+  return pendingSchedules(schedules)
+    .sort((a, b) => Date.parse(a.scheduledAt) - Date.parse(b.scheduledAt))
+    .map((s) => {
+      const account = accounts.find((a) => a.id === s.socialAccountId);
+      const who = account ? accountLabel(account) : PLATFORM_LABEL[s.platform];
+      return { scheduleId: s.id, label: `${who} · ${shortDayTime(new Date(s.scheduledAt))}` };
+    });
+}
+
+export function cancelConfirmation(title: string, count: number): string {
+  return count > 1
+    ? `“${title}” için seçtiğin ${count} zamanlama iptal edilecek; bu hesaplarda paylaşılmayacak. Postu sonra yeniden zamanlayabilirsin.`
+    : `“${title}” için zamanlama iptal edilecek; bu hesapta paylaşılmayacak. Postu sonra yeniden zamanlayabilirsin.`;
+}
+
+export class CancelError extends Error {
+  constructor(
+    message: string,
+    /** Schedules cancelled before the failure. */
+    readonly cancelled: Schedule[],
+  ) {
+    super(message);
+  }
+}
+
+/** Cancel the given pending schedules, one by one (a failure keeps what went through). */
+export async function cancelSchedules(
+  api: Pick<ScheduleApi["schedules"], "cancel">,
+  scheduleIds: readonly string[],
+): Promise<Schedule[]> {
+  const cancelled: Schedule[] = [];
+  try {
+    for (const id of scheduleIds) cancelled.push(await api.cancel(id));
+  } catch (e) {
+    throw new CancelError(e instanceof Error ? e.message : String(e), cancelled);
+  }
+  return cancelled;
 }
 
 /** "Şimdi yayınla" (after the owner confirmed). */

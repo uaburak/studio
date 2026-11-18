@@ -1,6 +1,6 @@
 // The full calendar ("Takvimi aç"): month grid with the posts in each day, or a week with hour
-// rows; problems listed on top; drag a pending schedule onto another day (or hour) to move it;
-// a click on a post opens it.
+// rows; problems listed on top; drag a pending schedule onto another day (or hour) to move it,
+// or cancel it from its row; a click on a post opens it.
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Button, cn, IconButton, SegmentedControl } from "../../components/ui/controls.tsx";
 import {
@@ -39,10 +39,12 @@ import {
 } from "./calendar-model.ts";
 import {
   AgendaRow,
+  CancelEntryButton,
   DOT_COLOR,
   EntryIcon,
   StatusTag,
   startScheduleDrag,
+  useCancelEntry,
   useScheduleDropTarget,
 } from "./calendar-views.tsx";
 
@@ -74,6 +76,7 @@ export default function CalendarPage() {
 function CalendarPageBody({ brandId, brandName }: { brandId: string; brandName: string }) {
   const data = useCalendarData(brandId);
   const reschedule = useReschedule(brandId);
+  const cancel = useCancelEntry();
   const today = dayKey(new Date());
   const [view, setView] = useState<View>("month");
   const [month, setMonth] = useState<MonthKey>(() => monthOf(today));
@@ -190,11 +193,11 @@ function CalendarPageBody({ brandId, brandName }: { brandId: string; brandName: 
             </div>
             <ul className="flex flex-col">
               {attention.slice(0, 5).map((e) => (
-                <li key={e.id}>
+                <li key={e.id} className="flex items-center gap-1">
                   <button
                     type="button"
                     onClick={(event) => open(e, event.currentTarget)}
-                    className="flex w-full items-center gap-2 rounded-full py-1 text-left text-body text-fg hover:underline"
+                    className="flex min-w-0 flex-1 items-center gap-2 rounded-full py-1 text-left text-body text-fg hover:underline"
                   >
                     <span className="text-fg-2 tabular-nums">
                       {shortDay(e.day)} {e.time}
@@ -202,6 +205,7 @@ function CalendarPageBody({ brandId, brandName }: { brandId: string; brandName: 
                     <span className="min-w-0 flex-1 truncate">{e.title}</span>
                     <span className="truncate text-footnote text-fg-2">{e.detail ?? e.status}</span>
                   </button>
+                  <CancelEntryButton entry={e} onCancel={cancel.ask} />
                 </li>
               ))}
             </ul>
@@ -274,11 +278,15 @@ function CalendarPageBody({ brandId, brandName }: { brandId: string; brandName: 
                     {entry.detail}
                   </span>
                 )}
+                <span className="flex w-6 shrink-0 justify-center">
+                  <CancelEntryButton entry={entry} onCancel={cancel.ask} />
+                </span>
               </div>
             ))}
           </div>
         </section>
       </div>
+      {cancel.dialog}
     </div>
   );
 }

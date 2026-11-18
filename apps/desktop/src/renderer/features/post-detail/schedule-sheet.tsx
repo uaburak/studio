@@ -1,8 +1,9 @@
 // "Postu zamanla" sheet: local date and time, the brand's accounts on the post's platforms
 // (with the platform rules each one reports — preflight, rechecked on every change), the
 // publishing mode, then "Zamanla" (approving first when needed) or "Şimdi yayınla" after a
-// confirmation.
-import type { Content, SchedulePreflight, SocialAccount } from "@studio/contract";
+// confirmation. Rescheduling starts from the accounts the post already waits on; unticking one
+// cancels its schedule. "Zamanlamayı iptal et" cancels without a new time.
+import type { Content, Schedule, SchedulePreflight, SocialAccount } from "@studio/contract";
 import { readReelVersionInfo } from "@studio/contract";
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -20,6 +21,7 @@ import { describeError, useApi } from "../../lib/api.ts";
 import { useAppStore } from "../../state/app-store.ts";
 import { invalidatePosts, storeContent, usePublishingStatus } from "../posts/data.ts";
 import { dateInput, dayTime, fromInputs, timeInput, timeZoneLabel } from "../posts/dates.ts";
+import { useCancelSchedule } from "./cancel-schedule.tsx";
 import {
   accountLabel,
   blockingReason,
@@ -35,6 +37,8 @@ import {
   submitSchedule,
 } from "./schedule.ts";
 
+const NO_SCHEDULES: readonly Schedule[] = [];
+
 const STATUS_NOTE: Partial<Record<SocialAccount["status"], string>> = {
   pending: "Bağlantı tamamlanmadı — önce Ayarlar → Hesaplar'dan bağlayın.",
   needs_reauth: "Yeniden bağlanması gerekiyor — Ayarlar → Hesaplar.",
@@ -46,6 +50,7 @@ export function ScheduleSheet({
   slideHtml,
   hash,
   accounts,
+  schedules = NO_SCHEDULES,
   initialDate,
   onClose,
   onDone,
@@ -57,6 +62,8 @@ export function ScheduleSheet({
   /** The verified hash, for approving first (null: not verified). */
   hash: string | null;
   accounts: SocialAccount[];
+  /** The post's schedules (rescheduling preselects the accounts it waits on). */
+  schedules?: readonly Schedule[];
   initialDate: Date;
   onClose(): void;
   onDone(content: Content): void;
@@ -67,23 +74,34 @@ export function ScheduleSheet({
   const candidates = useMemo(() => schedulableAccounts(accounts, content), [accounts, content]);
   const [date, setDate] = useState(dateInput(initialDate));
   const [time, setTime] = useState(timeInput(initialDate));
-  const [selected, setSelected] = useState<string[]>(() => defaultAccountIds(candidates));
+  const [selected, setSelected] = useState<string[]>(() =>
+    defaultAccountIds(candidates, schedules),
+  );
   const [preflight, setPreflight] = useState<SchedulePreflight | null>(null);
   const [checking, setChecking] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [confirmNow, setConfirmNow] = useState(false);
   const generation = useRef(0);
-  const opening = useRef({ initialDate, candidates });
-  opening.current = { initialDate, candidates };
+  const opening = useRef({ initialDate, candidates, schedules });
+  opening.current = { initialDate, candidates, schedules };
+  const cancel = useCancelSchedule({
+    content,
+    schedules,
+    accounts,
+    onDone: (fresh) => {
+      if (fresh) onDone(fresh);
+      onClose();
+    },
+  });
 
   // Reset when it opens again.
   useEffect(() => {
     if (!open) return;
-    const { initialDate: start, candidates: list } = opening.current;
+    const { initialDate: start, candidates: list, schedules: current } = opening.current;
     setDate(dateInput(start));
     setTime(timeInput(start));
-    setSelected(defaultAccountIds(list));
+    setSelected(defaultAccountIds(list, current));
     setError(null);
     setPreflight(null);
     setConfirmNow(false);
@@ -152,8 +170,18 @@ export function ScheduleSheet({
     setSubmitting(true);
     setError(null);
     try {
-      const result = await submitSchedule(api, { content, hash, accountIds: selected, date: at });
-      await finish(result, `Zamanlandı: ${dayTime(at)}`);
+      const result = await submitSchedule(api, {
+        content,
+        hash,
+        accountIds: selected,
+        date: at,
+        offeredAccountIds: candidates.map((a) => a.id),
+      });
+      const dropped = result.cancelled.length;
+      await finish(
+        result,
+        `Zamanlandı: ${dayTime(at)}${dropped > 0 ? ` · ${dropped} hesapta zamanlama iptal edildi` : ""}`,
+      );
     } catch (e) {
       setError(describeError(e));
       if (e instanceof SubmitError && e.created.length > 0)
@@ -185,12 +213,22 @@ export function ScheduleSheet({
   return (
     <>
       <Dialog
-        open={open && !confirmNow}
+        open={open && !confirmNow && !cancel.isOpen}
         title={content.status === "scheduled" ? "Zamanlamayı değiştir" : "Postu zamanla"}
         onClose={onClose}
         width={480}
         footer={
           <>
+            {cancel.targets.length > 0 && (
+              <Button
+                variant="ghost"
+                className="mr-auto"
+                disabled={submitting}
+                onClick={() => cancel.open()}
+              >
+                Zamanlamayı iptal et
+              </Button>
+            )}
             <Button variant="secondary" onClick={onClose}>
               Vazgeç
             </Button>
@@ -337,6 +375,7 @@ export function ScheduleSheet({
         onConfirm={() => void publishNow()}
         onClose={() => setConfirmNow(false)}
       />
+      {open && cancel.dialog}
     </>
   );
 }

@@ -16,7 +16,7 @@ import { promisify } from "node:util";
 import { z } from "zod";
 import { callGeminiJson } from "../gemini/json-call.ts";
 import type { GeminiUsageSample } from "../gemini/pricing.ts";
-import { extractSpeechWav, type FfmpegRunner, findExecutable } from "./ffmpeg.ts";
+import { buildToolEnv, extractSpeechWav, type FfmpegRunner, findExecutable } from "./ffmpeg.ts";
 
 const execFileAsync = promisify(nodeExecFile);
 
@@ -241,6 +241,7 @@ export function createDefaultClipTranscriber(options: DefaultTranscriberOptions)
           options.execWhisper ??
           (async (bin, args, opts) => {
             const r = await execFileAsync(bin, [...args], {
+              env: buildToolEnv(env),
               maxBuffer: 16 * 1024 * 1024,
               ...(opts?.signal ? { signal: opts.signal } : {}),
             });

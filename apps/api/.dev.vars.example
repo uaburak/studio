@@ -8,6 +8,12 @@ WORKER_TOKEN=change-me-local-dev-token
 #
 # Token vault key (social account tokens, cloud publisher token). At least 32
 # random characters; changing it makes stored tokens unreadable (reconnect accounts).
-# The Mac app generates its own (~/Library/Application Support/Studio/vault-key).
+# The Mac app generates its own (kept encrypted in ~/Library/Application Support/Studio).
 # Generate one with: openssl rand -base64 32
 TOKEN_ENCRYPTION_KEY=change-me-local-dev-vault-key-at-least-32-chars
+#
+# Owner secret: requests carrying `X-Studio-Owner: <value>` from 127.0.0.1 count as the Mac
+# itself (device management, pairing codes, ...). Without it a hand-started API serves only
+# the worker (WORKER_TOKEN) and paired devices. Scripts send it with STUDIO_OWNER_SECRET.
+# Generate one with: openssl rand -hex 32
+STUDIO_OWNER_SECRET=change-me-local-dev-owner-secret

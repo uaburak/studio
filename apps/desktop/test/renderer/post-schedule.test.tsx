@@ -1,11 +1,14 @@
 import type { ApiClient, Content, Schedule } from "@studio/contract";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   blockingReason,
+  CancelError,
+  cancelSchedules,
+  cancelTargets,
   dateError,
   defaultAccountIds,
   defaultScheduleDate,
@@ -167,6 +170,10 @@ function fakeScheduleApi(c: Content, pending: Schedule[] = []) {
         calls.push(`move:${id}`);
         return schedule({ id, scheduledAt: input.scheduledAt });
       }),
+      cancel: vi.fn(async (id: string) => {
+        calls.push(`cancel:${id}`);
+        return schedule({ id, status: "cancelled" });
+      }),
       publishNow: vi.fn(async () => ({ schedules: [], jobs: [] })),
       preflight: vi.fn(async () => preflight()),
     },
@@ -210,6 +217,39 @@ describe("submitting a schedule", () => {
     expect(calls).toEqual(["move:s9", "create:a2"]);
   });
 
+  it("cancels the pending schedule of an account the owner unticked", async () => {
+    const approved = contentFor(version("p1", 1), { status: "scheduled" });
+    const { api, calls } = fakeScheduleApi(approved, [
+      schedule({ id: "s1", socialAccountId: "a1" }),
+      schedule({ id: "s2", socialAccountId: "a2", platform: "facebook" }),
+      // On an account the sheet did not show (not unticked): left alone.
+      schedule({ id: "s3", socialAccountId: "a3" }),
+    ]);
+    const result = await submitSchedule(api as unknown as ScheduleApi, {
+      content: approved,
+      hash: null,
+      accountIds: ["a1"],
+      date: at,
+      offeredAccountIds: ["a1", "a2"],
+    });
+    expect(calls).toEqual(["move:s1", "cancel:s2"]);
+    expect(result.schedules.map((s) => s.id)).toEqual(["s1"]);
+    expect(result.cancelled.map((s) => s.id)).toEqual(["s2"]);
+
+    // Without the offered list every other pending schedule goes.
+    const all = fakeScheduleApi(approved, [
+      schedule({ id: "s1", socialAccountId: "a1" }),
+      schedule({ id: "s3", socialAccountId: "a3" }),
+    ]);
+    await submitSchedule(all.api as unknown as ScheduleApi, {
+      content: approved,
+      hash: null,
+      accountIds: ["a2"],
+      date: at,
+    });
+    expect(all.calls).toEqual(["create:a2", "cancel:s1", "cancel:s3"]);
+  });
+
   it("refuses to approve without a verified hash and keeps what went through", async () => {
     const draft = contentFor(version("p1", 1));
     const { api } = fakeScheduleApi(draft);
@@ -249,6 +289,50 @@ function wrap(ui: ReactNode, api: unknown) {
     </QueryClientProvider>,
   );
 }
+
+describe("cancelling schedules", () => {
+  it("preselects the accounts the post already waits on when rescheduling", () => {
+    const list = [account(), account({ id: "a2", handle: "@yan" })];
+    expect(defaultAccountIds(list)).toEqual(["a1", "a2"]);
+    expect(defaultAccountIds(list, [schedule({ socialAccountId: "a2" })])).toEqual(["a2"]);
+    // Finished or cancelled schedules do not count.
+    expect(
+      defaultAccountIds(list, [schedule({ socialAccountId: "a2", status: "cancelled" })]),
+    ).toEqual(["a1", "a2"]);
+  });
+
+  it("offers the pending schedules, one per account, earliest first", () => {
+    const targets = cancelTargets(
+      [
+        schedule({ id: "s2", socialAccountId: "a2", scheduledAt: "2026-11-21T07:00:00.000Z" }),
+        schedule({ id: "s1", scheduledAt: "2026-11-20T07:00:00.000Z" }),
+        schedule({ id: "s3", status: "published" }),
+      ],
+      [account(), account({ id: "a2", handle: "@yan" })],
+    );
+    expect(targets.map((t) => t.scheduleId)).toEqual(["s1", "s2"]);
+    expect(targets[0]?.label).toMatch(/^Instagram · @mtmagro · /);
+  });
+
+  it("keeps what was cancelled when one fails", async () => {
+    const cancel = vi
+      .fn()
+      .mockResolvedValueOnce(schedule({ id: "s1", status: "cancelled" }))
+      .mockRejectedValueOnce(new Error("only pending schedules can be cancelled"));
+    const error = await cancelSchedules({ cancel }, ["s1", "s2"]).catch((e) => e);
+    expect(error).toBeInstanceOf(CancelError);
+    expect((error as CancelError).cancelled.map((s) => s.id)).toEqual(["s1"]);
+  });
+
+  it("names a state it does not know in plain words", () => {
+    const missed = schedule({ status: "missed" as Schedule["status"] });
+    expect(scheduleDisplay(missed, "local")).toEqual({
+      label: "Bilinmeyen durum",
+      detail: null,
+      tone: "neutral",
+    });
+  });
+});
 
 describe("schedule sheet", () => {
   it("checks the platform rules for the picked accounts and schedules", async () => {
@@ -352,5 +436,74 @@ describe("schedule sheet", () => {
     );
     expect(screen.getByRole("button", { name: "Onayla ve zamanla" })).toBeInTheDocument();
     expect(screen.getByText(/Önce bu sürüm onaylanacak/)).toBeInTheDocument();
+  });
+});
+
+describe("schedule sheet: rescheduling and cancelling", () => {
+  it("starts from the scheduled accounts and cancels after a confirmation", async () => {
+    const c = contentFor(version("p1", 1), { status: "scheduled", targetPlatforms: ["instagram"] });
+    const pending = [schedule({ id: "s7", socialAccountId: "a2" })];
+    const { api } = fakeScheduleApi(c, pending);
+    const onDone = vi.fn();
+    const onClose = vi.fn();
+    wrap(
+      <ScheduleSheet
+        open
+        content={c}
+        slideHtml={null}
+        hash={null}
+        accounts={[account(), account({ id: "a2", handle: "@yan" })]}
+        schedules={pending}
+        initialDate={new Date(Date.now() + 2 * 86_400_000)}
+        onClose={onClose}
+        onDone={onDone}
+      />,
+      api,
+    );
+    expect(screen.getByRole("dialog", { name: "Zamanlamayı değiştir" })).toBeInTheDocument();
+    expect(screen.getByRole("checkbox", { name: "Instagram · @yan" })).toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "Instagram · @mtmagro" })).not.toBeChecked();
+
+    await userEvent.click(screen.getByRole("button", { name: "Zamanlamayı iptal et" }));
+    const confirm = await screen.findByRole("dialog", { name: "Zamanlama iptal edilsin mi?" });
+    expect(confirm).toHaveTextContent(/bu hesapta paylaşılmayacak/);
+    expect(confirm).toHaveTextContent(/Instagram · @yan/);
+    await userEvent.click(within(confirm).getByRole("button", { name: "Zamanlamayı iptal et" }));
+    await waitFor(() => expect(api.schedules.cancel).toHaveBeenCalledWith("s7"));
+    await waitFor(() => expect(onDone).toHaveBeenCalled());
+    expect(onClose).toHaveBeenCalled();
+    expect(useAppStore.getState().toasts.at(-1)?.message).toBe("Zamanlama iptal edildi.");
+  });
+
+  it("asks which accounts to cancel when the post waits on several", async () => {
+    const c = contentFor(version("p1", 1), { status: "scheduled", targetPlatforms: ["instagram"] });
+    const pending = [
+      schedule({ id: "s1", socialAccountId: "a1" }),
+      schedule({ id: "s2", socialAccountId: "a2" }),
+    ];
+    const { api } = fakeScheduleApi(c, pending);
+    wrap(
+      <ScheduleSheet
+        open
+        content={c}
+        slideHtml={null}
+        hash={null}
+        accounts={[account(), account({ id: "a2", handle: "@yan" })]}
+        schedules={pending}
+        initialDate={new Date(Date.now() + 2 * 86_400_000)}
+        onClose={() => undefined}
+        onDone={() => undefined}
+      />,
+      api,
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Zamanlamayı iptal et" }));
+    const confirm = await screen.findByRole("dialog", { name: "Zamanlama iptal edilsin mi?" });
+    const boxes = within(confirm).getAllByRole("checkbox");
+    expect(boxes).toHaveLength(2);
+    await userEvent.click(boxes[0] as HTMLElement);
+    expect(confirm).toHaveTextContent(/zamanlama iptal edilecek; bu hesapta/);
+    await userEvent.click(within(confirm).getByRole("button", { name: "Zamanlamayı iptal et" }));
+    await waitFor(() => expect(api.schedules.cancel).toHaveBeenCalledTimes(1));
+    expect(api.schedules.cancel).toHaveBeenCalledWith("s2");
   });
 });

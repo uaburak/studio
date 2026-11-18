@@ -10,7 +10,7 @@ import { execFile as nodeExecFile } from "node:child_process";
 import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
-import { type FfmpegRunner, probeMedia, transcodeAudioToAac } from "./ffmpeg.ts";
+import { buildToolEnv, type FfmpegRunner, probeMedia, transcodeAudioToAac } from "./ffmpeg.ts";
 
 const execFileAsync = promisify(nodeExecFile);
 
@@ -233,6 +233,7 @@ export class MacSayTtsProvider implements TtsProvider {
       options.exec ??
       (async (bin, args, opts) => {
         const r = await execFileAsync(bin, [...args], {
+          env: buildToolEnv(),
           ...(opts?.signal ? { signal: opts.signal } : {}),
         });
         return { stdout: String(r.stdout), stderr: String(r.stderr) };

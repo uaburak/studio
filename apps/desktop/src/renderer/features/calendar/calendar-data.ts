@@ -1,5 +1,6 @@
 // Server data of the calendar (react-query): a brand's schedules, posts and plans, the
-// publishing mode, and moving a pending schedule (optimistic, rolled back on error).
+// publishing mode, and moving a pending schedule (optimistic, rolled back on error). The posts
+// screens keep their own copies (`["posts", …]`); a move refreshes both.
 import type { Content, Plan, PublishingMode, Schedule } from "@studio/contract";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useMemo } from "react";
@@ -8,6 +9,7 @@ import { fetchAllPages } from "../../lib/paging.ts";
 import { useAppStore } from "../../state/app-store.ts";
 import { isHostUp, useAccounts, useBrands, useHost } from "../../state/studio.tsx";
 import { useRefreshOnJobs } from "../job-refresh.ts";
+import { invalidatePosts } from "../posts/data.ts";
 import {
   buildEntries,
   type CalendarEntry,
@@ -132,7 +134,8 @@ export function useReschedule(brandId: string | null) {
         queryClient.setQueryData<Schedule[]>(key, (list) =>
           list?.map((s) => (s.id === moved.id ? moved : s)),
         );
-        void queryClient.invalidateQueries({ queryKey: calendarKeys.contents(brandId) });
+        // The calendar's contents and the posts screens (board, open post) show the new time too.
+        void invalidatePosts(queryClient, entry.contentId);
         return true;
       } catch (error) {
         if (before) queryClient.setQueryData(key, before);

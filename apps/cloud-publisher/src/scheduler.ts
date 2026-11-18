@@ -59,6 +59,13 @@ const MAX_STEPS_PER_TICK = 100;
 const TICK_BUDGET_MS = 60_000;
 /** If a wake-up dies mid-step, the alarm fires again this soon. */
 const WATCHDOG_MS = 60_000;
+/**
+ * A due target whose media is not all uploaded yet waits for it this long after its publish
+ * time (bounded by the order's `notAfter`), checking every `MEDIA_RECHECK_MS`; "publish now"
+ * orders are due seconds after they are created, while the Mac may still be uploading.
+ */
+export const MEDIA_GRACE_MS = 30 * 60_000;
+export const MEDIA_RECHECK_MS = 20_000;
 
 export interface SchedulerDeps {
   clock: Clock;
@@ -86,6 +93,7 @@ type OrderRow = {
   version_id: string;
   content_hash: string;
   scheduled_at: number;
+  not_after: number | null;
   caption: string | null;
   title: string | null;
   is_ai_generated: number;
@@ -139,6 +147,7 @@ CREATE TABLE IF NOT EXISTS orders (
   version_id TEXT NOT NULL,
   content_hash TEXT NOT NULL,
   scheduled_at INTEGER NOT NULL,
+  not_after INTEGER,
   caption TEXT,
   title TEXT,
   is_ai_generated INTEGER NOT NULL DEFAULT 0,
@@ -217,6 +226,14 @@ export class Scheduler extends DurableObject<Env> {
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     ctx.storage.sql.exec(SCHEMA);
+    // Columns added after the first schema (an object created earlier has the old table).
+    const columns = ctx.storage.sql
+      .exec<{ name: string }>("SELECT name FROM pragma_table_info('orders')")
+      .toArray()
+      .map((c) => c.name);
+    if (!columns.includes("not_after")) {
+      ctx.storage.sql.exec("ALTER TABLE orders ADD COLUMN not_after INTEGER");
+    }
   }
 
   private get sql() {
@@ -228,6 +245,8 @@ export class Scheduler extends DurableObject<Env> {
       clock: systemClock,
       publisher: createPublisher({
         ...(this.env.META_APP_SECRET ? { appSecret: this.env.META_APP_SECRET } : {}),
+        // Optional override of the LinkedIn-Version header (see LINKEDIN_API_VERSION).
+        ...(this.env.LINKEDIN_VERSION ? { linkedinVersion: this.env.LINKEDIN_VERSION } : {}),
         // Graph client events are already redacted (method, path ids, status).
         logger: (e) => {
           if (e.level !== "debug") console.log(JSON.stringify({ src: "graph", ...e }));
@@ -253,6 +272,12 @@ export class Scheduler extends DurableObject<Env> {
     if (!(scheduledAt > now)) {
       return fail("validation_error", "scheduledAt must be in the future", [
         { path: "scheduledAt", message: "must be in the future" },
+      ]);
+    }
+    const notAfter = input.notAfter ? Date.parse(input.notAfter) : null;
+    if (notAfter !== null && !(notAfter > now)) {
+      return fail("validation_error", "notAfter has already passed", [
+        { path: "notAfter", message: "must be in the future" },
       ]);
     }
     const order = {
@@ -305,12 +330,13 @@ export class Scheduler extends DurableObject<Env> {
 
     this.ctx.storage.transactionSync(() => {
       this.sql.exec(
-        `INSERT INTO orders (id, content_id, version_id, content_hash, scheduled_at, caption, title,
-           is_ai_generated, media, status, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'scheduled', ?, ?)
+        `INSERT INTO orders (id, content_id, version_id, content_hash, scheduled_at, not_after,
+           caption, title, is_ai_generated, media, status, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'scheduled', ?, ?)
          ON CONFLICT (id) DO UPDATE SET content_id = excluded.content_id,
            version_id = excluded.version_id, content_hash = excluded.content_hash,
-           scheduled_at = excluded.scheduled_at, caption = excluded.caption, title = excluded.title,
+           scheduled_at = excluded.scheduled_at, not_after = excluded.not_after,
+           caption = excluded.caption, title = excluded.title,
            is_ai_generated = excluded.is_ai_generated, media = excluded.media,
            updated_at = excluded.updated_at`,
         id,
@@ -318,6 +344,7 @@ export class Scheduler extends DurableObject<Env> {
         input.versionId,
         input.contentHash,
         scheduledAt,
+        notAfter,
         order.caption,
         order.title,
         order.isAiGenerated ? 1 : 0,
@@ -487,8 +514,11 @@ export class Scheduler extends DurableObject<Env> {
     };
   }
 
-  /** Mark a verified upload. Refused if the order changed meanwhile. */
-  confirmUpload(id: string, mediaId: string, sha256: string): RpcResult<CloudOrder> {
+  /**
+   * Mark a verified upload. Refused if the order changed meanwhile. When it was the last
+   * missing file, a target already waiting for its media runs right away.
+   */
+  async confirmUpload(id: string, mediaId: string, sha256: string): Promise<RpcResult<CloudOrder>> {
     const row = this.orderRow(id);
     if (!row) return fail("not_found", "order not found");
     if (row.cancelled_at !== null) return fail("conflict", "order was cancelled");
@@ -502,7 +532,19 @@ export class Scheduler extends DurableObject<Env> {
     for (const m of media) if (m.sha256 === sha256) m.uploaded = true;
     const now = this.getDeps().clock.now();
     this.sql.exec("UPDATE orders SET media = ? WHERE id = ?", JSON.stringify(media), id);
+    if (media.every((m) => m.uploaded)) {
+      this.sql.exec(
+        `UPDATE targets SET next_run_at = MAX(?, ?) WHERE order_id = ? AND status = 'pending'
+           AND next_run_at > MAX(?, ?)`,
+        row.scheduled_at,
+        now,
+        id,
+        row.scheduled_at,
+        now,
+      );
+    }
     this.touchOrder(id, now);
+    await this.armAlarm();
     return { ok: true, value: this.toOrder(id) };
   }
 
@@ -559,7 +601,33 @@ export class Scheduler extends DurableObject<Env> {
     if (target.status === "pending") {
       const media: StoredMedia[] = JSON.parse(order.media);
       const now = deps.clock.now();
+      if (order.not_after !== null && now > order.not_after) {
+        // Too late (the publisher could not run on time, media never arrived): a post that
+        // goes out hours after its time is worse than none (S6).
+        this.finishFailed(target, target.attempts, now, {
+          code: "MISSED",
+          message:
+            "Gecikme sınırı aşıldı: paylaşım saatinden çok geç kalındığı için paylaşılmadı. Yeniden zamanlayın ya da şimdi paylaşın.",
+          action: "manual_check",
+        });
+        return;
+      }
       if (media.some((m) => !m.uploaded)) {
+        // The Mac may still be uploading ("publish now" is due in seconds): wait a bounded time.
+        const waitUntil = Math.min(
+          order.scheduled_at + MEDIA_GRACE_MS,
+          order.not_after ?? Number.POSITIVE_INFINITY,
+        );
+        if (now < waitUntil) {
+          this.sql.exec(
+            "UPDATE targets SET next_run_at = ?, updated_at = ? WHERE order_id = ? AND id = ?",
+            Math.min(now + MEDIA_RECHECK_MS, waitUntil),
+            now,
+            order.id,
+            target.id,
+          );
+          return;
+        }
         this.finishFailed(target, target.attempts, now, {
           code: "MEDIA_MISSING",
           message: "Yayın zamanı geldiğinde medya dosyalarının hepsi yüklenmemişti.",
@@ -634,16 +702,41 @@ export class Scheduler extends DurableObject<Env> {
       });
       return;
     }
-    const accessToken = await decryptToken(
-      await this.key(),
-      target.token,
-      tokenAad(order.id, target.id),
-    );
+    // One unreadable target (token sealed with another key, corrupt state) fails on its own;
+    // thrown, it would stop every wake-up at this same target and starve all the others.
+    let accessToken: string;
+    let state: PublishState;
+    try {
+      accessToken = await decryptToken(
+        await this.key(),
+        target.token,
+        tokenAad(order.id, target.id),
+      );
+    } catch {
+      this.finishFailed(target, target.attempts, deps.clock.now(), {
+        code: "TOKEN_UNREADABLE",
+        // Not the account's fault (the publisher's key changed): scheduling again re-seals it.
+        message:
+          "Erişim anahtarı bulut yayıncıda çözülemedi (yayıncının anahtarı değişmiş olabilir); yeniden zamanlayın.",
+        action: "manual_check",
+      });
+      return;
+    }
+    try {
+      state = JSON.parse(target.state) as PublishState;
+    } catch {
+      this.finishFailed(target, target.attempts, deps.clock.now(), {
+        code: "INVALID_STATE",
+        message: "Yayın durumu okunamadı; gönderiyi platformda kontrol edip yeniden zamanlayın.",
+        action: "manual_check",
+      });
+      return;
+    }
     const storedMedia: StoredMedia[] = JSON.parse(order.media);
-    const out: StepOutcome<PublishState> = await deps.publisher.step(
-      JSON.parse(target.state) as PublishState,
-      { accessToken, media: this.orderMediaReader(order.id, storedMedia) },
-    );
+    const out: StepOutcome<PublishState> = await deps.publisher.step(state, {
+      accessToken,
+      media: this.orderMediaReader(order.id, storedMedia),
+    });
     deps.beforePersist?.({ ...ids, status: out.status });
 
     const now = deps.clock.now();

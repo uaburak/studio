@@ -7,7 +7,7 @@
 // Detail keys: Esc deselects the layer or closes, ←/→ change slides (nudge the selected layer on
 // Düzenle, ⇧ for 10 px), ⌘Z / ⇧⌘Z undo and redo, ⌘↩ approves, Space quick look,
 // ⌫ hides the selected layer or asks to delete the post.
-import type { Content, ContentVersion } from "@studio/contract";
+import type { Content, ContentVersion, Schedule } from "@studio/contract";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   lazy,
@@ -46,6 +46,7 @@ import { ChecksPanel, useApproveGuard } from "../checks/checks-panel.tsx";
 import { WECRA_MISSING, wecraVendored } from "../post-editor/wecra/vendored.ts";
 import { usePostActions } from "../posts/actions.ts";
 import {
+  invalidatePosts,
   storeContent,
   storeVersion,
   useContent,
@@ -55,6 +56,7 @@ import {
 } from "../posts/data.ts";
 import { localDate } from "../posts/dates.ts";
 import { type DetailTab, usePostsStore } from "../posts/store.ts";
+import { useCancelSchedule } from "./cancel-schedule.tsx";
 import {
   CaptionCard,
   LayerEditor,
@@ -76,6 +78,8 @@ import { postMenu, usePostFacts } from "./post-facts.ts";
 import { defaultScheduleDate } from "./schedule.ts";
 import { ScheduleSheet } from "./schedule-sheet.tsx";
 import { SlideStage } from "./slide-stage.tsx";
+
+const NO_SCHEDULES: readonly Schedule[] = [];
 
 /**
  * Mounted once in the centre column: registers the app's post opener, follows finished jobs
@@ -212,6 +216,8 @@ function Editor({ content, version }: { content: Content; version: ContentVersio
           storeContent(queryClient, c);
           if (v) storeVersion(queryClient, v);
         },
+        // The board's and the calendar's lists follow the new status.
+        onApproved: (c) => void invalidatePosts(queryClient, c.id),
       }),
   );
   const snapshot = useSyncExternalStore(editor.subscribe, editor.getSnapshot);
@@ -240,6 +246,16 @@ function PostCanvas({ editor, snapshot }: { editor: PostEditor; snapshot: Editor
   const { content } = snapshot;
   const version = activeVersion(snapshot);
   const close = useCallback(() => usePostsStore.getState().close(), []);
+  const postSchedules = facts.schedules.data ?? NO_SCHEDULES;
+  const cancelFlow = useCancelSchedule({
+    content,
+    schedules: postSchedules,
+    accounts: facts.allAccounts,
+    onDone: (fresh) => {
+      if (fresh) editor.replaceContent(fresh);
+      void facts.schedules.refetch();
+    },
+  });
   const scheduleDate = useMemo(
     () => defaultScheduleDate({ schedule: facts.schedule, planItem: facts.planItem }),
     // Recomputed when the sheet opens.
@@ -290,18 +306,27 @@ function PostCanvas({ editor, snapshot }: { editor: PostEditor; snapshot: Editor
               : setScheduleOpen(true),
         }}
         guardApproval={approveGuard.guard}
-        menu={postMenu({ content, version, actions, quickLook, openInChat })}
+        menu={postMenu({
+          content,
+          version,
+          actions,
+          quickLook,
+          openInChat,
+          cancelSchedule: cancelFlow.targets.length > 0 ? () => cancelFlow.open() : null,
+        })}
         onClose={close}
         onPreview={quickLook}
         dialogs={
           <>
             {approveGuard.dialog}
+            {cancelFlow.dialog}
             <ScheduleSheet
               open={scheduleOpen}
               content={content}
               slideHtml={snapshot.current?.slides[0]?.html ?? null}
               hash={snapshot.approvableHash}
               accounts={facts.allAccounts}
+              schedules={postSchedules}
               initialDate={scheduleDate}
               onClose={() => setScheduleOpen(false)}
               onDone={(fresh) => {
@@ -339,6 +364,16 @@ export function EditorView({ editor, snapshot }: { editor: PostEditor; snapshot:
   const busy = changesVersion(snapshot.activity);
   const blocker = approveBlocker(snapshot);
   const approveGuard = useApproveGuard(snapshot);
+  const postSchedules = schedules.data ?? NO_SCHEDULES;
+  const cancelFlow = useCancelSchedule({
+    content,
+    schedules: postSchedules,
+    accounts: allAccounts,
+    onDone: (fresh) => {
+      if (fresh) editor.replaceContent(fresh);
+      void schedules.refetch();
+    },
+  });
   const scheduleDate = useMemo(
     () => defaultScheduleDate({ schedule, planItem }),
     // Recomputed when the sheet opens.
@@ -392,7 +427,7 @@ export function EditorView({ editor, snapshot }: { editor: PostEditor; snapshot:
       target instanceof HTMLInputElement ||
       target instanceof HTMLTextAreaElement ||
       target.isContentEditable;
-    if (useAppStore.getState().lightbox || scheduleOpen) return;
+    if (useAppStore.getState().lightbox || scheduleOpen || cancelFlow.isOpen) return;
     const s = editor.getSnapshot();
     const selected = s.selectedLayerId;
     if (event.key === "Escape") {
@@ -460,7 +495,14 @@ export function EditorView({ editor, snapshot }: { editor: PostEditor; snapshot:
     }
   };
 
-  const more = postMenu({ content, version, actions, quickLook, openInChat });
+  const more = postMenu({
+    content,
+    version,
+    actions,
+    quickLook,
+    openInChat,
+    cancelSchedule: cancelFlow.targets.length > 0 ? () => cancelFlow.open() : null,
+  });
 
   const statusText = facts.statusText;
   const { approvalFirst, scheduleLabel } = facts;
@@ -552,9 +594,10 @@ export function EditorView({ editor, snapshot }: { editor: PostEditor; snapshot:
                   planDate={planItem?.date ? localDate(planItem.date) : null}
                 />
                 <PublishHistory
-                  schedules={schedules.data ?? []}
+                  schedules={postSchedules}
                   accounts={allAccounts}
                   mode={publishing.data?.mode ?? "local"}
+                  onCancel={(s) => cancelFlow.open([s.id])}
                 />
               </div>
             )}
@@ -653,12 +696,14 @@ export function EditorView({ editor, snapshot }: { editor: PostEditor; snapshot:
         </div>
       </div>
       {approveGuard.dialog}
+      {cancelFlow.dialog}
       <ScheduleSheet
         open={scheduleOpen}
         content={content}
         slideHtml={snapshot.current?.slides[0]?.html ?? null}
         hash={snapshot.approvableHash}
         accounts={allAccounts}
+        schedules={postSchedules}
         initialDate={scheduleDate}
         onClose={() => {
           setScheduleOpen(false);

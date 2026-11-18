@@ -46,6 +46,8 @@ export function AdvancedSection() {
   const [hostname, setHostname] = useState(settings.remoteHostname);
   const token = useRef<HTMLInputElement | null>(null);
   const [tunnelMessage, setTunnelMessage] = useState<{ text: string; error: boolean } | null>(null);
+  const [backupMessage, setBackupMessage] = useState<{ text: string; error: boolean } | null>(null);
+  const [backupBusy, setBackupBusy] = useState(false);
   useEffect(() => setRepo(settings.repoPath), [settings.repoPath]);
   useEffect(() => setHostname(settings.remoteHostname), [settings.remoteHostname]);
 
@@ -102,7 +104,23 @@ export function AdvancedSection() {
       await queryClient.invalidateQueries({ queryKey: tunnelKey });
       setTunnelMessage({ text: "Anahtar bu Mac'te şifreli kaydedildi.", error: false });
     }
-    if (settings.remoteControlEnabled) restartHost();
+    // A new token or address restarts only the tunnel (the main process does it); running
+    // jobs keep going.
+  };
+
+  const runBackup = async (action: "create" | "restore") => {
+    const backup = system?.backup;
+    if (!backup) return;
+    setBackupBusy(true);
+    setBackupMessage(null);
+    try {
+      const result = action === "create" ? await backup.create() : await backup.restore();
+      if (result.status !== "cancelled") {
+        setBackupMessage({ text: result.message, error: result.status === "failed" });
+      }
+    } finally {
+      setBackupBusy(false);
+    }
   };
 
   return (
@@ -218,6 +236,36 @@ export function AdvancedSection() {
               />
             }
           />
+          <Subheader title="Yedek" ids={[ITEMS.backup.id, ITEMS.restore.id]} />
+          <Row
+            item={ITEMS.backup}
+            detail={backupMessage?.text ?? ITEMS.backup.detail}
+            detailTone={backupMessage?.error ? "danger" : "default"}
+          >
+            <Button
+              disabled={!system?.backup || backupBusy || host?.status.kind === "starting"}
+              onClick={() => void runBackup("create")}
+            >
+              {backupBusy ? "Bekle…" : "Yedekle"}
+            </Button>
+          </Row>
+          <Row item={ITEMS.restore}>
+            <Button
+              disabled={!system?.backup || backupBusy || host?.status.kind === "starting"}
+              onClick={() =>
+                confirm({
+                  title: "Yedekten geri yüklensin mi?",
+                  message:
+                    "Seçeceğin yedekteki veriler şu anki verilerin yerine geçer. Şu anki veriler önce yedekler klasörüne kaydedilir. Sunucu kısa bir süre durur.",
+                  confirm: "Yedeği seç",
+                  danger: true,
+                  onConfirm: () => void runBackup("restore"),
+                })
+              }
+            >
+              Geri yükle
+            </Button>
+          </Row>
           <Subheader title="Kayıtlar" ids={[ITEMS.errorLog.id, ITEMS.logsFolder.id]} />
           {errorLog && (
             <Row
@@ -247,9 +295,9 @@ export function AdvancedSection() {
                     confirm: "Sil",
                     danger: true,
                     onConfirm: async () => {
+                      // The main process restarts only the tunnel.
                       await system?.tunnelToken.forget();
                       await queryClient.invalidateQueries({ queryKey: tunnelKey });
-                      if (settings.remoteControlEnabled) restartHost();
                     },
                   })
                 }

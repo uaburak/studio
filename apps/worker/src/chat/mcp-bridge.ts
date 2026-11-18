@@ -22,6 +22,7 @@ import {
 import type { Socket } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { buildGeminiCliSettings, buildGeminiPolicyToml } from "../gemini/cli-sandbox.ts";
 import type { StudioToolDefinition, StudioToolExecutor } from "./tools.ts";
 
 export interface McpBridge {
@@ -31,6 +32,8 @@ export interface McpBridge {
   readonly scriptPath: string;
   readonly claudeMcpConfigPath: string;
   readonly geminiSettingsPath: string;
+  /** Admin-tier Gemini CLI policy: Studio's tools allowed, every other tool denied. */
+  readonly geminiPolicyPath: string;
   readonly allowedTools: string[];
   /** Direct in-process HTTP handler (also useful when loopback `connect` is sandbox-blocked). */
   dispatchHttp(
@@ -239,22 +242,19 @@ export async function startMcpBridge(
     { mode: 0o600 },
   );
 
+  // Gemini CLI: Studio's tools only (no built-in shell, file or web tools; see cli-sandbox.ts).
   const geminiDir = path.join(workDir, ".gemini");
   await mkdir(geminiDir, { recursive: true });
+  const geminiPolicyPath = path.join(geminiDir, "studio-policy.toml");
+  await writeFile(geminiPolicyPath, buildGeminiPolicyToml(), { mode: 0o600 });
   const geminiSettingsPath = path.join(geminiDir, "settings.json");
   await writeFile(
     geminiSettingsPath,
     JSON.stringify(
-      {
-        mcpServers: {
-          studio: {
-            command: process.execPath,
-            args: [scriptPath],
-            env: serverEnv,
-            trust: true,
-          },
-        },
-      },
+      buildGeminiCliSettings({
+        server: { command: process.execPath, args: [scriptPath], env: serverEnv },
+        policyPath: geminiPolicyPath,
+      }),
       null,
       2,
     ),
@@ -280,6 +280,7 @@ export async function startMcpBridge(
     scriptPath,
     claudeMcpConfigPath,
     geminiSettingsPath,
+    geminiPolicyPath,
     allowedTools: executor.toolNames().map((n) => `mcp__studio__${n}`),
     dispatchHttp,
     close,

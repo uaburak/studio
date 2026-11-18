@@ -43,6 +43,7 @@ import {
 } from "../gemini/json-call.ts";
 import { type BrandContext, loadBrandContext } from "../generate/brand.ts";
 import {
+  buildToolEnv,
   createNodeFfmpegRunner,
   encodeReel,
   extractFrameJpeg,
@@ -127,7 +128,11 @@ export function createPlaywrightReelFrameCapturer(
     if (getBrowser) {
       browser = await getBrowser();
     } else {
-      owned = await chromium.launch({ headless: true, args: [...CHROMIUM_ARGS] });
+      owned = await chromium.launch({
+        headless: true,
+        args: [...CHROMIUM_ARGS],
+        env: buildToolEnv(),
+      });
       browser = owned;
     }
     const context = await browser.newContext({
@@ -217,7 +222,7 @@ export function resolveReelFfmpeg(deps: AgentDeps, seams?: ReelEngineTestSeams):
     ...(deps.settings.ffmpegBin ? { STUDIO_FFMPEG_BIN: deps.settings.ffmpegBin } : {}),
   });
   if (!bin) throw new Error(FFMPEG_MISSING_MESSAGE);
-  return createNodeFfmpegRunner(bin);
+  return createNodeFfmpegRunner(bin, buildToolEnv(deps.settings.parentEnv));
 }
 
 function slug(text: string): string {

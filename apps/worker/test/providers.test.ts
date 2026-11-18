@@ -317,6 +317,36 @@ describe("Codex CLI", () => {
     expect(args.at(-1)).toBe("-");
   });
 
+  it("leaves Codex with Studio's tools only: no shell, local image reading or web", () => {
+    for (const bridge of [{ scriptPath: "/tmp/turn/studio-mcp.mjs" } as never, undefined]) {
+      const args = codexExecArgs({
+        bin: "codex",
+        parentEnv: {},
+        system: "s",
+        prompt: "p",
+        cwd: "/tmp/turn",
+        bridge,
+      });
+      const overrides = args.flatMap((a, i) => (args[i - 1] === "-c" ? [a] : []));
+      expect(overrides).toEqual(
+        expect.arrayContaining([
+          "features.shell_tool=false",
+          "features.unified_exec=false",
+          "features.view_image=false",
+          'web_search="disabled"',
+          "features.apps=false",
+          "features.plugins=false",
+          "features.browser_use=false",
+          "features.computer_use=false",
+          'shell_environment_policy.inherit="none"',
+        ]),
+      );
+      expect(args[args.indexOf("-s") + 1]).toBe("read-only");
+      expect(args.join(" ")).not.toMatch(/danger|workspace-write|--add-dir|--enable/);
+      expect(overrides).not.toContain('approval_policy="on-request"');
+    }
+  });
+
   it("answers a chat turn through codex exec --json, calling a Studio tool over the bridge", async () => {
     const bin = fakeCli(
       "codex",

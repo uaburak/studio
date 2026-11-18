@@ -14,6 +14,22 @@ import { PublishLog, Schedule } from "./schedule.ts";
 export const PublishingMode = z.enum(["cloud", "local"]).meta({ id: "PublishingMode" });
 export type PublishingMode = z.infer<typeof PublishingMode>;
 
+/**
+ * True for a cloud publisher URL the Mac may send tokens to: `https://`, or plain `http://`
+ * only to this machine (`localhost`, `127.0.0.1`, `[::1]`; local testing with `wrangler dev`).
+ */
+export function isAllowedCloudPublisherUrl(value: string): boolean {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return false;
+  }
+  if (url.protocol === "https:") return true;
+  if (url.protocol !== "http:") return false;
+  return ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname.toLowerCase());
+}
+
 /** Body of `PUT /api/publishing/cloud` (Mac only). The token is vaulted, never returned. */
 export const PublishingCloudPut = z
   .object({
@@ -22,11 +38,22 @@ export const PublishingCloudPut = z
       .trim()
       .url()
       .max(500)
-      .refine((v) => /^https?:\/\//i.test(v), "must be http(s)"),
+      .refine(
+        isAllowedCloudPublisherUrl,
+        "must be https:// (http:// only for localhost / 127.0.0.1 while testing)",
+      ),
     token: z.string().trim().min(16).max(512),
   })
   .meta({ id: "PublishingCloudPut" });
 export type PublishingCloudPut = z.input<typeof PublishingCloudPut>;
+
+/**
+ * Maximum lateness (S6): a schedule whose time passed more than this long ago (the Mac was
+ * asleep, the cloud publisher could not run) is not published; it is marked missed instead.
+ */
+export const DEFAULT_MAX_LATENESS_MINUTES = 120;
+export const MIN_MAX_LATENESS_MINUTES = 5;
+export const MAX_MAX_LATENESS_MINUTES = 7 * 24 * 60;
 
 export const PublishingStatus = z
   .object({
@@ -42,9 +69,24 @@ export const PublishingStatus = z
     }),
     /** False when the token vault key is missing (tokens cannot be stored). */
     vaultReady: z.boolean(),
+    /** Maximum lateness in minutes (absent from older servers: 120). */
+    maxLatenessMinutes: z.number().int().positive().optional(),
   })
   .meta({ id: "PublishingStatus" });
 export type PublishingStatus = z.infer<typeof PublishingStatus>;
+
+/** Body of `PATCH /api/publishing/settings` (Mac only). */
+export const PublishingSettingsPatch = z
+  .object({
+    maxLatenessMinutes: z
+      .number()
+      .int()
+      .min(MIN_MAX_LATENESS_MINUTES)
+      .max(MAX_MAX_LATENESS_MINUTES)
+      .optional(),
+  })
+  .meta({ id: "PublishingSettingsPatch" });
+export type PublishingSettingsPatch = z.input<typeof PublishingSettingsPatch>;
 
 // --- Worker side ------------------------------------------------------------------
 
@@ -53,6 +95,8 @@ export const WorkerPublishingConfig = z
     cloud: z.object({ url: z.string(), token: z.string() }).nullable(),
     /** The app asked for an immediate sync (on focus) at this time. */
     syncRequestedAt: Timestamp.nullable(),
+    /** Maximum lateness (ms); absent from older servers (2 hours). */
+    maxLatenessMs: z.number().int().positive().optional(),
   })
   .meta({ id: "WorkerPublishingConfig" });
 export type WorkerPublishingConfig = z.infer<typeof WorkerPublishingConfig>;

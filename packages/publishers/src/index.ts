@@ -20,6 +20,8 @@ export {
 export {
   DEFAULT_LINKEDIN_BASE_URL,
   LINKEDIN_API_VERSION,
+  LINKEDIN_TIMEOUT_MS,
+  LINKEDIN_UPLOAD_TIMEOUT_MS,
   type LinkedInPhase,
   LinkedInPublisher,
   type LinkedInPublisherOptions,
@@ -27,6 +29,7 @@ export {
   type LinkedInUploadPart,
   type LinkedInUploadSlot,
   linkedinPermalink,
+  toLittleText,
 } from "./linkedin/publisher.ts";
 export {
   DEFAULT_MACHINE_OPTIONS,

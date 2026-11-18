@@ -9,6 +9,7 @@
  *
  * Usage (API started separately with its own --persist-to and WORKER_TOKEN):
  *   STUDIO_E2E_API=http://127.0.0.1:8797 STUDIO_WORKER_TOKEN=<test token> \
+ *   STUDIO_OWNER_SECRET=<the API's --var STUDIO_OWNER_SECRET> \
  *   STUDIO_E2E_STATE=$S/worker pnpm --filter @studio/worker exec tsx scripts/e2e-reels.ts
  * Env: FFMPEG / FFPROBE for the checks (default: the bake-off's pinned binaries).
  */
@@ -25,6 +26,7 @@ import {
   readReelVersionInfo,
 } from "@studio/contract";
 import sharp from "sharp";
+import { OwnerWebSocket, ownerFetch, requireOwnerSecret } from "./owner.ts";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const WORKER_DIR = path.resolve(HERE, "..");
@@ -47,7 +49,8 @@ if (/:8787\b/.test(apiBase)) {
   process.exit(2);
 }
 
-const api = createApiClient({ baseUrl: apiBase });
+requireOwnerSecret();
+const api = createApiClient({ baseUrl: apiBase, fetch: ownerFetch, WebSocket: OwnerWebSocket });
 const t0 = Date.now();
 const transcript: string[] = [];
 const log = (line: string) => {
@@ -391,7 +394,10 @@ async function main() {
 
     // Optional: ask the chat agent for a reel (real Claude, sonnet/low: the turn + the planner).
     if (process.env.STUDIO_E2E_CHAT === "1") {
-      const conversation = await api.conversations.create({ brandId: brand.id, title: "Reels isteği" });
+      const conversation = await api.conversations.create({
+        brandId: brand.id,
+        title: "Reels isteği",
+      });
       const text =
         "Venta Borinc için yaklaşık 8 saniyelik hareketli grafik bir Reels hazırla: çiçeklenmede bor ve çinkonun önemi. Instagram için. Bitince kısaca haber ver.";
       const started = Date.now();
@@ -406,7 +412,8 @@ async function main() {
         await sleep(1500);
         run = await api.agentRuns.get(run.id);
       }
-      const messages = (await api.conversations.messages.list(conversation.id, { limit: 10 })).items;
+      const messages = (await api.conversations.messages.list(conversation.id, { limit: 10 }))
+        .items;
       const answer = messages.find((m) => m.runId === run.id);
       const tools = (answer?.parts ?? [])
         .filter((p) => p.type === "tool_step")
@@ -415,11 +422,13 @@ async function main() {
         .map((p) => (p.type === "text" ? p.text : ""))
         .join(" ")
         .trim();
-      log(`chat: run ${run.status} in ${((Date.now() - started) / 1000).toFixed(1)} s; tools ${tools.join(", ")}`);
-      log(`chat: assistant: ${reply.slice(0, 400)}`);
-      const reels = (await api.contents.list({ brandId: brand.id, type: "reel", limit: 50 })).items.filter(
-        (c) => !Object.values(all).some((sp) => sp.hook === c.title),
+      log(
+        `chat: run ${run.status} in ${((Date.now() - started) / 1000).toFixed(1)} s; tools ${tools.join(", ")}`,
       );
+      log(`chat: assistant: ${reply.slice(0, 400)}`);
+      const reels = (
+        await api.contents.list({ brandId: brand.id, type: "reel", limit: 50 })
+      ).items.filter((c) => !Object.values(all).some((sp) => sp.hook === c.title));
       const created = reels.find((c) => c.title !== "İptal denemesi");
       if (!created) {
         failed = true;
@@ -429,7 +438,9 @@ async function main() {
         const job = jobs.find((j) => j.type === "content.generate");
         const done = job ? await waitJob(job.id, "chat reel") : null;
         if (done?.status === "succeeded") {
-          results.push(await collect("chat-motion_graphics", created.id, done, (Date.now() - started) / 1000));
+          results.push(
+            await collect("chat-motion_graphics", created.id, done, (Date.now() - started) / 1000),
+          );
         } else {
           failed = true;
           log(`chat reel: ${done?.status ?? "no job"} — ${done?.error ?? ""}`);
@@ -481,10 +492,10 @@ async function collect(recipe: string, contentId: string, job: Job, seconds: num
   const info = readReelVersionInfo(v.slides[0]?.html ?? "");
   const videoId = info.videoAssetId ?? "";
   const coverId = info.coverAssetId ?? "";
-  const video = await fetch(`${apiBase}/api/assets/${videoId}/content`);
+  const video = await ownerFetch(`${apiBase}/api/assets/${videoId}/content`);
   const mp4 = path.join(outDir, `${recipe}.mp4`);
   writeFileSync(mp4, new Uint8Array(await video.arrayBuffer()));
-  const cover = await fetch(`${apiBase}/api/assets/${coverId}/content`);
+  const cover = await ownerFetch(`${apiBase}/api/assets/${coverId}/content`);
   writeFileSync(
     path.join(outDir, `${recipe}-cover.jpg`),
     new Uint8Array(await cover.arrayBuffer()),

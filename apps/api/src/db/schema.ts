@@ -581,6 +581,14 @@ export const schedules = sqliteTable(
     cloudSyncedAt: integer("cloud_synced_at", { mode: "timestamp_ms" }),
     /** Last publishing-path error (Turkish). */
     lastError: text("last_error"),
+    /**
+     * Local publishing (Mac worker): the publisher state machine's state, saved before the
+     * worker acts on it, so a crashed or retried publish resumes (and reconciles with the
+     * platform) instead of posting again. No tokens inside. Null for cloud delivery.
+     */
+    publishState: text("publish_state", { mode: "json" }).$type<Record<string, unknown>>(),
+    /** When the local worker claimed the schedule (or last saved its state): a stale claim is taken over. */
+    claimedAt: integer("claimed_at", { mode: "timestamp_ms" }),
     cancelledAt: integer("cancelled_at", { mode: "timestamp_ms" }),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
@@ -614,6 +622,8 @@ export const publishingSettings = sqliteTable("publishing_settings", {
   lastSyncAt: integer("last_sync_at", { mode: "timestamp_ms" }),
   lastSyncOk: integer("last_sync_ok", { mode: "boolean" }),
   lastSyncError: text("last_sync_error"),
+  /** Maximum lateness (S6) in minutes; null = the default (2 hours). */
+  maxLatenessMinutes: integer("max_lateness_minutes"),
   updatedAt: updatedAt(),
 });
 

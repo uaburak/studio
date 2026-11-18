@@ -186,11 +186,47 @@ export class FfmpegError extends Error {
   }
 }
 
-export function createNodeFfmpegRunner(bin: string): FfmpegRunner {
+/** Variables a media tool (ffmpeg, whisper.cpp, `say`) may see; never Studio's keys or tokens. */
+const TOOL_ENV_ALLOW = [
+  "PATH",
+  "HOME",
+  "USER",
+  "LOGNAME",
+  "TMPDIR",
+  "LANG",
+  "LC_ALL",
+  "LC_CTYPE",
+  "TZ",
+  "FONTCONFIG_FILE",
+  "FONTCONFIG_PATH",
+] as const;
+
+/**
+ * Allow-listed environment for media child processes. They used to inherit the worker's whole
+ * `process.env` (worker token, Gemini / ElevenLabs keys, the cloud token).
+ */
+export function buildToolEnv(parent: NodeJS.ProcessEnv = process.env): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const key of TOOL_ENV_ALLOW) {
+    const value = parent[key];
+    if (value) env[key] = value;
+  }
+  // whisper.cpp / ggml tuning knobs (Metal resources, thread counts): no secrets.
+  for (const [key, value] of Object.entries(parent)) {
+    if (key.startsWith("GGML_") && value) env[key] = value;
+  }
+  env.LANG ??= "en_US.UTF-8";
+  return env;
+}
+
+export function createNodeFfmpegRunner(
+  bin: string,
+  env: Record<string, string> = buildToolEnv(),
+): FfmpegRunner {
   return async (args, options = {}) => {
     options.signal?.throwIfAborted();
     return new Promise<FfmpegRunResult>((resolve, reject) => {
-      const child = spawn(bin, [...args], { stdio: ["pipe", "pipe", "pipe"] });
+      const child = spawn(bin, [...args], { env, stdio: ["pipe", "pipe", "pipe"] });
       const stdoutChunks: Buffer[] = [];
       const stderrChunks: Buffer[] = [];
       let stderrBytes = 0;

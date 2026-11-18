@@ -92,6 +92,12 @@ export const CloudOrderCreate = z
     contentHash: ContentHash,
     /** Publish time, UTC (`...Z`). Must be in the future on create/replace. */
     scheduledAt: Timestamp,
+    /**
+     * Latest time publishing may start (the original publish time + the maximum lateness).
+     * A target that could not start by then (the publisher was down, media never arrived)
+     * fails with `MISSED` instead of publishing late. Omitted: no limit.
+     */
+    notAfter: Timestamp.optional(),
     caption: z.string().max(5000).optional(),
     /** Facebook video or LinkedIn document/video title. */
     title: z.string().max(255).optional(),

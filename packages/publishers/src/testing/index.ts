@@ -4,8 +4,10 @@
 import type { MediaReader } from "../models.ts";
 import { type CreatePublisherOptions, createPublisher } from "../publisher.ts";
 import { FakeClock, FakeGraph, type FakeGraphOptions } from "./fake-graph.ts";
+import { FakeLinkedIn, type FakeLinkedInOptions, isFakeLinkedInHost } from "./fake-linkedin.ts";
 
 export * from "./fake-graph.ts";
+export * from "./fake-linkedin.ts";
 
 /** In-memory MediaReader over named byte arrays. */
 export function memoryMediaReader(
@@ -26,21 +28,27 @@ export function memoryMediaReader(
 
 export interface FakeEnvOptions extends FakeGraphOptions {
   publisher?: Omit<CreatePublisherOptions, "fetch" | "clock" | "sleep">;
+  linkedin?: Omit<FakeLinkedInOptions, "clock">;
 }
 
 /**
- * A fake Graph API wired to a publisher with a shared fake clock:
+ * A fake Graph API and a fake LinkedIn API wired to a publisher with a shared fake clock:
  * sleeping advances time instantly, so polling and backoff cost nothing.
  */
 export function createFakeEnv(options: FakeEnvOptions = {}) {
   const clock = options.clock ?? new FakeClock();
   const fake = new FakeGraph({ ...options, clock });
+  const linkedin = new FakeLinkedIn({ ...options.linkedin, clock });
+  const fetch = (input: string | URL | Request, init?: RequestInit) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    return isFakeLinkedInHost(url) ? linkedin.fetch(input, init) : fake.fetch(input, init);
+  };
   const publisher = createPublisher({
     ...options.publisher,
-    fetch: fake.fetch,
+    fetch,
     clock,
     sleep: clock.sleep,
     random: () => 0.5,
   });
-  return { clock, fake, publisher };
+  return { clock, fake, linkedin, publisher };
 }

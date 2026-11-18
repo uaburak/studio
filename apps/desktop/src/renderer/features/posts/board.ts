@@ -177,13 +177,15 @@ export function renderedAssetIds(card: Pick<PostCard, "version">): string[] {
   );
 }
 
-const SCHEDULE_RANK: Record<Schedule["status"], number> = {
+const SCHEDULE_RANK: Partial<Record<string, number>> = {
   pending: 0,
   publishing: 0,
   published: 1,
   failed: 2,
   cancelled: 3,
 };
+/** A state this version does not know yet ranks with the finished ones. */
+const rankOf = (s: Schedule) => SCHEDULE_RANK[s.status] ?? 2;
 
 /** The schedule a card shows: the earliest active one, else the latest published / failed. */
 export function pickSchedule(schedules: readonly Schedule[]): Schedule | null {
@@ -194,8 +196,8 @@ export function pickSchedule(schedules: readonly Schedule[]): Schedule | null {
       best = s;
       continue;
     }
-    const a = SCHEDULE_RANK[s.status];
-    const b = SCHEDULE_RANK[best.status];
+    const a = rankOf(s);
+    const b = rankOf(best);
     if (a !== b) {
       if (a < b) best = s;
       continue;
@@ -384,7 +386,7 @@ export function moveSelection(
 export function deletionBlocker(content: Pick<Content, "status">): string | null {
   switch (content.status) {
     case "scheduled":
-      return "Zamanlanmış post silinemez; önce Takvim'den zamanlamayı iptal et.";
+      return "Zamanlanmış post silinemez; önce zamanlamayı iptal et (postun … menüsünde ya da Takvim'de).";
     case "publishing":
       return "Yayınlanmakta olan post silinemez.";
     case "published":

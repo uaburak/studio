@@ -2,9 +2,12 @@
  * Headless `gemini` CLI runner (used when `STUDIO_GEMINI_MODE=cli` or when
  * `GEMINI_API_KEY` is absent in `.env` while `gemini` CLI is installed).
  *
- * Runs inside the per-turn `McpBridge` `workDir`, where `.gemini/settings.json`
- * points at `studio-mcp.mjs` (`trust: true`) and `--yolo` lets tool calls reach
- * Studio's own `consent` card enforcement without interactive terminal prompts.
+ * Runs inside the per-turn `McpBridge` `workDir` with Studio's tools only: `.gemini/settings.json`
+ * (also the CLI's system settings file) registers `studio-mcp.mjs` (`trust: true`), turns every
+ * built-in tool off (no shell, file or web access) and loads an admin policy that allows only
+ * Studio's MCP tools, so the CLI runs in its `default` approval mode without `--yolo`. The CLI
+ * gets its own `HOME` in the turn folder (see `cli-sandbox.ts`): the owner's `~/.gemini`
+ * settings, extensions and MCP servers never load; only the sign-in is carried over.
  */
 import { type ChildProcess, spawn as nodeSpawn } from "node:child_process";
 import { writeFile } from "node:fs/promises";
@@ -13,6 +16,7 @@ import type { RunUsage } from "@studio/contract";
 import type { McpBridge } from "../chat/mcp-bridge.ts";
 import type { Effort } from "../claude/models.ts";
 import { LineSplitter } from "../claude/stream.ts";
+import { geminiCliArgs, prepareGeminiCliHome } from "./cli-sandbox.ts";
 import { GeminiError } from "./errors.ts";
 import { buildGeminiEnv } from "./health.ts";
 import type { GeminiModelAlias } from "./models.ts";
@@ -47,9 +51,17 @@ export async function runGeminiCliTurn(
   const systemFile = path.join(options.bridge.workDir, "gemini-system.md");
   await writeFile(systemFile, options.system, "utf8");
 
-  const env = buildGeminiEnv(options.parentEnv ?? process.env, {
+  const parentEnv = options.parentEnv ?? process.env;
+  const cliHome = await prepareGeminiCliHome({
+    workDir: options.bridge.workDir,
+    settingsPath: options.bridge.geminiSettingsPath,
+    parentEnv,
+    apiKey: options.apiKey,
+  });
+  const env = buildGeminiEnv(parentEnv, {
     apiKey: options.apiKey,
     extra: {
+      ...cliHome.env,
       GEMINI_SYSTEM_MD: systemFile,
     },
   });
@@ -78,11 +90,7 @@ function executeCli(
   const timeoutMs = options.timeoutMs ?? 15 * 60_000;
   const started = Date.now();
 
-  const args = ["--model", options.modelId, "--yolo"];
-  if (format === "stream-json") {
-    args.push("--output-format", "stream-json");
-  }
-  args.push("-p", "Yukarıdaki Studio bağlamına ve son kullanıcı mesajına Türkçe yanıt ver.");
+  const args = geminiCliArgs(options.modelId, format);
 
   return new Promise<GeminiCliTurnResult>((resolve, reject) => {
     let child: ChildProcess;

@@ -1,6 +1,7 @@
 // The typed API client of the renderer. HTTP goes to the page's own origin (`/api/…`): the
 // Vite dev proxy or the `studio://` protocol forwards it to the local API. WebSockets connect
-// straight to ws://127.0.0.1:<apiPort> (not subject to CORS; the API counts them as local).
+// straight to ws://127.0.0.1:<apiPort>. The main process adds the app's owner secret to both
+// (the page never sees it), which is what makes the API count them as the Mac itself.
 import { type ApiClient, createApiClient } from "@studio/contract";
 import { createContext, useContext } from "react";
 

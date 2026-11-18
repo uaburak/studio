@@ -11,18 +11,24 @@ import type {
 } from "@studio/contract";
 import { expect } from "vitest";
 
-export const BASE = "http://studio.test";
+/** The Mac app addresses the API by a loopback name (the `local` principal requires it). */
+export const BASE = "http://127.0.0.1:8790";
+
+/** The desktop app's owner secret in tests (`STUDIO_OWNER_SECRET`, vitest.config.ts). */
+export const OWNER_SECRET = "test-owner-secret";
 
 /**
- * Header that makes a request look like it came from the Mac itself
- * (Miniflare sets CF-Connecting-IP from the socket; tests have no socket).
+ * Headers that make a request look like it came from the Mac app itself: the loopback peer
+ * Miniflare would set from the socket (tests have no socket) and the app's owner secret.
  */
-export const LOCAL = { "CF-Connecting-IP": "127.0.0.1" } as const;
+export const LOCAL = { "CF-Connecting-IP": "127.0.0.1", "X-Studio-Owner": OWNER_SECRET } as const;
 
-/** `exports.default.fetch` as the Mac app would call it (127.0.0.1). */
+/** `exports.default.fetch` as the Mac app would call it (127.0.0.1 + owner secret). */
 export function localFetch(input: string, init: RequestInit = {}): Promise<Response> {
   const headers = new Headers(init.headers);
-  if (!headers.has("CF-Connecting-IP")) headers.set("CF-Connecting-IP", "127.0.0.1");
+  for (const [name, value] of Object.entries(LOCAL)) {
+    if (!headers.has(name)) headers.set(name, value);
+  }
   return exports.default.fetch(input, { ...init, headers });
 }
 

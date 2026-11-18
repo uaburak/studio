@@ -9,7 +9,8 @@ import { waitForCallback } from "./loopback.ts";
 import { AppKitKeychain, type Cipher, FileSecretStore, type SecretStore } from "./secrets.ts";
 import { AccountsService } from "./service.ts";
 
-const cipher: Cipher = {
+/** Electron's safeStorage (its key lives in the macOS Keychain). */
+export const safeStorageCipher: Cipher = {
   available: () => safeStorage.isEncryptionAvailable(),
   encrypt: (text) => safeStorage.encryptString(text),
   decrypt: (data) => safeStorage.decryptString(data),
@@ -17,7 +18,11 @@ const cipher: Cipher = {
 
 /** The secret store of this app (also the host's tunnel token source). */
 export function createSecretStore(stateDir: string): SecretStore {
-  return new FileSecretStore(join(stateDir, "desktop-secrets.json"), cipher, new AppKitKeychain());
+  return new FileSecretStore(
+    join(stateDir, "desktop-secrets.json"),
+    safeStorageCipher,
+    new AppKitKeychain(),
+  );
 }
 
 export function setupAccounts(input: {
@@ -25,10 +30,14 @@ export function setupAccounts(input: {
   logsDir: string;
   secrets: SecretStore;
   apiPort: () => number | null;
+  /** The app's owner secret (the API's `local` principal). */
+  ownerSecret: () => string;
+  /** A tunnel token was saved or removed: restart the tunnel only. */
+  onTunnelTokenChange: () => void;
   send: (channel: string, value: unknown) => void;
 }): AccountsService {
   const service = new AccountsService({
-    api: createAccountsApi(input.apiPort),
+    api: createAccountsApi(input.apiPort, input.ownerSecret),
     secrets: input.secrets,
     ids: new AppIdsStore(join(input.stateDir, "desktop-accounts.json")),
     openExternal: (url) => shell.openExternal(url),
@@ -48,6 +57,7 @@ export function setupAccounts(input: {
       }),
       openPath: (path) => shell.openPath(path),
       secrets: input.secrets,
+      onTunnelTokenChange: input.onTunnelTokenChange,
     },
     input.send,
   );

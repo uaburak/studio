@@ -7,9 +7,11 @@
  *   plan into API billing.
  * - Studio's tools reach Codex through the per-turn MCP bridge (stdio script), configured with
  *   `-c mcp_servers.studio.*` overrides; `--ignore-user-config` keeps the owner's own Codex
- *   config (other MCP servers, profiles) out of Studio turns. Shell commands run in the
- *   read-only sandbox; tool calls never ask (`approval_policy="never"`): Studio's own consent
- *   cards guard the actions that need the owner.
+ *   config (other MCP servers, profiles) out of Studio turns. The agent gets Studio's tools only
+ *   (PLAN.md §10): the shell tool, image viewing (local files), web search, apps/connectors,
+ *   plugins, browser and computer use are switched off (`CODEX_TOOL_LOCKDOWN`), and the sandbox
+ *   stays read-only, so the file-edit tool that remains cannot write. Tool calls never ask
+ *   (`approval_policy="never"`): Studio's own consent cards guard the actions that need the owner.
  * - `--json` prints JSONL events: `thread.started`, `turn.started`, `item.started|updated|
  *   completed` (`agent_message`, `reasoning`, `mcp_tool_call`, `command_execution`, `error`),
  *   `turn.completed` (with `usage`), `turn.failed`, `error`.
@@ -119,6 +121,34 @@ export interface CodexTurnResult {
   threadId: string | null;
 }
 
+/**
+ * `-c` overrides that leave the agent with Studio's MCP tools only. Checked against
+ * codex-cli 0.169 (`codex features list`, `codex debug prompt-input`): `features.shell_tool=false`
+ * removes `exec_command` / `write_stdin`, `features.view_image=false` removes local image
+ * reading. `-c` (unlike `--disable`) accepts keys an older or newer CLI does not know, so the
+ * older spellings (`tools.web_search`, `tools.view_image`) ride along.
+ */
+export const CODEX_TOOL_LOCKDOWN = [
+  "features.shell_tool=false",
+  "features.unified_exec=false",
+  "features.view_image=false",
+  `web_search=${toml("disabled")}`,
+  "tools.web_search=false",
+  "tools.view_image=false",
+  "features.apps=false",
+  "features.plugins=false",
+  "features.image_generation=false",
+  "features.browser_use=false",
+  "features.browser_use_external=false",
+  "features.in_app_browser=false",
+  "features.computer_use=false",
+  "features.hooks=false",
+  "features.memories=false",
+  "features.tool_suggest=false",
+  "features.skill_mcp_dependency_install=false",
+  `shell_environment_policy.inherit=${toml("none")}`,
+] as const;
+
 export function codexExecArgs(options: CodexTurnOptions): string[] {
   const args = [
     "exec",
@@ -137,6 +167,7 @@ export function codexExecArgs(options: CodexTurnOptions): string[] {
     `approval_policy=${toml("never")}`,
     "-c",
     `model_reasoning_effort=${toml(codexEffort(options.effort))}`,
+    ...CODEX_TOOL_LOCKDOWN.flatMap((override) => ["-c", override]),
   ];
   if (options.model) args.push("-m", options.model);
   if (options.bridge) {

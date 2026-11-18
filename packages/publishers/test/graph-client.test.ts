@@ -398,3 +398,51 @@ describe("token redaction", () => {
     expect(JSON.stringify(logs)).not.toMatch(/EAA/);
   });
 });
+
+describe("timeouts (Y16)", () => {
+  /** A server that never answers; it only gives up when the request is aborted. */
+  const hanging = (seen: (RequestInit | undefined)[]) => (_input: unknown, init?: RequestInit) => {
+    seen.push(init);
+    return new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener("abort", () => reject(init.signal?.reason));
+    });
+  };
+
+  it("gives up on a call that hangs and reports a network error (non-idempotent: no retry)", async () => {
+    const seen: (RequestInit | undefined)[] = [];
+    const graph = new GraphClient({ fetch: hanging(seen), timeoutMs: 20, sleep: async () => {} });
+    const error = await graph
+      .request({
+        method: "POST",
+        path: "/1/media",
+        form: { a: "b" },
+        accessToken: TOKEN,
+        idempotent: false,
+      })
+      .catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(GraphError);
+    expect((error as GraphError).info.category).toBe("network");
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it("uses the longer upload timeout for calls with a body", async () => {
+    const seen: (RequestInit | undefined)[] = [];
+    const graph = new GraphClient({
+      fetch: hanging(seen),
+      timeoutMs: 10_000,
+      uploadTimeoutMs: 20,
+      retry: { maxAttempts: 1 },
+    });
+    const error = await graph
+      .request({
+        method: "POST",
+        path: "https://rupload.facebook.com/video-upload/v27.0/1",
+        body: new Uint8Array([1, 2, 3]),
+        accessToken: TOKEN,
+        idempotent: true,
+      })
+      .catch((e: unknown) => e);
+    expect((error as GraphError).info.category).toBe("network");
+  });
+});

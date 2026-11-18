@@ -30,7 +30,7 @@ import {
   VERSIONABLE_STATUSES,
   WECRA_DOCUMENT_MIME,
 } from "@studio/contract";
-import { and, asc, desc, eq, inArray, lt, max, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNotNull, lt, max, or, type SQL } from "drizzle-orm";
 import type { BatchItem } from "drizzle-orm/batch";
 import { createDb, type Db } from "../db/client.ts";
 import {
@@ -52,6 +52,7 @@ import {
 import { ApiProblem, badRequest, conflict, invalidTransition, notFound } from "../lib/errors.ts";
 import { newId } from "../lib/ids.ts";
 import { toPage } from "../lib/pagination.ts";
+import { requestSyncStatement } from "../lib/publishing.ts";
 import { createRouter, errors, IdParams, json, jsonBody } from "../lib/router.ts";
 import { requireBrand } from "./brands.ts";
 
@@ -99,12 +100,19 @@ function assertTransition(from: ContentStatus, to: ContentStatus, why: string) {
   }
 }
 
-/** Statement cancelling the content's pending schedules (used when approval is lost). */
-function cancelPendingSchedules(db: Db, contentId: string, now: Date) {
-  return db
-    .update(schedules)
-    .set({ status: "cancelled", cancelledAt: now, updatedAt: now })
-    .where(and(eq(schedules.contentId, contentId), eq(schedules.status, "pending")));
+/**
+ * Statements cancelling the content's pending schedules (used when approval is lost), and
+ * asking the worker for an immediate sync so orders at the cloud publisher are cancelled
+ * there now.
+ */
+function cancelPendingSchedules(db: Db, contentId: string, now: Date): BatchItem<"sqlite">[] {
+  return [
+    db
+      .update(schedules)
+      .set({ status: "cancelled", cancelledAt: now, updatedAt: now })
+      .where(and(eq(schedules.contentId, contentId), eq(schedules.status, "pending"))),
+    requestSyncStatement(db, now),
+  ];
 }
 
 async function respondContent(db: Db, id: string) {
@@ -387,7 +395,7 @@ export const contentRoutes = createRouter()
       if (publishedFieldsChange && row.approvedVersionId !== null) {
         assertTransition(row.status, "draft", "caption or platforms changed after approval");
         set = { ...set, ...clearedApproval, status: "draft" };
-        if (row.status === "scheduled") stmts.push(cancelPendingSchedules(db, id, now));
+        if (row.status === "scheduled") stmts.push(...cancelPendingSchedules(db, id, now));
       } else if (publishedFieldsChange && statusIn(row.status, ["publishing", "published"])) {
         throw invalidTransition(`content is ${row.status}; caption and platforms are frozen`);
       }
@@ -408,7 +416,10 @@ export const contentRoutes = createRouter()
       path: "/api/contents/{id}",
       tags,
       summary: "Delete a content item with its versions",
-      description: "Refused (409) while scheduled, publishing or published.",
+      description:
+        "Refused (409) while scheduled, publishing or published, and while a cancelled " +
+        "schedule's order is still at the cloud publisher (the worker cancels it there within " +
+        "seconds; an immediate sync is requested).",
       request: { params: IdParams },
       responses: { 204: { description: "Deleted." }, 404: errors[404], 409: errors[409] },
     }),
@@ -418,6 +429,34 @@ export const contentRoutes = createRouter()
       const { row } = await loadContent(db, id);
       if (statusIn(row.status, UNDELETABLE_STATUSES)) {
         throw invalidTransition(`content is ${row.status} and cannot be deleted`);
+      }
+      // Deleting cascades the schedules away. One cancelled here whose order is still at the
+      // cloud publisher (the worker has not cancelled it there yet) would then never be
+      // cancelled and would still publish: wait for that first.
+      const [held] = await db
+        .select({ id: schedules.id, status: schedules.status })
+        .from(schedules)
+        .where(
+          and(
+            eq(schedules.contentId, id),
+            or(
+              inArray(schedules.status, ["pending", "publishing"]),
+              and(
+                eq(schedules.status, "cancelled"),
+                eq(schedules.delivery, "cloud"),
+                isNotNull(schedules.cloudSyncedAt),
+              ),
+            ),
+          ),
+        )
+        .limit(1);
+      if (held) {
+        await requestSyncStatement(db, new Date());
+        throw conflict(
+          held.status === "cancelled"
+            ? "Zamanlamanın iptali bulut yayıncıya henüz iletilmedi; birkaç saniye sonra yeniden deneyin."
+            : `content has a ${held.status} schedule and cannot be deleted`,
+        );
       }
       await db.delete(contents).where(eq(contents.id, id));
       return c.body(null, 204);
@@ -630,7 +669,7 @@ export const contentRoutes = createRouter()
         editorDocument,
         now,
       });
-      if (row.status === "scheduled") stmts.push(cancelPendingSchedules(db, id, now));
+      if (row.status === "scheduled") stmts.push(...cancelPendingSchedules(db, id, now));
       stmts.push(
         db
           .update(contents)
@@ -666,13 +705,19 @@ export const contentRoutes = createRouter()
       method: "patch",
       path: "/api/contents/{id}/versions/{version}",
       tags,
-      summary: "Update version metadata (note, rendered assets)",
-      description: "Slides are immutable; neither field changes the content hash.",
+      summary: "Update version metadata (note, rendered assets, layer layouts)",
+      description:
+        "Slides are immutable; no field changes the content hash. On the version the content's " +
+        "approval covers, rendered images are frozen too (they are what gets published): a " +
+        "missing render may be filled in (it is rendered from the approved slide), but one " +
+        "that is set cannot be replaced or removed (409 `invalid_transition`) — add a new " +
+        "version instead, which needs a new approval.",
       request: { params: VersionParams, body: jsonBody(ContentVersionUpdate) },
       responses: {
         200: json(ContentVersion, "Updated."),
         400: errors[400],
         404: errors[404],
+        409: errors[409],
       },
     }),
     async (c) => {
@@ -698,6 +743,27 @@ export const contentRoutes = createRouter()
               versionRow.slideCount,
             )
           : undefined;
+      if (renders && row.approvedVersionId === versionRow.id) {
+        const stored = await db
+          .select({
+            position: contentVersionSlides.position,
+            renderedAssetId: contentVersionSlides.renderedAssetId,
+          })
+          .from(contentVersionSlides)
+          .where(eq(contentVersionSlides.versionId, versionRow.id));
+        const replaced = stored.filter(
+          (slide) =>
+            slide.renderedAssetId !== null &&
+            slide.renderedAssetId !== (renders[slide.position] ?? null),
+        );
+        if (replaced.length > 0) {
+          throw invalidTransition(
+            `version ${version} is approved; its rendered image of slide ` +
+              `${(replaced[0]?.position ?? 0) + 1} is what gets published and cannot be ` +
+              "replaced (add a new version and approve it)",
+          );
+        }
+      }
       const layouts =
         input.layouts !== undefined
           ? checkLayouts(input.layouts, versionRow.slideCount)
@@ -764,7 +830,7 @@ export const contentRoutes = createRouter()
         editorDocument: source.editorDocument ?? null,
         now,
       });
-      if (row.status === "scheduled") stmts.push(cancelPendingSchedules(db, id, now));
+      if (row.status === "scheduled") stmts.push(...cancelPendingSchedules(db, id, now));
       stmts.push(
         db
           .update(contents)

@@ -1,7 +1,10 @@
 /**
  * Turn a stored order + one of its targets into a `@studio/publishers`
  * request. Every media file is referenced by a signed URL on this Worker:
- * Meta pulls images (and videos) from there.
+ * Meta pulls images (and videos) from there. LinkedIn uploads are pushed by
+ * the publisher itself, so LinkedIn media also names the file's media id as
+ * an upload source: the scheduler's media reader serves the bytes straight
+ * from storage (no request from this Worker to its own public URL).
  */
 
 import type { CloudOrderMedia, CloudPublishKind } from "@studio/contract";
@@ -67,6 +70,11 @@ function document(m: CloudOrderMedia, url: string, title: string | null): Docume
     bytes: m.bytes,
     ...(title ? { title } : {}),
   };
+}
+
+/** LinkedIn: the publisher reads the file from storage by its media id. */
+function stored(img: ImageMedia, m: CloudOrderMedia): ImageMedia {
+  return { ...img, source: { type: "upload", key: m.id } };
 }
 
 const any = (m: CloudOrderMedia, url: string): AnyMedia =>
@@ -152,21 +160,24 @@ export function buildRequest(
       return {
         kind: target.kind,
         authorUrn,
-        image: image(first, firstUrl),
+        image: stored(image(first, firstUrl), first),
         ...(caption !== undefined ? { commentary: caption } : {}),
       };
     case "linkedin.multi_image":
       return {
         kind: target.kind,
         authorUrn,
-        images: order.media.map((m) => image(m, urlOf(m.id))),
+        images: order.media.map((m) => stored(image(m, urlOf(m.id)), m)),
         ...(caption !== undefined ? { commentary: caption } : {}),
       };
     case "linkedin.document":
       return {
         kind: target.kind,
         authorUrn,
-        document: document(first, firstUrl, order.title),
+        document: {
+          ...document(first, firstUrl, order.title),
+          source: { type: "upload", key: first.id },
+        },
         title: order.title ?? first.altText ?? first.id,
         ...(caption !== undefined ? { commentary: caption } : {}),
       };
@@ -174,7 +185,7 @@ export function buildRequest(
       return {
         kind: target.kind,
         authorUrn,
-        video: video(first, firstUrl),
+        video: { ...video(first, firstUrl), source: { type: "upload", key: first.id } },
         ...(order.title ? { title: order.title } : {}),
         ...(caption !== undefined ? { commentary: caption } : {}),
       };

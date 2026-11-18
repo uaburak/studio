@@ -228,23 +228,37 @@ export function usePublishingStatus() {
 
 // --- cache updates ----------------------------------------------------------------------------
 
-/** Put a changed content into every cached list and its own query. */
+/**
+ * The calendar keeps its own copies of schedules and contents (`["calendar", …]`, see
+ * calendar-data.ts); whatever changes a post or its schedules refreshes those too.
+ */
+const CALENDAR_SCHEDULES = ["calendar", "schedules"] as const;
+const CALENDAR_CONTENTS = ["calendar", "contents"] as const;
+
+/** Put a changed content into every cached list (the posts' and the calendar's) and its own query. */
 export function storeContent(queryClient: QueryClient, content: Content): void {
   queryClient.setQueryData(postKeys.content(content.id), content);
-  queryClient.setQueriesData<Content[]>({ queryKey: ["posts", "contents"] }, (list) =>
-    list?.map((c) => (c.id === content.id ? content : c)),
-  );
+  for (const queryKey of [["posts", "contents"], CALENDAR_CONTENTS]) {
+    queryClient.setQueriesData<Content[]>({ queryKey }, (list) =>
+      list?.map((c) => (c.id === content.id ? content : c)),
+    );
+  }
 }
 
 export function storeVersion(queryClient: QueryClient, version: ContentVersion): void {
   queryClient.setQueryData(postKeys.version(version.contentId, version.version), version);
 }
 
-/** Refresh the lists after something changed (create, delete, schedule). */
+/**
+ * Refresh the lists after something changed (create, delete, approve, schedule, cancel, move):
+ * the posts' and the calendar's.
+ */
 export function invalidatePosts(queryClient: QueryClient, contentId?: string): Promise<void> {
   return Promise.all([
     queryClient.invalidateQueries({ queryKey: ["posts", "contents"] }),
     queryClient.invalidateQueries({ queryKey: ["posts", "schedules"] }),
+    queryClient.invalidateQueries({ queryKey: CALENDAR_SCHEDULES }),
+    queryClient.invalidateQueries({ queryKey: CALENDAR_CONTENTS }),
     contentId
       ? queryClient.invalidateQueries({ queryKey: postKeys.content(contentId) })
       : Promise.resolve(),

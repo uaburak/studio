@@ -393,10 +393,13 @@ describe("Mode B — Local Direct Publisher (@studio/publishers)", () => {
       externalPostId: "ig_post_777",
       permalink: "https://www.instagram.com/p/IG777/",
     });
-    expect(state.scheduleOutcomes.map((o) => o.outcome.status)).toEqual([
-      "publishing",
-      "published",
+    // `publishing` is the atomic claim now; every state was saved before it was acted on.
+    expect(state.publishing?.claims).toEqual([
+      { id: schedule.id, claimed: true, reason: null, resumed: false },
     ]);
+    expect(state.scheduleOutcomes.map((o) => o.outcome.status)).toEqual(["published"]);
+    expect(state.publishing?.saves.map((s) => s.phase).at(0)).toBe("check_quota");
+    expect(state.publishing?.saves.at(-1)?.phase).toBe("done");
   });
 
   it("automatically generates multi-page PDF and publishes LinkedIn carousel as linkedin.document", async () => {

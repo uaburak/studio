@@ -28,6 +28,11 @@ const MediaMeta = {
 export const ImageMedia = z.object({
   kind: z.literal("image"),
   url: PublicUrl,
+  /**
+   * Optional: the same bytes through the caller's `MediaReader`. Publishers that push the file
+   * themselves (LinkedIn) read it from there instead of downloading `url`; Meta still pulls `url`.
+   */
+  source: z.object({ type: z.literal("upload"), key: z.string().min(1) }).optional(),
   ...MediaMeta,
   /** Accessibility text (Instagram feed/carousel images, Facebook photos). */
   altText: z.string().optional(),

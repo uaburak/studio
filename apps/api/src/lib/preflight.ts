@@ -300,11 +300,21 @@ export async function preflightTargets(args: {
         message:
           "Hesabın erişim anahtarı yok ya da geçersiz; yayından önce hesabı yeniden bağlayın.",
       });
-    } else if (token.expiresAt && token.expiresAt.getTime() - now < 7 * 24 * 3600_000) {
+    } else if (token.expiresAt && token.expiresAt.getTime() <= at) {
+      // Measured against the publish time, not today: a token that is valid now but runs out
+      // before the post goes out would fail it then (the cloud publisher holds a copy of it).
+      errors.push({
+        code: "TOKEN_EXPIRES_BEFORE_PUBLISH",
+        path: "",
+        message:
+          "Hesabın erişim anahtarı paylaşım saatinden önce doluyor; zamanlamadan önce hesabı yeniden bağlayın.",
+      });
+    } else if (token.expiresAt && token.expiresAt.getTime() - at < 7 * 24 * 3600_000) {
       warnings.push({
         code: "TOKEN_EXPIRING",
         path: "",
-        message: "Hesabın erişim anahtarı yakında doluyor; yeniden bağlamanız önerilir.",
+        message:
+          "Hesabın erişim anahtarı paylaşım saatinden kısa süre sonra doluyor; yeniden bağlamanız önerilir.",
       });
     }
 

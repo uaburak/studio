@@ -18,6 +18,7 @@ import { badRequest, invalidTransition, notFound, zodIssues } from "../lib/error
 import { newId } from "../lib/ids.ts";
 import { toPage } from "../lib/pagination.ts";
 import { createRouter, errors, IdParams, json, jsonBody } from "../lib/router.ts";
+import type { Principal } from "../middleware/access.ts";
 import { requireBrand } from "./brands.ts";
 import { loadContent } from "./contents.ts";
 
@@ -109,10 +110,17 @@ export async function createJob(env: Env, input: z.output<typeof JobCreate>): Pr
 }
 
 /** Upgrade to the Hub's client stream (see JobStreamMessage in the contract). */
-async function openStream(env: Env, request: Request, query: z.output<typeof JobStreamQuery>) {
+async function openStream(
+  env: Env,
+  request: Request,
+  query: z.output<typeof JobStreamQuery>,
+  principal: Principal | undefined,
+) {
   const target = new URL("https://hub.internal/clients");
   if (query.jobId) target.searchParams.set("jobId", query.jobId);
   if (query.brandId) target.searchParams.set("brandId", query.brandId);
+  // A device's sockets are tagged so revoking the device closes them (G8).
+  if (principal?.kind === "device") target.searchParams.set("device", principal.deviceId);
   return hubStub(env).fetch(target.toString(), { headers: request.headers });
 }
 
@@ -152,7 +160,7 @@ jobRoutes.get("/api/jobs/stream", async (c) => {
     if (!row) throw notFound("job", query.jobId);
   }
   if (query.brandId) await requireBrand(db, query.brandId);
-  return openStream(c.env, c.req.raw, query);
+  return openStream(c.env, c.req.raw, query, c.get("principal"));
 });
 
 jobRoutes

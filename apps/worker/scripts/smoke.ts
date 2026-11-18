@@ -3,7 +3,8 @@
  * 1. starts a worker in-process and waits until it is connected to the hub,
  * 2. creates a demo.echo job through the real API (POST /api/jobs),
  * 3. polls the job until the worker has reported its result.
- * Needs STUDIO_WORKER_TOKEN (apps/worker/.env) matching WORKER_TOKEN (apps/api/.dev.vars).
+ * Needs STUDIO_WORKER_TOKEN (apps/worker/.env) matching WORKER_TOKEN (apps/api/.dev.vars); the
+ * job calls use the same token (127.0.0.1 alone no longer counts as the Mac).
  * Exits 0 on success, 1 on failure/timeout.
  */
 import { createApiClient } from "@studio/contract";
@@ -14,7 +15,10 @@ import { startWorker } from "../src/worker.ts";
 
 const config = loadConfig({ ...process.env, STUDIO_WORKER_ID: "smoke-test" });
 const apiBase = config.hubUrl.replace(/^ws/, "http").replace(/\/api\/hub$/, "");
-const api = createApiClient({ baseUrl: apiBase });
+const api = createApiClient({
+  baseUrl: apiBase,
+  ...(config.token ? { workerToken: config.token } : {}),
+});
 const logger = createLogger("info");
 
 function fail(message: string): never {

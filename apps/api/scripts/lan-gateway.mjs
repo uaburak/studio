@@ -2,11 +2,18 @@
 // LAN gateway for the Mac-hosted API (task L1).
 //
 // workerd (wrangler dev) listens on 127.0.0.1 only. Phones on the local
-// network reach it through this small reverse proxy, which
+// network (and, through `cloudflared`, Remote Control) reach it through this
+// small reverse proxy, which
 //   - overwrites `CF-Connecting-IP` with the real peer address (Miniflare
-//     would keep a client-supplied value, so "127.0.0.1" could be spoofed),
+//     would keep a client-supplied value, so "127.0.0.1" could be spoofed).
+//     Only when the peer is this Mac's loopback (the Cloudflare Tunnel
+//     connector) does it keep the address Cloudflare's edge put there, so
+//     per-client pairing limits tell tunnel clients apart; gatewayed requests
+//     are never the Mac itself, so a faked value only picks another bucket,
 //   - adds `X-Studio-Gateway: 1`, so the API never treats gatewayed traffic as
 //     the Mac itself (src/middleware/access.ts), even from 127.0.0.1,
+//   - drops a client-sent `X-Studio-Owner` (only the Mac app talks to workerd
+//     directly with it),
 //   - forwards HTTP and WebSocket upgrades unchanged otherwise.
 //
 // Started and supervised by the Mac app. Environment:
@@ -39,11 +46,22 @@ const DROP = new Set([
   "x-forwarded-for",
   "x-real-ip",
   "x-studio-gateway",
+  "x-studio-owner",
 ]);
 
 function peer(socket) {
   const address = socket.remoteAddress ?? "unknown";
   return address.startsWith("::ffff:") ? address.slice(7) : address;
+}
+
+const IP_ADDRESS = /^(?:\d{1,3}(?:\.\d{1,3}){3}|[0-9a-f:]{2,39})$/i;
+
+/** The client address the API sees (see the header comment for the tunnel case). */
+function clientAddressFor(peerAddress, forwarded) {
+  const loopback = peerAddress === "::1" || peerAddress.startsWith("127.");
+  const value = typeof forwarded === "string" ? forwarded.trim() : "";
+  if (loopback && IP_ADDRESS.test(value)) return value;
+  return peerAddress;
 }
 
 /** Copy client headers minus hop-by-hop ones, then stamp ours. */
@@ -56,7 +74,7 @@ function forwardHeaders(req, { upgrade }) {
     if (headers[name] === undefined) headers[name] = value;
     else headers[name] = [].concat(headers[name], value);
   }
-  headers["CF-Connecting-IP"] = peer(req.socket);
+  headers["CF-Connecting-IP"] = clientAddressFor(peer(req.socket), req.headers["cf-connecting-ip"]);
   headers["X-Studio-Gateway"] = "1";
   if (upgrade) {
     headers.Connection = "Upgrade";

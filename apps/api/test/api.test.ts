@@ -22,9 +22,7 @@ import {
 import { describe, expect, it } from "vitest";
 import { ENUMS } from "../src/db/schema.ts";
 import * as entry from "../src/index.ts";
-import { localFetch } from "./helpers.ts";
-
-const BASE = "http://studio.test";
+import { BASE, localFetch } from "./helpers.ts";
 
 describe("worker entry module", () => {
   // workerd refuses to start if the entry exports anything that is not a

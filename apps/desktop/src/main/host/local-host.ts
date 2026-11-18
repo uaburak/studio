@@ -1,15 +1,20 @@
 // Runs the Studio back end on this Mac (port of StudioMac/Host/LocalHost.swift): the API
 // (wrangler dev / workerd, state under ~/Library/Application Support/Studio), the LAN gateway
-// and the worker, as supervised child processes. Applies D1 migrations first, restarts crashed
-// children with backoff, keeps logs, advertises the gateway with Bonjour, publishes where
-// phones can reach the Mac, and stops everything on quit.
+// and the worker, as supervised child processes. Snapshots the database and applies D1
+// migrations first, restarts crashed children with backoff, keeps logs, advertises the gateway
+// with Bonjour, publishes where phones can reach the Mac, and stops everything on quit.
 //
-// If the API port already answers /api/health with this host's instance id and the app that
-// started it is still alive (the AppKit app, another copy of this app), it attaches instead of
-// starting a second copy. Children left behind by a crashed app are stopped and started fresh.
+// If the API port already answers /api/health with this host's instance id, the app that
+// started it is still alive and it accepts this app's owner secret, it attaches instead of
+// starting a second copy. Children left behind by a crashed app (including its `dns-sd` and
+// `cloudflared`) are stopped and started fresh.
+//
+// Secrets reach children only through their environment, never their command line; anything
+// shown in the app (status, log tails, notes) goes through the redactor first (G2).
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { HostSnapshot, HostStatus, ServiceName, ServicePhase } from "../../shared/ipc.ts";
+import { snapshotDatabase } from "./backup.ts";
 import type { Advertiser } from "./bonjour.ts";
 import * as env from "./environment.ts";
 import * as guards from "./guards.ts";
@@ -19,6 +24,7 @@ import {
   type RunningProcess,
   waitOneShot,
 } from "./process.ts";
+import { Redactor } from "./redact.ts";
 import * as secrets from "./secrets.ts";
 import { ServiceSupervisor, type SupervisorDeps } from "./supervisor.ts";
 
@@ -43,9 +49,17 @@ export interface HostDeps {
   launcher: ProcessLauncher;
   advertiser: Advertiser;
   ownPid: number;
+  /** safeStorage (null: none; the worker token and vault key then stay plain files). */
+  cipher: secrets.Cipher | null;
+  /** This app's owner secret (the API's `local` principal). */
+  ownerSecret(): string;
   health(port: number): Promise<HealthInfo | null>;
+  /** Whether the API on `port` accepts this app's owner secret (before attaching to it). */
+  ownerCheck(port: number): Promise<boolean>;
   isAlive(pid: number): boolean;
-  stopLeftovers(repoPath: string): Promise<void>;
+  stopLeftovers(repoPath: string, stateDir: string): Promise<void>;
+  /** G5: copy the database before migrations. */
+  snapshotDatabase(stateDir: string): void;
   loginShellPath(): string;
   which(tool: string, path: string): string | null;
   fileExists(path: string): boolean;
@@ -71,7 +85,7 @@ export interface HostDeps {
   apiReadyTimeoutMs?: number;
   /** Health polling interval while attached; three misses take over. */
   attachPollMs?: number;
-  /** Interval of the LAN address check (Wi-Fi changes). */
+  /** Interval of the LAN address and Bonjour check (Wi-Fi changes, sleep, dns-sd exits). */
   networkPollMs?: number;
 }
 
@@ -91,6 +105,10 @@ const SERVICE_LABELS: Record<ServiceName, string> = {
   tunnel: "Uzaktan erişim tüneli",
 };
 
+/** Shown when the running API does not know this app's owner secret. */
+export const FOREIGN_HOST_MESSAGE =
+  "Studio sunucusu başka bir uygulama tarafından (ör. eski Studio uygulaması) açılmış ve bu uygulamayı tanımıyor. O uygulamayı kapatıp burada “Yeniden başlat”a tıkla.";
+
 /** Builds the environment and arguments of every child (pure, tested on its own). */
 export function buildSpecs(input: {
   node: string;
@@ -99,6 +117,8 @@ export function buildSpecs(input: {
   base: Record<string, string>;
   token: string;
   vaultKey: string;
+  /** STUDIO_OWNER_SECRET for the API (G1). */
+  ownerSecret: string;
   instance: string;
   apiPort: number;
   claude: string | null;
@@ -113,10 +133,13 @@ export function buildSpecs(input: {
   const persist = ["--persist-to", join(input.stateDir, "api", "state")];
   const wrangler = join(apiDir, "node_modules", "wrangler", "bin", "wrangler.js");
   const gatewayScript = join(apiDir, "scripts", "lan-gateway.mjs");
+  // Secrets go through the environment: wrangler passes declared secrets
+  // (wrangler.jsonc `secrets.required`) from process.env to the Worker.
   const wranglerEnv: Record<string, string> = {
     ...input.base,
     WORKER_TOKEN: input.token,
     TOKEN_ENCRYPTION_KEY: input.vaultKey,
+    STUDIO_OWNER_SECRET: input.ownerSecret,
     STUDIO_INSTANCE_ID: input.instance,
     WRANGLER_SEND_METRICS: "false",
     NO_COLOR: "1",
@@ -200,6 +223,12 @@ export function buildSpecs(input: {
 
 type Listener = (snapshot: HostSnapshot) => void;
 
+/** Where the tunnel points, kept from the last start so the tunnel can restart on its own. */
+interface TunnelTarget {
+  port: number | null;
+  path: string;
+}
+
 export class LocalHost {
   private statusValue: HostStatus = { kind: "stopped" };
   apiPort: number | null = null;
@@ -213,9 +242,13 @@ export class LocalHost {
   private startAbort: AbortController | undefined;
   private attachAbort: AbortController | undefined;
   private networkTimer: ReturnType<typeof setInterval> | undefined;
-  private publishedAddresses: string[] | null = null;
+  private publishedRoutes: string | null = null;
+  private advertisedAddresses: string | null = null;
+  private tunnelTarget: TunnelTarget | null = null;
+  private tunnelChain: Promise<void> = Promise.resolve();
   private macName = "";
   private listeners = new Set<Listener>();
+  private readonly redactor = new Redactor();
   /** Bumped each time the routes were published. */
   routesRevision = 0;
 
@@ -260,16 +293,29 @@ export class LocalHost {
     return this.deps.lanAddresses().map((ip) => `http://${ip}:${this.lanPort}`);
   }
 
+  /** What the renderer sees: every text masked (G2). */
   snapshot(): HostSnapshot {
+    const r = (text: string) => this.redactor.redact(text);
+    const status: HostStatus =
+      this.statusValue.kind === "error"
+        ? { kind: "error", message: r(this.statusValue.message), log: r(this.statusValue.log) }
+        : this.statusValue.kind === "starting"
+          ? { kind: "starting", message: r(this.statusValue.message) }
+          : this.statusValue;
+    const services: Partial<Record<ServiceName, ServicePhase>> = {};
+    for (const [name, phase] of Object.entries(this.phases) as [ServiceName, ServicePhase][]) {
+      services[name] =
+        phase.kind === "failed" ? { kind: "failed", message: r(phase.message) } : phase;
+    }
     return {
-      status: this.statusValue,
+      status,
       apiPort: this.apiPort,
       lanPort: this.lanPort,
       instance: this.instance,
       lanUrls: this.lanUrls,
       tunnelUrl: this.tunnelUrl,
-      tunnelNote: this.tunnelNote,
-      services: { ...this.phases },
+      tunnelNote: this.tunnelNote === null ? null : r(this.tunnelNote),
+      services,
       ownsChildren: this.ownsChildren,
     };
   }
@@ -292,13 +338,22 @@ export class LocalHost {
     if (this.isUp) return Promise.resolve();
     const abort = new AbortController();
     this.startAbort = abort;
-    const promise = this.performStart(abort.signal).finally(() => {
-      if (this.startPromise === promise) {
-        this.startPromise = undefined;
-        this.startAbort = undefined;
-      }
-      this.emit();
-    });
+    const promise = this.performStart(abort.signal)
+      .catch((error: unknown) => {
+        // Never stay "starting" forever: an unexpected failure is an error the owner can retry.
+        if (!abort.signal.aborted) {
+          this.fail(
+            `Sunucu başlatılırken beklenmeyen bir hata oldu: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
+      })
+      .finally(() => {
+        if (this.startPromise === promise) {
+          this.startPromise = undefined;
+          this.startAbort = undefined;
+        }
+        this.emit();
+      });
     this.startPromise = promise;
     return promise;
   }
@@ -320,7 +375,9 @@ export class LocalHost {
     this.attachAbort = undefined;
     if (this.networkTimer) clearInterval(this.networkTimer);
     this.networkTimer = undefined;
-    this.publishedAddresses = null;
+    this.publishedRoutes = null;
+    this.advertisedAddresses = null;
+    this.tunnelTarget = null;
     this.deps.advertiser.stop();
     for (const service of ["tunnel", "worker", "gateway", "api"] as const) {
       await this.supervisors[service]?.stop();
@@ -329,7 +386,37 @@ export class LocalHost {
     this.phases = {};
     this.tunnelNote = null;
     this.tunnelUrl = null;
+    this.releaseHostFile();
     if (this.statusValue.kind !== "stopped") this.status = { kind: "stopped" };
+  }
+
+  /** Removes host.json when it names this app (its children are gone or never started). */
+  releaseHostFile(): void {
+    try {
+      secrets.removeHostFile(this.deps.stateDir, this.deps.ownPid);
+    } catch {
+      // best effort
+    }
+  }
+
+  /**
+   * Runs `task` while this app's children are stopped (backup, restore), then starts the host
+   * again. Refuses while attached: the other app's children keep the files open.
+   */
+  async withStopped<T>(message: string, task: () => Promise<T>): Promise<T> {
+    if (this.statusValue.kind === "attached") {
+      throw new Error(
+        "Sunucu başka bir Studio uygulamasında çalışıyor. Önce o uygulamayı kapatıp tekrar dene.",
+      );
+    }
+    await this.stop();
+    this.status = { kind: "starting", message };
+    try {
+      return await task();
+    } finally {
+      this.statusValue = { kind: "stopped" };
+      void this.start();
+    }
   }
 
   private async performStart(signal: AbortSignal): Promise<void> {
@@ -355,6 +442,8 @@ export class LocalHost {
     this.instance = instance;
     this.macName = deps.computerName();
     const repo = env.expandTilde(config.repoPath);
+    const ownerSecret = deps.ownerSecret();
+    this.redactor.add(ownerSecret);
 
     // 1. Attach to our own running copy, but only if the app that started it is still alive.
     //    Children left behind by a force-quit run old code against an old database
@@ -366,7 +455,7 @@ export class LocalHost {
       !deps.isAlive(previous.pid) &&
       config.hostEnabled
     ) {
-      await deps.stopLeftovers(repo);
+      await deps.stopLeftovers(repo, stateDir);
       if (signal.aborted) return;
     }
     const ownerAlive = previous
@@ -379,6 +468,10 @@ export class LocalHost {
       const health = await deps.health(port);
       if (signal.aborted) return;
       if (health?.instance === instance) {
+        // The other app's API must accept our owner secret, or nothing would work through it.
+        const accepted = await deps.ownerCheck(port);
+        if (signal.aborted) return;
+        if (!accepted) return this.fail(FOREIGN_HOST_MESSAGE);
         this.apiPort = port;
         this.lanPort = ownerAlive && previous?.lanPort ? previous.lanPort : null;
         this.status = { kind: "attached" };
@@ -399,15 +492,18 @@ export class LocalHost {
     const codex = deps.which("codex", path);
     const antigravity = deps.which("agy", path);
 
-    // 3. Secrets (shared with the AppKit app).
-    let token: string;
-    let vaultKey: string;
+    // 3. Secrets (sealed with safeStorage, G10).
+    let hostSecrets: secrets.HostSecrets;
     try {
-      token = secrets.loadOrCreateWorkerToken(stateDir);
-      vaultKey = secrets.loadOrCreateVaultKey(stateDir);
+      hostSecrets = secrets.loadOrCreateHostSecrets(stateDir, deps.cipher);
     } catch (error) {
-      return this.fail(`Anahtar dosyaları oluşturulamadı: ${(error as Error).message}`);
+      return this.fail(
+        error instanceof secrets.HostSecretsError
+          ? error.message
+          : `Anahtar dosyaları oluşturulamadı: ${(error as Error).message}`,
+      );
     }
+    this.redactor.add(hostSecrets.workerToken, hostSecrets.vaultKey);
 
     // 4. Ports: the preferred ones when free (a hand-started `wrangler dev` may hold them).
     const apiFree =
@@ -424,7 +520,7 @@ export class LocalHost {
           : await deps.freePort("0.0.0.0");
     }
     // Remote Control must always go through the gateway: traffic sent straight to workerd on
-    // 127.0.0.1 counts as the Mac itself. With LAN access off, run the gateway on loopback.
+    // 127.0.0.1 could pass for the Mac itself. With LAN access off, run the gateway on loopback.
     let tunnelGateway: number | null = null;
     if (config.remoteControlEnabled && lan === null) {
       tunnelGateway = await deps.freePort("127.0.0.1");
@@ -436,8 +532,9 @@ export class LocalHost {
       repo,
       stateDir,
       base: env.baseEnvironment(path),
-      token,
-      vaultKey,
+      token: hostSecrets.workerToken,
+      vaultKey: hostSecrets.vaultKey,
+      ownerSecret,
       instance,
       apiPort,
       claude,
@@ -471,7 +568,15 @@ export class LocalHost {
     this.lanPort = lan;
     secrets.writeHostFile(stateDir, { apiPort, lanPort: lan, pid: deps.ownPid });
 
-    // 5. Migrations (one shot).
+    // 5. A copy of the database, then the migrations (one shot).
+    this.status = { kind: "starting", message: "Veritabanı yedekleniyor" };
+    try {
+      deps.snapshotDatabase(stateDir);
+    } catch (error) {
+      return this.fail(
+        `Veritabanının yedeği alınamadı, güncelleme yapılmadı: ${(error as Error).message}. Diskte yer açıp yeniden başlat.`,
+      );
+    }
     this.status = { kind: "starting", message: "Veritabanı güncelleniyor" };
     for (const name of ["migrate", "api", "gateway", "worker"]) deps.rotate(this.logFile(name));
     let migration: RunningProcess;
@@ -518,12 +623,7 @@ export class LocalHost {
     // 7. LAN gateway + Bonjour.
     if (lan !== null) {
       this.supervise("gateway", specs.gateway("0.0.0.0", lan));
-      deps.advertiser.start({
-        name: this.macName,
-        port: lan,
-        macId: instance,
-        addresses: deps.lanAddresses(),
-      });
+      this.advertise();
     } else if (tunnelGateway !== null) {
       this.supervise("gateway", specs.gateway("127.0.0.1", tunnelGateway));
     }
@@ -531,33 +631,40 @@ export class LocalHost {
     // 8. Worker.
     this.supervise("worker", specs.worker);
 
-    // 9. Remote Control Cloudflare Tunnel.
+    // 9. Remote Control Cloudflare Tunnel. Its trouble never stops the rest (it only sets a note).
+    this.tunnelTarget = { port: lan ?? tunnelGateway, path };
     this.tunnelNote = null;
-    if (config.remoteControlEnabled) {
-      deps.rotate(this.logFile("tunnel"));
-      const targetPort = lan ?? tunnelGateway;
-      if (targetPort === null) {
-        this.tunnelNote = "Tünel için geçit başlatılamadı.";
-      } else {
-        await this.startTunnel(config, targetPort, path);
-      }
-    }
+    if (config.remoteControlEnabled) await this.startTunnel(config);
 
     this.status = { kind: "running" };
     this.startNetworkMonitor();
   }
 
-  private async startTunnel(config: HostConfiguration, targetPort: number, path: string) {
-    const localTargetURL = `http://127.0.0.1:${targetPort}`;
-    const cloudflared = this.deps.which("cloudflared", path);
+  private async startTunnel(config: HostConfiguration): Promise<void> {
+    const target = this.tunnelTarget;
+    if (!target) return;
+    if (target.port === null) {
+      this.tunnelNote =
+        "Tünel için geçit yok: uzaktan erişimi açtıktan sonra sunucuyu yeniden başlat.";
+      return;
+    }
+    this.deps.rotate(this.logFile("tunnel"));
+    const localTargetURL = `http://127.0.0.1:${target.port}`;
+    const cloudflared = this.deps.which("cloudflared", target.path);
     if (!cloudflared) {
       this.tunnelNote =
         "cloudflared bulunamadı (`brew install cloudflared` ile kurup Studio'yu yeniden başlat).";
       return;
     }
     const host = guards.normalizedHostname(config.remoteHostname);
-    const token = await this.deps.readTunnelToken();
-    const base = env.baseEnvironment(path);
+    let token: string | null;
+    try {
+      token = await this.deps.readTunnelToken();
+    } catch {
+      token = null;
+    }
+    this.redactor.add(token);
+    const base = env.baseEnvironment(target.path);
     const spec = (args: string[], extra: Record<string, string> = {}): ProcessSpec => ({
       name: "tunnel",
       executable: cloudflared,
@@ -569,7 +676,7 @@ export class LocalHost {
     if (token) {
       this.supervise(
         "tunnel",
-        spec(guards.tunnelArguments(token, host, localTargetURL), { TUNNEL_TOKEN: token }),
+        spec(guards.tunnelArguments(token, host, localTargetURL), guards.tunnelEnvironment(token)),
       );
       this.tunnelNote = `Aktif hedef: https://${host} → ${localTargetURL}`;
       this.tunnelUrl = `https://${host}`;
@@ -581,6 +688,31 @@ export class LocalHost {
       this.tunnelNote =
         "CLOUDFLARE_TUNNEL_TOKEN girilmedi. Cloudflare Zero Trust panelinden tünel anahtarını yapıştırıp Kaydet'e tıkla.";
     }
+  }
+
+  /**
+   * Restarts only the tunnel (a new token or address); the API, gateway and worker keep
+   * running. Does nothing unless this app runs the host.
+   */
+  restartTunnel(): Promise<void> {
+    // One at a time: saving the address and the token together asks twice.
+    const next = this.tunnelChain.then(() => this.replaceTunnel());
+    this.tunnelChain = next.catch(() => undefined);
+    return next;
+  }
+
+  private async replaceTunnel(): Promise<void> {
+    if (this.statusValue.kind !== "running" || !this.tunnelTarget) return;
+    const supervisor = this.supervisors.tunnel;
+    delete this.supervisors.tunnel;
+    delete this.phases.tunnel;
+    await supervisor?.stop();
+    this.tunnelUrl = null;
+    this.tunnelNote = null;
+    const config = this.configuration();
+    if (config.remoteControlEnabled) await this.startTunnel(config);
+    this.emit();
+    await this.publishRoutes();
   }
 
   // --- routes for phones -----------------------------------------------------------------------
@@ -605,12 +737,24 @@ export class LocalHost {
     const routes = this.routes();
     if (!routes || this.apiPort === null) return;
     if (await this.deps.publishRoutes(this.apiPort, routes)) {
-      this.publishedAddresses = routes.lanAddresses;
+      this.publishedRoutes = JSON.stringify(routes);
       this.routesRevision += 1;
     }
   }
 
-  /** Wi-Fi changes: advertise the new addresses with Bonjour and publish them. */
+  private advertise(): void {
+    if (this.lanPort === null) return;
+    const addresses = this.deps.lanAddresses();
+    this.advertisedAddresses = JSON.stringify(addresses);
+    this.deps.advertiser.start({
+      name: this.macName,
+      port: this.lanPort,
+      macId: this.instance,
+      addresses,
+    });
+  }
+
+  /** Wi-Fi changes, sleep and a dead `dns-sd`: advertise again and publish the routes. */
   private startNetworkMonitor(): void {
     if (this.networkTimer) clearInterval(this.networkTimer);
     this.networkTimer = setInterval(
@@ -622,18 +766,17 @@ export class LocalHost {
   }
 
   async networkChanged(): Promise<void> {
-    const routes = this.routes();
-    if (!routes) return;
-    if (JSON.stringify(routes.lanAddresses) === JSON.stringify(this.publishedAddresses)) return;
-    if (this.lanPort !== null && this.deps.advertiser.isAdvertising) {
-      this.deps.advertiser.start({
-        name: this.macName,
-        port: this.lanPort,
-        macId: this.instance,
-        addresses: this.deps.lanAddresses(),
-      });
+    if (this.statusValue.kind !== "running") return;
+    // `dns-sd` exits when mDNSResponder restarts (sleep, network changes): register again.
+    if (
+      this.lanPort !== null &&
+      (JSON.stringify(this.deps.lanAddresses()) !== this.advertisedAddresses ||
+        !this.deps.advertiser.isAdvertising)
+    ) {
+      this.advertise();
     }
-    await this.publishRoutes();
+    const routes = this.routes();
+    if (routes && JSON.stringify(routes) !== this.publishedRoutes) await this.publishRoutes();
   }
 
   // --- helpers ---------------------------------------------------------------------------------
@@ -645,7 +788,12 @@ export class LocalHost {
       this.deps.launcher,
       this.deps.supervisor,
     );
-    supervisor.onChange = (phase) => this.update(service, phase);
+    supervisor.onChange = (phase) => {
+      // A supervisor that was replaced (tunnel restart) must not report into the new one's place.
+      const current = this.supervisors[service];
+      if (current && current !== supervisor) return;
+      this.update(service, phase);
+    };
     this.supervisors[service] = supervisor;
     supervisor.start();
     this.phases[service] = supervisor.phase;
@@ -654,6 +802,14 @@ export class LocalHost {
 
   private update(service: ServiceName, phase: ServicePhase): void {
     this.phases[service] = phase;
+    if (phase.kind === "failed" && service === "tunnel") {
+      // Remote access is optional: the rest of the host keeps running.
+      this.tunnelUrl = null;
+      this.tunnelNote = `Uzaktan erişim tüneli durdu: ${phase.message} Ayrıntı: tunnel.log. Anahtarı yeniden kaydedince tünel tekrar denenir.`;
+      this.emit();
+      void this.publishRoutes();
+      return;
+    }
     if (phase.kind === "failed" && this.statusValue.kind === "running") {
       this.status = {
         kind: "error",
@@ -699,13 +855,16 @@ export class LocalHost {
     })();
   }
 
-  /** Log tail for one service (shown on errors). */
+  /** Log tail for one service (shown on errors), masked. */
   lastLines(service: string, lines = 12): string {
-    return this.deps.tail(this.logFile(service), lines);
+    return this.redactor.redact(this.deps.tail(this.logFile(service), lines));
   }
 }
 
 // --- real dependencies ------------------------------------------------------------------------
+
+/** The header that makes the API treat a request as this app's own (G1). */
+export const OWNER_HEADER = "X-Studio-Owner";
 
 export async function fetchHealth(port: number): Promise<HealthInfo | null> {
   try {
@@ -721,11 +880,33 @@ export async function fetchHealth(port: number): Promise<HealthInfo | null> {
   }
 }
 
-export async function putRoutes(port: number, routes: MacRoutesInput): Promise<boolean> {
+/** True when the API on `port` treats `ownerSecret` as this Mac (a Mac-only route answers). */
+export async function checkOwner(port: number, ownerSecret: string): Promise<boolean> {
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/api/devices`, {
+      signal: AbortSignal.timeout(3_000),
+      headers: { accept: "application/json", [OWNER_HEADER]: ownerSecret },
+    });
+    await res.body?.cancel();
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+export async function putRoutes(
+  port: number,
+  routes: MacRoutesInput,
+  ownerSecret: string,
+): Promise<boolean> {
   try {
     const res = await fetch(`http://127.0.0.1:${port}/api/pairing/routes`, {
       method: "PUT",
-      headers: { "content-type": "application/json", accept: "application/json" },
+      headers: {
+        "content-type": "application/json",
+        accept: "application/json",
+        [OWNER_HEADER]: ownerSecret,
+      },
       body: JSON.stringify(routes),
       signal: AbortSignal.timeout(5_000),
     });
@@ -754,13 +935,17 @@ export function defaultHostDeps(input: {
   stateDir: string;
   launcher: ProcessLauncher;
   advertiser: Advertiser;
+  cipher: secrets.Cipher | null;
+  ownerSecret: () => string;
 }): HostDeps {
   return {
     ...input,
     ownPid: process.pid,
     health: fetchHealth,
+    ownerCheck: (port) => checkOwner(port, input.ownerSecret()),
     isAlive: guards.isAlive,
     stopLeftovers: guards.stopLeftovers,
+    snapshotDatabase: (stateDir) => void snapshotDatabase(stateDir),
     loginShellPath: env.loginShellPath,
     which: env.which,
     fileExists: existsSync,
@@ -776,7 +961,7 @@ export function defaultHostDeps(input: {
         signal,
       }),
     readTunnelToken: guards.readTunnelToken,
-    publishRoutes: putRoutes,
+    publishRoutes: (port, routes) => putRoutes(port, routes, input.ownerSecret()),
     tail: env.tail,
     rotate: (file) => env.rotate(file),
     sleep,

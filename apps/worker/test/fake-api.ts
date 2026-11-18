@@ -79,6 +79,8 @@ export interface FakeApiState {
   accountTokens: Map<string, string | null>;
   schedules: Schedule[];
   scheduleOutcomes: { id: string; outcome: WorkerScheduleOutcome }[];
+  /** Local publishing (claims, saved publisher states, stale-claim sweeps); see `workerSchedules`. */
+  publishing?: FakePublishingState;
   jobs: Job[];
   assetRecords: Asset[];
   uploads: {
@@ -101,6 +103,19 @@ export interface FakeApiState {
   closed: boolean;
   /** Simulate the owner clicking Allow or Deny on a pending consent card. */
   decideConsent(consentId: string, allow: boolean): void;
+}
+
+export interface FakePublishingState {
+  /** The API's clock for claims (lateness); default NOW. */
+  now: string;
+  maxLatenessMs: number;
+  claims: { id: string; claimed: boolean; reason: string | null; resumed: boolean }[];
+  /** Saved publisher states per schedule (the last one) and every save in order. */
+  states: Map<string, Record<string, unknown>>;
+  saves: { id: string; phase: unknown }[];
+  claimedAt: Map<string, number>;
+  /** Make the next N state saves fail (API down). */
+  failSaves: number;
 }
 
 export function fakeRun(overrides: Partial<AgentRun> = {}): AgentRun {
@@ -569,15 +584,107 @@ export function createFakeApi(init: Partial<FakeApiState> = {}): {
       },
     },
     workerSchedules: {
-      due: async (query?: { before?: string; limit?: number }) => {
+      due: async (query?: { before?: string; limit?: number; mode?: "cloud" | "local" }) => {
         const items = state.schedules
           .filter(
             (s) =>
               s.status === "pending" &&
+              (query?.mode !== "local" || s.delivery !== "cloud") &&
               (!query?.before || Date.parse(s.scheduledAt) <= Date.parse(query.before)),
           )
           .slice(0, query?.limit ?? 100);
         return { items };
+      },
+      claim: async (id: string, input: { attempt?: number; staleAfterMs?: number } = {}) => {
+        const pub = publishingState();
+        const idx = state.schedules.findIndex((s) => s.id === id);
+        if (idx < 0) throw new ApiError("schedule not found", 404, "not_found");
+        const cur = state.schedules[idx] as Schedule;
+        const now = Date.parse(pub.now);
+        const attempt = input.attempt ?? 1;
+        const refuse = (reason: string) => {
+          pub.claims.push({ id, claimed: false, reason, resumed: false });
+          return {
+            claimed: false,
+            reason,
+            resumed: false,
+            schedule: state.schedules[idx] as Schedule,
+            publishState: null,
+            attempt,
+          };
+        };
+        if (cur.status === "cancelled" || cur.status === "published" || cur.status === "failed") {
+          return refuse(cur.status);
+        }
+        if (cur.status === "publishing") {
+          if (cur.delivery !== "local") return refuse("cloud");
+          const at = pub.claimedAt.get(id);
+          if (at !== undefined && at > now - (input.staleAfterMs ?? 20 * 60_000)) {
+            return refuse("in_progress");
+          }
+          pub.claimedAt.set(id, now);
+          pub.claims.push({ id, claimed: true, reason: null, resumed: true });
+          return {
+            claimed: true,
+            reason: null,
+            resumed: true,
+            schedule: cur,
+            publishState: pub.states.get(id) ?? null,
+            attempt,
+          };
+        }
+        if (cur.delivery === "cloud") return refuse("cloud");
+        if (now - Date.parse(cur.scheduledAt) > pub.maxLatenessMs) {
+          state.schedules[idx] = {
+            ...cur,
+            status: "failed",
+            delivery: "local",
+            lastError: "Mac kapalıyken kaçtı: test",
+          };
+          state.scheduleOutcomes.push({
+            id,
+            outcome: { status: "failed", attempt, error: "Mac kapalıyken kaçtı: test" },
+          });
+          return refuse("missed");
+        }
+        state.schedules[idx] = { ...cur, status: "publishing", delivery: "local" };
+        pub.claimedAt.set(id, now);
+        pub.claims.push({ id, claimed: true, reason: null, resumed: false });
+        return {
+          claimed: true,
+          reason: null,
+          resumed: false,
+          schedule: state.schedules[idx] as Schedule,
+          publishState: pub.states.get(id) ?? null,
+          attempt,
+        };
+      },
+      publishState: async (id: string, input: { state: Record<string, unknown> }) => {
+        const pub = publishingState();
+        const cur = state.schedules.find((s) => s.id === id);
+        if (!cur) throw new ApiError("schedule not found", 404, "not_found");
+        if (pub.failSaves > 0) {
+          pub.failSaves--;
+          throw new ApiError("api down", 503, "internal_error");
+        }
+        if (cur.status !== "publishing" || cur.delivery !== "local") {
+          throw conflict("schedule is not being published on this Mac", "invalid_transition");
+        }
+        const copy = JSON.parse(JSON.stringify(input.state)) as Record<string, unknown>;
+        pub.states.set(id, copy);
+        pub.saves.push({ id, phase: copy.phase });
+        pub.claimedAt.set(id, Date.parse(pub.now));
+        return cur;
+      },
+      stale: async (query?: { staleAfterMs?: number; limit?: number }) => {
+        const pub = publishingState();
+        const now = Date.parse(pub.now);
+        const items = state.schedules.filter((s) => {
+          if (s.status !== "publishing" || s.delivery !== "local") return false;
+          const at = pub.claimedAt.get(s.id);
+          return at === undefined || at < now - (query?.staleAfterMs ?? 20 * 60_000);
+        });
+        return { items: items.slice(0, query?.limit ?? 20) };
       },
       credentials: async (id: string) => {
         const schedule = state.schedules.find((s) => s.id === id);
@@ -609,9 +716,11 @@ export function createFakeApi(init: Partial<FakeApiState> = {}): {
           ...cur,
           status: input.status,
           ...(input.permalink !== undefined ? { permalink: input.permalink } : {}),
+          ...(input.status === "failed" ? { lastError: input.error ?? null } : {}),
           updatedAt: NOW,
         };
         state.schedules[idx] = updated;
+        if (input.status === "published") state.publishing?.states.delete(id);
         if (input.accountNeedsReauth) {
           const accIdx = state.socialAccounts.findIndex((a) => a.id === cur.socialAccountId);
           if (accIdx >= 0 && state.socialAccounts[accIdx]) {
@@ -933,6 +1042,28 @@ export function createFakeApi(init: Partial<FakeApiState> = {}): {
         }),
       },
     },
+  };
+
+  function publishingState(): FakePublishingState {
+    state.publishing ??= {
+      now: NOW,
+      maxLatenessMs: 2 * 3600_000,
+      claims: [],
+      states: new Map(),
+      saves: [],
+      claimedAt: new Map(),
+      failSaves: 0,
+    };
+    return state.publishing;
+  }
+  // Local mode by default (no cloud publisher); tests replace it to configure one.
+  (client as Record<string, unknown>).workerPublishing = {
+    config: async () => ({
+      cloud: null,
+      syncRequestedAt: null,
+      maxLatenessMs: publishingState().maxLatenessMs,
+    }),
+    report: async () => ({ cloud: null, syncRequestedAt: null }),
   };
 
   const api: StudioApi = {

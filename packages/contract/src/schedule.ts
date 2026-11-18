@@ -120,11 +120,39 @@ export type PublishLogListQuery = z.input<typeof PublishLogListQuery>;
 export const PublishLogList = pageOf(PublishLog, "PublishLogList");
 export type PublishLogList = z.infer<typeof PublishLogList>;
 
+// --- Missed schedules (S6: maximum lateness) ----------------------------------
+
+/**
+ * `lastError` of a schedule that was not published because its time had passed by more than
+ * the maximum lateness (Ayarlar → Yayın, default 2 hours): the Mac was asleep or off, or the
+ * cloud publisher could not run on time. The schedule is `failed`; the owner reschedules it.
+ * UIs can recognise it by this prefix.
+ */
+export const SCHEDULE_MISSED_PREFIX = "Mac kapalıyken kaçtı";
+
+/** Turkish "2 saatten" / "90 dakikadan" for a lateness limit in minutes. */
+function latenessText(minutes: number): string {
+  return minutes % 60 === 0 ? `${minutes / 60} saatten` : `${minutes} dakikadan`;
+}
+
+export function missedScheduleMessage(maxLatenessMinutes: number): string {
+  return (
+    `${SCHEDULE_MISSED_PREFIX}: paylaşım saatinden ${latenessText(maxLatenessMinutes)} fazla ` +
+    "geçtiği için paylaşılmadı. Yeniden zamanlayın ya da şimdi paylaşın."
+  );
+}
+
 // --- Worker schedule execution -----------------------------------------------
 
 export const WorkerDueSchedulesQuery = z
   .object({
     before: Timestamp.optional(),
+    /**
+     * `local`: the Mac publishes them itself, so schedules already handed to the cloud
+     * publisher (`delivery = cloud`) are left out — the cloud publishes those. Omitted: every
+     * pending schedule (the cloud push loop).
+     */
+    mode: z.enum(["cloud", "local"]).optional(),
     limit: z.coerce.number().int().min(1).max(200).default(100),
   })
   .meta({ id: "WorkerDueSchedulesQuery" });
@@ -170,3 +198,80 @@ export const WorkerScheduleDelivery = z
   })
   .meta({ id: "WorkerScheduleDelivery" });
 export type WorkerScheduleDelivery = z.input<typeof WorkerScheduleDelivery>;
+
+/**
+ * Body of `POST /api/worker/schedules/{id}/claim`: the Mac worker takes a schedule to publish it
+ * itself. Atomic: only a `pending` schedule that was not handed to the cloud publisher, whose
+ * approval still matches and whose time is within the maximum lateness, moves to `publishing`;
+ * or a `publishing` one claimed locally longer than `staleAfterMs` ago (its worker died) is
+ * taken over with its saved publisher state, so the publish resumes instead of starting again.
+ */
+export const WorkerScheduleClaim = z
+  .object({
+    attempt: z.number().int().min(1).default(1),
+    /** Takeover age for a local `publishing` claim; the server default is 20 minutes. */
+    staleAfterMs: z
+      .number()
+      .int()
+      .min(0)
+      .max(24 * 3600_000)
+      .optional(),
+  })
+  .meta({ id: "WorkerScheduleClaim" });
+export type WorkerScheduleClaim = z.input<typeof WorkerScheduleClaim>;
+
+export const WorkerScheduleClaimRefusal = z
+  .enum([
+    "cancelled",
+    "published",
+    "failed",
+    /** Handed to the cloud publisher: it publishes it. */
+    "cloud",
+    /** Another worker is publishing it (claim not stale yet). */
+    "in_progress",
+    /** The content's approval no longer covers the schedule's version. */
+    "approval_changed",
+    /** Too late (maximum lateness): marked `failed` with the missed message. */
+    "missed",
+  ])
+  .meta({ id: "WorkerScheduleClaimRefusal" });
+export type WorkerScheduleClaimRefusal = z.infer<typeof WorkerScheduleClaimRefusal>;
+
+export const WorkerScheduleClaimResult = z
+  .object({
+    claimed: z.boolean(),
+    /** Why not (only when `claimed` is false). */
+    reason: WorkerScheduleClaimRefusal.nullable(),
+    /** A stale local claim was taken over: continue from `publishState`. */
+    resumed: z.boolean(),
+    schedule: Schedule,
+    /** The publisher state saved by the previous claim (`null`: start from scratch). */
+    publishState: z.record(z.string(), z.unknown()).nullable(),
+    /** Publish log attempt number of this claim. */
+    attempt: z.number().int().min(1),
+  })
+  .meta({ id: "WorkerScheduleClaimResult" });
+export type WorkerScheduleClaimResult = z.infer<typeof WorkerScheduleClaimResult>;
+
+/**
+ * Body of `PUT /api/worker/schedules/{id}/publish-state`: the publisher's state machine state,
+ * saved before the worker acts on it (and as the claim's heartbeat). No tokens inside.
+ */
+export const WorkerSchedulePublishState = z
+  .object({ state: z.record(z.string(), z.unknown()) })
+  .meta({ id: "WorkerSchedulePublishState" });
+export type WorkerSchedulePublishState = z.input<typeof WorkerSchedulePublishState>;
+
+/** `GET /api/worker/schedules/stale`: local `publishing` claims older than `staleAfterMs`. */
+export const WorkerStaleSchedulesQuery = z
+  .object({
+    staleAfterMs: z.coerce
+      .number()
+      .int()
+      .min(0)
+      .max(24 * 3600_000)
+      .optional(),
+    limit: z.coerce.number().int().min(1).max(100).default(20),
+  })
+  .meta({ id: "WorkerStaleSchedulesQuery" });
+export type WorkerStaleSchedulesQuery = z.input<typeof WorkerStaleSchedulesQuery>;

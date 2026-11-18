@@ -1,6 +1,6 @@
 import { Brand, BrandList, SocialAccount, SocialAccountList } from "@studio/contract";
 import { describe, expect, it } from "vitest";
-import { api, createAccount, createBrand, expectError, localFetch, uniq } from "./helpers.ts";
+import { api, BASE, createAccount, createBrand, expectError, localFetch, uniq } from "./helpers.ts";
 
 describe("brands", () => {
   it("creates, reads, updates and archives a brand", async () => {
@@ -146,7 +146,7 @@ describe("social accounts", () => {
 });
 
 async function fetchRaw(path: string, body: string) {
-  return localFetch(`http://studio.test${path}`, {
+  return localFetch(`${BASE}${path}`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body,

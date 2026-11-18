@@ -2,21 +2,25 @@ import { createRoute } from "@hono/zod-openapi";
 import {
   ApiErrorBody,
   PublishingCloudPut,
+  PublishingSettingsPatch,
   PublishingStatus,
   PublishLogFeed,
   PublishLogFeedQuery,
   WorkerPublishingConfig,
   WorkerPublishingSyncReport,
 } from "@studio/contract";
-import { and, asc, desc, eq, gt, inArray, isNotNull, type SQL } from "drizzle-orm";
-import { createDb } from "../db/client.ts";
+import { and, asc, count, desc, eq, gt, inArray, isNotNull, or, type SQL } from "drizzle-orm";
+import { z } from "zod";
+import { createDb, type Db } from "../db/client.ts";
 import { toPublishLog, toSchedule } from "../db/mappers.ts";
 import { contents, publishLogs, schedules, socialAccounts } from "../db/schema.ts";
-import { badRequest } from "../lib/errors.ts";
+import { badRequest, conflict } from "../lib/errors.ts";
 import {
   CLOUD_TOKEN_SETTING,
   cloudCredentials,
   loadPublishingSettings,
+  maxLatenessMinutes,
+  type PublishingSettingsRow,
   savePublishingSettings,
   toPublishingStatus,
 } from "../lib/publishing.ts";
@@ -31,14 +35,21 @@ const forbidden = json(ApiErrorBody, "Not called from the Mac itself (`forbidden
 const security = [{ workerToken: [] }];
 const unauthorized = { description: "Missing or wrong worker token (plain text)." };
 
+/** Outbound calls to the cloud publisher give up after this long. */
+const PROBE_TIMEOUT_MS = 15_000;
+
 /** Check that a cloud publisher answers and accepts the token before saving it. */
 async function probeCloudPublisher(url: string, token: string): Promise<string | null> {
   const base = url.replace(/\/+$/, "");
   try {
-    const health = await fetch(`${base}/health`, { method: "GET" });
+    const health = await fetch(`${base}/health`, {
+      method: "GET",
+      signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
+    });
     if (!health.ok) return `Bulut yayıncı yanıt vermedi (${base}/health → HTTP ${health.status}).`;
     const list = await fetch(`${base}/v1/orders?limit=1`, {
       headers: { authorization: `Bearer ${token}`, accept: "application/json" },
+      signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
     });
     if (list.status === 401)
       return "Bulut yayıncı anahtarı kabul etmedi (PUBLISHER_TOKEN ile aynı olmalı).";
@@ -49,9 +60,36 @@ async function probeCloudPublisher(url: string, token: string): Promise<string |
   }
 }
 
+/** Schedules the cloud publisher holds: pending/publishing there, or cancelled here but not there yet. */
+async function cloudHeldSchedules(db: Db): Promise<number> {
+  const [row] = await db
+    .select({ n: count() })
+    .from(schedules)
+    .where(
+      and(
+        eq(schedules.delivery, "cloud"),
+        or(
+          inArray(schedules.status, ["pending", "publishing"]),
+          and(eq(schedules.status, "cancelled"), isNotNull(schedules.cloudSyncedAt)),
+        ),
+      ),
+    );
+  return row?.n ?? 0;
+}
+
+/** Worker config: the cloud publisher (throws 409 when it is set but unreadable) and the limits. */
+async function workerConfig(row: PublishingSettingsRow | null, env: Env) {
+  return {
+    cloud: await cloudCredentials(row, env),
+    syncRequestedAt: row?.syncRequestedAt ? row.syncRequestedAt.toISOString() : null,
+    maxLatenessMs: maxLatenessMinutes(row) * 60_000,
+  };
+}
+
 const router = createRouter();
 
 router.use("/api/publishing/cloud", requireLocal);
+router.use("/api/publishing/settings", requireLocal);
 router.use("/api/worker/publishing/*", requireWorkerToken);
 
 export const publishingRoutes = router
@@ -111,12 +149,30 @@ export const publishingRoutes = router
       tags,
       summary: "Forget the cloud publisher; this Mac publishes again (Mac only)",
       description:
-        "Orders already at the cloud publisher stay there and still publish; cancel them " +
-        "from the calendar first if that is not wanted.",
-      responses: { 200: json(PublishingStatus, "Cleared."), 403: forbidden },
+        "Refused (409) while schedules handed to the cloud publisher are pending or publishing " +
+        "there, or cancelled here but not yet cancelled there: without the cloud publisher the " +
+        "Mac could neither cancel nor follow them. With `force=true` it is cleared anyway; those " +
+        "orders stay at the cloud publisher and still publish (the Mac never publishes them).",
+      request: {
+        query: z.object({ force: z.enum(["true", "false"]).optional() }),
+      },
+      responses: {
+        200: json(PublishingStatus, "Cleared."),
+        403: forbidden,
+        409: errors[409],
+      },
     }),
     async (c) => {
       const db = createDb(c.env.DB);
+      if (c.req.valid("query").force !== "true") {
+        const held = await cloudHeldSchedules(db);
+        if (held > 0) {
+          throw conflict(
+            `Bulut yayıncıda ${held} zamanlama var (bekleyen ya da iptali henüz iletilmemiş). ` +
+              "Önce Takvim'den iptal edip eşitlenmesini bekleyin; yoksa bunlar bulutta kalır ve yine paylaşılır.",
+          );
+        }
+      }
       await savePublishingSettings(db, {
         cloudUrl: null,
         cloudTokenCiphertext: null,
@@ -126,6 +182,32 @@ export const publishingRoutes = router
         lastSyncOk: null,
         lastSyncError: null,
       });
+      return c.json(toPublishingStatus(await loadPublishingSettings(db), c.env), 200);
+    },
+  )
+  .openapi(
+    createRoute({
+      method: "patch",
+      path: "/api/publishing/settings",
+      tags,
+      summary: "Change publishing settings: maximum lateness (Mac only)",
+      description:
+        "`maxLatenessMinutes` (default 120): a schedule whose time passed more than this long " +
+        "ago (the Mac was asleep, the cloud publisher was down) is not published; it fails as " +
+        "missed and the owner reschedules it.",
+      request: { body: jsonBody(PublishingSettingsPatch) },
+      responses: {
+        200: json(PublishingStatus, "Saved."),
+        400: errors[400],
+        403: forbidden,
+      },
+    }),
+    async (c) => {
+      const input = c.req.valid("json");
+      const db = createDb(c.env.DB);
+      if (input.maxLatenessMinutes !== undefined) {
+        await savePublishingSettings(db, { maxLatenessMinutes: input.maxLatenessMinutes });
+      }
       return c.json(toPublishingStatus(await loadPublishingSettings(db), c.env), 200);
     },
   )
@@ -202,18 +284,19 @@ export const publishingRoutes = router
       path: "/api/worker/publishing/config",
       tags,
       security,
-      summary: "Cloud publisher URL + token (or null) and the last sync request",
-      responses: { 200: json(WorkerPublishingConfig, "Config."), 401: unauthorized },
+      summary: "Cloud publisher URL + token (or null), the last sync request, the maximum lateness",
+      description:
+        "409 when a cloud publisher is set but its token cannot be read: the worker must not " +
+        "fall back to publishing locally what the cloud publisher holds.",
+      responses: {
+        200: json(WorkerPublishingConfig, "Config."),
+        401: unauthorized,
+        409: errors[409],
+      },
     }),
     async (c) => {
       const row = await loadPublishingSettings(createDb(c.env.DB));
-      return c.json(
-        {
-          cloud: await cloudCredentials(row, c.env),
-          syncRequestedAt: row?.syncRequestedAt ? row.syncRequestedAt.toISOString() : null,
-        },
-        200,
-      );
+      return c.json(await workerConfig(row, c.env), 200);
     },
   )
   .openapi(
@@ -239,12 +322,12 @@ export const publishingRoutes = router
         lastSyncError: input.ok ? null : (input.error ?? "Bilinmeyen hata"),
       });
       const row = await loadPublishingSettings(db);
-      return c.json(
-        {
-          cloud: await cloudCredentials(row, c.env),
-          syncRequestedAt: row?.syncRequestedAt ? row.syncRequestedAt.toISOString() : null,
-        },
-        200,
-      );
+      // The report must land even when the token is unreadable (that is what it reports).
+      const config = await workerConfig(row, c.env).catch(() => ({
+        cloud: null,
+        syncRequestedAt: row?.syncRequestedAt ? row.syncRequestedAt.toISOString() : null,
+        maxLatenessMs: maxLatenessMinutes(row) * 60_000,
+      }));
+      return c.json(config, 200);
     },
   );

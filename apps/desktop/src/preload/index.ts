@@ -55,6 +55,10 @@ const bridge: StudioBridge = {
       save: (token) => ipcRenderer.invoke(A.tunnelSave, token),
       forget: () => ipcRenderer.invoke(A.tunnelForget),
     },
+    backup: {
+      create: () => ipcRenderer.invoke(A.backupCreate),
+      restore: () => ipcRenderer.invoke(A.backupRestore),
+    },
   },
 };
 

@@ -136,6 +136,7 @@ import {
 import { decodeJobStreamMessage, type JobStreamMessage } from "./protocol.ts";
 import {
   type PublishingCloudPut,
+  type PublishingSettingsPatch,
   PublishingStatus,
   PublishLogFeed,
   type PublishLogFeedQuery,
@@ -156,9 +157,13 @@ import {
   type ScheduleUpdate,
   WorkerDueSchedules,
   type WorkerDueSchedulesQuery,
+  type WorkerScheduleClaim,
+  WorkerScheduleClaimResult,
   WorkerScheduleCredentials,
   type WorkerScheduleDelivery,
   type WorkerScheduleOutcome,
+  type WorkerSchedulePublishState,
+  type WorkerStaleSchedulesQuery,
 } from "./schedule.ts";
 import {
   type LinkedInConnectInput,
@@ -827,8 +832,19 @@ export function createApiClient(options: ApiClientOptions = {}) {
       status: (init?: RequestInit) => call(PublishingStatus, "/api/publishing/status", { init }),
       setCloud: (input: PublishingCloudPut, init?: RequestInit) =>
         call(PublishingStatus, "/api/publishing/cloud", { method: "PUT", json: input, init }),
-      clearCloud: (init?: RequestInit) =>
-        call(PublishingStatus, "/api/publishing/cloud", { method: "DELETE", init }),
+      /**
+       * Forget the cloud publisher. Refused (409) while schedules handed to it are pending or
+       * still to be cancelled there, unless `force` (those orders then stay in the cloud).
+       */
+      clearCloud: (init?: RequestInit, opts?: { force?: boolean }) =>
+        call(PublishingStatus, "/api/publishing/cloud", {
+          method: "DELETE",
+          ...(opts?.force ? { query: q({ force: "true" }) } : {}),
+          init,
+        }),
+      /** Publishing settings (maximum lateness). */
+      updateSettings: (input: PublishingSettingsPatch, init?: RequestInit) =>
+        call(PublishingStatus, "/api/publishing/settings", { method: "PATCH", json: input, init }),
       /** Ask the worker to push and pull cloud orders now (app focus). */
       requestSync: (init?: RequestInit) =>
         call(PublishingStatus, "/api/publishing/sync", { method: "POST", init }),
@@ -1025,6 +1041,23 @@ export function createApiClient(options: ApiClientOptions = {}) {
       /** Schedules that were sent to the cloud and later cancelled (cancel the orders). */
       cancelled: (query?: { since?: string; limit?: number }, init?: RequestInit) =>
         call(WorkerDueSchedules, "/api/worker/schedules/cancelled", { query: q(query), init }),
+      /** Take a schedule to publish it on this Mac (atomic; resumes a stale local claim). */
+      claim: (id: string, input: WorkerScheduleClaim = {}, init?: RequestInit) =>
+        call(WorkerScheduleClaimResult, `/api/worker/schedules/${enc(id)}/claim`, {
+          method: "POST",
+          json: input,
+          init,
+        }),
+      /** Save the publisher state before acting on it (also the claim's heartbeat). */
+      publishState: (id: string, input: WorkerSchedulePublishState, init?: RequestInit) =>
+        call(Schedule, `/api/worker/schedules/${enc(id)}/publish-state`, {
+          method: "PUT",
+          json: input,
+          init,
+        }),
+      /** Local `publishing` claims whose worker stopped (resume them). */
+      stale: (query?: WorkerStaleSchedulesQuery, init?: RequestInit) =>
+        call(WorkerDueSchedules, "/api/worker/schedules/stale", { query: q(query), init }),
     },
 
     /** AI provider keys in the vault and Gemini spend (Ayarlar → Yapay zekâ / Kullanım). */

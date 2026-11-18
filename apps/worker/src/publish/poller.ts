@@ -8,7 +8,13 @@
  *   (`publishing` / `published` with permalink / `failed` with reason) is pulled back
  *   into the local schedules and publish logs. Each round is reported to the API.
  * - Local mode: due schedules (`scheduledAt <= now`) are published by this worker
- *   with `@studio/publishers`; the Mac must be on at that time.
+ *   with `@studio/publishers`; the Mac must be on at that time. Schedules already handed
+ *   to the cloud publisher are never published here, and one whose time passed more than
+ *   the maximum lateness ago is marked missed instead (the API's claim decides).
+ * - Both modes: a local publish whose worker stopped mid-way (claim not refreshed for a
+ *   while) is resumed from its saved state, which reconciles before publishing anything.
+ * - Unknown publishing path (the cloud publisher is set but its token is unreadable):
+ *   nothing is published; the round reports the error.
  *
  * Timing: a light control check every `controlIntervalMs` (5 s) reads the config from
  * the local API; a full round runs every `intervalMs` (30 s by default) and at once
@@ -22,6 +28,7 @@ import {
   publishScheduleLocally,
   pushScheduleToCloudPublisher,
   reportDelivery,
+  ScheduleNotPublished,
   type SchedulePublishDeps,
   syncCloudPublisherOutcomes,
 } from "./handler.ts";
@@ -161,8 +168,15 @@ export class SchedulePoller {
     const signal = this.controller?.signal ?? new AbortController().signal;
     if (signal.aborted) return;
 
-    const { cloud } = await resolveCloudPublisherConfig(this.deps, { signal });
+    const { cloud, unavailable } = await resolveCloudPublisherConfig(this.deps, { signal });
     const lockSet = this.deps.inFlightSchedules;
+    if (unavailable) {
+      await this.report(false, unavailable, signal);
+      return;
+    }
+
+    await this.resumeStaleLocalPublishes(signal);
+    if (signal.aborted) return;
 
     if (cloud) {
       const before = JSON.stringify([...this.pushedVersions, ...this.reportedStates]);
@@ -173,9 +187,12 @@ export class SchedulePoller {
       for (const sched of pending.items) {
         if (signal.aborted) return;
         if (lockSet?.has(sched.id)) continue;
-        if (this.pushedVersions.get(sched.id) === pushKey(sched)) {
+        // `delivery = cloud` without `cloudSyncedAt`: the API says the cloud copy is stale
+        // (the account was reconnected, so the order holds the old token): push it again.
+        const stale = sched.delivery === "cloud" && !sched.cloudSyncedAt;
+        if (this.pushedVersions.get(sched.id) === pushKey(sched) && !stale) {
           // Already there; make sure the calendar knows (e.g. after an app update).
-          if (!sched.cloudSyncedAt || sched.delivery !== "cloud") {
+          if (sched.delivery !== "cloud") {
             await reportDelivery(
               this.deps,
               sched.id,
@@ -195,6 +212,11 @@ export class SchedulePoller {
           });
         } catch (err) {
           const message = (err as Error).message;
+          if (err instanceof ScheduleNotPublished) {
+            // Not a sync problem: it was too late to hand over (marked missed).
+            this.deps.logger.warn(`schedule ${sched.id} not handed over: ${message}`);
+            continue;
+          }
           errors.push(message);
           this.deps.logger.warn(
             `could not push schedule ${sched.id} to cloud publisher: ${message}`,
@@ -238,33 +260,54 @@ export class SchedulePoller {
       return;
     }
 
-    // Local mode: publish schedules whose time has come.
+    // Local mode: publish schedules whose time has come (not the ones the cloud holds).
     const nowIso = (this.deps.now ?? (() => new Date()))().toISOString();
     const due = await this.deps.api.client.workerSchedules.due(
-      { before: nowIso, limit: 50 },
+      { before: nowIso, mode: "local", limit: 50 },
       { signal },
     );
 
     for (const sched of due.items) {
       if (signal.aborted) return;
       if (Date.parse(sched.scheduledAt) > Date.parse(nowIso)) continue;
-      if (lockSet?.has(sched.id)) continue;
+      await this.publishLocally(sched.id, signal);
+    }
+  }
 
-      lockSet?.add(sched.id);
-      try {
-        await publishScheduleLocally({
-          scheduleId: sched.id,
-          attempt: 1,
-          deps: this.deps,
-          signal,
-        });
-      } catch (err) {
-        this.deps.logger.warn(
-          `local publish of due schedule ${sched.id} failed: ${(err as Error).message}`,
-        );
-      } finally {
-        lockSet?.delete(sched.id);
+  /** Local `publishing` claims whose worker stopped (crash, restart): resume them. */
+  private async resumeStaleLocalPublishes(signal: AbortSignal): Promise<void> {
+    let stale: { items: { id: string }[] };
+    try {
+      stale = await this.deps.api.client.workerSchedules.stale({ limit: 20 }, { signal });
+    } catch {
+      return; // older API or not reachable: the next round tries again
+    }
+    for (const sched of stale.items) {
+      if (signal.aborted) return;
+      await this.publishLocally(sched.id, signal);
+    }
+  }
+
+  private async publishLocally(scheduleId: string, signal: AbortSignal): Promise<void> {
+    const lockSet = this.deps.inFlightSchedules;
+    if (lockSet?.has(scheduleId)) return;
+    lockSet?.add(scheduleId);
+    try {
+      const result = await publishScheduleLocally({
+        scheduleId,
+        attempt: 1,
+        deps: this.deps,
+        signal,
+      });
+      if (result.status === "skipped" && result.reason === "missed") {
+        this.deps.logger.warn(`schedule ${scheduleId} missed: ${result.message}`);
       }
+    } catch (err) {
+      this.deps.logger.warn(
+        `local publish of schedule ${scheduleId} failed: ${(err as Error).message}`,
+      );
+    } finally {
+      lockSet?.delete(scheduleId);
     }
   }
 }

@@ -3,218 +3,24 @@ import {
   createPublisher,
   LINKEDIN_API_VERSION,
   LINKEDIN_LIMITS,
+  type LinkedInState,
   type LogEvent,
   type PublishRequest,
   type PublishState,
   type StepContext,
   type StepOutcome,
+  toLittleText,
   validateRequest,
 } from "../src/index.ts";
-import { FakeClock, memoryMediaReader } from "../src/testing/index.ts";
+import { FakeClock, FakeLinkedIn, memoryMediaReader } from "../src/testing/index.ts";
 
 const AUTHOR = "urn:li:person:burak123";
 const VALID_TOKEN = "AQVsecretLinkedInAccessToken999999999999";
 const EXPIRED_TOKEN = "AQVexpiredLinkedInAccessToken00000000000";
 
-interface RecordedLinkedInCall {
-  method: string;
-  url: string;
-  path: string;
-  headers: Record<string, string>;
-  json: unknown;
-  bytes: Uint8Array;
-}
-
-class FakeLinkedInServer {
-  readonly calls: RecordedLinkedInCall[] = [];
-  readonly posts: { urn: string; body: Record<string, unknown> }[] = [];
-  readonly uploadedBytes = new Map<string, Uint8Array>();
-  readonly finalizedVideos: { video: string; uploadToken: string; uploadedPartIds: string[] }[] =
-    [];
-  private seq = 0;
-  private rateLimitRemaining = 0;
-  private retryAfterSec = 45;
-
-  rateLimitNext(times = 1, retryAfterSec = 45) {
-    this.rateLimitRemaining = times;
-    this.retryAfterSec = retryAfterSec;
-  }
-
-  readonly fetch = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
-    const rawUrl =
-      typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-    const u = new URL(rawUrl);
-    const method = (init?.method ?? "GET").toUpperCase();
-    const headersObj: Record<string, string> = {};
-    new Headers(init?.headers).forEach((v, k) => {
-      headersObj[k.toLowerCase()] = v;
-    });
-
-    // Serve fake external media assets for URL-based media sources.
-    if (u.hostname === "media.example.com") {
-      const ext = u.pathname.split(".").pop();
-      const content =
-        ext === "pdf"
-          ? new TextEncoder().encode("%PDF-1.7 fake carousel")
-          : new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]);
-      const type = ext === "pdf" ? "application/pdf" : ext === "mp4" ? "video/mp4" : "image/jpeg";
-      return new Response(content, { status: 200, headers: { "content-type": type } });
-    }
-
-    let rawBytes: Uint8Array = new Uint8Array(0);
-    if (init?.body !== undefined && init.body !== null) {
-      rawBytes = new Uint8Array(await new Response(init.body).arrayBuffer());
-    }
-    let parsedJson: unknown = null;
-    if (headersObj["content-type"]?.includes("application/json") && rawBytes.byteLength > 0) {
-      parsedJson = JSON.parse(new TextDecoder().decode(rawBytes));
-    }
-
-    this.calls.push({
-      method,
-      url: rawUrl,
-      path: `${u.pathname}${u.search}`,
-      headers: headersObj,
-      json: parsedJson,
-      bytes: rawBytes,
-    });
-
-    // Verify mandatory LinkedIn headers on REST calls.
-    const auth = headersObj.authorization ?? "";
-    if (!auth.startsWith("Bearer ") || auth === `Bearer ${EXPIRED_TOKEN}`) {
-      return new Response(
-        JSON.stringify({
-          status: 401,
-          code: "REVOKED_ACCESS_TOKEN",
-          message: `Token ${auth.replace(/^Bearer\s+/i, "")} has expired or been revoked`,
-        }),
-        { status: 401, headers: { "content-type": "application/json" } },
-      );
-    }
-
-    if (this.rateLimitRemaining > 0) {
-      this.rateLimitRemaining--;
-      return new Response(
-        JSON.stringify({ status: 429, message: "Application rate limit reached" }),
-        {
-          status: 429,
-          headers: {
-            "content-type": "application/json",
-            "retry-after": String(this.retryAfterSec),
-          },
-        },
-      );
-    }
-
-    // Binary upload PUTs
-    if (method === "PUT" && u.pathname.startsWith("/dms-uploads/")) {
-      const prev = this.uploadedBytes.get(u.pathname);
-      const merged = new Uint8Array((prev?.byteLength ?? 0) + rawBytes.byteLength);
-      if (prev) merged.set(prev, 0);
-      merged.set(rawBytes, prev?.byteLength ?? 0);
-      this.uploadedBytes.set(u.pathname, merged);
-      return new Response(null, {
-        status: 201,
-        headers: { etag: `"etag-${++this.seq}"` },
-      });
-    }
-
-    if (
-      method === "POST" &&
-      u.pathname === "/rest/images" &&
-      u.searchParams.get("action") === "initializeUpload"
-    ) {
-      const id = ++this.seq;
-      return Response.json({
-        value: {
-          image: `urn:li:image:img-${id}`,
-          uploadUrl: `https://api.linkedin.com/dms-uploads/image-${id}`,
-        },
-      });
-    }
-
-    if (
-      method === "POST" &&
-      u.pathname === "/rest/documents" &&
-      u.searchParams.get("action") === "initializeUpload"
-    ) {
-      const id = ++this.seq;
-      return Response.json({
-        value: {
-          document: `urn:li:document:doc-${id}`,
-          uploadUrl: `https://api.linkedin.com/dms-uploads/doc-${id}`,
-        },
-      });
-    }
-
-    if (
-      method === "POST" &&
-      u.pathname === "/rest/videos" &&
-      u.searchParams.get("action") === "initializeUpload"
-    ) {
-      const id = ++this.seq;
-      const reqBody = parsedJson as { initializeUploadRequest?: { fileSizeBytes?: number } };
-      const size = reqBody?.initializeUploadRequest?.fileSizeBytes ?? 8;
-      const mid = Math.floor(size / 2);
-      return Response.json({
-        value: {
-          video: `urn:li:video:vid-${id}`,
-          uploadToken: `tok-${id}`,
-          uploadInstructions:
-            size > 4
-              ? [
-                  {
-                    uploadUrl: `https://api.linkedin.com/dms-uploads/vid-${id}`,
-                    firstByte: 0,
-                    lastByte: mid - 1,
-                  },
-                  {
-                    uploadUrl: `https://api.linkedin.com/dms-uploads/vid-${id}`,
-                    firstByte: mid,
-                    lastByte: size - 1,
-                  },
-                ]
-              : [
-                  {
-                    uploadUrl: `https://api.linkedin.com/dms-uploads/vid-${id}`,
-                    firstByte: 0,
-                    lastByte: size - 1,
-                  },
-                ],
-        },
-      });
-    }
-
-    if (
-      method === "POST" &&
-      u.pathname === "/rest/videos" &&
-      u.searchParams.get("action") === "finalizeUpload"
-    ) {
-      const body = (
-        parsedJson as {
-          finalizeUploadRequest: { video: string; uploadToken: string; uploadedPartIds: string[] };
-        }
-      ).finalizeUploadRequest;
-      this.finalizedVideos.push(body);
-      return new Response(null, { status: 202 });
-    }
-
-    if (method === "POST" && u.pathname === "/rest/posts") {
-      const urn = `urn:li:share:post-${++this.seq}`;
-      this.posts.push({ urn, body: parsedJson as Record<string, unknown> });
-      return new Response(null, {
-        status: 201,
-        headers: { "x-restli-id": urn },
-      });
-    }
-
-    return new Response("not found", { status: 404 });
-  };
-}
-
 function makeEnv() {
   const clock = new FakeClock();
-  const server = new FakeLinkedInServer();
+  const server = new FakeLinkedIn({ clock, revokedTokens: [EXPIRED_TOKEN] });
   const logs: LogEvent[] = [];
   const publisher = createPublisher({
     fetch: server.fetch,
@@ -527,5 +333,159 @@ describe("LinkedInPublisher", () => {
         },
       }).errors.map((e) => e.code),
     ).toContain("VIDEO_TOO_LARGE");
+  });
+});
+
+describe("LinkedIn publishing safety (Y7, Y15)", () => {
+  it("escapes little-text reserved characters and keeps #hashtags as hashtag templates", async () => {
+    const caption =
+      "Fiyat (KDV dahil) [yeni] @mtm *özel* _not_ ~ <b> {x} | a\\b #hasat #mtm_agro C#";
+    expect(toLittleText(caption)).toBe(
+      "Fiyat \\(KDV dahil\\) \\[yeni\\] \\@mtm \\*özel\\* \\_not\\_ \\~ \\<b\\> \\{x\\} \\| a\\\\b " +
+        "{hashtag|\\#|hasat} \\#mtm\\_agro C\\#",
+    );
+    expect(toLittleText("Şimdi #Tarım2026!")).toBe("Şimdi {hashtag|\\#|Tarım2026}!");
+
+    const env = makeEnv();
+    const { out } = await driveToEnd(
+      env,
+      env.publisher.start({ kind: "linkedin.text", authorUrn: AUTHOR, commentary: caption }),
+    );
+    expect(out.status).toBe("done");
+    expect(env.server.posts[0]?.body.commentary).toBe(toLittleText(caption));
+  });
+
+  it("does not post twice when a post call's answer is lost: the duplicate refusal links the post", async () => {
+    const env = makeEnv();
+    env.server.loseNextPostResponse("network");
+    const state = env.publisher.start({
+      kind: "linkedin.text",
+      authorUrn: AUTHOR,
+      commentary: "Hasat başladı",
+    });
+    const { out, outcomes } = await driveToEnd(env, state);
+    // The lost answer was a retryable network error, not a failure.
+    expect(outcomes[0]?.status).toBe("wait");
+    expect(out.status).toBe("done");
+    if (out.status !== "done") return;
+    expect(env.server.posts).toHaveLength(1);
+    expect(out.result).toMatchObject({
+      externalId: env.server.posts[0]?.urn,
+      reconciled: true,
+    });
+    expect(out.result.warnings.map((w) => w.code)).not.toContain("LINKEDIN_DUPLICATE_LINKED");
+  });
+
+  it("finds the post among the author's posts (when readable) before posting again", async () => {
+    const env = makeEnv();
+    env.server.allowAuthorLookup = true;
+    env.server.loseNextPostResponse("504");
+    const req: PublishRequest = {
+      kind: "linkedin.image",
+      authorUrn: AUTHOR,
+      image: {
+        kind: "image",
+        url: "https://media.example.com/hero.jpg",
+        mimeType: "image/jpeg",
+        bytes: 8,
+      },
+      commentary: "Yeni sezon (2026)",
+    };
+    const { out } = await driveToEnd(env, env.publisher.start(req));
+    expect(out.status).toBe("done");
+    if (out.status !== "done") return;
+    expect(env.server.postCalls()).toHaveLength(1);
+    expect(env.server.posts).toHaveLength(1);
+    expect(out.result).toMatchObject({ externalId: env.server.posts[0]?.urn, reconciled: true });
+  });
+
+  it("resumes a state saved after a lost answer without a second post (crash safety)", async () => {
+    const env = makeEnv();
+    env.server.loseNextPostResponse("network");
+    const first = await env.publisher.step(
+      env.publisher.start({ kind: "linkedin.text", authorUrn: AUTHOR, commentary: "Tek sefer" }),
+      env.ctx,
+    );
+    expect(first.status).toBe("wait");
+    expect((first.state as LinkedInState).postCalls).toBe(1);
+    // A different process picks the saved state up later.
+    const saved = JSON.parse(JSON.stringify(first.state)) as PublishState;
+    const { out } = await driveToEnd(env, saved);
+    expect(out.status).toBe("done");
+    expect(env.server.posts).toHaveLength(1);
+  });
+
+  it("waits for the video to be AVAILABLE before creating the post", async () => {
+    const env = makeEnv();
+    env.server.videoProcessingPolls = 2;
+    const req: PublishRequest = {
+      kind: "linkedin.video",
+      authorUrn: AUTHOR,
+      video: {
+        kind: "video",
+        source: { type: "upload", key: "videos/demo.mp4" },
+        mimeType: "video/mp4",
+        bytes: env.videoBytes.byteLength,
+        durationMs: 15_000,
+      },
+      commentary: "Saha",
+    };
+    const { out, outcomes } = await driveToEnd(env, env.publisher.start(req));
+    expect(out.status).toBe("done");
+    expect(outcomes.filter((o) => o.status === "wait" && o.reason === "poll")).toHaveLength(2);
+    const paths = env.server.calls.map((c) => `${c.method} ${c.path.split("?")[0]}`);
+    const lastStatusRead = paths.lastIndexOf("GET /rest/videos/urn%3Ali%3Avideo%3Avid-1");
+    expect(lastStatusRead).toBeGreaterThan(-1);
+    expect(paths.indexOf("POST /rest/posts")).toBeGreaterThan(lastStatusRead);
+    expect(env.server.videoReads.get("urn:li:video:vid-1")).toBe(3);
+  });
+
+  it("fails (no post) when LinkedIn cannot process the video", async () => {
+    const env = makeEnv();
+    env.server.failVideoProcessing = true;
+    const { out } = await driveToEnd(
+      env,
+      env.publisher.start({
+        kind: "linkedin.video",
+        authorUrn: AUTHOR,
+        video: {
+          kind: "video",
+          source: { type: "upload", key: "videos/demo.mp4" },
+          mimeType: "video/mp4",
+          bytes: env.videoBytes.byteLength,
+          durationMs: 15_000,
+        },
+      }),
+    );
+    expect(out.status).toBe("failed");
+    if (out.status !== "failed") return;
+    expect(out.error.code).toBe("MEDIA_REJECTED");
+    expect(env.server.posts).toHaveLength(0);
+  });
+
+  it("reads image bytes through the MediaReader when the request names an upload source", async () => {
+    const env = makeEnv();
+    const bytes = new Uint8Array([9, 8, 7, 6, 5]);
+    const ctx: StepContext = {
+      accessToken: VALID_TOKEN,
+      media: memoryMediaReader({ "slide-1.jpg": bytes }),
+    };
+    const req: PublishRequest = {
+      kind: "linkedin.image",
+      authorUrn: AUTHOR,
+      // Not served by anything: the publisher must not download its own public URL.
+      image: {
+        kind: "image",
+        url: "https://publisher.test/media/o-1/999/sig/slide-1.jpg",
+        source: { type: "upload", key: "slide-1.jpg" },
+        mimeType: "image/jpeg",
+        bytes: bytes.byteLength,
+      },
+      commentary: "Bulut",
+    };
+    const { out } = await driveToEnd(env, env.publisher.start(req), ctx);
+    expect(out.status).toBe("done");
+    expect(env.server.uploadedBytes.get("/dms-uploads/image-1")).toEqual(bytes);
+    expect(env.server.calls.some((c) => c.url.includes("publisher.test"))).toBe(false);
   });
 });

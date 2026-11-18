@@ -16,8 +16,9 @@
  *   pnpm --filter @studio/api exec wrangler d1 migrations apply DB --local --persist-to $S/api
  *   pnpm --filter @studio/api exec wrangler dev --port 8797 --ip 127.0.0.1 --persist-to $S/api \
  *     --inspector-port 9337 --var WORKER_TOKEN:test-token --var TOKEN_ENCRYPTION_KEY:$(openssl rand -base64 32) \
- *     --var META_GRAPH_BASE_URL:http://127.0.0.1:8798 &
+ *     --var STUDIO_OWNER_SECRET:test-owner --var META_GRAPH_BASE_URL:http://127.0.0.1:8798 &
  *   STUDIO_E2E_API=http://127.0.0.1:8797 STUDIO_WORKER_TOKEN=test-token STUDIO_E2E_STATE=$S/worker \
+ *     STUDIO_OWNER_SECRET=test-owner \
  *     STUDIO_FAKE_GRAPH_PORT=8798 pnpm --filter @studio/worker exec tsx scripts/e2e-publish.ts
  */
 
@@ -32,6 +33,7 @@ import { ClaudeGate } from "../src/claude/gate.ts";
 import { silentLogger } from "../src/log.ts";
 import type { SchedulePublishDeps } from "../src/publish/handler.ts";
 import { SchedulePoller } from "../src/publish/poller.ts";
+import { OwnerWebSocket, ownerFetch, requireOwnerSecret } from "./owner.ts";
 
 const apiBase = process.env.STUDIO_E2E_API ?? "";
 const workerToken = process.env.STUDIO_WORKER_TOKEN ?? "";
@@ -98,7 +100,8 @@ const graphHttp = createServer(async (req, res) => {
 await new Promise<void>((resolve) => graphHttp.listen(fakePort, "127.0.0.1", resolve));
 log(`FakeGraph on http://127.0.0.1:${fakePort}`);
 
-const api = createApiClient({ baseUrl: apiBase });
+requireOwnerSecret();
+const api = createApiClient({ baseUrl: apiBase, fetch: ownerFetch, WebSocket: OwnerWebSocket });
 
 // --- 1. Connect a (fake) Instagram account the way the Mac does -------------------------
 const health = await fetch(`${apiBase}/api/health`).then((r) => r.json());

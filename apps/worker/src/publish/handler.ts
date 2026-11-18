@@ -5,16 +5,23 @@
  * - Mode B (Local Direct Publisher): drives `@studio/publishers` (`instagram.*`, `facebook.*`,
  *   `linkedin.*`, including automatic PDF generation for LinkedIn carousels) using a local
  *   `MediaReader` backed by `StudioApi`, reporting outcomes to `workerSchedules.outcome`.
+ *   A schedule is claimed atomically first (cancelled, published, cloud-held, too late or
+ *   no-longer-approved schedules are never published) and the state machine's state is saved
+ *   before every action, so a crashed or retried publish resumes and reconciles instead of
+ *   posting again.
  */
 import { createHash } from "node:crypto";
 import {
   ApiError,
+  CloudOrder,
   type CloudOrderCreate,
   CloudOrderList,
   type CloudOrderMedia,
   type CloudPublishKind,
+  missedScheduleMessage,
   SchedulePublishPayload,
   selectPublishKind as selectKind,
+  type WorkerScheduleClaimRefusal,
   type WorkerScheduleCredentials,
   type WorkerScheduleDelivery,
 } from "@studio/contract";
@@ -25,6 +32,7 @@ import {
   type MediaReader,
   PublishError,
   type PublishRequest,
+  type PublishState,
   runToCompletion,
   toPublishError,
 } from "../../../../packages/publishers/src/index.ts";
@@ -202,14 +210,21 @@ async function ensurePreparedMediaForSchedule(
   // Image / Multi-image / Carousel / Story
   let slideAssetIds = version.slides.map((s) => s.renderedAssetId);
   if (slideAssetIds.some((id) => !id)) {
-    const rendered = await executeContentRender({
+    await executeContentRender({
       deps,
       brandId: content.brandId,
       contentId: content.id,
       payload: { version: version.version, format: "jpeg" },
       signal,
     });
-    slideAssetIds = rendered.renderedAssetIds;
+    // What the API stored on the approved version is what gets published (its renders are
+    // frozen once set), not whatever this render produced.
+    const stored = await deps.api.client.contents.versions.get(content.id, version.version, {
+      signal,
+    });
+    slideAssetIds = stored.slides.map(
+      (s, i) => version.slides[i]?.renderedAssetId ?? s.renderedAssetId,
+    );
   }
 
   const items: PreparedMediaAsset[] = [];
@@ -327,7 +342,11 @@ export async function pushScheduleToCloudPublisher(input: {
     );
     return { orderId: pushed.orderId, mediaUploaded: pushed.mediaUploaded, status: pushed.status };
   } catch (error) {
-    if (!signal.aborted && !(error instanceof ApiError && error.status === 409)) {
+    if (
+      !signal.aborted &&
+      !(error instanceof ApiError && error.status === 409) &&
+      !(error instanceof ScheduleNotPublished)
+    ) {
       const message = error instanceof Error ? error.message : String(error);
       await reportDelivery(
         deps,
@@ -342,6 +361,33 @@ export async function pushScheduleToCloudPublisher(input: {
 
 function nowMs(deps: SchedulePublishDeps): number {
   return (deps.now ?? (() => new Date()))().getTime();
+}
+
+const APPROVAL_CHANGED = "İçerik onayı değiştiği için zamanlanmış yayın iptal edildi.";
+
+/**
+ * Calls to the cloud publisher give up after this long (media uploads after the longer one):
+ * a hung call must not hold the poller's round, and every other schedule with it, forever.
+ */
+const CLOUD_TIMEOUT_MS = 30_000;
+const CLOUD_UPLOAD_TIMEOUT_MS = 10 * 60_000;
+const within = (signal: AbortSignal, ms: number) =>
+  AbortSignal.any([signal, AbortSignal.timeout(ms)]);
+
+/** The schedule is not to be published (cancelled, published, cloud-held, too late …). */
+export class ScheduleNotPublished extends Error {
+  override name = "ScheduleNotPublished";
+  constructor(
+    readonly reason: WorkerScheduleClaimRefusal | "not_publishable",
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
+/** The publisher state could not be saved: stop without an outcome (the publish resumes later). */
+class StateNotSaved extends Error {
+  override name = "StateNotSaved";
 }
 
 /** Turkish summary of a cloud publisher error body (`{ error: { message, issues } }`). */
@@ -373,14 +419,14 @@ async function pushOrder(input: {
   try {
     creds = await deps.api.client.workerSchedules.credentials(scheduleId, init);
   } catch (err) {
-    if (err instanceof ApiError && err.status === 409) {
+    if (err instanceof ApiError && err.status === 409 && err.code === "hash_mismatch") {
       await deps.api.client.workerSchedules
         .outcome(
           scheduleId,
           {
             status: "failed",
             attempt: 1,
-            error: "İçerik onayı değiştiği için zamanlanmış yayın iptal edildi.",
+            error: APPROVAL_CHANGED,
             accountNeedsReauth: false,
           },
           init,
@@ -388,6 +434,19 @@ async function pushOrder(input: {
         .catch(() => undefined);
     }
     throw err;
+  }
+
+  // Too late (S6): the Mac slept through the publish time and it was never handed over.
+  const { maxLatenessMs } = await resolveCloudPublisherConfig(deps, { signal });
+  const lateMs = nowMs(deps) - Date.parse(creds.schedule.scheduledAt);
+  if (lateMs > maxLatenessMs) {
+    const msg = missedScheduleMessage(Math.round(maxLatenessMs / 60_000));
+    await deps.api.client.workerSchedules.outcome(
+      scheduleId,
+      { status: "failed", attempt: 1, error: msg, accountNeedsReauth: false },
+      init,
+    );
+    throw new ScheduleNotPublished("missed", msg);
   }
 
   if (!creds.accessToken || !creds.account.externalId) {
@@ -408,9 +467,12 @@ async function pushOrder(input: {
     creds.version.slides.length,
   );
   const prepared = await ensurePreparedMediaForSchedule(creds, kind, deps, signal);
+  // Preparing media may render (a Reel without its video makes a new version, which revokes
+  // the approval and cancels the schedule): make sure it is still the approved, pending one.
+  await deps.api.client.workerSchedules.credentials(scheduleId, init);
 
-  const nowMs = (deps.now ?? (() => new Date()))().getTime();
-  const scheduledMs = Math.max(Date.parse(creds.schedule.scheduledAt), nowMs + 5_000);
+  const originalMs = Date.parse(creds.schedule.scheduledAt);
+  const scheduledMs = Math.max(originalMs, nowMs(deps) + 5_000);
   const externalId =
     creds.schedule.platform === "linkedin"
       ? normalizeLinkedInAuthorUrn(creds.account.externalId)
@@ -432,6 +494,8 @@ async function pushOrder(input: {
     versionId: creds.version.id,
     contentHash: creds.schedule.contentHash,
     scheduledAt: new Date(scheduledMs).toISOString(),
+    // The cloud publisher does not start it later than this (the Mac's maximum lateness).
+    notAfter: new Date(Math.max(originalMs + maxLatenessMs, scheduledMs + 60_000)).toISOString(),
     ...(creds.content.caption ? { caption: creds.content.caption.slice(0, 5000) } : {}),
     ...(creds.content.title ? { title: creds.content.title.slice(0, 255) } : {}),
     ...(hasAiGeneratedMarker(creds) ? { isAiGenerated: true } : {}),
@@ -455,7 +519,7 @@ async function pushOrder(input: {
       accept: "application/json",
     },
     body: JSON.stringify(orderBody),
-    signal,
+    signal: within(signal, CLOUD_TIMEOUT_MS),
   });
 
   if (putOrderRes.status === 409) {
@@ -495,7 +559,7 @@ async function pushOrder(input: {
         "content-type": m.mimeType,
       },
       body: m.bytes.slice(),
-      signal,
+      signal: within(signal, CLOUD_UPLOAD_TIMEOUT_MS),
     });
     if (!putMediaRes.ok) {
       const raw = redactToken(await putMediaRes.text().catch(() => ""), cloud.token);
@@ -524,7 +588,7 @@ async function everyTargetFailed(
   try {
     const res = await doFetch(orderUrl, {
       headers: { authorization: `Bearer ${token}`, accept: "application/json" },
-      signal,
+      signal: within(signal, CLOUD_TIMEOUT_MS),
     });
     if (!res.ok) return false;
     const order = (await res.json()) as { targets?: { status?: string }[] };
@@ -552,12 +616,18 @@ export async function cancelCloudOrders(input: {
   let cancelled = 0;
   for (const sched of list.items) {
     if (signal.aborted) break;
-    const res = await doFetch(`${cloud.url}/v1/orders/${encodeURIComponent(sched.id)}/cancel`, {
+    const orderUrl = `${cloud.url}/v1/orders/${encodeURIComponent(sched.id)}`;
+    const res = await doFetch(`${orderUrl}/cancel`, {
       method: "POST",
       headers: { authorization: `Bearer ${cloud.token}`, accept: "application/json" },
-      signal,
+      signal: within(signal, CLOUD_TIMEOUT_MS),
     });
-    // 404: never fully created there; 409: already publishing (too late to stop).
+    // 409: it had already started there (too late to stop): record what really happened,
+    // so the post does not show as cancelled while it is live.
+    if (res.status === 409 && !(await recordCloudTruth(deps, cloud, orderUrl, sched.id, signal))) {
+      continue; // could not read it now: try again next round
+    }
+    // 404: never fully created there.
     if (res.ok || res.status === 404 || res.status === 409) {
       cloudState(deps).pushed.delete(sched.id);
       await reportDelivery(
@@ -567,7 +637,7 @@ export async function cancelCloudOrders(input: {
           delivery: "cloud",
           cloudSyncedAt: null,
           ...(res.status === 409
-            ? { error: "Bulut yayıncı yayına başlamıştı; iptal edilemedi." }
+            ? { error: "Bulut yayıncı iptalden önce yayına başlamıştı; iptal edilemedi." }
             : {}),
         },
         signal,
@@ -576,6 +646,63 @@ export async function cancelCloudOrders(input: {
     }
   }
   return cancelled;
+}
+
+/** Write a cloud order target's real state back to a schedule cancelled here too late. */
+async function recordCloudTruth(
+  deps: SchedulePublishDeps,
+  cloud: CloudPublisherConfig,
+  orderUrl: string,
+  scheduleId: string,
+  signal: AbortSignal,
+): Promise<boolean> {
+  const doFetch = deps.publisherFetch ?? globalThis.fetch.bind(globalThis);
+  try {
+    const res = await doFetch(orderUrl, {
+      headers: { authorization: `Bearer ${cloud.token}`, accept: "application/json" },
+      signal: within(signal, CLOUD_TIMEOUT_MS),
+    });
+    if (!res.ok) return false;
+    const order = CloudOrder.parse(await res.json());
+    const target = order.targets.find((t) => t.id === scheduleId);
+    if (!target) return true;
+    const attempt = Math.max(1, target.attempts);
+    if (target.status === "published") {
+      await deps.api.client.workerSchedules.outcome(
+        scheduleId,
+        {
+          status: "published",
+          attempt,
+          externalPostId: target.postId ?? target.externalId,
+          permalink: target.permalink,
+        },
+        { signal },
+      );
+    } else if (target.status === "publishing") {
+      await deps.api.client.workerSchedules.outcome(
+        scheduleId,
+        { status: "publishing", attempt },
+        { signal },
+      );
+    } else if (target.status === "failed") {
+      await deps.api.client.workerSchedules.outcome(
+        scheduleId,
+        {
+          status: "failed",
+          attempt,
+          error: target.error?.message ?? "Bulut yayıncı hatası.",
+          accountNeedsReauth: target.error?.action === "reauth",
+        },
+        { signal },
+      );
+    }
+    // Its later outcomes come with the regular sync.
+    cloudState(deps).reported.delete(scheduleId);
+    return true;
+  } catch (error) {
+    if (signal.aborted) throw error;
+    return false;
+  }
 }
 
 /**
@@ -603,7 +730,7 @@ export async function syncCloudPublisherOutcomes(input: {
         authorization: `Bearer ${input.cloud.token}`,
         accept: "application/json",
       },
-      signal: input.signal,
+      signal: within(input.signal, CLOUD_TIMEOUT_MS),
     });
     if (!res.ok) {
       const raw = redactToken(await res.text().catch(() => ""), input.cloud.token);
@@ -668,6 +795,32 @@ export async function syncCloudPublisherOutcomes(input: {
   } while (cursor);
 
   return { synced, latestUpdatedAt };
+}
+
+/** Kind, account and texts of a request: what a resumed state must still match. */
+function requestIdentity(request: PublishRequest): string {
+  const r = request as Partial<
+    Record<
+      | "caption"
+      | "commentary"
+      | "message"
+      | "description"
+      | "title"
+      | "igUserId"
+      | "pageId"
+      | "authorUrn",
+      unknown
+    >
+  >;
+  return JSON.stringify([
+    request.kind,
+    r.igUserId ?? r.pageId ?? r.authorUrn ?? null,
+    r.caption ?? null,
+    r.commentary ?? null,
+    r.message ?? null,
+    r.description ?? null,
+    r.title ?? null,
+  ]);
 }
 
 function buildLocalPublishRequest(
@@ -835,8 +988,42 @@ function buildLocalPublishRequest(
   }
 }
 
+export type LocalPublishResult =
+  | {
+      scheduleId: string;
+      status: "published";
+      platform: string;
+      kind: CloudPublishKind;
+      externalPostId: string | null;
+      permalink: string | null;
+      resumed: boolean;
+    }
+  | {
+      scheduleId: string;
+      status: "skipped";
+      reason: WorkerScheduleClaimRefusal | "not_publishable";
+      message: string;
+    };
+
+const skipped = (scheduleId: string, error: ScheduleNotPublished): LocalPublishResult => ({
+  scheduleId,
+  status: "skipped",
+  reason: error.reason,
+  message: error.message,
+});
+
 /**
  * Mode B: Execute a due schedule directly from the Mac worker using `@studio/publishers`.
+ *
+ * 1. Credentials: refused (409) for a schedule that is not pending/publishing or whose
+ *    approval changed.
+ * 2. Media is prepared (renders) before the claim, so a render that loses the approval
+ *    cancels the schedule and the claim refuses it.
+ * 3. The claim moves it to `publishing` atomically (or takes over a stale local claim with
+ *    its saved state); a refused claim publishes nothing.
+ * 4. Every state machine state is saved (`publish-state`) before it is acted on; a resumed
+ *    state reconciles with the platform before any publish call.
+ * 5. The outcome is a compare-and-set on the API side.
  */
 export async function publishScheduleLocally(input: {
   scheduleId: string;
@@ -844,16 +1031,8 @@ export async function publishScheduleLocally(input: {
   deps: SchedulePublishDeps;
   signal: AbortSignal;
   progress?: (value: number, message: string) => void;
-}): Promise<{
-  scheduleId: string;
-  status: "published";
-  platform: string;
-  kind: CloudPublishKind;
-  externalPostId: string | null;
-  permalink: string | null;
-}> {
+}): Promise<LocalPublishResult> {
   const { scheduleId, deps, signal } = input;
-  const attempt = input.attempt ?? 1;
   const progress = input.progress ?? (() => {});
   const init = { signal };
 
@@ -861,57 +1040,117 @@ export async function publishScheduleLocally(input: {
   try {
     creds = await deps.api.client.workerSchedules.credentials(scheduleId, init);
   } catch (err) {
+    if (err instanceof ApiError && err.status === 409 && err.code === "invalid_transition") {
+      // Cancelled, published or failed meanwhile: nothing to publish.
+      return skipped(scheduleId, new ScheduleNotPublished("not_publishable", err.message));
+    }
     if (err instanceof ApiError && err.status === 409) {
-      const msg = "İçerik onayı değiştiği için zamanlanmış yayın iptal edildi.";
       await deps.api.client.workerSchedules
         .outcome(
           scheduleId,
-          { status: "failed", attempt, error: msg, accountNeedsReauth: false },
+          { status: "failed", attempt: input.attempt ?? 1, error: APPROVAL_CHANGED },
           init,
         )
         .catch(() => undefined);
-      throw new Error(msg);
+      throw new Error(APPROVAL_CHANGED);
     }
     throw err;
   }
 
+  const fail = async (msg: string, reauth: boolean, attempt: number) => {
+    await deps.api.client.workerSchedules
+      .outcome(
+        scheduleId,
+        { status: "failed", attempt, error: msg, accountNeedsReauth: reauth },
+        init,
+      )
+      .catch(() => undefined);
+    throw new Error(msg);
+  };
   if (!creds.accessToken) {
-    const msg = "Sosyal hesap erişim anahtarı bulunamadı; lütfen hesabı yeniden bağlayın.";
-    await deps.api.client.workerSchedules.outcome(
-      scheduleId,
-      { status: "failed", attempt, error: msg, accountNeedsReauth: true },
-      init,
+    return fail(
+      "Sosyal hesap erişim anahtarı bulunamadı; lütfen hesabı yeniden bağlayın.",
+      true,
+      input.attempt ?? 1,
     );
-    throw new Error(msg);
   }
-
   if (!creds.account.externalId) {
-    const msg = "Sosyal hesabın platform kimliği (externalId) eksik; hesabı yeniden bağlayın.";
-    await deps.api.client.workerSchedules.outcome(
-      scheduleId,
-      { status: "failed", attempt, error: msg, accountNeedsReauth: true },
-      init,
+    return fail(
+      "Sosyal hesabın platform kimliği (externalId) eksik; hesabı yeniden bağlayın.",
+      true,
+      input.attempt ?? 1,
     );
-    throw new Error(msg);
   }
+  const accessToken = creds.accessToken;
 
-  await reportDelivery(deps, scheduleId, { delivery: "local", cloudSyncedAt: null }, signal);
-  progress(0.15, "Medya dosyaları yayına hazırlanıyor");
   const kind = selectPublishKind(
     creds.schedule.platform,
     creds.content.type,
     creds.version.slides.length,
   );
-  const prepared = await ensurePreparedMediaForSchedule(creds, kind, deps, signal);
+  let prepared: { items: PreparedMediaAsset[]; coverAssetId?: string } | null = null;
+  if (creds.schedule.status === "pending") {
+    progress(0.15, "Medya dosyaları yayına hazırlanıyor");
+    prepared = await ensurePreparedMediaForSchedule(creds, kind, deps, signal);
+  }
 
-  await deps.api.client.workerSchedules.outcome(
+  const claim = await deps.api.client.workerSchedules.claim(
     scheduleId,
-    { status: "publishing", attempt },
+    { attempt: input.attempt ?? 1 },
     init,
   );
+  if (!claim.claimed) {
+    const reason = claim.reason ?? "in_progress";
+    const message =
+      reason === "missed"
+        ? (claim.schedule.lastError ?? "Paylaşım saati çok geçti.")
+        : `Zamanlama paylaşılmadı (${reason}).`;
+    return skipped(scheduleId, new ScheduleNotPublished(reason, message));
+  }
+  const attempt = claim.attempt;
+
+  // A saved state resumes (and reconciles) unless it ended in a definitive failure (nothing
+  // was published then; start again from scratch).
+  let saved = claim.publishState as PublishState | null;
+  if (saved && saved.phase === "failed") saved = null;
+  if (saved && !claim.resumed && prepared) {
+    // A retried failed schedule kept the state of its earlier try (same design). Its caption
+    // may have changed since (that needs a new approval but not a new design): resume only
+    // when the text and the account are still the same, otherwise start from scratch.
+    const fresh = buildLocalPublishRequest(creds, kind, prepared, (assetId) =>
+      deps.api.client.assets.contentUrl(assetId),
+    );
+    if (requestIdentity(saved.request) !== requestIdentity(fresh)) saved = null;
+  }
+  if (saved && saved.intentAt === null) {
+    // Nothing reached the platform yet: a late resume is a late publish (S6).
+    const { maxLatenessMs } = await resolveCloudPublisherConfig(deps, { signal });
+    if (nowMs(deps) - Date.parse(creds.schedule.scheduledAt) > maxLatenessMs) {
+      const msg = missedScheduleMessage(Math.round(maxLatenessMs / 60_000));
+      await deps.api.client.workerSchedules.outcome(
+        scheduleId,
+        { status: "failed", attempt, error: msg },
+        init,
+      );
+      return skipped(scheduleId, new ScheduleNotPublished("missed", msg));
+    }
+  }
+
+  if (!saved && !prepared) {
+    // A stale claim without a saved state: nothing was sent; prepare and check approval again.
+    prepared = await ensurePreparedMediaForSchedule(creds, kind, deps, signal);
+    try {
+      await deps.api.client.workerSchedules.credentials(scheduleId, init);
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 409) {
+        return fail(APPROVAL_CHANGED, false, attempt);
+      }
+      throw err;
+    }
+  }
 
   const bytesByAssetId = new Map<string, PreparedMediaAsset>();
-  for (const item of prepared.items) {
+  for (const item of prepared?.items ?? []) {
     bytesByAssetId.set(item.assetId, item);
   }
 
@@ -955,30 +1194,59 @@ export async function publishScheduleLocally(input: {
         headers: { "content-type": dl.contentType },
       });
     }
-    return baseFetch(reqInput, { ...reqInit, ...(signal ? { signal } : {}) });
+    return baseFetch(reqInput, {
+      ...reqInit,
+      // The caller's own timeout stays; the job's abort signal joins it.
+      signal: reqInit?.signal ? AbortSignal.any([reqInit.signal, signal]) : signal,
+    });
   };
 
+  const linkedinVersion = deps.settings.parentEnv.STUDIO_LINKEDIN_VERSION?.trim();
   const publisher = createPublisher({
     fetch: wrappedFetch,
-    clock: { now: () => (deps.now ?? (() => new Date()))().getTime() },
+    clock: { now: () => nowMs(deps) },
+    ...(linkedinVersion ? { linkedinVersion } : {}),
     ...(deps.publisherMachineOptions ? { machine: deps.publisherMachineOptions } : {}),
   });
 
-  const request = buildLocalPublishRequest(creds, kind, prepared, (assetId) =>
-    deps.api.client.assets.contentUrl(assetId),
-  );
+  /** Save the state before acting on it; a failed save stops the run (it resumes later). */
+  const persist = async (state: PublishState) => {
+    try {
+      await deps.api.client.workerSchedules.publishState(
+        scheduleId,
+        { state: state as unknown as Record<string, unknown> },
+        init,
+      );
+    } catch (error) {
+      if (signal.aborted) throw error;
+      throw new StateNotSaved(
+        `Yayın durumu kaydedilemedi (${(error as Error).message}); yayın daha sonra kaldığı yerden sürecek.`,
+      );
+    }
+  };
 
   let outcomeRecorded = false;
   try {
-    progress(0.45, `${creds.schedule.platform} yayını gönderiliyor (${kind})`);
-    const initial = publisher.start(request);
+    let initial: PublishState;
+    if (saved) {
+      initial = saved;
+      progress(0.45, `${creds.schedule.platform} yayını kaldığı yerden sürüyor (${kind})`);
+    } else {
+      const request = buildLocalPublishRequest(creds, kind, prepared ?? { items: [] }, (assetId) =>
+        deps.api.client.assets.contentUrl(assetId),
+      );
+      initial = publisher.start(request);
+      await persist(initial);
+      progress(0.45, `${creds.schedule.platform} yayını gönderiliyor (${kind})`);
+    }
     const outcome = await runToCompletion(
       publisher,
       initial,
-      { accessToken: creds.accessToken, media: mediaReader },
+      { accessToken, media: mediaReader },
       {
-        clock: { now: () => (deps.now ?? (() => new Date()))().getTime() },
+        clock: { now: () => nowMs(deps) },
         sleep: deps.publisherSleep ?? ((ms) => abortableSleep(ms, signal)),
+        onState: (state) => persist(state),
       },
     );
 
@@ -1003,6 +1271,7 @@ export async function publishScheduleLocally(input: {
         kind,
         externalPostId,
         permalink: outcome.result.permalink,
+        resumed: saved !== null,
       };
     }
 
@@ -1022,7 +1291,9 @@ export async function publishScheduleLocally(input: {
     throw new Error(msg);
   } catch (error) {
     if (signal.aborted) throw signal.reason ?? error;
-    if (outcomeRecorded) throw error;
+    // Mid-publish and the state could not be saved: leave it `publishing`; the stale-claim
+    // sweep resumes it from the last saved state (which reconciles first).
+    if (outcomeRecorded || error instanceof StateNotSaved) throw error;
     if (error instanceof PublishError) {
       await deps.api.client.workerSchedules
         .outcome(
@@ -1038,7 +1309,7 @@ export async function publishScheduleLocally(input: {
         .catch(() => undefined);
       throw new Error(error.data.message);
     }
-    const mapped = toPublishError(error, [creds.accessToken]);
+    const mapped = toPublishError(error, [accessToken]);
     await deps.api.client.workerSchedules
       .outcome(
         scheduleId,
@@ -1069,19 +1340,51 @@ export function createSchedulePublishHandler(deps: SchedulePublishDeps) {
       }
       lockSet?.add(payload.scheduleId);
       try {
-        const { cloud } = await resolveCloudPublisherConfig(deps, { signal: ctx.signal });
+        const { cloud, unavailable } = await resolveCloudPublisherConfig(deps, {
+          signal: ctx.signal,
+        });
+        // Unknown publishing path (unreadable cloud token): publishing locally could post what
+        // the cloud publisher also holds. Retry later instead.
+        if (unavailable) throw new RetryableError(unavailable);
         if (cloud) {
           // With a cloud publisher every schedule goes there (Meta fetches images from its
           // signed public URLs); a due one is sent for a few seconds from now.
           ctx.progress(0.3, "Bulut yayıncıya sipariş aktarılıyor");
-          const pushed = await pushScheduleToCloudPublisher({
-            scheduleId: payload.scheduleId,
-            cloud,
-            deps,
-            signal: ctx.signal,
-          });
-          ctx.progress(1, "Bulut yayıncıya aktarıldı");
-          return { mode: "cloud", ...pushed };
+          try {
+            const pushed = await pushScheduleToCloudPublisher({
+              scheduleId: payload.scheduleId,
+              cloud,
+              deps,
+              signal: ctx.signal,
+            });
+            ctx.progress(1, "Bulut yayıncıya aktarıldı");
+            return { mode: "cloud", ...pushed };
+          } catch (error) {
+            if (error instanceof ScheduleNotPublished) {
+              return {
+                mode: "cloud",
+                scheduleId: payload.scheduleId,
+                skipped: true,
+                reason: error.reason,
+                message: error.message,
+              };
+            }
+            if (
+              error instanceof ApiError &&
+              error.status === 409 &&
+              error.code === "invalid_transition"
+            ) {
+              // Cancelled, published or failed meanwhile: nothing to hand over.
+              return {
+                mode: "cloud",
+                scheduleId: payload.scheduleId,
+                skipped: true,
+                reason: "not_publishable",
+                message: error.message,
+              };
+            }
+            throw error;
+          }
         }
 
         const published = await publishScheduleLocally({

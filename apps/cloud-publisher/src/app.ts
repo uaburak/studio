@@ -51,6 +51,46 @@ function reply<T>(result: RpcResult<T>, status = 200): Response {
 
 const scheduler = (env: Env) => env.SCHEDULER.getByName("main");
 
+const isLoopback = (host: string) =>
+  ["localhost", "127.0.0.1", "[::1]"].includes(host) || host.endsWith(".localhost");
+
+/**
+ * Why this deployment must not run, or null. `PUBLIC_BASE_URL` is where Meta downloads media
+ * from: the wrangler.jsonc default (`http://127.0.0.1:8788`) is only right for `wrangler dev`.
+ * Reached on a real hostname with a loopback or plain-http base, every Instagram/Facebook post
+ * would fail at publish time, so the publisher refuses to take orders (and `/health` says so,
+ * which makes the Mac refuse to save it) instead. Local runs (loopback host) are not affected.
+ */
+export function deploymentProblem(
+  env: Pick<Env, "PUBLIC_BASE_URL">,
+  requestUrl: string,
+): string | null {
+  if (isLoopback(new URL(requestUrl).hostname.toLowerCase())) return null;
+  let base: URL;
+  try {
+    base = new URL(env.PUBLIC_BASE_URL);
+  } catch {
+    return "PUBLIC_BASE_URL is not a URL";
+  }
+  if (base.protocol !== "https:" || isLoopback(base.hostname.toLowerCase())) {
+    return "PUBLIC_BASE_URL must be this deployment's public https:// origin (wrangler.jsonc vars)";
+  }
+  return null;
+}
+
+// Startup assertion, checked on every request (a Worker has no start-up hook with env).
+app.use("*", async (c, next) => {
+  const problem = deploymentProblem(c.env, c.req.url);
+  if (problem) {
+    console.error(JSON.stringify({ event: "misconfigured", problem }));
+    const body: CloudPublisherErrorBody = {
+      error: { code: "internal_error", message: `misconfigured: ${problem}` },
+    };
+    return Response.json(body, { status: 503 });
+  }
+  await next();
+});
+
 app.get("/health", (c) => c.json({ ok: true }));
 
 // --- signed media (public) -------------------------------------------------------------

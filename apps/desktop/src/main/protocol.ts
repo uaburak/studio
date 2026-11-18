@@ -1,6 +1,9 @@
 // The packaged renderer is served from `studio://app/…`. Requests under `/api/` are forwarded
-// to the local API on 127.0.0.1 (same origin for the renderer, so no CORS; the API counts them
-// as the Mac itself, like the AppKit app). WebSockets go straight to ws://127.0.0.1:<port>.
+// to the local API on 127.0.0.1 with the app's owner secret (`X-Studio-Owner`), which makes the
+// API treat them as the Mac itself (G1). Only this app's own pages can reach a `studio://` URL;
+// a request that names another origin is refused here. WebSockets go straight to
+// ws://127.0.0.1:<port>; the main process's webRequest hook adds the secret to those
+// (see app.ts).
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { net, protocol } from "electron";
@@ -8,6 +11,7 @@ import { apiTargetUrl, resolveAppFile } from "./protocol-paths.ts";
 
 export const APP_SCHEME = "studio";
 export const APP_ORIGIN = `${APP_SCHEME}://app`;
+export const OWNER_HEADER = "X-Studio-Owner";
 
 export function registerSchemePrivileges(): void {
   protocol.registerSchemesAsPrivileged([
@@ -24,21 +28,31 @@ export function registerSchemePrivileges(): void {
   ]);
 }
 
-export function handleAppProtocol(rendererRoot: string, apiPort: () => number | null): void {
+function problem(status: number, code: string, message: string): Response {
+  return new Response(JSON.stringify({ error: { code, message } }), {
+    status,
+    headers: { "content-type": "application/json" },
+  });
+}
+
+export function handleAppProtocol(
+  rendererRoot: string,
+  apiPort: () => number | null,
+  ownerSecret: () => string,
+): void {
   protocol.handle(APP_SCHEME, async (request) => {
     const port = apiPort();
     const target = port === null ? null : apiTargetUrl(request.url, port);
     if (new URL(request.url).pathname.startsWith("/api/")) {
-      if (!target) {
-        return new Response(
-          JSON.stringify({
-            error: { code: "unavailable", message: "Studio sunucusu hazır değil." },
-          }),
-          { status: 503, headers: { "content-type": "application/json" } },
-        );
+      const origin = request.headers.get("origin");
+      if (origin !== null && origin !== APP_ORIGIN) {
+        return problem(403, "forbidden", "Bu istek Studio'nun kendi sayfasından gelmiyor.");
       }
+      if (!target) return problem(503, "unavailable", "Studio sunucusu hazır değil.");
       const headers = new Headers(request.headers);
+      // Checked above; the API sees the owner secret instead.
       headers.delete("origin");
+      headers.set(OWNER_HEADER, ownerSecret());
       const hasBody = request.method !== "GET" && request.method !== "HEAD";
       return net.fetch(target, {
         method: request.method,

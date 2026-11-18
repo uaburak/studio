@@ -324,6 +324,20 @@ export const ITEMS = {
     "Uzaktan erişim yeni anahtar girilene kadar çalışmaz.",
     "kaldır",
   ),
+  backup: item(
+    "advanced.backup",
+    "advanced",
+    "Yedekle",
+    "Postları, sohbetleri, medyayı ve hesap anahtarlarını tek bir dosyaya kaydeder. Bu sırada sunucu birkaç saniye durur.",
+    "yedek backup zip kaydet",
+  ),
+  restore: item(
+    "advanced.restore",
+    "advanced",
+    "Yedekten geri yükle",
+    "Seçtiğin yedek şu anki verilerin yerine geçer. Şu anki veriler önce ayrıca saklanır.",
+    "yedek geri yükle restore",
+  ),
   // Cihazlar
   pairPhone: item(
     "devices.pair",

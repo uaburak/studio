@@ -21,6 +21,12 @@ if (!wecraVendored())
  * `~/Library/Application Support/Studio/host.json` (this app's supervisor or the AppKit
  * app it attached to); 8790 when there is none yet. The packaged app does the same through
  * its `studio://` protocol handler (src/main/protocol.ts).
+ *
+ * The proxy holds no secret (G1): the Electron main process adds the owner secret
+ * (`X-Studio-Owner`) to the dev renderer's own `/api/` requests (src/main/app.ts, webRequest),
+ * and the proxy forwards it with `Origin` and `Host` unchanged, so the API can still refuse a
+ * web page that sends requests here (no secret, foreign Origin, rebound Host). The renderer
+ * opened in a plain browser (`dev:renderer`) therefore gets 401 from owner-only routes.
  */
 function apiPort(): number {
   try {
@@ -40,7 +46,6 @@ function apiProxy(): Plugin {
     configureServer(server) {
       server.middlewares.use("/api", (req, res) => {
         const headers = { ...req.headers };
-        delete headers.origin;
         delete headers.referer;
         const upstream = request(
           {

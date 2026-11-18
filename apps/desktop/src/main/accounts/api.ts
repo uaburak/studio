@@ -1,5 +1,6 @@
 // The few API calls of the connect flows, made from the main process straight to the local API
-// (127.0.0.1 counts as the Mac itself, which these "Mac only" routes require). Paths and bodies
+// (127.0.0.1 with the app's owner secret counts as the Mac itself, which these "Mac only" routes
+// require; see apps/api/src/middleware/access.ts). Paths and bodies
 // follow packages/contract (social-account.ts); only types are imported, so the main bundle does
 // not pull in the contract package at runtime.
 import type {
@@ -35,7 +36,11 @@ export interface AccountsApi {
 
 type Fetch = typeof fetch;
 
-export function createAccountsApi(port: () => number | null, doFetch: Fetch = fetch): AccountsApi {
+export function createAccountsApi(
+  port: () => number | null,
+  ownerSecret: () => string,
+  doFetch: Fetch = fetch,
+): AccountsApi {
   async function call<T>(method: "GET" | "POST", path: string, body?: unknown): Promise<T> {
     const p = port();
     if (p === null) throw new ApiFailure("Studio sunucusu hazır değil.", 503);
@@ -45,6 +50,7 @@ export function createAccountsApi(port: () => number | null, doFetch: Fetch = fe
         method,
         headers: {
           accept: "application/json",
+          "X-Studio-Owner": ownerSecret(),
           ...(body !== undefined ? { "content-type": "application/json" } : {}),
         },
         ...(body !== undefined ? { body: JSON.stringify(body) } : {}),

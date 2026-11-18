@@ -1,16 +1,42 @@
-import { mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AdvertiseInput, Advertiser } from "../../src/main/host/bonjour.ts";
 import {
   buildSpecs,
+  FOREIGN_HOST_MESSAGE,
   type HostConfiguration,
   type HostDeps,
   LocalHost,
   type MacRoutesInput,
 } from "../../src/main/host/local-host.ts";
 import type { ProcessLauncher, ProcessSpec, RunningProcess } from "../../src/main/host/process.ts";
+import type { Cipher } from "../../src/main/host/secrets.ts";
+
+/** A reversible stand-in for safeStorage. */
+const cipher: Cipher = {
+  available: () => true,
+  encrypt: (text) => Buffer.from(`sealed:${text}`, "utf8"),
+  decrypt: (data) => {
+    const text = data.toString("utf8");
+    if (!text.startsWith("sealed:")) throw new Error("not sealed");
+    return text.slice("sealed:".length);
+  },
+};
+
+const OWNER = "owner-secret-0123456789abcdef0123456789abcdef";
+
+/** The sealed worker token and vault key, opened. */
+function sealed(stateDir: string): Record<string, string> {
+  const raw = JSON.parse(readFileSync(join(stateDir, "host-secrets.json"), "utf8")) as Record<
+    string,
+    string
+  >;
+  return Object.fromEntries(
+    Object.entries(raw).map(([k, v]) => [k, cipher.decrypt(Buffer.from(v, "base64"))]),
+  );
+}
 
 class Proc implements RunningProcess {
   private done!: (code: number) => void;
@@ -80,9 +106,13 @@ function setup(overrides: Partial<HostDeps> = {}, conf: Partial<HostConfiguratio
     launcher,
     advertiser,
     ownPid: 4242,
+    cipher,
+    ownerSecret: () => OWNER,
     health: vi.fn(async () => (apiUp ? { instance: "inst-1" } : null)),
+    ownerCheck: vi.fn(async () => true),
     isAlive: vi.fn(() => false),
     stopLeftovers: vi.fn(async () => undefined),
+    snapshotDatabase: vi.fn(() => undefined),
     loginShellPath: () => "/usr/bin:/opt/homebrew/bin",
     which: (tool) =>
       tool === "node"
@@ -167,7 +197,7 @@ describe("LocalHost attach rules", () => {
     writeFileSync(join(ctx.stateDir, "host.json"), JSON.stringify({ apiPort: 8790, pid: 777 }));
     ctx.setApiUp(true); // the leftover API still answers — it must not be reused
     await ctx.host.start();
-    expect(ctx.deps.stopLeftovers).toHaveBeenCalledWith("/repo");
+    expect(ctx.deps.stopLeftovers).toHaveBeenCalledWith("/repo", ctx.stateDir);
     expect(ctx.host.status).toEqual({ kind: "running" });
     expect(ctx.launcher.names()).toEqual(["migrate", "api", "gateway", "worker"]);
     const hostFile = JSON.parse(readFileSync(join(ctx.stateDir, "host.json"), "utf8"));
@@ -190,10 +220,15 @@ describe("LocalHost start", () => {
     hosts.push(ctx.host);
     await ctx.host.start();
     const byName = Object.fromEntries(ctx.launcher.started.map((p) => [p.spec.name, p.spec]));
-    const token = readFileSync(join(ctx.stateDir, "worker-token"), "utf8");
-    const vault = readFileSync(join(ctx.stateDir, "vault-key"), "utf8");
+    // G10: the worker token and vault key are sealed with safeStorage, never plain files.
+    const keys = sealed(ctx.stateDir);
+    const token = keys["worker-token"] ?? "";
+    const vault = keys["vault-key"] ?? "";
     expect(token).toMatch(/^[0-9a-f]{64}$/);
-    expect(statSync(join(ctx.stateDir, "worker-token")).mode & 0o777).toBe(0o600);
+    expect(Buffer.from(vault, "base64")).toHaveLength(32);
+    expect(statSync(join(ctx.stateDir, "host-secrets.json")).mode & 0o777).toBe(0o600);
+    expect(existsSync(join(ctx.stateDir, "worker-token"))).toBe(false);
+    expect(existsSync(join(ctx.stateDir, "vault-key"))).toBe(false);
     expect(byName.migrate?.args.slice(1, 6)).toEqual([
       "d1",
       "migrations",
@@ -205,10 +240,17 @@ describe("LocalHost start", () => {
     expect(byName.api?.env).toMatchObject({
       WORKER_TOKEN: token,
       TOKEN_ENCRYPTION_KEY: vault,
+      STUDIO_OWNER_SECRET: OWNER,
       STUDIO_INSTANCE_ID: "inst-1",
       WRANGLER_SEND_METRICS: "false",
       PATH: "/usr/bin:/opt/homebrew/bin",
     });
+    // Secrets only travel in the environment, never on a command line (G1, G2).
+    const commandLines = ctx.launcher.started.map((p) => p.spec.args.join(" ")).join("\n");
+    for (const secret of [token, vault, OWNER]) expect(commandLines).not.toContain(secret);
+    expect(byName.worker?.env.STUDIO_OWNER_SECRET).toBeUndefined();
+    expect(byName.gateway?.env.STUDIO_OWNER_SECRET).toBeUndefined();
+    expect(ctx.deps.snapshotDatabase).toHaveBeenCalledWith(ctx.stateDir);
     expect(byName.api?.args).toContain("--port");
     expect(byName.api?.args).toContain(join(ctx.stateDir, "api", "state"));
     expect(byName.gateway?.env).toMatchObject({
@@ -238,7 +280,7 @@ describe("LocalHost start", () => {
     expect(ctx.host.ownsChildren).toBe(true);
   });
 
-  it("reuses the shared secrets of the AppKit app", async () => {
+  it("moves the AppKit app's plain secrets into safeStorage once", async () => {
     const ctx = setup();
     hosts.push(ctx.host);
     writeFileSync(join(ctx.stateDir, "worker-token"), "a".repeat(64));
@@ -247,6 +289,27 @@ describe("LocalHost start", () => {
     const api = ctx.launcher.started.find((p) => p.spec.name === "api");
     expect(api?.spec.env.WORKER_TOKEN).toBe("a".repeat(64));
     expect(api?.spec.env.TOKEN_ENCRYPTION_KEY).toBe("b".repeat(44));
+    expect(sealed(ctx.stateDir)).toEqual({
+      "worker-token": "a".repeat(64),
+      "vault-key": "b".repeat(44),
+    });
+    expect(existsSync(join(ctx.stateDir, "worker-token"))).toBe(false);
+    expect(existsSync(join(ctx.stateDir, "vault-key"))).toBe(false);
+  });
+
+  it("refuses to start when the sealed vault key cannot be opened (never makes a new one)", async () => {
+    const ctx = setup();
+    hosts.push(ctx.host);
+    writeFileSync(
+      join(ctx.stateDir, "host-secrets.json"),
+      JSON.stringify({ "vault-key": Buffer.from("garbage").toString("base64") }),
+    );
+    await ctx.host.start();
+    expect(ctx.host.status).toMatchObject({
+      kind: "error",
+      message: expect.stringContaining("çözülemedi"),
+    });
+    expect(ctx.launcher.started).toHaveLength(0);
   });
 
   it("falls back to a free port when the preferred one is taken", async () => {
@@ -312,14 +375,186 @@ describe("LocalHost start", () => {
     });
   });
 
-  it("stop ends the children: worker before gateway before API", async () => {
+  it("stop ends the children: worker before gateway before API, and removes host.json", async () => {
     const ctx = setup();
     hosts.push(ctx.host);
     await ctx.host.start();
+    expect(existsSync(join(ctx.stateDir, "host.json"))).toBe(true);
     await ctx.host.stop();
     expect(ctx.host.status).toEqual({ kind: "stopped" });
     expect(ctx.host.ownsChildren).toBe(false);
     expect(ctx.advertiser.isAdvertising).toBe(false);
+    expect(existsSync(join(ctx.stateDir, "host.json"))).toBe(false);
+  });
+
+  it("does not attach to a host that refuses this app's owner secret", async () => {
+    const ctx = setup({ isAlive: vi.fn(() => true), ownerCheck: vi.fn(async () => false) });
+    hosts.push(ctx.host);
+    writeFileSync(join(ctx.stateDir, "host.json"), JSON.stringify({ apiPort: 8795, pid: 777 }));
+    ctx.setApiUp(true);
+    await ctx.host.start();
+    expect(ctx.host.status).toMatchObject({ kind: "error", message: FOREIGN_HOST_MESSAGE });
+    expect(ctx.launcher.started).toHaveLength(0);
+    // The other app's host.json stays.
+    expect(existsSync(join(ctx.stateDir, "host.json"))).toBe(true);
+  });
+
+  it("turns an unexpected failure into an error that can be retried", async () => {
+    let calls = 0;
+    const ctx = setup({
+      computerName: () => {
+        calls += 1;
+        if (calls === 1) throw new Error("scutil exploded");
+        return "Mac";
+      },
+    });
+    hosts.push(ctx.host);
+    await ctx.host.start();
+    expect(ctx.host.status).toMatchObject({
+      kind: "error",
+      message: expect.stringContaining("scutil exploded"),
+    });
+    await ctx.host.restart();
+    expect(ctx.host.status).toEqual({ kind: "running" });
+  });
+
+  it("copies the database before migrating, and does not migrate when the copy fails", async () => {
+    const order: string[] = [];
+    const ctx = setup({
+      snapshotDatabase: vi.fn(() => {
+        order.push("snapshot");
+        throw new Error("disk full");
+      }),
+    });
+    hosts.push(ctx.host);
+    await ctx.host.start();
+    expect(order).toEqual(["snapshot"]);
+    expect(ctx.host.status).toMatchObject({
+      kind: "error",
+      message: expect.stringContaining("disk full"),
+    });
+    expect(ctx.launcher.names()).toEqual([]);
+  });
+
+  it("never shows a secret in what it sends to the window", async () => {
+    const ctx = setup({
+      tail: () => `boom WORKER_TOKEN=abc ${OWNER} --token eyJhIjoiMTIzNDU2Nzg5MCJ9`,
+    });
+    hosts.push(ctx.host);
+    ctx.launcher.migrateExit = 1;
+    await ctx.host.start();
+    const shown = JSON.stringify(ctx.host.snapshot());
+    expect(shown).not.toContain(OWNER);
+    expect(shown).not.toContain("eyJhIjoiMTIzNDU2Nzg5MCJ9");
+    expect(shown).not.toContain("WORKER_TOKEN=abc");
+    expect(shown).toContain("***");
+  });
+
+  it("advertises again when dns-sd went away (sleep, mDNSResponder restart)", async () => {
+    const ctx = setup();
+    hosts.push(ctx.host);
+    await ctx.host.start();
+    expect(ctx.advertiser.starts).toHaveLength(1);
+    await ctx.host.networkChanged();
+    expect(ctx.advertiser.starts).toHaveLength(1); // still advertising, same addresses
+    ctx.advertiser.isAdvertising = false; // dns-sd exited
+    await ctx.host.networkChanged();
+    expect(ctx.advertiser.starts).toHaveLength(2);
+    expect(ctx.advertiser.isAdvertising).toBe(true);
+    // A new Wi-Fi: advertise the new address and tell the phones.
+    ctx.deps.lanAddresses = () => ["10.0.0.7"];
+    await ctx.host.networkChanged();
+    expect(ctx.advertiser.starts).toHaveLength(3);
+    expect(ctx.advertiser.starts[2]?.addresses).toEqual(["10.0.0.7"]);
+    expect(ctx.routes.at(-1)?.lanAddresses).toEqual(["10.0.0.7"]);
+  });
+
+  it("does not restart dns-sd on every check when publishing the routes fails", async () => {
+    const ctx = setup({ publishRoutes: async () => false });
+    hosts.push(ctx.host);
+    await ctx.host.start();
+    for (let i = 0; i < 3; i++) await ctx.host.networkChanged();
+    expect(ctx.advertiser.starts).toHaveLength(1);
+  });
+
+  it("refuses backups while attached; otherwise pauses the children and starts again", async () => {
+    const attached = setup({ isAlive: vi.fn(() => true) });
+    hosts.push(attached.host);
+    writeFileSync(
+      join(attached.stateDir, "host.json"),
+      JSON.stringify({ apiPort: 8795, pid: 777 }),
+    );
+    attached.setApiUp(true);
+    await attached.host.start();
+    await expect(attached.host.withStopped("x", async () => 1)).rejects.toThrow("başka bir Studio");
+    // Its attach monitor polls with the instant test sleep: stop it before waiting on timers.
+    await attached.host.stop();
+
+    const ctx = setup();
+    hosts.push(ctx.host);
+    await ctx.host.start();
+    const seen: string[] = [];
+    const result = await ctx.host.withStopped("Yedekleniyor", async () => {
+      seen.push(ctx.host.status.kind, String(ctx.host.ownsChildren));
+      return 42;
+    });
+    expect(result).toBe(42);
+    expect(seen).toEqual(["starting", "false"]);
+    await new Promise((r) => setTimeout(r, 0));
+    await ctx.host.start();
+    expect(ctx.host.status).toEqual({ kind: "running" });
+    expect(ctx.launcher.names().filter((n) => n === "api")).toHaveLength(2);
+  });
+});
+
+describe("Remote Control tunnel", () => {
+  const remote = { remoteControlEnabled: true };
+  const withCloudflared = (overrides: Partial<HostDeps> = {}) =>
+    setup(
+      {
+        which: (tool) =>
+          tool === "node" ? "/n" : tool === "cloudflared" ? "/opt/homebrew/bin/cloudflared" : null,
+        readTunnelToken: async () => "eyJhIjoidHVubmVsLXRva2VuLXZhbHVlIn0",
+        ...overrides,
+      },
+      remote,
+    );
+
+  it("passes the token only in the environment", async () => {
+    const ctx = withCloudflared();
+    hosts.push(ctx.host);
+    await ctx.host.start();
+    const tunnel = ctx.launcher.started.find((p) => p.spec.name === "tunnel");
+    expect(tunnel?.spec.args).not.toContain("--token");
+    expect(tunnel?.spec.args.join(" ")).not.toContain("eyJhIjoidHVubmVsLXRva2VuLXZhbHVlIn0");
+    expect(tunnel?.spec.env.TUNNEL_TOKEN).toBe("eyJhIjoidHVubmVsLXRva2VuLXZhbHVlIn0");
+  });
+
+  it("a failing tunnel leaves the rest of the host running", async () => {
+    const ctx = withCloudflared();
+    hosts.push(ctx.host);
+    ctx.deps.supervisor = { sleep: async () => undefined, policy: { maxQuickFailures: 0 } };
+    await ctx.host.start();
+    const tunnel = ctx.launcher.started.find((p) => p.spec.name === "tunnel");
+    tunnel?.end(1);
+    await new Promise((r) => setTimeout(r, 0));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(ctx.host.snapshot().services.tunnel?.kind).toBe("failed");
+    expect(ctx.host.status).toEqual({ kind: "running" });
+    expect(ctx.host.tunnelNote).toContain("tüneli durdu");
+  });
+
+  it("a new token restarts only the tunnel", async () => {
+    const ctx = withCloudflared();
+    hosts.push(ctx.host);
+    await ctx.host.start();
+    const before = ctx.launcher.names();
+    await ctx.host.restartTunnel();
+    const after = ctx.launcher.names().slice(before.length);
+    expect(after).toEqual(["tunnel"]);
+    expect(ctx.host.status).toEqual({ kind: "running" });
+    const workers = ctx.launcher.started.filter((p) => p.spec.name === "worker");
+    expect(workers).toHaveLength(1);
   });
 });
 
@@ -332,6 +567,7 @@ describe("buildSpecs", () => {
       base: { PATH: "/bin" },
       token: "t",
       vaultKey: "v",
+      ownerSecret: "o",
       instance: "i",
       apiPort: 9000,
       claude: null,
@@ -343,6 +579,7 @@ describe("buildSpecs", () => {
       STUDIO_API_PORT: "9000",
     });
     expect(specs.worker.env.STUDIO_GEMINI_BIN).toBe("/g");
+    expect(specs.api.env.STUDIO_OWNER_SECRET).toBe("o");
     expect(specs.api.args).toContain("--show-interactive-dev-session=false");
     expect(specs.required).toContain("/r/apps/api/node_modules/wrangler/bin/wrangler.js");
   });

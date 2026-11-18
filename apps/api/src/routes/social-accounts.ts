@@ -41,6 +41,7 @@ import {
   readMetaGrantedScopes,
 } from "../lib/oauth.ts";
 import { toPage } from "../lib/pagination.ts";
+import { requestSyncStatement } from "../lib/publishing.ts";
 import { createRouter, errors, IdParams, json, jsonBody } from "../lib/router.ts";
 import {
   decryptAccountToken,
@@ -88,23 +89,11 @@ async function saveEncryptedToken(args: {
     args.accessToken,
   );
   const health = args.health ?? evaluateTokenHealth(args.expiresAt, args.now.getTime());
-  await args.db
-    .insert(socialAccountTokens)
-    .values({
-      socialAccountId: args.socialAccountId,
-      ciphertext,
-      iv,
-      keyVersion,
-      scopes: args.scopes,
-      expiresAt: args.expiresAt,
-      health,
-      checkedAt: args.now,
-      createdAt: args.now,
-      updatedAt: args.now,
-    })
-    .onConflictDoUpdate({
-      target: socialAccountTokens.socialAccountId,
-      set: {
+  await args.db.batch([
+    args.db
+      .insert(socialAccountTokens)
+      .values({
+        socialAccountId: args.socialAccountId,
         ciphertext,
         iv,
         keyVersion,
@@ -112,9 +101,36 @@ async function saveEncryptedToken(args: {
         expiresAt: args.expiresAt,
         health,
         checkedAt: args.now,
+        createdAt: args.now,
         updatedAt: args.now,
-      },
-    });
+      })
+      .onConflictDoUpdate({
+        target: socialAccountTokens.socialAccountId,
+        set: {
+          ciphertext,
+          iv,
+          keyVersion,
+          scopes: args.scopes,
+          expiresAt: args.expiresAt,
+          health,
+          checkedAt: args.now,
+          updatedAt: args.now,
+        },
+      }),
+    // Orders already at the cloud publisher carry the old token (sealed there): a cleared
+    // `cloudSyncedAt` makes the worker push them again with this one, right away.
+    args.db
+      .update(schedules)
+      .set({ cloudSyncedAt: null, updatedAt: args.now })
+      .where(
+        and(
+          eq(schedules.socialAccountId, args.socialAccountId),
+          eq(schedules.status, "pending"),
+          eq(schedules.delivery, "cloud"),
+        ),
+      ),
+    requestSyncStatement(args.db, args.now),
+  ]);
   return health;
 }
 
@@ -417,8 +433,10 @@ export const socialAccountRoutes = router
               platform: "instagram",
               externalId: page.instagram.igUserId,
               handle: igHandle,
+              // Instagram publishes with the Page token (like the Facebook row above): it
+              // expires only when that Page token does, not with the user token.
               accessToken: page.pageAccessToken,
-              expiresAt: pageExpiresAt ?? userExpiresAt,
+              expiresAt: pageExpiresAt,
               scopes: [...META_INSTAGRAM_SCOPES],
               skipForeignBrand: true,
             });

@@ -7,6 +7,7 @@ import {
   MacRoutesInput,
   PAIRING_CODE_LENGTH,
   PAIRING_CODE_TTL_MS,
+  PAIRING_MAX_CODE_TRIES,
   PAIRING_MAX_FAILURES_PER_CLIENT,
   PAIRING_MAX_FAILURES_TOTAL,
   PAIRING_RATE_WINDOW_MS,
@@ -23,18 +24,29 @@ import { errorBody, notFound } from "../lib/errors.ts";
 import { newId } from "../lib/ids.ts";
 import { createRouter, errors, IdParams, json, jsonBody } from "../lib/router.ts";
 import { clientAddress, requireLocal } from "../middleware/access.ts";
+import { hubStub } from "./jobs.ts";
 
 /*
  * Device pairing (task L1, QR pairing). The Mac app creates a pairing offer
- * (POST /api/pairing/codes, 127.0.0.1 only): a 6-digit code it can show as
- * text and a 32-byte secret it puts in a QR code. The phone trades either one
- * for a device token (POST /api/pairing/claim, public); either one uses up the
+ * (POST /api/pairing/codes, Mac only): a 6-digit code it can show as text and
+ * a 32-byte secret it puts in a QR code. The phone trades either one for a
+ * device token (POST /api/pairing/claim, public); either one uses up the
  * whole offer. Wrong, expired and reused codes or secrets look the same to the
- * caller (401). Failed claims are counted per client address and in total;
- * over the limit every claim (even a correct one) gets 429 until the window
- * passes. The 6-digit space, the 2-minute lifetime, one active offer at a time
- * and the global cap keep guessing hopeless (at most 20 tries per 10 minutes
- * against 1 000 000 values); the QR secret cannot be guessed at all.
+ * caller (401).
+ *
+ * Guessing (G9): only codes can be guessed (1 000 000 values); the QR secret
+ * (32 random bytes) cannot, so secret claims are never counted or limited and
+ * nobody can lock the QR path out. Every code claim first records an attempt
+ * and counts in the same D1 batch (a transaction), so concurrent claims are
+ * serialized and each sees all earlier ones:
+ *  - the active offer's code dies after PAIRING_MAX_CODE_TRIES attempts (its
+ *    QR secret keeps working); at most that many guesses ever reach the
+ *    comparison, bursts included;
+ *  - a client address with PAIRING_MAX_FAILURES_PER_CLIENT failures, or all
+ *    clients together with PAIRING_MAX_FAILURES_TOTAL (loose), get 429 until
+ *    the window passes. Behind the tunnel the LAN gateway passes the real
+ *    client address on, so tunnel clients are told apart too.
+ * A successful claim removes its own attempt again.
  *
  * Routes (where phones reach this Mac) are published by the Mac app and kept
  * in `app_meta` under ROUTES_KEY; phones read them after every connect.
@@ -138,63 +150,55 @@ deviceRoutes.openapi(
     const input = c.req.valid("json");
     const db = createDb(c.env.DB);
     const now = Date.now();
-    const since = new Date(now - PAIRING_RATE_WINDOW_MS);
-    const ip = clientAddress(c);
+    const wrong = () =>
+      c.json(errorBody("unauthorized", "pairing code is wrong, expired or already used"), 401);
 
-    await db.delete(pairingFailures).where(lt(pairingFailures.createdAt, since));
-    const [mine, all] = await Promise.all([
-      db
-        .select({ n: count(), oldest: min(pairingFailures.createdAt) })
-        .from(pairingFailures)
-        .where(and(eq(pairingFailures.clientIp, ip), gte(pairingFailures.createdAt, since))),
-      db
-        .select({ n: count(), oldest: min(pairingFailures.createdAt) })
-        .from(pairingFailures)
-        .where(gte(pairingFailures.createdAt, since)),
-    ]);
-    const limited =
-      (mine[0]?.n ?? 0) >= PAIRING_MAX_FAILURES_PER_CLIENT
-        ? mine[0]
-        : (all[0]?.n ?? 0) >= PAIRING_MAX_FAILURES_TOTAL
-          ? all[0]
-          : undefined;
-    if (limited) {
-      const oldest = limited.oldest ? new Date(limited.oldest).getTime() : now;
-      const retryAfter = Math.max(1, Math.ceil((oldest + PAIRING_RATE_WINDOW_MS - now) / 1000));
-      return c.json(
-        errorBody("rate_limited", "too many failed pairing attempts; wait and retry"),
-        429,
-        {
-          "Retry-After": String(retryAfter),
-        },
-      );
-    }
-
-    // Single use: the conditional update is the claim (code or secret, each within its lifetime).
-    const match =
-      input.secret !== undefined
-        ? and(
+    let codeId: string | undefined;
+    if (input.secret !== undefined) {
+      // Single use: the conditional update is the claim (within the secret's lifetime).
+      const claimed = await db
+        .update(pairingCodes)
+        .set({ usedAt: new Date(now) })
+        .where(
+          and(
             eq(pairingCodes.secretHash, await sha256Hex(input.secret)),
             gt(pairingCodes.secretExpiresAt, new Date(now)),
-          )
-        : and(
+            isNull(pairingCodes.usedAt),
+          ),
+        )
+        .returning({ id: pairingCodes.id });
+      codeId = claimed[0]?.id;
+      if (!codeId) return wrong();
+    } else {
+      const attempt = await reserveCodeAttempt(db, clientAddress(c), now);
+      if (attempt.kind === "limited") {
+        return c.json(
+          errorBody("rate_limited", "too many failed pairing attempts; wait and retry"),
+          429,
+          { "Retry-After": String(attempt.retryAfterSeconds) },
+        );
+      }
+      if (attempt.kind === "codeDead") return wrong();
+      const claimed = await db
+        .update(pairingCodes)
+        .set({ usedAt: new Date(now) })
+        .where(
+          and(
             eq(pairingCodes.codeHash, await sha256Hex(input.code ?? "")),
             gt(pairingCodes.expiresAt, new Date(now)),
-          );
-    const claimed = await db
-      .update(pairingCodes)
-      .set({ usedAt: new Date(now) })
-      .where(and(match, isNull(pairingCodes.usedAt)))
-      .returning({ id: pairingCodes.id });
-    const codeId = claimed[0]?.id;
-    if (!codeId) {
-      await db
-        .insert(pairingFailures)
-        .values({ id: newId(), clientIp: ip, createdAt: new Date(now) });
-      return c.json(
-        errorBody("unauthorized", "pairing code is wrong, expired or already used"),
-        401,
-      );
+            isNull(pairingCodes.usedAt),
+          ),
+        )
+        .returning({ id: pairingCodes.id });
+      codeId = claimed[0]?.id;
+      if (!codeId) {
+        // The attempt row stays as the failure. The offer's last allowed try kills its code.
+        if (attempt.offerId && attempt.offerTries >= PAIRING_MAX_CODE_TRIES) {
+          await killCode(db, attempt.offerId, now);
+        }
+        return wrong();
+      }
+      await db.delete(pairingFailures).where(eq(pairingFailures.id, attempt.attemptId));
     }
 
     const token = `sdt_${randomToken(32)}`;
@@ -217,7 +221,7 @@ deviceRoutes.openapi(
 
     // Re-pairing the same phone: retire the device its previous token belonged to.
     if (input.replacesToken) {
-      await db
+      const retired = await db
         .update(devices)
         .set({ revokedAt: new Date(now) })
         .where(
@@ -225,13 +229,95 @@ deviceRoutes.openapi(
             eq(devices.tokenHash, await sha256Hex(input.replacesToken)),
             isNull(devices.revokedAt),
           ),
-        );
+        )
+        .returning({ id: devices.id });
+      for (const old of retired) await closeDeviceStreams(c.env, old.id);
     }
 
     const routes = await readRoutes(db);
     return c.json(PairingResult.parse({ device: toDevice(device), token, routes }), 201);
   },
 );
+
+type CodeAttempt =
+  | { kind: "limited"; retryAfterSeconds: number }
+  | { kind: "codeDead" }
+  | { kind: "go"; attemptId: string; offerId: string | null; offerTries: number };
+
+/**
+ * Records a code attempt and counts, in one D1 batch (a transaction): the attempt itself, the
+ * client's and everybody's failures in the window, and the tries on the active offer (all code
+ * attempts since it was made: only one offer is active at a time). Over a rate limit the attempt
+ * is taken back (it compared nothing); over the offer's tries its code is killed.
+ */
+async function reserveCodeAttempt(db: Db, ip: string, now: number): Promise<CodeAttempt> {
+  const since = new Date(now - PAIRING_RATE_WINDOW_MS);
+  const offer = await db
+    .select({ id: pairingCodes.id, createdAt: pairingCodes.createdAt })
+    .from(pairingCodes)
+    .where(and(isNull(pairingCodes.usedAt), gt(pairingCodes.expiresAt, new Date(now))))
+    .orderBy(desc(pairingCodes.createdAt))
+    .limit(1)
+    .then((rows) => rows[0] ?? null);
+  const attemptId = newId();
+  const failures = (client?: string) =>
+    db
+      .select({ n: count(), oldest: min(pairingFailures.createdAt) })
+      .from(pairingFailures)
+      .where(
+        client === undefined
+          ? gte(pairingFailures.createdAt, since)
+          : and(eq(pairingFailures.clientIp, client), gte(pairingFailures.createdAt, since)),
+      );
+  const [, , mine, all, onOffer] = await db.batch([
+    db.delete(pairingFailures).where(lt(pairingFailures.createdAt, since)),
+    db.insert(pairingFailures).values({ id: attemptId, clientIp: ip, createdAt: new Date(now) }),
+    failures(ip),
+    failures(),
+    db
+      .select({ n: count() })
+      .from(pairingFailures)
+      .where(gte(pairingFailures.createdAt, offer?.createdAt ?? new Date(now + 1))),
+  ]);
+  // The counts include this attempt: n - 1 failures came before it.
+  const limited =
+    (mine[0]?.n ?? 0) > PAIRING_MAX_FAILURES_PER_CLIENT
+      ? mine[0]
+      : (all[0]?.n ?? 0) > PAIRING_MAX_FAILURES_TOTAL
+        ? all[0]
+        : undefined;
+  if (limited) {
+    await db.delete(pairingFailures).where(eq(pairingFailures.id, attemptId));
+    const oldest = limited.oldest ? new Date(limited.oldest).getTime() : now;
+    return {
+      kind: "limited",
+      retryAfterSeconds: Math.max(1, Math.ceil((oldest + PAIRING_RATE_WINDOW_MS - now) / 1000)),
+    };
+  }
+  const offerTries = offer ? (onOffer[0]?.n ?? 0) : 0;
+  if (offer && offerTries > PAIRING_MAX_CODE_TRIES) {
+    await killCode(db, offer.id, now);
+    return { kind: "codeDead" };
+  }
+  return { kind: "go", attemptId, offerId: offer?.id ?? null, offerTries };
+}
+
+/** The offer's code stops working; its QR secret keeps its own lifetime. */
+async function killCode(db: Db, offerId: string, now: number): Promise<void> {
+  await db
+    .update(pairingCodes)
+    .set({ expiresAt: new Date(now) })
+    .where(and(eq(pairingCodes.id, offerId), gt(pairingCodes.expiresAt, new Date(now))));
+}
+
+/** A revoked device's open streams authenticated only at upgrade: close them now (G8). */
+async function closeDeviceStreams(env: Env, deviceId: string): Promise<void> {
+  try {
+    await hubStub(env).closeDeviceSockets(deviceId);
+  } catch (error) {
+    console.warn(`api: could not close the streams of revoked device ${deviceId}`, error);
+  }
+}
 
 /** Saved routes, or null when the Mac app has not published any (or they no longer parse). */
 async function readRoutes(db: Db): Promise<MacRoutes | null> {
@@ -318,7 +404,8 @@ deviceRoutes.openapi(
     path: "/api/devices/{id}/revoke",
     tags,
     summary: "Revoke a paired device (Mac only)",
-    description: "Its token stops working immediately. Revoking twice is a no-op.",
+    description:
+      "Its token stops working immediately and its open live streams (jobs, conversations) are closed. Revoking twice is a no-op.",
     request: { params: IdParams },
     responses: { 200: json(Device, "The revoked device."), 403: forbidden, 404: errors[404] },
   }),
@@ -331,6 +418,7 @@ deviceRoutes.openapi(
       .where(and(eq(devices.id, id), isNull(devices.revokedAt)));
     const row = await db.query.devices.findFirst({ where: eq(devices.id, id) });
     if (!row) throw notFound("device", id);
+    await closeDeviceStreams(c.env, id);
     return c.json(toDevice(row), 200);
   },
 );

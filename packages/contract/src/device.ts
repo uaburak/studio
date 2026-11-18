@@ -3,8 +3,9 @@ import { EntityId, Timestamp } from "./common.ts";
 
 /*
  * Device pairing (task L1). The API runs on the owner's Mac. Requests from the
- * Mac itself (127.0.0.1) and the local worker (WORKER_TOKEN) are trusted; a
- * phone on the network (or, later, through the tunnel) must present a device
+ * Mac app itself (127.0.0.1 with its owner secret, see the API's
+ * middleware/access.ts) and the local worker (WORKER_TOKEN) are trusted; a
+ * phone on the network (or through the tunnel) must present a device
  * token: `Authorization: Bearer <token>`.
  *
  *   Mac app:  POST /api/pairing/codes  -> { code, expiresAt, secret, secretExpiresAt }
@@ -27,10 +28,15 @@ export const PAIRING_CODE_TTL_MS = 2 * 60 * 1000;
 export const PAIRING_CODE_LENGTH = 6;
 /** Lifetime of the QR secret (high entropy, so it may live longer than the code). */
 export const PAIRING_SECRET_TTL_MS = 10 * 60 * 1000;
-/** Failed claims allowed per client address in PAIRING_RATE_WINDOW_MS. */
+/** Failed code claims allowed per client address in PAIRING_RATE_WINDOW_MS. */
 export const PAIRING_MAX_FAILURES_PER_CLIENT = 5;
-/** Failed claims allowed from all addresses together in PAIRING_RATE_WINDOW_MS. */
-export const PAIRING_MAX_FAILURES_TOTAL = 20;
+/** Wrong codes one pairing offer survives; then its code stops working (its QR secret does not). */
+export const PAIRING_MAX_CODE_TRIES = 10;
+/**
+ * Failed code claims allowed from all addresses together in PAIRING_RATE_WINDOW_MS. Loose on
+ * purpose: each code dies after PAIRING_MAX_CODE_TRIES, and QR secret claims are never limited.
+ */
+export const PAIRING_MAX_FAILURES_TOTAL = 100;
 export const PAIRING_RATE_WINDOW_MS = 10 * 60 * 1000;
 
 /** Bonjour service type the Mac app advertises (TXT: name, api, pairing). */

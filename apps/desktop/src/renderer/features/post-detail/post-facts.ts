@@ -94,21 +94,30 @@ export function usePostFacts(snapshot: EditorSnapshot) {
 
 export type PostFacts = ReturnType<typeof usePostFacts>;
 
-/** The post's "…" menu: quick look, copy the caption, open in chat, duplicate, delete. */
+/**
+ * The post's "…" menu: quick look, copy the caption, open in chat, cancel the schedule (when it
+ * waits on one), duplicate, delete.
+ */
 export function postMenu({
   content,
   version,
   actions,
   quickLook,
   openInChat,
+  cancelSchedule,
 }: {
   content: Content;
   version: ContentVersion | null;
   actions: ReturnType<typeof usePostActions>;
   quickLook(): void;
   openInChat(): void;
+  /** Opens "Zamanlamayı iptal et"; null when nothing waits to be published. */
+  cancelSchedule?: (() => void) | null;
 }): MenuEntry[] {
   const blocker = deletionBlocker(content);
+  const cancel: MenuEntry[] = cancelSchedule
+    ? [{ id: "cancel-schedule", label: "Zamanlamayı iptal et…", onSelect: cancelSchedule }]
+    : [];
   return [
     {
       id: "quicklook",
@@ -124,6 +133,7 @@ export function postMenu({
       onSelect: () => void actions.copyCaption(content),
     },
     { id: "chat", label: "Sohbette aç", onSelect: openInChat },
+    ...cancel,
     { type: "separator" },
     {
       id: "duplicate",

@@ -9,6 +9,7 @@ import {
   dayTitle,
   defaultDay,
   entriesOn,
+  entryCancelLabel,
   monthGrid,
   monthTitle,
   moveTarget,
@@ -287,5 +288,36 @@ describe("drag to reschedule", () => {
     const list = withMovedSchedule([schedule(), schedule({ id: "s2" })], "s1", target);
     expect(list[0]?.scheduledAt).toBe(at("2026-11-25T10:00:00"));
     expect(list[1]?.scheduledAt).toBe(at("2026-11-18T10:00:00"));
+  });
+
+  it("offers cancelling on pending schedules only and tolerates states it does not know", () => {
+    const entries = buildEntries({
+      schedules: [
+        schedule({ id: "wait" }),
+        schedule({ id: "cloudErr", contentId: "p2", delivery: "cloud", lastError: "Reddedildi" }),
+        schedule({ id: "done", contentId: "p3", status: "published" }),
+        schedule({ id: "late", contentId: "p3", status: "missed" as Schedule["status"] }),
+      ],
+      contents: [content(), content({ id: "p2" }), content({ id: "p3" })],
+      plans: [],
+    });
+    const by = (id: string) => entries.find((e) => e.scheduleId === id);
+    expect(by("wait")).toMatchObject({ canCancel: true, canMove: true });
+    // Refused by the cloud: still pending, so it can be cancelled from "İlgini bekleyenler".
+    expect(by("cloudErr")).toMatchObject({ canCancel: true, needsOwner: true });
+    expect(by("done")).toMatchObject({ canCancel: false });
+    expect(by("late")).toMatchObject({
+      status: "Bilinmeyen durum",
+      tone: "neutral",
+      canCancel: false,
+      canMove: false,
+      needsOwner: false,
+    });
+    expect(scheduleState(schedule({ status: "cancelled" }), "local")).toEqual({
+      kind: "cancelled",
+    });
+    expect(entryCancelLabel(by("wait") as NonNullable<ReturnType<typeof by>>)).toBe(
+      "Instagram · 18 Kas 10:00",
+    );
   });
 });
