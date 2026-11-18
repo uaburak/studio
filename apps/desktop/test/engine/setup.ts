@@ -1,25 +1,20 @@
-// The engine's web build in Node: its glue looks up `window` and `document` when it starts
-// (its DOM helpers) and gets the Wasm bytes passed in; headless engines need nothing else.
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
+// Wecra's engine (the vendored, committed Wasm build) headless in the tests, as Wecra's own
+// engine tests run it: the web build's glue gets `window` / `document` (jsdom) and the Wasm bytes.
+import { existsSync, readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { beforeAll } from "vitest";
-import {
-  loadEngineModule,
-  setInterSource,
-} from "../../src/renderer/features/post-editor/engine/studio-engine.ts";
+import { WECRA_MISSING } from "../../src/renderer/features/post-editor/wecra/vendored.ts";
 
-const vendor = new URL("../../src/renderer/vendor/wecra-engine/", import.meta.url);
+const wasm = resolve(
+  import.meta.dirname,
+  "../../src/renderer/vendor/wecra-editor/src/renderer/src/engine/wasm/engine.wasm",
+);
+if (!existsSync(wasm)) throw new Error(WECRA_MISSING);
 
 beforeAll(async () => {
-  const g = globalThis as Record<string, unknown>;
-  g.window ??= globalThis;
-  g.document ??= { querySelector: () => null };
-  setInterSource(
-    async () =>
-      new Uint8Array(readFileSync(fileURLToPath(new URL("fonts/Inter-3.19.ttf", vendor)))),
-  );
-  const bytes = readFileSync(fileURLToPath(new URL("wasm/engine.wasm", vendor)));
-  await loadEngineModule({
+  const { loadEngine } = await import("@/engine/loadEngine");
+  const bytes = readFileSync(wasm);
+  await loadEngine({
     wasmBinary: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength),
     printErr: () => {},
   });

@@ -4,7 +4,12 @@
     "lib": ["ES2024", "DOM", "DOM.Iterable"],
     "jsx": "react-jsx",
     "types": ["vite/client", "node"],
-    "paths": { "@renderer/*": ["./src/renderer/*"] }
+    "paths": {
+      "@renderer/*": ["./src/renderer/*"],
+      "@/*": ["./src/renderer/vendor/wecra-editor/src/renderer/src/*"],
+      "@shared/*": ["./src/renderer/vendor/wecra-editor/src/shared/*"]
+    }
   },
-  "include": ["src/renderer", "src/shared", "test/renderer", "test/setup.ts"]
+  "include": ["src/renderer", "src/shared", "test/renderer", "test/setup.ts"],
+  "exclude": ["src/renderer/vendor"]
 }

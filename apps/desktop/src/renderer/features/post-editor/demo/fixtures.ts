@@ -1,11 +1,16 @@
 // A demo post for the canvas editor without a server (`?demo=post-editor`, headless checks):
-// five design-contract slides in a stand-in brand, and an in-memory API that renders edits the
-// worker's way (design-kit patches on the version's HTML) and keeps versions.
+// five design-contract slides in a stand-in brand, and an in-memory API that keeps versions
+// (the canvas's saves: renders and the Wecra document as in-memory assets) and renders patch
+// jobs the worker's way (design-kit patches on the version's HTML).
 import {
+  type Asset,
+  type AssetUploadInput,
   type BrandProfile,
   type Content,
   type ContentVersion,
+  type ContentVersionCreate,
   computeContentHash,
+  type EditorDocument,
   type Job,
   type Slide,
 } from "@studio/contract";
@@ -251,10 +256,18 @@ export class DemoApi {
     this.versions = [first];
   }
 
-  private async newVersion(slides: Slide[], origin: ContentVersion["origin"], note: string | null) {
+  readonly assets = new Map<string, { asset: Asset; blob: Blob; url?: string }>();
+
+  private async newVersion(
+    slides: Slide[],
+    origin: ContentVersion["origin"],
+    note: string | null,
+    editorDocument: EditorDocument | null = null,
+  ) {
     const n = Math.max(...this.versions.map((v) => v.version)) + 1;
     const hash = await computeContentHash(slides);
     const v: ContentVersion = {
+      editorDocument,
       id: `demo-v${n}`,
       contentId: this.content.id,
       version: n,
@@ -310,7 +323,26 @@ export class DemoApi {
         }),
         restore: async (_id: string, n: number) => {
           const v = this.versions.find((x) => x.version === n) as ContentVersion;
-          return this.newVersion(v.slides, v.origin, `v${n} geri yüklendi.`);
+          return this.newVersion(
+            v.slides,
+            v.origin,
+            `v${n} geri yüklendi.`,
+            v.editorDocument ?? null,
+          );
+        },
+        create: async (_id: string, input: ContentVersionCreate) => {
+          this.log.push({ type: "versions.create", payload: input });
+          const slides: Slide[] = input.slides.map((s, i) => ({
+            ...s,
+            renderedAssetId: input.renderedAssetIds?.[i] ?? null,
+            layers: null,
+          }));
+          return this.newVersion(
+            slides,
+            input.origin,
+            input.note ?? null,
+            input.editorDocument ?? null,
+          );
         },
       },
     },
@@ -337,6 +369,8 @@ export class DemoApi {
                 ? payload.note
                 : `${(payload.patches as unknown[]).length} katman yaması.`;
             output = { version: (await this.newVersion(slides, "manual_edit", note)).version };
+          } else if (input.type === "content.check") {
+            output = { checked: payload.version };
           } else if (input.type === "content.generate") {
             status = "failed";
             error = "Demo: AI düzenlemesi için Mac'teki işçi gerekir.";
@@ -360,8 +394,31 @@ export class DemoApi {
       cancel: async (id: string) => this.jobs.get(id) as Job,
     },
     assets: {
-      upload: async () => {
-        throw new Error("Demo: görsel yükleme sunucu ister.");
+      upload: async (input: AssetUploadInput) => {
+        const id = `demo-asset-${this.next++}`;
+        const asset = {
+          id,
+          brandId: input.brandId,
+          kind: input.kind ?? "image",
+          source: input.source ?? "upload",
+          objectKey: `demo/${id}`,
+          mimeType: input.file.type,
+          bytes: input.file.size,
+          sha256: "",
+          width: input.width ?? null,
+          height: input.height ?? null,
+          durationMs: null,
+          originalFilename: input.filename ?? null,
+          createdAt: NOW(),
+        } as Asset;
+        this.assets.set(id, { asset, blob: input.file });
+        return asset;
+      },
+      contentUrl: (id: string) => {
+        const entry = this.assets.get(id);
+        if (!entry) return `/api/assets/${encodeURIComponent(id)}/content`;
+        entry.url ??= URL.createObjectURL(entry.blob);
+        return entry.url;
       },
     },
     brandProfiles: {

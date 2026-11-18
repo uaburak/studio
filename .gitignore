@@ -28,4 +28,6 @@ apps/apple/**/build/
 
 # Reels e2e videos are large; keep only covers, frame strips and checks in git.
 apps/worker/docs/e2e/reels/*.mp4
-apps/desktop/src/renderer/vendor/wecra-engine/
+# Wecra (Burak's DesignerV2, closed source) vendored for the post editor: never commit it.
+# apps/desktop/scripts/vendor-wecra.mjs recreates it from DesignerV2's git history.
+apps/desktop/src/renderer/vendor/

@@ -1,13 +1,55 @@
-// The post workspace inside the app's layout: opening a post turns the centre into the canvas
-// and the right panel into the post's panel, back returns to the board, the Sohbet / Düzenle
-// mode is remembered per post, the dock morphs between the tools and the message box, the panel
-// switches with the mode and its tabs, and the Sohbet is a conversation bound to the post.
+// The post workspace inside the app's layout: opening a post turns the centre into Wecra's
+// canvas and the right panel into the post's panel (Wecra's Design panel, the caption, the
+// Sohbet), Wecra's Layers sit on a card on the canvas, the dock carries Wecra's tools or the
+// message box, back is only the app's (the title area has no back of its own), the Sohbet /
+// Düzenle mode is remembered per post, and the Sohbet is a conversation bound to the post.
+// Wecra's editor itself (WebGL, the engine) is stood in for here: test/engine drives the real one.
 import type { ApiClient, Content, ContentVersion } from "@studio/contract";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { useState } from "react";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { useEffect, useState } from "react";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+
+// Wecra's components in Studio's places, stood in for (jsdom has no WebGL): the canvas is up at
+// once on the session's document, the import has nothing to read.
+vi.mock("../../src/renderer/features/post-editor/wecra/host.tsx", () => ({
+  WecraEditor: ({ source, onReady }: { source: unknown; onReady?: (ed: unknown) => void }) => {
+    useEffect(() => {
+      onReady?.({
+        source,
+        store: { page: "0:1" },
+        engine: {
+          destroyed: false,
+          command: () => 0,
+          readNode: () => null,
+          readNodes: () => [],
+          setSelection: () => 0,
+        },
+        withRealType: (n: unknown) => n,
+        focusCanvas: () => {},
+      });
+    }, [source, onReady]);
+    return <div data-testid="wecra-canvas" data-wecra-region="canvas" />;
+  },
+  WecraScope: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+  WecraDesignPanel: () => <section aria-label="Wecra Tasarım paneli" />,
+  WecraLayers: () => <div role="tree" aria-label="Wecra katmanları" />,
+  WecraToolbar: () => <div role="toolbar" aria-label="Wecra araçları" />,
+  WecraZoomMenu: () => <button type="button">100%</button>,
+}));
+vi.mock("../../src/renderer/features/post-editor/wecra/import.ts", () => ({
+  captureSlides: async () => [],
+  importSlides: async () => [],
+}));
+vi.mock("../../src/renderer/features/post-editor/wecra/fonts.ts", () => ({
+  installStudioFonts: () => {},
+}));
+vi.mock("@/engine/hooks", () => ({
+  useTool: () => "MOVE",
+  useSelection: () => ({ pageId: "0:1", refs: [] }),
+}));
+
 import { RightPanel } from "../../src/renderer/components/panels/right-panel.tsx";
 import { PostEditor } from "../../src/renderer/features/post-detail/editor.ts";
 import { PostDetailLayer } from "../../src/renderer/features/post-detail/post-detail.tsx";
@@ -54,6 +96,9 @@ function resetStores() {
 }
 
 beforeEach(resetStores);
+beforeAll(async () => {
+  await import("../../src/renderer/features/post-editor/workspace.tsx");
+}, 30_000);
 afterEach(() => {
   vi.restoreAllMocks();
 });
@@ -243,19 +288,21 @@ const slot = (name: string) =>
 
 async function openPost() {
   act(() => usePostsStore.getState().open("p1"));
-  await waitFor(() => expect(workspace()).toBeInTheDocument());
+  // The workspace (with Wecra's editor) is loaded with the first post opened.
+  await waitFor(() => expect(workspace()).toBeInTheDocument(), { timeout: 15_000 });
 }
 
 describe("opening a post", () => {
-  it("turns the centre into the canvas and the right panel into the post's panel; back returns", async () => {
+  it("turns the centre into Wecra's canvas and the right panel into the post's panel; back returns", async () => {
     await setup();
     await openPost();
-    // Engine mode: the canvas, the floating layers list and the dock (on Düzenle).
-    expect(screen.getByTestId("post-canvas")).toBeInTheDocument();
-    expect(screen.getByRole("region", { name: "Katmanlar paneli" })).toBeInTheDocument();
+    // Wecra's canvas, its Layers on the canvas's card, the dock with Wecra's tools (Düzenle).
+    expect(await screen.findByTestId("wecra-canvas")).toBeInTheDocument();
+    const card = await screen.findByRole("complementary", { name: "Katmanlar" });
+    expect(within(card).getByRole("tree", { name: "Wecra katmanları" })).toBeInTheDocument();
     expect(screen.getByTestId("mode-dock")).toHaveAttribute("data-mode", "edit");
-    expect(screen.getByRole("toolbar", { name: "Araçlar" })).toBeInTheDocument();
-    // The shell shows the post: its title area, its panel (header tabs, the edit panel).
+    expect(screen.getByRole("toolbar", { name: "Wecra araçları" })).toBeInTheDocument();
+    // The shell shows the post: its title area, its panel (Tasarım: Wecra's Design panel).
     expect(useWorkspaceStore.getState().active).toBe("p1");
     expect(useAppStore.getState().panelPane).toBe("post");
     expect(useAppStore.getState().panelPresented).toBe(true);
@@ -264,7 +311,10 @@ describe("opening a post", () => {
     ).toBeInTheDocument();
     expect(within(slot("title")).getByRole("button", { name: "Onayla" })).toBeInTheDocument();
     expect(within(slot("panel-header")).getByRole("radio", { name: "Tasarım" })).toBeChecked();
-    expect(within(slot("panel")).getByRole("region", { name: "Biçim" })).toBeInTheDocument();
+    expect(within(slot("panel-header")).getByRole("button", { name: "100%" })).toBeInTheDocument();
+    expect(
+      await within(slot("panel")).findByRole("region", { name: "Wecra Tasarım paneli" }),
+    ).toBeInTheDocument();
     // No post detail in between.
     expect(screen.queryByRole("dialog", { name: /Açık post/ })).toBeNull();
 
@@ -278,12 +328,24 @@ describe("opening a post", () => {
     expect(screen.getByRole("region", { name: "Postlar" })).toBeInTheDocument();
   });
 
-  it("goes back from the title area's back button too", async () => {
+  it("has exactly one back: the app's (no back or close of its own in the title or the canvas)", async () => {
     await setup();
     await openPost();
-    await userEvent.click(within(slot("title")).getByRole("button", { name: "Postlara dön" }));
-    await waitFor(() => expect(workspace()).toBeNull());
-    expect(useAppStore.getState().post).toBeNull();
+    await screen.findByTestId("wecra-canvas");
+    const back = /dön|^Geri|Kapat|Postlar/;
+    expect(within(slot("title")).queryAllByRole("button", { name: back })).toEqual([]);
+    expect(within(workspace() as HTMLElement).queryAllByRole("button", { name: back })).toEqual([]);
+  });
+
+  it("folds the layers card into a pill and back (remembered)", async () => {
+    await setup();
+    await openPost();
+    const card = await screen.findByRole("complementary", { name: "Katmanlar" });
+    await userEvent.click(within(card).getByRole("button", { name: "Katmanları gizle" }));
+    expect(screen.queryByRole("complementary", { name: "Katmanlar" })).toBeNull();
+    expect(useWorkspaceStore.getState().layersOpen).toBe(false);
+    await userEvent.click(screen.getByRole("button", { name: "Katmanları göster" }));
+    expect(screen.getByRole("complementary", { name: "Katmanlar" })).toBeInTheDocument();
   });
 
   it("remembers Sohbet for the post and opens it there next time", async () => {
@@ -335,57 +397,16 @@ describe("the post's panel", () => {
     expect(useAppStore.getState().panelPane).toBe("post");
     expect(useAppStore.getState().panelPresented).toBe(true);
   });
-
-  it("shows a selected layer's sections (Wecra's order) and edits its text", async () => {
-    const { fake } = await setup();
-    await openPost();
-    const layers = screen.getByRole("listbox", { name: "Katmanlar" });
-    await userEvent.click(within(layers).getByText("Hasat bitti, toprak hazır mı?"));
-    const panel = slot("panel");
-    // Sections in Wecra's order (jsdom has no computed style: the sections reading it are absent).
-    const ORDER = [
-      "Konum",
-      "Boyut",
-      "Görünüm",
-      "Metin",
-      "Tipografi",
-      "Dolgu",
-      "Kenarlık",
-      "Görsel",
-      "Efektler",
-      "AI ile düzenle",
-    ];
-    const sections = within(panel)
-      .getAllByRole("region")
-      .map((r) => (r.getAttribute("aria-label") ?? "").split(" · ")[0] ?? "");
-    expect(sections).toEqual(ORDER.filter((name) => sections.includes(name)));
-    expect(sections).toEqual(expect.arrayContaining(["Konum", "Boyut", "Metin", "Dolgu"]));
-    const text = within(panel).getByRole("textbox", { name: "Metin" });
-    await userEvent.clear(text);
-    await userEvent.type(text, "Kış geliyor");
-    await userEvent.click(within(panel).getByRole("button", { name: "Metni uygula" }));
-    // Applied at once, saved (one render job) after a short pause.
-    await waitFor(() => expect(fake.createdJobs).toHaveLength(1), { timeout: 5000 });
-    expect(fake.createdJobs[0]?.payload.patches).toEqual([
-      { slide: 0, op: "setText", layer: "headline", text: "Kış geliyor" },
-    ]);
-  });
 });
 
 describe("the post's Sohbet", () => {
-  it("creates the post's conversation, sends with the selection as @ scope, follows the reply", async () => {
+  it("creates the post's conversation, sends with the post's reference, follows the reply", async () => {
     const refresh = vi.spyOn(PostEditor.prototype, "refresh");
     const { chat, fake } = await setup();
     await openPost();
-    // Pick the headline on the layers list, then talk about it.
-    await userEvent.click(
-      within(screen.getByRole("listbox", { name: "Katmanlar" })).getByText(
-        "Hasat bitti, toprak hazır mı?",
-      ),
-    );
+    await screen.findByTestId("wecra-canvas");
     await userEvent.click(screen.getByRole("radio", { name: /Sohbet/ }));
     const dock = screen.getByTestId("mode-dock");
-    expect(within(dock).getByText("@Hasat bitti, toprak hazır mı?")).toBeInTheDocument();
     const input = within(dock).getByRole("textbox", { name: "Post hakkında yaz" });
     await userEvent.type(input, "Kısalt{Enter}");
 
@@ -394,9 +415,7 @@ describe("the post's Sohbet", () => {
     const conversationId = useWorkspaceStore.getState().chats.p1;
     expect(conversationId).toBeTruthy();
     expect(chat.sent[0]?.conversationId).toBe(conversationId);
-    expect(chat.sent[0]?.text).toBe(
-      `“${TITLE}” postu (id: p1, v1) için:\nKapsam: Kare 1 › headline (Hasat bitti, toprak hazır mı?). Yalnızca bu katmanları değiştir; diğerlerini olduğu gibi bırak.\nKısalt`,
-    );
+    expect(chat.sent[0]?.text).toBe(`“${TITLE}” postu (id: p1, v1) için:\nKısalt`);
     // The transcript is in the panel; the reply's end re-reads the post (new versions land).
     expect(await within(slot("panel")).findByText("Başlığı kısalttım.")).toBeInTheDocument();
     await waitFor(() => expect(refresh).toHaveBeenCalled());
@@ -410,19 +429,9 @@ describe("the post's Sohbet", () => {
     expect(fake.approveCalls).toHaveLength(0);
 
     // The next message continues the same conversation, without the post's reference.
-    await userEvent.click(within(dock).getByRole("button", { name: /kapsamdan çıkar/ }));
     await userEvent.type(input, "Biraz daha{Enter}");
     await waitFor(() => expect(chat.sent).toHaveLength(2));
     expect(chat.created).toHaveLength(1);
     expect(chat.sent[1]).toEqual({ conversationId, text: "Biraz daha" });
-  });
-
-  it("asks the chat from the edit panel's AI chips (and switches to Sohbet)", async () => {
-    const { chat } = await setup();
-    await openPost();
-    await userEvent.click(within(slot("panel")).getByRole("button", { name: "Daha sade" }));
-    await waitFor(() => expect(chat.sent).toHaveLength(1));
-    expect(chat.sent[0]?.text).toContain("Kare 1: Daha sade");
-    expect(screen.getByTestId("mode-dock")).toHaveAttribute("data-mode", "chat");
   });
 });

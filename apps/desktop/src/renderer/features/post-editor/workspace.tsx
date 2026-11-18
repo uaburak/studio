@@ -1,14 +1,18 @@
 // The open post, inside the app's layout (Wecra's "Post Editor" as an app mode, not a screen):
-// the centre column becomes the canvas — the slides' own HTML under Wecra's engine, the
-// floating layers list on its left edge, one floating dock at its bottom (the edit tools, or the
-// post's message box, with the Sohbet / Düzenle switch) — the right panel becomes the post's
-// panel (Düzenle: the properties panel and the caption; Sohbet: the post's conversation), and
-// the top bar's title area shows the post (title, state, versions, Onayla, Zamanla). The sidebar
-// and the top bar stay the app's; back (⌘[) returns to where the post was opened from.
+// the centre column becomes Wecra's own editor — its engine draws the slides as frames and does
+// everything Wecra does there (selection, handles, guides, auto layout, constraints, text, images,
+// effects, its keys, clipboard and context menu) — with Wecra's Layers on a card at its left edge
+// and one floating dock at its bottom (Wecra's tools, or the post's message box, with the
+// Sohbet / Düzenle switch). The right panel becomes the post's panel (Düzenle: Wecra's Design
+// panel, and the caption; Sohbet: the post's conversation) and the top bar's title area shows
+// the post (title, state, versions, save state, Onayla, Zamanla). The sidebar and the top bar
+// stay the app's, and so does back (the top bar's ‹ ›, ⌘[): the post has no back button of its
+// own.
 //
-// Everything that changes the design goes through the draft (model/draft.ts): instant on the
-// canvas, saved as `content.render` jobs on its own. Approving, scheduling and chat messages
-// save first.
+// The document is Wecra's (wecra/session.ts): a version saved from the canvas opens its saved
+// document; any other version (the AI's) is imported from its HTML once. Saving exports the
+// slides through Wecra's engine as the new version's renders. Approving, scheduling, a chat
+// message and leaving save first.
 import type { Content } from "@studio/contract";
 import {
   type ReactNode,
@@ -18,10 +22,18 @@ import {
   useState,
   useSyncExternalStore,
 } from "react";
-import { cn, IconButton, type TagTone } from "../../components/ui/controls.tsx";
+import type { EditorController } from "@/editor/controller";
+import { useTool } from "@/engine/hooks";
+import {
+  cn,
+  IconButton,
+  SegmentedControl,
+  Spinner,
+  type TagTone,
+} from "../../components/ui/controls.tsx";
 import { IconClose, IconWarning } from "../../components/ui/icons.tsx";
-import { MenuButton, type MenuEntry } from "../../components/ui/menu.tsx";
-import { describeError, useApi } from "../../lib/api.ts";
+import type { MenuEntry } from "../../components/ui/menu.tsx";
+import { useApi } from "../../lib/api.ts";
 import { useAppStore } from "../../state/app-store.ts";
 import {
   activeVersion,
@@ -29,33 +41,27 @@ import {
   canApprove,
   changesVersion,
   type EditorSnapshot,
-  hasApproval,
   type PostEditor,
 } from "../post-detail/editor.ts";
-import { mediaSource } from "../posts/slides.ts";
 import { usePostChat } from "./chat.ts";
 import { useRenderKit } from "./data.ts";
-import { findLayer, layerKey } from "./model/document.ts";
-import type { SlidePatchInput } from "./model/draft.ts";
-import { presetFor, presetsForSlide } from "./model/safe-areas.ts";
-import { matchShortcut, type ShortcutCommand } from "./model/shortcuts.ts";
-import { type EditorSession, useEditorSession } from "./session.ts";
 import { InSlot } from "./slots.tsx";
-import { CanvasArea } from "./ui/canvas-view.tsx";
+import { CaptionPanel } from "./ui/caption-panel.tsx";
 import { ChatHeader, ChatPanel } from "./ui/chat-panel.tsx";
-import { EditPanel, EditTabs } from "./ui/edit-panel.tsx";
+import { LAYERS_CARD_INSET, LAYERS_CARD_WIDTH, LayersCard } from "./ui/layers-card.tsx";
+import { ChatInput, type ChatInputHandle, ModeDock } from "./ui/mode-dock.tsx";
+import { type SaveControl, TitleBar } from "./ui/title-bar.tsx";
+import { installStudioFonts } from "./wecra/fonts.ts";
 import {
-  IconCrop,
-  IconSparkles,
-  IconTextCenter,
-  IconTextLeft,
-  IconTextRight,
-  IconWand,
-} from "./ui/glyphs.tsx";
-import { LAYERS_DOCK_WIDTH, LayersDock, layerTitle } from "./ui/layers-dock.tsx";
-import { ChatInput, type ChatInputHandle, EditTools, ModeDock } from "./ui/mode-dock.tsx";
-import { TitleBar } from "./ui/title-bar.tsx";
-import { modeOf, useWorkspaceStore, type WorkspaceMode } from "./workspace-store.ts";
+  WecraDesignPanel,
+  WecraEditor,
+  WecraScope,
+  WecraToolbar,
+  WecraZoomMenu,
+} from "./wecra/host.tsx";
+import { type ChatLayers, describeNode, NO_LAYERS, useChatLayers } from "./wecra/scope.ts";
+import { WecraPostSession, type WecraSessionState } from "./wecra/session.ts";
+import { type EditTab, modeOf, useWorkspaceStore, type WorkspaceMode } from "./workspace-store.ts";
 
 export interface WorkspaceProps {
   editor: PostEditor;
@@ -66,15 +72,21 @@ export interface WorkspaceProps {
   approvalFirst: boolean;
   /** The post's "…" menu (quick look, copy caption, open in chat, duplicate, delete). */
   menu?: MenuEntry[];
-  /** Back to where the post was opened from. */
+  /** Back to where the post was opened from (the app's back does it; kept for the shell). */
   onClose(): void;
   onPreview(): void;
   /** Runs the approval (the content checks may ask first); default: approve at once. */
   guardApproval?: (approve: () => void) => void;
   /** The approve guard's question and the schedule sheet. */
   dialogs?: ReactNode;
-  /** Debounce before saving on its own (tests). */
+  /** Pause before saving on its own (tests; 0: never). */
   autosaveMs?: number;
+}
+
+interface Toast {
+  id: number;
+  message: string;
+  tone: "error" | "notice";
 }
 
 const isTyping = (target: EventTarget | null) =>
@@ -87,47 +99,78 @@ const isTyping = (target: EventTarget | null) =>
 const inWorkspace = (target: EventTarget | null) =>
   target === null ||
   target === document.body ||
-  (target instanceof Element && !!target.closest("[data-post-workspace],[data-workspace-slot]"));
+  (target instanceof Element &&
+    !!target.closest("[data-post-workspace],[data-workspace-slot],[data-wecra-region]"));
 
-/** Below this canvas width the layers list starts folded. */
-const NARROW_CANVAS = 700;
-
-const MOVE_TOOLS = new Set<ShortcutCommand>([
-  "tool.move",
-  "tool.hand",
-  "tool.scale",
-  "layer.text",
-  "layer.shape",
-]);
+/** The dock's height and margin: zoom to fit keeps the slides above it. */
+const DOCK_INSET = 68;
 
 export function PostWorkspace(props: WorkspaceProps) {
-  const { editor, snapshot, onClose } = props;
+  const { editor, snapshot } = props;
   const content: Content = snapshot.content;
   const api = useApi();
   const kit = useRenderKit(content.brandId);
-  const session = useEditorSession(
-    editor,
-    snapshot,
-    kit,
-    props.autosaveMs !== undefined ? { autosaveMs: props.autosaveMs } : {},
-  );
-  const { draft, draftState, canvas, canvasState } = session;
+  const version = activeVersion(snapshot);
   const mode = useWorkspaceStore((s) => modeOf(s, content.id));
   const editTab = useWorkspaceStore((s) => s.editTab);
-  const layersWanted = useWorkspaceStore((s) => s.layersOpen);
+  const layersOpen = useWorkspaceStore((s) => s.layersOpen);
   const [versionsOpen, setVersionsOpen] = useState(false);
+  const [toasts, setToasts] = useState<Toast[]>([]);
   const root = useRef<HTMLElement | null>(null);
   const chatInput = useRef<ChatInputHandle | null>(null);
-  const pendingFocus = useRef<{ prefill?: string; scope?: readonly string[] } | null>(null);
-  const fileInput = useRef<HTMLInputElement | null>(null);
-  const imageTarget = useRef<string | null>(null);
-  const version = activeVersion(snapshot);
+  const pendingFocus = useRef<{ prefill?: string } | null>(null);
+
+  const notify = useCallback((message: string, tone: Toast["tone"] = "notice") => {
+    const id = Date.now() + Math.random();
+    setToasts((t) => [...t.slice(-3), { id, message, tone }]);
+    if (tone === "notice") setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), 3500);
+  }, []);
+
+  // The post's Wecra document (one session per opened post).
+  const latest = useRef({ content, kit, editor });
+  latest.current = { content, kit, editor };
+  const [session] = useState(
+    () =>
+      new WecraPostSession({
+        api,
+        content: () => latest.current.content,
+        kit: () => latest.current.kit,
+        refresh: () => latest.current.editor.refresh(),
+        ...(props.autosaveMs !== undefined ? { autosaveMs: props.autosaveMs } : {}),
+      }),
+  );
+  const ws = useSyncExternalStore(session.subscribe, session.getState);
+  const ed = ws.editor;
+  useEffect(() => {
+    session.activate();
+    return () => {
+      // Leaving the post (the app's back, the sidebar): unsaved edits are saved — read from the
+      // editor now, before it goes.
+      void session.flush({ closing: true });
+      session.dispose();
+    };
+  }, [session]);
+  // The brand's fonts for Wecra's text engine, before a document opens.
+  const fontsFor = useRef<object | null>(null);
+  if (fontsFor.current !== kit) {
+    fontsFor.current = kit;
+    installStudioFonts(kit);
+  }
+  // The version shown is the document on the canvas (an older one too: saving makes it current).
+  useEffect(() => {
+    if (version) void session.open(version);
+  }, [session, version]);
+  useEffect(() => {
+    if (ws.saveError) notify(ws.saveError, "error");
+  }, [ws.saveError, notify]);
+  useEffect(() => {
+    for (const w of ws.warnings) notify(w, "notice");
+  }, [ws.warnings, notify]);
 
   // The shell shows the post: its title in the top bar, its panel on the right.
   useEffect(() => {
     useWorkspaceStore.getState().setActive(content.id);
     useAppStore.getState().showPostPanel();
-    root.current?.focus({ preventScroll: true });
     return () => {
       if (useWorkspaceStore.getState().active === content.id)
         useWorkspaceStore.getState().setActive(null);
@@ -135,35 +178,15 @@ export function PostWorkspace(props: WorkspaceProps) {
     };
   }, [content.id]);
 
-  // On a narrow canvas the layers list folds into its pill until it is opened there by hand.
-  const narrow = useSyncExternalStore(
-    (cb) => canvas.onView(cb),
-    () => canvas.getView().width > 0 && canvas.getView().width < NARROW_CANVAS,
-  );
-  const [openedNarrow, setOpenedNarrow] = useState(false);
-  useEffect(() => {
-    if (!narrow) setOpenedNarrow(false);
-  }, [narrow]);
-  const layersOpen = layersWanted && (!narrow || openedNarrow);
-  const setLayersOpen = (open: boolean) => {
-    if (narrow) setOpenedNarrow(open);
-    if (open || !narrow) useWorkspaceStore.getState().setLayersOpen(open);
-  };
-
-  // Fitted slides keep clear of the layers list.
-  useEffect(() => {
-    canvas.setInsets({ left: layersOpen ? 12 + LAYERS_DOCK_WIDTH + 28 : 40 });
-  }, [canvas, layersOpen]);
-
   const setMode = useCallback(
-    (next: WorkspaceMode, focus?: { prefill?: string; scope?: readonly string[] }) => {
+    (next: WorkspaceMode, focus?: { prefill?: string }) => {
       useWorkspaceStore.getState().setMode(content.id, next);
       // A mode switch brings the post's panel back (if another pane was picked meanwhile).
       useAppStore.getState().showPostPanel();
       if (next === "chat") {
         pendingFocus.current = focus ?? {};
         if (chatInput.current) {
-          chatInput.current.focus(focus?.prefill, focus?.scope);
+          chatInput.current.focus(focus?.prefill);
           pendingFocus.current = null;
         }
       }
@@ -175,452 +198,103 @@ export function PostWorkspace(props: WorkspaceProps) {
     if (mode !== "chat" || !pendingFocus.current) return;
     const f = pendingFocus.current;
     pendingFocus.current = null;
-    chatInput.current?.focus(f.prefill, f.scope);
+    chatInput.current?.focus(f.prefill);
   }, [mode]);
 
   const describe = useCallback(
-    (key: string) => {
-      const layer = findLayer(canvas.editorSlides, key);
-      return layer ? { slide: layer.slide, id: layer.id, label: layerTitle(layer) } : null;
-    },
-    [canvas],
+    (key: string) => (ws.editor ? describeNode(ws.editor, key) : null),
+    [ws.editor],
   );
 
   const chat = usePostChat({
     content,
     version,
-    flush: () => draft.flush(),
+    flush: () => session.flush(),
     describe,
-    notify: session.notify,
+    notify,
     onReplyEnd: () => void editor.refresh(),
   });
 
-  /** Ask the post's Sohbet: switch to it and send (the quick AI chips). */
-  const askChat = useCallback(
-    (instruction: string, scope: readonly string[]) => {
-      setMode("chat");
-      void chat.send(instruction, scope);
-    },
-    [chat, setMode],
-  );
+  const save: SaveControl = {
+    dirty: ws.dirty,
+    saving: ws.saving,
+    error: ws.saveError,
+    lastSavedAt: ws.lastSavedAt,
+    save: (note) => session.save(note),
+    flush: () => session.flush(),
+    notify,
+  };
 
   const approve = useCallback(async () => {
-    if (!(await draft.flush())) return;
+    if (!(await session.flush())) return;
     await editor.whenIdle();
     await editor.verify();
     if (!canApprove(editor.getSnapshot())) return;
     const run = () => void editor.approve();
     if (props.guardApproval) props.guardApproval(run);
     else run();
-  }, [draft, editor, props.guardApproval]);
+  }, [session, editor, props.guardApproval]);
 
   const openSchedule = useCallback(async () => {
-    if (!(await draft.flush())) return;
+    if (!(await session.flush())) return;
     props.schedule.open();
-  }, [draft, props.schedule]);
+  }, [session, props.schedule]);
 
-  const close = useCallback(() => {
-    canvas.endTextEdit(true);
-    void draft.flush();
-    onClose();
-  }, [canvas, draft, onClose]);
-
-  const pickImage = (key: string | null) => {
-    imageTarget.current = key;
-    fileInput.current?.click();
-  };
-
-  const placeFile = async (file: File) => {
-    const target = imageTarget.current;
-    imageTarget.current = null;
-    try {
-      session.notify("Görsel yükleniyor…");
-      const asset = await api.assets.upload({ brandId: content.brandId, kind: "image", file });
-      const src = mediaSource(asset.id, asset.mimeType);
-      if (target) {
-        const layer = canvas.layer(target);
-        if (!layer) return;
-        canvas.applyOps(
-          [
-            layer.type === "slot"
-              ? ({ op: "fillSlot", layer: layer.id, src, slide: layer.slide } as SlidePatchInput)
-              : ({
-                  op: "replaceImage",
-                  layer: layer.id,
-                  src,
-                  slide: layer.slide,
-                } as SlidePatchInput),
-          ],
-          layer.type === "slot" ? "Yuvayı doldur" : "Görseli değiştir",
-        );
-        return;
-      }
-      // A new picture layer in the middle of the active slide (half its width).
-      const index = canvasState.activeSlide;
-      const slide = canvas.editorSlides[index];
-      if (!slide) return;
-      const taken = new Set(slide.layers.map((l) => l.id));
-      let n = 1;
-      while (taken.has(`image-${n}`)) n++;
-      const w = Math.round(slide.width / 2);
-      const bitmap = await createImageBitmap(file).catch(() => null);
-      const h = bitmap ? Math.round((w * bitmap.height) / bitmap.width) : w;
-      bitmap?.close();
-      const id = `image-${n}`;
-      const ok = canvas.applyOps(
-        [
-          {
-            op: "insertLayer",
-            parent: null,
-            index: slide.roots.length,
-            html: `<img data-layer="${id}" data-type="image" src="${src}" alt="" style="position: absolute; left: ${Math.round((slide.width - w) / 2)}px; top: ${Math.round((slide.height - h) / 2)}px; width: ${w}px; height: ${h}px; object-fit: cover">`,
-            leading: "\n    ",
-            slide: index,
-          } as SlidePatchInput,
-        ],
-        "Görsel yerleştir",
-      );
-      if (ok) setTimeout(() => canvas.selectLayers([layerKey(index, id)]), 0);
-    } catch (e) {
-      session.notify(`Görsel yüklenemedi: ${describeError(e)}`, "error");
-    }
-  };
-
-  const run = useCallback(
-    (command: ShortcutCommand): boolean => {
-      const sel = canvasState.selection;
-      const layers = sel
-        .map((k) => canvas.layer(k))
-        .filter((l): l is NonNullable<typeof l> => l !== null);
-      // Picking a tool is editing: the dock shows the tools.
-      if (MOVE_TOOLS.has(command) && mode !== "edit") setMode("edit");
-      switch (command) {
-        case "tool.move":
-          canvas.setTool("MOVE");
-          return true;
-        case "tool.hand":
-          canvas.setTool("HAND");
-          return true;
-        case "tool.scale":
-          canvas.setTool("SCALE");
-          return true;
-        case "layer.text":
-          canvas.setTool("TEXT");
-          return true;
-        case "layer.shape":
-          canvas.setTool("RECTANGLE");
-          return true;
-        case "image.place":
-          pickImage(null);
-          return true;
-        case "ai.focus":
-          setMode("chat", { scope: sel });
-          return true;
-        case "undo": {
-          const name = draft.undo();
-          if (name) session.notify(`Geri alındı: ${name}`);
-          return true;
-        }
-        case "redo": {
-          const name = draft.redo();
-          if (name) session.notify(`Yinelendi: ${name}`);
-          return true;
-        }
-        case "layer.duplicate":
-          if (!layers.length) return false;
-          canvas.applyOps(
-            layers.map(
-              (l) =>
-                ({
-                  op: "duplicateLayer",
-                  layer: l.id,
-                  offset: { x: 24, y: 24 },
-                  slide: l.slide,
-                }) as SlidePatchInput,
-            ),
-            "Çoğalt",
-          );
-          return true;
-        case "layer.delete":
-          if (!layers.length) return false;
-          canvas.applyOps(
-            layers.map(
-              (l) => ({ op: "deleteLayer", layer: l.id, slide: l.slide }) as SlidePatchInput,
-            ),
-            "Sil",
-          );
-          canvas.selectLayers([]);
-          return true;
-        case "layer.forward":
-        case "layer.backward":
-          if (layers.length !== 1) return false;
-          canvas.restack((layers[0] as { key: string }).key, command === "layer.forward" ? 1 : -1);
-          return true;
-        case "layer.group":
-          session.notify(
-            "Gruplama henüz yok: tasarım sözleşmesinde gruplar AI'nın kurduğu düzenlerdir.",
-          );
-          return true;
-        case "slide.prev":
-        case "slide.next": {
-          const next = canvasState.activeSlide + (command === "slide.next" ? 1 : -1);
-          canvas.selectSlide(next, { zoom: canvasState.focus !== null });
-          if (canvasState.focus !== null && next >= 0 && next < canvas.editorSlides.length)
-            canvas.setFocus(next);
-          return true;
-        }
-        case "slide.add":
-        case "slide.duplicate":
-          session.notify(
-            "Kare ekleme ve çoğaltma Sohbet'ten yapılır (AI kareyi tasarım sistemine göre kurar).",
-          );
-          return true;
-        case "zoom.fit":
-          canvas.command("ZOOM_TO_FIT");
-          return true;
-        case "zoom.selection":
-          if (sel.length) canvas.command("ZOOM_TO_SELECTION");
-          else canvas.zoomToSlide(canvasState.activeSlide);
-          return true;
-        case "zoom.100":
-          canvas.command("ZOOM_TO_100");
-          return true;
-        case "zoom.in":
-          canvas.command("ZOOM_IN");
-          return true;
-        case "zoom.out":
-          canvas.command("ZOOM_OUT");
-          return true;
-        case "view.safeArea":
-          canvas.setSafeArea(!canvasState.safeArea);
-          return true;
-        case "view.rulers":
-          canvas.setRulers(!canvasState.rulers);
-          return true;
-        case "view.snapping":
-          canvas.setSnapping(!canvasState.snapping);
-          session.notify(canvasState.snapping ? "Yapışma kapalı" : "Yapışma açık");
-          return true;
-        case "versions.open":
-          setVersionsOpen((o) => !o);
-          return true;
-        case "versions.save":
-          void (async () => {
-            if (!draft.dirty) {
-              session.notify("Kaydedilecek değişiklik yok.");
-              return;
-            }
-            if (await draft.flush()) session.notify("Sürüm kaydedildi.");
-          })();
-          return true;
-        case "preview":
-          props.onPreview();
-          return true;
-        case "approve":
-          void approve();
-          return true;
-        case "schedule":
-          void openSchedule();
-          return true;
-        case "caption.tab": {
-          const store = useWorkspaceStore.getState();
-          if (mode !== "edit") setMode("edit");
-          else useAppStore.getState().showPostPanel();
-          store.setEditTab(store.editTab === "caption" ? "design" : "caption");
-          return true;
-        }
-        case "select.all": {
-          const slide = canvas.editorSlides[canvasState.activeSlide];
-          if (!slide) return false;
-          canvas.selectLayers(slide.roots.map((id) => layerKey(slide.index, id)));
-          return true;
-        }
-        case "text.edit": {
-          const only = layers.length === 1 ? layers[0] : null;
-          if (only?.type === "text") {
-            canvas.startTextEdit(only.key);
-            return true;
-          }
-          return false;
-        }
-        case "escape":
-          if (canvasState.cropping) {
-            canvas.endCrop();
-            return true;
-          }
-          if (versionsOpen) {
-            setVersionsOpen(false);
-            return true;
-          }
-          if (canvasState.tool !== "MOVE") {
-            canvas.setTool("MOVE");
-            return true;
-          }
-          if (sel.length) {
-            // Esc selects the parent first (a layer in a group), then nothing.
-            const first = layers[0];
-            if (layers.length === 1 && first?.parent)
-              canvas.selectLayers([layerKey(first.slide, first.parent)]);
-            else canvas.selectLayers([]);
-            return true;
-          }
-          if (canvasState.focus !== null) {
-            canvas.setFocus(null);
-            return true;
-          }
-          close();
-          return true;
-      }
-      return false;
-    },
-    [
-      canvasState,
-      canvas,
-      draft,
-      session,
-      versionsOpen,
-      approve,
-      openSchedule,
-      close,
-      mode,
-      setMode,
-      props.onPreview,
-    ],
-  );
-
-  // Keys on the canvas come through the controller; elsewhere in the workspace, here.
-  const runKey = useCallback(
-    (e: KeyboardEvent): boolean => {
-      const shortcut = matchShortcut(e);
-      if (!shortcut) return false;
-      return run(shortcut.command);
-    },
-    [run],
-  );
-  useEffect(() => {
-    canvas.keyHandler = runKey;
-    return () => {
-      canvas.keyHandler = null;
-    };
-  }, [canvas, runKey]);
+  // The workspace's own keys (the canvas's are Wecra's): save, approve, schedule.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.defaultPrevented || useAppStore.getState().lightbox) return;
-      if (!inWorkspace(e.target)) return;
-      if (isTyping(e.target)) {
-        // From a field only ⌘S, and ⌘↩ / ⇧⌘↩ outside text boxes (the message box and the
-        // caption keep theirs: ⌘↩ never approves while writing).
-        const s = matchShortcut(e);
-        const box = e.target instanceof HTMLTextAreaElement;
-        if (
-          s &&
-          (s.command === "versions.save" ||
-            (!box && (s.command === "approve" || s.command === "schedule")))
-        ) {
-          e.preventDefault();
-          run(s.command);
-        }
-        return;
-      }
-      const target = e.target as HTMLElement | null;
-      if (target?.tagName === "CANVAS") return;
-      // Menus, lists, segmented controls and dialogs keep their own keys.
-      if (
-        target?.closest?.(
-          '[role="menu"],[role="listbox"]:not([data-editor-list]),[role="radiogroup"],[role="tablist"],[role="dialog"]',
-        )
-      )
-        return;
-      const s = matchShortcut(e);
-      if (!s) return;
-      // Arrows without a canvas focus turn the slides only when nothing is selected.
-      if (
-        (s.command === "slide.prev" || s.command === "slide.next") &&
-        canvasState.selection.length > 0
-      )
-        return;
-      if (run(s.command)) {
+      if (!inWorkspace(e.target) || !e.metaKey || e.ctrlKey || e.altKey) return;
+      const box = e.target instanceof HTMLTextAreaElement;
+      if (e.key === "s" || e.key === "S") {
         e.preventDefault();
-        // The app's own shortcuts (⌘K search …) stay out while the post is open.
         e.stopPropagation();
+        void (async () => {
+          if (!ws.dirty) return notify("Kaydedilecek değişiklik yok.");
+          if (await session.save()) notify("Sürüm kaydedildi.");
+        })();
+      } else if (e.key === "Enter" && !box && !(isTyping(e.target) && !e.shiftKey)) {
+        e.preventDefault();
+        e.stopPropagation();
+        if (e.shiftKey) void openSchedule();
+        else void approve();
       }
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
-  }, [run, canvasState.selection.length]);
+  }, [session, ws.dirty, approve, openSchedule, notify]);
 
-  // Unsaved edits are saved first: approving waits for that render, then checks the hash.
-  const approveDisabled =
-    draftState.pending.length > 0 && !draftState.saving && !hasApproval(content)
-      ? null
-      : approveBlocker(snapshot);
-
+  // Unsaved edits are saved first: approving waits for that save, then checks the hash.
+  const approveDisabled = ws.dirty && !ws.saving ? null : approveBlocker(snapshot);
   const chatDisabled =
     changesVersion(snapshot.activity) && snapshot.activity.kind !== "rendering" ? "Bekle…" : null;
 
-  const first = canvas.editorSlides[0];
-  const preset = first
-    ? presetFor(content.type, content.targetPlatforms, first, session.preset)
-    : null;
-  const viewEntries = (): MenuEntry[] => [
-    { type: "label", label: "Görünüm" },
-    {
-      id: "all",
-      label: "Tüm kareler",
-      checked: canvasState.focus === null,
-      onSelect: () => canvas.setFocus(null),
-    },
-    {
-      id: "focus",
-      label: "Odak: yalnız bu kare",
-      checked: canvasState.focus !== null,
-      onSelect: () => canvas.setFocus(canvasState.activeSlide),
-    },
-    { type: "separator" },
-    {
-      id: "layers",
-      label: "Katmanlar listesi",
-      checked: layersOpen,
-      onSelect: () => setLayersOpen(!layersOpen),
-    },
-    {
-      id: "snapping",
-      label: "Yapışma",
-      shortcut: "⌘;",
-      checked: canvasState.snapping,
-      onSelect: () => canvas.setSnapping(!canvasState.snapping),
-    },
-    {
-      id: "rulers",
-      label: "Cetveller",
-      shortcut: "⇧R",
-      checked: canvasState.rulers,
-      onSelect: () => canvas.setRulers(!canvasState.rulers),
-    },
-    ...(first
-      ? ([
-          { type: "separator" },
-          { type: "label", label: "Önizleme biçimi" },
-          ...presetsForSlide(first).map((p) => ({
-            id: `preset-${p.id}`,
-            label: p.label,
-            checked: p.id === preset?.id,
-            onSelect: () => session.setPreset(p.id),
-          })),
-        ] as MenuEntry[])
-      : []),
-  ];
+  const setLayersOpen = (open: boolean) => useWorkspaceStore.getState().setLayersOpen(open);
+  const insets = {
+    left: layersOpen ? LAYERS_CARD_INSET + LAYERS_CARD_WIDTH + 16 : 24,
+    bottom: DOCK_INSET,
+  };
 
-  const selectionToolbar = (
-    <SelectionToolbar
-      session={session}
-      kit={kit}
-      onAi={(image) =>
-        setMode("chat", { prefill: image ? "Bu görseli " : "", scope: canvasState.selection })
-      }
-      onReplace={(key) => pickImage(key)}
-      onRemoveBackground={() => askChat("Arka planı kaldır", canvasState.selection)}
-    />
+  const dock = (layers: ChatLayers) => (
+    <div className="pointer-events-none absolute inset-x-3 bottom-3 z-20 flex justify-center">
+      <ModeDock
+        mode={mode}
+        onMode={(m) => setMode(m)}
+        edit={
+          ed ? <WecraToolbar /> : <span className="flex h-8 items-center px-3 text-fg-3">…</span>
+        }
+        chat={
+          <ChatInput
+            ref={chatInput}
+            layers={layers}
+            working={chat.working}
+            disabled={chatDisabled}
+            onSend={chat.send}
+            onStop={chat.stop}
+          />
+        }
+      />
+    </div>
   );
 
   return (
@@ -632,54 +306,35 @@ export function PostWorkspace(props: WorkspaceProps) {
       data-mode={mode}
       className="absolute inset-0 z-30 flex bg-page outline-none animate-fade-in"
     >
-      <CanvasArea
-        session={session}
-        selectionToolbar={selectionToolbar}
-        coveredLeft={layersOpen ? 12 + LAYERS_DOCK_WIDTH : 0}
-        overlay={
-          <>
-            <LayersDock
-              session={session}
-              open={layersOpen}
-              onOpenChange={setLayersOpen}
-              thumbs={(version?.slides ?? []).map((s) => s.renderedAssetId ?? null)}
-            />
-            <Toasts session={session} snapshot={snapshot} editor={editor} />
-          </>
-        }
-        bottom={
-          <ModeDock
-            mode={mode}
-            onMode={(m) => setMode(m)}
-            edit={
-              <EditTools
-                session={session}
-                onPlaceImage={() => pickImage(null)}
-                viewEntries={viewEntries}
-              />
-            }
-            chat={
-              <ChatInput
-                ref={chatInput}
-                session={session}
-                working={chat.working}
-                disabled={chatDisabled}
-                onSend={chat.send}
-                onStop={chat.stop}
-              />
-            }
-          />
-        }
-      />
+      <div className="@container relative min-w-0 flex-1 overflow-hidden" data-canvas-column="">
+        {session.source && (
+          <WecraEditor source={session.source} onReady={session.attach} insets={insets} />
+        )}
+        {ed ? (
+          <WecraScope ed={ed}>
+            <ToolFollower ed={ed} onEdit={() => mode !== "edit" && setMode("edit")} />
+            <LayersCard open={layersOpen} onOpenChange={setLayersOpen} />
+            <WithChatLayers ed={ed}>{dock}</WithChatLayers>
+          </WecraScope>
+        ) : (
+          dock(NO_LAYERS)
+        )}
+        <Status state={ws} onRetry={() => version && void session.reopen(version)} />
+        <Toasts
+          toasts={toasts}
+          snapshot={snapshot}
+          editor={editor}
+          onDismiss={(id) => setToasts((t) => t.filter((x) => x.id !== id))}
+        />
+      </div>
 
       <InSlot name="title">
         <TitleBar
-          session={session}
+          save={save}
           editor={editor}
           snapshot={snapshot}
           status={props.status}
           menu={props.menu ?? []}
-          onBack={close}
           onApprove={() => void approve()}
           onSchedule={() => void openSchedule()}
           approve={{
@@ -697,6 +352,11 @@ export function PostWorkspace(props: WorkspaceProps) {
           <>
             <EditTabs tab={editTab} onTab={(t) => useWorkspaceStore.getState().setEditTab(t)} />
             <span className="flex-1" />
+            {ed && editTab === "design" && (
+              <WecraScope ed={ed}>
+                <WecraZoomMenu />
+              </WecraScope>
+            )}
           </>
         ) : (
           <ChatHeader chat={chat} title={content.title} />
@@ -708,179 +368,108 @@ export function PostWorkspace(props: WorkspaceProps) {
           data-post-panel={mode}
           className="flex min-h-0 flex-1 flex-col animate-fade-in"
         >
-          {mode === "edit" ? (
-            <EditPanel
-              tab={editTab}
-              session={session}
-              kit={kit}
-              editor={editor}
-              snapshot={snapshot}
-              actions={{ ai: askChat, replaceImage: (key) => pickImage(key) }}
-            />
-          ) : (
+          {mode === "chat" ? (
             <ChatPanel chat={chat} onStarter={(text) => chatInput.current?.focus(text)} />
+          ) : editTab === "caption" ? (
+            <div className="scroll-area min-h-0 flex-1">
+              <CaptionPanel snapshot={snapshot} editor={editor} />
+            </div>
+          ) : ed ? (
+            <WecraScope ed={ed}>
+              <WecraDesignPanel className="min-h-0 flex-1" />
+            </WecraScope>
+          ) : (
+            <div className="flex flex-1 items-center justify-center gap-2 text-body text-fg-3">
+              <Spinner size={12} /> Tasarım paneli hazırlanıyor…
+            </div>
           )}
         </div>
       </InSlot>
-
-      <input
-        ref={fileInput}
-        type="file"
-        accept="image/png,image/jpeg,image/webp,image/avif,image/gif"
-        className="hidden"
-        aria-hidden="true"
-        tabIndex={-1}
-        onChange={(e) => {
-          const file = e.target.files?.[0];
-          e.target.value = "";
-          if (file) void placeFile(file);
-        }}
-      />
       {props.dialogs}
     </section>
   );
 }
 
-/** Over the selection: ask the chat, and the selection's quick edits. */
-function SelectionToolbar({
-  session,
-  kit,
-  onAi,
-  onReplace,
-  onRemoveBackground,
-}: {
-  session: EditorSession;
-  kit: ReturnType<typeof useRenderKit>;
-  onAi(image: boolean): void;
-  onReplace(key: string): void;
-  onRemoveBackground(): void;
-}) {
-  const { canvas, canvasState } = session;
-  const layers = canvasState.selection
-    .map((k) => canvas.layer(k))
-    .filter((l): l is NonNullable<typeof l> => l !== null);
-  const first = layers[0];
-  if (!first || canvasState.editing) return null;
-  const image = layers.length === 1 && (first.type === "image" || first.type === "slot");
-  const align = (textAlign: "left" | "center" | "right") =>
-    canvas.applyOps(
-      layers.map(
-        (l) =>
-          ({
-            op: "setTypography",
-            layer: l.id,
-            textAlign,
-            slide: l.slide,
-          }) as SlidePatchInput,
-      ),
-      "Hizalama",
-    );
+/** Tasarım · Açıklama */
+export function EditTabs({ tab, onTab }: { tab: EditTab; onTab(tab: EditTab): void }) {
   return (
-    <div className="glass flex h-9 items-center gap-0.5 rounded-full p-1 shadow-md">
-      <button
-        type="button"
-        onClick={() => onAi(image)}
-        className="flex h-7 items-center gap-1.5 rounded-full bg-accent-subtle px-2.5 text-body font-medium text-accent-text hover:bg-accent/25"
+    <SegmentedControl<EditTab>
+      label="Düzenle paneli"
+      value={tab}
+      onChange={onTab}
+      options={[
+        { value: "design", label: "Tasarım" },
+        { value: "caption", label: "Açıklama" },
+      ]}
+    />
+  );
+}
+
+/** Picking a tool on the canvas (V, T, R … or the toolbar) is editing: the dock shows the tools. */
+function ToolFollower({ ed, onEdit }: { ed: EditorController; onEdit(): void }) {
+  const tool = useTool(ed.store);
+  const last = useRef(tool);
+  useEffect(() => {
+    if (last.current !== tool) onEdit();
+    last.current = tool;
+  }, [tool, onEdit]);
+  return null;
+}
+
+function WithChatLayers({
+  ed,
+  children,
+}: {
+  ed: EditorController;
+  children: (layers: ChatLayers) => ReactNode;
+}) {
+  return <>{children(useChatLayers(ed))}</>;
+}
+
+/** Opening, importing, or why the document could not be opened. */
+function Status({ state, onRetry }: { state: WecraSessionState; onRetry(): void }) {
+  if (state.phase === "ready" && state.editor) return null;
+  const text =
+    state.phase === "error"
+      ? state.error
+      : state.phase === "importing"
+        ? "Kareler Wecra katmanlarına aktarılıyor…"
+        : "Tasarım açılıyor…";
+  return (
+    <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center">
+      <div
+        role={state.phase === "error" ? "alert" : "status"}
+        className="glass pointer-events-auto flex max-w-[420px] items-center gap-2 rounded-full px-4 py-2 text-body text-fg-2"
       >
-        <IconSparkles size={13} /> {image ? "Görsel üret" : "Sohbette düzenle"}
-      </button>
-      {image ? (
-        <>
-          <button
-            type="button"
-            onClick={() => onReplace(first.key)}
-            className="h-7 rounded-full px-2.5 text-body text-fg hover:bg-control"
-          >
-            Değiştir
+        {state.phase === "error" ? (
+          <IconWarning size={14} className="shrink-0 text-danger" />
+        ) : (
+          <Spinner size={12} />
+        )}
+        <span className="min-w-0 [overflow-wrap:anywhere]">{text}</span>
+        {state.phase === "error" && (
+          <button type="button" className="shrink-0 underline" onClick={onRetry}>
+            Yeniden dene
           </button>
-          <button
-            type="button"
-            onClick={onRemoveBackground}
-            className="h-7 rounded-full px-2.5 text-body text-fg hover:bg-control"
-          >
-            Arka planı kaldır
-          </button>
-          <IconButton
-            size={28}
-            icon={<IconCrop size={14} />}
-            label="Kırp"
-            onClick={() => canvas.startCrop(first.key)}
-          />
-        </>
-      ) : first.type === "text" ? (
-        <>
-          <IconButton
-            size={28}
-            icon={<IconTextLeft size={14} />}
-            label="Sola yasla"
-            onClick={() => align("left")}
-          />
-          <IconButton
-            size={28}
-            icon={<IconTextCenter size={14} />}
-            label="Ortala"
-            onClick={() => align("center")}
-          />
-          <IconButton
-            size={28}
-            icon={<IconTextRight size={14} />}
-            label="Sağa yasla"
-            onClick={() => align("right")}
-          />
-          <MenuButton
-            label="Marka rengi"
-            width={200}
-            entries={kit.swatches.map((sw) => ({
-              id: sw.token,
-              label: sw.token,
-              detail: sw.value,
-              icon: <span className="size-3 rounded-full" style={{ background: sw.value }} />,
-              onSelect: () =>
-                canvas.applyOps(
-                  layers.map(
-                    (l) =>
-                      ({
-                        op: "setColor",
-                        layer: l.id,
-                        property: "color",
-                        value: { token: sw.token },
-                        slide: l.slide,
-                      }) as unknown as SlidePatchInput,
-                  ),
-                  "Marka rengi",
-                ),
-            }))}
-          >
-            {({ ref, onClick, onKeyDown, open, ...aria }) => (
-              <IconButton
-                ref={ref}
-                size={28}
-                icon={<IconWand size={14} />}
-                label="Marka rengi"
-                selected={open}
-                onClick={onClick}
-                onKeyDown={onKeyDown}
-                {...aria}
-              />
-            )}
-          </MenuButton>
-        </>
-      ) : null}
+        )}
+      </div>
     </div>
   );
 }
 
 function Toasts({
-  session,
+  toasts,
   snapshot,
   editor,
+  onDismiss,
 }: {
-  session: EditorSession;
+  toasts: Toast[];
   snapshot: EditorSnapshot;
   editor: PostEditor;
+  onDismiss(id: number): void;
 }) {
   const items = [
-    ...session.toasts,
+    ...toasts,
     ...(snapshot.error ? [{ id: -1, message: snapshot.error, tone: "error" as const }] : []),
     ...(snapshot.notice ? [{ id: -2, message: snapshot.notice, tone: "notice" as const }] : []),
   ];
@@ -911,7 +500,7 @@ function Toasts({
             onClick={() => {
               if (t.id === -1) editor.clearError();
               else if (t.id === -2) editor.clearNotice();
-              else session.dismiss(t.id);
+              else onDismiss(t.id);
             }}
           />
         </div>

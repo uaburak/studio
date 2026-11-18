@@ -1,11 +1,15 @@
 import { resolve } from "node:path";
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vitest/config";
+import { wecraAliases, wecraStubs } from "./wecra.vite.ts";
 
 export default defineConfig({
-  plugins: [react()],
+  plugins: [wecraStubs(), react()],
   resolve: {
-    alias: { "@renderer": resolve(import.meta.dirname, "src/renderer") },
+    alias: [
+      { find: /^@renderer\//, replacement: `${resolve(import.meta.dirname, "src/renderer")}/` },
+      ...wecraAliases,
+    ],
   },
   test: {
     env: { TZ: "Europe/Istanbul" },
@@ -20,12 +24,12 @@ export default defineConfig({
         },
       },
       {
-        // Wecra's engine (the vendored Wasm build) driven headless in Node.
+        // Wecra's editor (vendored, gitignored) with its real engine, headless (jsdom, no WebGL).
         extends: true,
         test: {
           name: "engine",
-          environment: "node",
-          include: ["test/engine/**/*.test.ts"],
+          environment: "jsdom",
+          include: ["test/engine/**/*.test.{ts,tsx}"],
           setupFiles: ["./test/engine/setup.ts"],
         },
       },

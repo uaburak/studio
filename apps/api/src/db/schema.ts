@@ -59,6 +59,8 @@ export const ENUMS = {
   // --- generation checks (roadmap 13) ---
   checkTrigger: ["generate", "render", "manual", "fix"],
   checkStrictness: ["relaxed", "standard", "strict"],
+  // --- editor documents (the post editor's canvas, 0016) ---
+  editorDocumentKind: ["wecra"],
 } as const;
 
 /** `col in ('a', 'b')` for CHECK constraints (values are constants above, never input). */
@@ -450,6 +452,31 @@ export const contentVersionSlides = sqliteTable(
     primaryKey({ columns: [t.versionId, t.position] }),
     index("content_version_slides_asset_idx").on(t.renderedAssetId),
     check("content_version_slides_size_check", sql`${t.width} > 0 and ${t.height} > 0`),
+  ],
+);
+
+/**
+ * The editor's own document of a version (`EditorDocument` in @studio/contract): the post
+ * editor's canvas (a Wecra document bundle, an asset of the brand). One per version at most;
+ * goes with the version. Not part of the content hash (the slides are rendered from it).
+ */
+export const contentVersionDocuments = sqliteTable(
+  "content_version_documents",
+  {
+    versionId: text("version_id")
+      .primaryKey()
+      .references(() => contentVersions.id, { onDelete: "cascade" }),
+    kind: text("kind", { enum: ENUMS.editorDocumentKind }).notNull(),
+    assetId: text("asset_id")
+      .notNull()
+      .references(() => assets.id),
+    format: integer("format").notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    index("content_version_documents_asset_idx").on(t.assetId),
+    check("content_version_documents_kind_check", oneOf(t.kind, ENUMS.editorDocumentKind)),
+    check("content_version_documents_format_check", sql`${t.format} >= 1`),
   ],
 );
 

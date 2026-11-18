@@ -6,6 +6,14 @@ import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "electron-vite";
 import type { Plugin } from "vite";
+import { wecraAliases, wecraStubs, wecraVendored } from "./wecra.vite.ts";
+
+if (!wecraVendored())
+  console.warn(
+    "\n[studio] Wecra's editor is not vendored (src/renderer/vendor/wecra-editor): the post editor " +
+      "shows how to add it. Run `node apps/desktop/scripts/vendor-wecra.mjs` with DesignerV2 next " +
+      "to Studio (or --repo / WECRA_REPO). It is gitignored: Wecra is closed source.\n",
+  );
 
 /**
  * Dev only: the renderer (Vite on localhost) reaches the local API through this proxy,
@@ -82,10 +90,16 @@ export default defineConfig({
   },
   renderer: {
     root: resolve(import.meta.dirname, "src/renderer"),
-    plugins: [react(), tailwindcss(), apiProxy()],
+    plugins: [wecraStubs(), react(), tailwindcss(), apiProxy()],
     resolve: {
-      alias: { "@renderer": resolve(import.meta.dirname, "src/renderer") },
+      // `@renderer/…` is Studio's; `@/…` and `@shared/…` are Wecra's vendored editor (wecra.vite.ts).
+      alias: [
+        { find: /^@renderer\//, replacement: `${resolve(import.meta.dirname, "src/renderer")}/` },
+        ...wecraAliases,
+      ],
     },
+    // Wecra's image decoding and document loading run in module workers.
+    worker: { format: "es", plugins: () => [wecraStubs()] },
     server: {
       host: "127.0.0.1",
       port: 5183,

@@ -20,6 +20,7 @@ import {
   ContentVersionUpdate,
   canTransitionContent,
   computeContentHash,
+  type EditorDocument,
   EntityId,
   isManualContentTransition,
   SLIDE_LIMITS,
@@ -27,6 +28,7 @@ import {
   statusIn,
   UNDELETABLE_STATUSES,
   VERSIONABLE_STATUSES,
+  WECRA_DOCUMENT_MIME,
 } from "@studio/contract";
 import { and, asc, desc, eq, inArray, lt, max, type SQL } from "drizzle-orm";
 import type { BatchItem } from "drizzle-orm/batch";
@@ -41,6 +43,7 @@ import {
 import {
   assets,
   contents,
+  contentVersionDocuments,
   contentVersionSlides,
   contentVersions,
   jobs,
@@ -123,7 +126,32 @@ async function versionWithSlides(db: Db, versionRow: typeof contentVersions.$inf
     .from(contentVersionSlides)
     .where(eq(contentVersionSlides.versionId, versionRow.id))
     .orderBy(asc(contentVersionSlides.position));
-  return toVersion(versionRow, slides);
+  const document = await db.query.contentVersionDocuments.findFirst({
+    where: eq(contentVersionDocuments.versionId, versionRow.id),
+  });
+  return toVersion(versionRow, slides, document ?? null);
+}
+
+/** An editor document must be a Wecra bundle of the content's brand. */
+async function checkEditorDocument(
+  db: Db,
+  brandId: string,
+  doc: EditorDocument | undefined,
+): Promise<EditorDocument | null> {
+  if (!doc) return null;
+  const asset = await db.query.assets.findFirst({ where: eq(assets.id, doc.assetId) });
+  if (!asset) throw notFound("asset", doc.assetId);
+  if (asset.brandId !== brandId) {
+    throw badRequest(`asset ${doc.assetId} belongs to another brand`, [
+      { path: "editorDocument.assetId", message: "asset must belong to the content's brand" },
+    ]);
+  }
+  if (asset.mimeType !== WECRA_DOCUMENT_MIME) {
+    throw badRequest(`asset ${doc.assetId} is not a ${doc.kind} document`, [
+      { path: "editorDocument.assetId", message: `expected ${WECRA_DOCUMENT_MIME}` },
+    ]);
+  }
+  return { kind: doc.kind, assetId: doc.assetId, format: doc.format };
 }
 
 /** Rendered asset refs: empty, or one per slide; each must belong to the brand. */
@@ -183,6 +211,8 @@ async function insertVersionStatements(
     jobId: string | null;
     renders: ReadonlyArray<string | null>;
     layouts: ReadonlyArray<SlideLayout | null>;
+    /** The editor's document the slides come from (copied as it is). */
+    editorDocument?: EditorDocument | null;
     now: Date;
   },
 ) {
@@ -218,6 +248,17 @@ async function insertVersionStatements(
       }),
     ),
   ];
+  if (input.editorDocument) {
+    stmts.push(
+      db.insert(contentVersionDocuments).values({
+        versionId,
+        kind: input.editorDocument.kind,
+        assetId: input.editorDocument.assetId,
+        format: input.editorDocument.format,
+        createdAt: input.now,
+      }),
+    );
+  }
   return { versionId, stmts };
 }
 
@@ -571,6 +612,7 @@ export const contentRoutes = createRouter()
         input.slides.length,
       );
       const layouts = checkLayouts(input.layouts, input.slides.length);
+      const editorDocument = await checkEditorDocument(db, row.brandId, input.editorDocument);
       if (input.jobId) {
         const job = await db.query.jobs.findFirst({ where: eq(jobs.id, input.jobId) });
         if (!job) throw notFound("job", input.jobId);
@@ -585,6 +627,7 @@ export const contentRoutes = createRouter()
         jobId: input.jobId ?? null,
         renders,
         layouts,
+        editorDocument,
         now,
       });
       if (row.status === "scheduled") stmts.push(cancelPendingSchedules(db, id, now));
@@ -688,7 +731,7 @@ export const contentRoutes = createRouter()
       summary: "Restore an older version as a new version",
       description:
         "Adds a new `manual_edit` version that copies the slides of `version` exactly (so the " +
-        "hash equals that version's hash); its renders and layer layouts are reused. Like any " +
+        "hash equals that version's hash); its renders, layer layouts and editor document are reused. Like any " +
         "new version it clears the approval and cancels pending schedules. Refused (409) while " +
         "publishing or published.",
       request: { params: VersionParams, body: jsonBody(ContentVersionRestore) },
@@ -718,6 +761,7 @@ export const contentRoutes = createRouter()
         jobId: null,
         renders: source.slides.map((s) => s.renderedAssetId),
         layouts: source.slides.map((s) => s.layers ?? null),
+        editorDocument: source.editorDocument ?? null,
         now,
       });
       if (row.status === "scheduled") stmts.push(cancelPendingSchedules(db, id, now));
@@ -742,8 +786,8 @@ export const contentRoutes = createRouter()
       tags,
       summary: "Duplicate a content item as a new draft",
       description:
-        "Copies type, brief, caption and platforms, and the current version (slides, renders " +
-        "and layer layouts) as version 1 of the copy. Approval, schedules and older versions " +
+        "Copies type, brief, caption and platforms, and the current version (slides, renders, " +
+        "layer layouts and the editor document) as version 1 of the copy. Approval, schedules and older versions " +
         "are not copied.",
       request: { params: IdParams, body: jsonBody(ContentDuplicate) },
       responses: {
@@ -787,6 +831,7 @@ export const contentRoutes = createRouter()
           jobId: null,
           renders: source.slides.map((s) => s.renderedAssetId),
           layouts: source.slides.map((s) => s.layers ?? null),
+          editorDocument: source.editorDocument ?? null,
           now,
         });
         stmts.push(

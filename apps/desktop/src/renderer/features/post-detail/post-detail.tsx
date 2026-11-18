@@ -9,7 +9,16 @@
 // ⌫ hides the selected layer or asks to delete the post.
 import type { Content, ContentVersion } from "@studio/contract";
 import { useQueryClient } from "@tanstack/react-query";
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import {
+  lazy,
+  Suspense,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import {
   Button,
   cn,
@@ -34,7 +43,7 @@ import { startChat } from "../../state/chat-draft.ts";
 import { usePostOpener } from "../../state/post-opener.ts";
 import { useJobsSnapshot } from "../../state/studio.tsx";
 import { ChecksPanel, useApproveGuard } from "../checks/checks-panel.tsx";
-import { PostWorkspace } from "../post-editor/workspace.tsx";
+import { WECRA_MISSING, wecraVendored } from "../post-editor/wecra/vendored.ts";
 import { usePostActions } from "../posts/actions.ts";
 import {
   storeContent,
@@ -137,11 +146,9 @@ function PostDetail({ contentId }: { contentId: string }) {
   const content = useContent(contentId);
   const seed = content.data ?? cachedContent(queryClient, contentId);
   const version = useVersion(contentId, seed?.currentVersion?.version);
-  const close = () => usePostsStore.getState().close();
-
   if (!seed) {
     return (
-      <Shell onClose={close} title="Post">
+      <Shell title="Post">
         <div className="flex flex-1 items-center justify-center gap-2 text-body text-fg-2">
           {content.error ? (
             <>
@@ -159,7 +166,7 @@ function PostDetail({ contentId }: { contentId: string }) {
   }
   if (seed.currentVersion && version.isLoading) {
     return (
-      <Shell onClose={close} title={seed.title}>
+      <Shell title={seed.title}>
         <div className="flex flex-1 items-center justify-center gap-2 text-body text-fg-2">
           <Spinner /> Sürüm yükleniyor…
         </div>
@@ -169,28 +176,26 @@ function PostDetail({ contentId }: { contentId: string }) {
   return <Editor content={seed} version={version.data ?? null} />;
 }
 
-function Shell({
-  title,
-  onClose,
-  children,
-}: {
-  title: string;
-  onClose(): void;
-  children: React.ReactNode;
-}) {
+/** The opened post while it loads (back is the app's: the top bar's ‹, ⌘[, Esc). */
+function Shell({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <div
       role="dialog"
       aria-label={`Açık post: ${title}`}
       className="absolute inset-0 z-30 flex flex-col bg-page animate-fade-in"
     >
-      <div className="absolute top-3 right-3 z-10">
-        <IconButton icon={<IconClose size={16} />} label="Kapat" shortcut="Esc" onClick={onClose} />
-      </div>
       {children}
     </div>
   );
 }
+
+/**
+ * Wecra's editor (vendored, gitignored: scripts/vendor-wecra.mjs) is loaded with the canvas, so
+ * the app runs — and says what to do — on a checkout without it.
+ */
+const PostWorkspace = lazy(() =>
+  import("../post-editor/workspace.tsx").then((m) => ({ default: m.PostWorkspace })),
+);
 
 function Editor({ content, version }: { content: Content; version: ContentVersion | null }) {
   const api = useApi();
@@ -249,44 +254,65 @@ function PostCanvas({ editor, snapshot }: { editor: PostEditor; snapshot: Editor
       content.brandId,
     );
   };
+  if (!wecraVendored)
+    return (
+      <Shell title={content.title}>
+        <div className="flex flex-1 items-center justify-center p-8">
+          <p role="alert" className="max-w-[520px] text-body text-fg-2">
+            <IconWarning size={15} className="mr-1.5 inline text-danger" />
+            {WECRA_MISSING}
+          </p>
+        </div>
+      </Shell>
+    );
   return (
-    <PostWorkspace
-      editor={editor}
-      snapshot={snapshot}
-      brandName={facts.brand?.name ?? null}
-      status={{ label: facts.statusText, tone: facts.tone }}
-      approvalFirst={facts.approvalFirst}
-      schedule={{
-        label: facts.scheduleLabel,
-        disabled: facts.scheduleDisabled,
-        open: () =>
-          facts.approvalFirst
-            ? approveGuard.guard(() => setScheduleOpen(true))
-            : setScheduleOpen(true),
-      }}
-      guardApproval={approveGuard.guard}
-      menu={postMenu({ content, version, actions, quickLook, openInChat })}
-      onClose={close}
-      onPreview={quickLook}
-      dialogs={
-        <>
-          {approveGuard.dialog}
-          <ScheduleSheet
-            open={scheduleOpen}
-            content={content}
-            slideHtml={snapshot.current?.slides[0]?.html ?? null}
-            hash={snapshot.approvableHash}
-            accounts={facts.allAccounts}
-            initialDate={scheduleDate}
-            onClose={() => setScheduleOpen(false)}
-            onDone={(fresh) => {
-              editor.replaceContent(fresh);
-              void facts.schedules.refetch();
-            }}
-          />
-        </>
+    <Suspense
+      fallback={
+        <Shell title={content.title}>
+          <div className="flex flex-1 items-center justify-center gap-2 text-body text-fg-2">
+            <Spinner /> Düzenleyici yükleniyor…
+          </div>
+        </Shell>
       }
-    />
+    >
+      <PostWorkspace
+        editor={editor}
+        snapshot={snapshot}
+        brandName={facts.brand?.name ?? null}
+        status={{ label: facts.statusText, tone: facts.tone }}
+        approvalFirst={facts.approvalFirst}
+        schedule={{
+          label: facts.scheduleLabel,
+          disabled: facts.scheduleDisabled,
+          open: () =>
+            facts.approvalFirst
+              ? approveGuard.guard(() => setScheduleOpen(true))
+              : setScheduleOpen(true),
+        }}
+        guardApproval={approveGuard.guard}
+        menu={postMenu({ content, version, actions, quickLook, openInChat })}
+        onClose={close}
+        onPreview={quickLook}
+        dialogs={
+          <>
+            {approveGuard.dialog}
+            <ScheduleSheet
+              open={scheduleOpen}
+              content={content}
+              slideHtml={snapshot.current?.slides[0]?.html ?? null}
+              hash={snapshot.approvableHash}
+              accounts={facts.allAccounts}
+              initialDate={scheduleDate}
+              onClose={() => setScheduleOpen(false)}
+              onDone={(fresh) => {
+                editor.replaceContent(fresh);
+                void facts.schedules.refetch();
+              }}
+            />
+          </>
+        }
+      />
+    </Suspense>
   );
 }
 
@@ -463,9 +489,7 @@ export function EditorView({ editor, snapshot }: { editor: PostEditor; snapshot:
               aria-label="Konum"
               className="flex min-w-0 flex-1 items-center gap-1 pt-1.5 text-footnote text-fg-3"
             >
-              <button type="button" className="hover:text-fg-2" onClick={close}>
-                Postlar
-              </button>
+              <span>Postlar</span>
               <IconChevronRight size={11} className="shrink-0" />
               <span className="truncate">{brand?.name ?? "Marka"}</span>
               {planItem?.pillar && (
@@ -488,12 +512,6 @@ export function EditorView({ editor, snapshot }: { editor: PostEditor; snapshot:
                 />
               )}
             </MenuButton>
-            <IconButton
-              icon={<IconClose size={16} strokeWidth={1.5} />}
-              label="Kapat"
-              shortcut="Esc"
-              onClick={close}
-            />
           </div>
           <h1 className="selectable mt-2 text-title font-semibold text-fg [overflow-wrap:anywhere]">
             {content.title}

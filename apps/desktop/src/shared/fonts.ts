@@ -34,9 +34,14 @@ export interface InstalledFonts {
 export interface FontsBridge {
   /** Cached; rescanned when a font folder changed or with `refresh`. */
   list(options?: { refresh?: boolean }): Promise<InstalledFonts>;
+  /**
+   * One installed face's font file by PostScript name (a face of a collection as a file of its
+   * own), for the post editor's text engine; null when it is not installed or not readable.
+   */
+  read?(postscriptName: string): Promise<Uint8Array | null>;
 }
 
-export const FONTS_IPC = { list: "fonts:list" } as const;
+export const FONTS_IPC = { list: "fonts:list", read: "fonts:read" } as const;
 
 const STYLE_WEIGHTS: [RegExp, number][] = [
   [/\b(hairline|thin)\b/i, 100],

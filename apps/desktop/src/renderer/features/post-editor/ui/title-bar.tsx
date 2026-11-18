@@ -1,20 +1,32 @@
-// The open post in the app's top bar (its title area): back to where the post was opened from,
-// the title with the post's menu, its state, the version chip (versions popover: save a named
-// version, show / restore an older one), the save state, and at the right Onayla and Zamanla.
+// The open post in the app's top bar (its title area): the title with the post's menu, its
+// state, the version chip (versions popover: save a named version, show / restore an older one),
+// the save state, and at the right Onayla and Zamanla. Back is the app's own (the top bar's ‹ ›,
+// ⌘[, a swipe): the title area has no back button of its own.
 import { useState } from "react";
 import { Button, cn, Spinner, TagPill, type TagTone } from "../../../components/ui/controls.tsx";
-import { IconChevronDown, IconChevronLeft, IconClock } from "../../../components/ui/icons.tsx";
+import { IconChevronDown, IconClock } from "../../../components/ui/icons.tsx";
 import { MenuButton, type MenuEntry } from "../../../components/ui/menu.tsx";
 import { Popover } from "../../../components/ui/popover.tsx";
 import { formatAgo } from "../../../lib/format.ts";
-import { type Route, useAppStore } from "../../../state/app-store.ts";
 import {
   activeVersion,
   type EditorSnapshot,
   isViewingCurrent,
   type PostEditor,
 } from "../../post-detail/editor.ts";
-import type { EditorSession } from "../session.ts";
+
+/** The canvas's saving, as the title area shows and drives it. */
+export interface SaveControl {
+  dirty: boolean;
+  saving: boolean;
+  error: string | null;
+  lastSavedAt: number | null;
+  /** Saves now (a version; `note` names it). */
+  save(note?: string): Promise<boolean>;
+  /** Saves unsaved edits (true also when there are none). */
+  flush(): Promise<boolean>;
+  notify(message: string): void;
+}
 
 const ORIGIN: Record<string, string> = {
   generated: "AI ilk taslak",
@@ -22,24 +34,12 @@ const ORIGIN: Record<string, string> = {
   manual_edit: "Düzenleme",
 };
 
-/** Where back goes, and how to say it (Turkish case endings by hand). */
-const BACK: Partial<Record<Route["kind"], { label: string; action: string }>> = {
-  posts: { label: "Postlar", action: "Postlara dön" },
-  calendar: { label: "Takvim", action: "Takvime dön" },
-  media: { label: "Medya", action: "Medyaya dön" },
-  conversation: { label: "Sohbet", action: "Sohbete dön" },
-  new: { label: "Sohbet", action: "Sohbete dön" },
-  brand: { label: "Marka", action: "Markaya dön" },
-  brands: { label: "Markalar", action: "Markalara dön" },
-};
-
 export function TitleBar({
-  session,
+  save,
   editor,
   snapshot,
   status,
   menu,
-  onBack,
   onApprove,
   onSchedule,
   approve,
@@ -47,12 +47,11 @@ export function TitleBar({
   versionsOpen,
   setVersionsOpen,
 }: {
-  session: EditorSession;
+  save: SaveControl;
   editor: PostEditor;
   snapshot: EditorSnapshot;
   status: { label: string; tone: TagTone };
   menu: MenuEntry[];
-  onBack(): void;
   onApprove(): void;
   onSchedule(): void;
   approve: { visible: boolean; disabled: string | null; busy: boolean };
@@ -60,37 +59,21 @@ export function TitleBar({
   versionsOpen: boolean;
   setVersionsOpen(open: boolean): void;
 }) {
-  const { draft, draftState: d } = session;
   const [chip, setChip] = useState<HTMLElement | null>(null);
-  const routeKind = useAppStore((s) => s.route.kind);
   const version = activeVersion(snapshot);
   const viewingCurrent = isViewingCurrent(snapshot);
-  const saveLabel = d.saving
+  const saveLabel = save.saving
     ? "Kaydediliyor…"
-    : d.saveError
+    : save.error
       ? "Kaydedilemedi"
-      : d.pending.length > 0
+      : save.dirty
         ? "Kaydedilmedi"
-        : d.lastSavedAt
+        : save.lastSavedAt
           ? "Kaydedildi"
           : "";
-  const back = BACK[routeKind] ?? { label: "Geri", action: "Geri dön" };
 
   return (
     <>
-      <button
-        type="button"
-        onClick={onBack}
-        title={`${back.action} (⌘[)`}
-        aria-label={back.action}
-        className="no-drag hidden h-7 shrink-0 items-center gap-0.5 rounded-full pr-2 pl-1 text-body-lg text-fg-2 transition-colors hover:bg-control hover:text-fg @[340px]:flex"
-      >
-        <IconChevronLeft size={16} strokeWidth={1.5} />
-        <span className="hidden @[620px]:inline">{back.label}</span>
-      </button>
-      <span className="hidden text-fg-3 @[620px]:inline" aria-hidden="true">
-        /
-      </span>
       <MenuButton
         entries={() =>
           approve.visible
@@ -157,13 +140,14 @@ export function TitleBar({
           role="status"
           className={cn(
             "flex shrink-0 items-center gap-1.5 text-footnote",
-            d.saveError ? "text-danger" : "text-fg-3",
+            save.error ? "text-danger" : "text-fg-3",
           )}
+          title={save.error ?? undefined}
         >
-          {d.saving && <Spinner size={11} />}
-          <span className={cn(!d.saveError && "hidden @[700px]:inline")}>{saveLabel}</span>
-          {d.saveError && (
-            <button type="button" className="no-drag underline" onClick={() => void draft.retry()}>
+          {save.saving && <Spinner size={11} />}
+          <span className={cn(!save.error && "hidden @[700px]:inline")}>{saveLabel}</span>
+          {save.error && (
+            <button type="button" className="no-drag underline" onClick={() => void save.save()}>
               Yeniden dene
             </button>
           )}
@@ -200,7 +184,7 @@ export function TitleBar({
         anchor={chip}
         open={versionsOpen}
         onClose={() => setVersionsOpen(false)}
-        session={session}
+        save={save}
         editor={editor}
         snapshot={snapshot}
       />
@@ -212,18 +196,17 @@ function VersionsPopover({
   anchor,
   open,
   onClose,
-  session,
+  save: control,
   editor,
   snapshot,
 }: {
   anchor: HTMLElement | null;
   open: boolean;
   onClose(): void;
-  session: EditorSession;
+  save: SaveControl;
   editor: PostEditor;
   snapshot: EditorSnapshot;
 }) {
-  const { draft, draftState: d } = session;
   const [naming, setNaming] = useState(false);
   const [name, setName] = useState("");
   const current = snapshot.content.currentVersion?.version;
@@ -232,11 +215,11 @@ function VersionsPopover({
     const note = name.trim();
     setNaming(false);
     setName("");
-    if (draft.dirty) {
-      const ok = await draft.flush(note || undefined);
-      if (ok) session.notify(note ? `“${note}” sürümü kaydedildi.` : "Sürüm kaydedildi.");
+    if (control.dirty || note) {
+      const ok = await control.save(note || undefined);
+      if (ok) control.notify(note ? `“${note}” sürümü kaydedildi.` : "Sürüm kaydedildi.");
     } else {
-      session.notify("Kaydedilecek değişiklik yok; son sürüm güncel.");
+      control.notify("Kaydedilecek değişiklik yok; son sürüm güncel.");
     }
   };
   return (
@@ -251,7 +234,9 @@ function VersionsPopover({
         <div className="flex items-start gap-2 px-3 pt-3 pb-2">
           <div className="min-w-0 flex-1">
             <div className="text-body font-semibold text-fg">Sürümler</div>
-            <div className="text-footnote text-fg-3">Bu Mac'te saklanır · her kayıt bir render</div>
+            <div className="text-footnote text-fg-3">
+              Bu Mac'te saklanır · her kayıt Wecra'nın render'ı
+            </div>
           </div>
           <Button size="sm" variant="ghost" onClick={() => setNaming(true)}>
             Sürüm kaydet
@@ -285,16 +270,14 @@ function VersionsPopover({
           aria-label="Sürüm listesi"
           className="scroll-area flex max-h-[320px] flex-col gap-0.5 px-1.5 pb-1.5"
         >
-          {d.pending.length > 0 || d.inflight ? (
+          {control.dirty || control.saving ? (
             <div className="flex h-12 items-center gap-2.5 rounded-[14px] bg-control px-2.5">
               <span className="min-w-0 flex-1">
                 <span className="block text-body text-fg">
                   Taslak · kaydedilmemiş değişiklikler
                 </span>
                 <span className="block text-footnote text-fg-3">
-                  {d.saving
-                    ? "Kaydediliyor…"
-                    : `${d.undo.length} adım · birazdan kendiliğinden kaydedilir`}
+                  {control.saving ? "Kaydediliyor…" : "Birazdan kendiliğinden kaydedilir"}
                 </span>
               </span>
             </div>
@@ -310,7 +293,7 @@ function VersionsPopover({
                 tabIndex={-1}
                 aria-selected={isShown}
                 onClick={async () => {
-                  if (draft.dirty) await draft.flush();
+                  if (control.dirty) await control.flush();
                   void editor.selectVersion(v.version);
                 }}
                 className={cn(

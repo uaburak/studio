@@ -39,6 +39,9 @@ const MAGIC: Record<string, (b: Uint8Array) => boolean> = {
   "image/webp": (b) => ascii(b, 0, 4) === "RIFF" && ascii(b, 8, 12) === "WEBP",
   "application/pdf": (b) => ascii(b, 0, 5) === "%PDF-",
   "image/svg+xml": (b) => /<svg[\s>]/i.test(new TextDecoder().decode(b.subarray(0, 4096))),
+  // A Wecra document bundle is a zip.
+  "application/vnd.wecra.document+zip": (b) =>
+    b[0] === 0x50 && b[1] === 0x4b && b[2] === 0x03 && b[3] === 0x04,
 };
 
 function ascii(b: Uint8Array, start: number, end: number): string {

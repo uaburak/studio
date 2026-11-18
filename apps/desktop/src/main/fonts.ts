@@ -9,7 +9,7 @@
 // Cached in memory with a signature of the font folders' modification times: installing or
 // removing a font (Font Book, a copy into ~/Library/Fonts) rescans on the next request.
 import { execFile } from "node:child_process";
-import { stat } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import {
@@ -155,5 +155,134 @@ export class FontLister {
       if (this.cached) return { ...this.cached.fonts, error: reason };
       return { families: [], scannedAt, source: "appkit", error: reason };
     }
+  }
+}
+
+// --- one face's file (the post editor's engine shapes text with the font's own bytes) ----------
+
+/** JXA: PostScript names → the font files they are in (NSFontDescriptor's file URL). */
+export const APPKIT_FONT_FILES_SCRIPT = `ObjC.import('AppKit');
+function run(argv) {
+  const out = {};
+  for (const ps of argv) {
+    const font = $.NSFont.fontWithNameSize(ps, 12);
+    if (font.isNil()) { out[ps] = null; continue; }
+    const url = font.fontDescriptor.objectForKey($('NSCTFontFileURLAttribute'));
+    out[ps] = url.isNil() ? null : url.path.js;
+  }
+  return JSON.stringify(out);
+}`;
+
+/** Largest font file handed to the renderer. */
+export const MAX_FONT_FILE_BYTES = 64 * 1024 * 1024;
+
+const tag = (b: Uint8Array, o: number) =>
+  String.fromCharCode(b[o] ?? 0, b[o + 1] ?? 0, b[o + 2] ?? 0, b[o + 3] ?? 0);
+
+/** The PostScript name (name ID 6) of the face whose table directory starts at `dir`. */
+export function postscriptNameAt(bytes: Uint8Array, dir: number): string | null {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const tables = view.getUint16(dir + 4);
+  for (let i = 0; i < tables; i++) {
+    const rec = dir + 12 + i * 16;
+    if (tag(bytes, rec) !== "name") continue;
+    const base = view.getUint32(rec + 8);
+    const count = view.getUint16(base + 2);
+    const strings = base + view.getUint16(base + 4);
+    for (let j = 0; j < count; j++) {
+      const r = base + 6 + j * 12;
+      const platform = view.getUint16(r);
+      const nameId = view.getUint16(r + 6);
+      if (nameId !== 6) continue;
+      const length = view.getUint16(r + 8);
+      const offset = strings + view.getUint16(r + 10);
+      const raw = bytes.subarray(offset, offset + length);
+      if (platform === 3 || platform === 0) {
+        let s = "";
+        for (let k = 0; k + 1 < raw.length; k += 2)
+          s += String.fromCharCode(((raw[k] ?? 0) << 8) | (raw[k + 1] ?? 0));
+        return s;
+      }
+      return new TextDecoder("latin1").decode(raw);
+    }
+  }
+  return null;
+}
+
+/**
+ * One face of a font file as a standalone font: the file itself, or — for a collection
+ * (.ttc / .otc) — the face named `postscriptName`, its tables copied into a file of its own.
+ */
+export function faceOfFile(bytes: Uint8Array, postscriptName: string): Uint8Array | null {
+  if (bytes.length < 12) return null;
+  if (tag(bytes, 0) !== "ttcf") return bytes;
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const faces = view.getUint32(8);
+  for (let i = 0; i < faces; i++) {
+    const dir = view.getUint32(12 + i * 4);
+    if (postscriptNameAt(bytes, dir) !== postscriptName) continue;
+    const count = view.getUint16(dir + 4);
+    const records = Array.from({ length: count }, (_, k) => {
+      const rec = dir + 12 + k * 16;
+      return { rec, offset: view.getUint32(rec + 8), length: view.getUint32(rec + 12) };
+    });
+    const header = 12 + count * 16;
+    const size = records.reduce((n, r) => n + ((r.length + 3) & ~3), header);
+    const out = new Uint8Array(size);
+    const w = new DataView(out.buffer);
+    out.set(bytes.subarray(dir, dir + header), 0);
+    let at = header;
+    records.forEach((r, k) => {
+      out.set(bytes.subarray(r.offset, r.offset + r.length), at);
+      w.setUint32(12 + k * 16 + 8, at);
+      at += (r.length + 3) & ~3;
+    });
+    return out;
+  }
+  return null;
+}
+
+export interface FontFileDeps {
+  /** PostScript names → file paths (null: not installed). */
+  locate(postscriptNames: string[]): Promise<Record<string, string | null>>;
+  read(path: string): Promise<Uint8Array>;
+}
+
+export function defaultFontFileDeps(): FontFileDeps {
+  return {
+    locate: (names) =>
+      new Promise((resolve, reject) => {
+        execFile(
+          "/usr/bin/osascript",
+          ["-l", "JavaScript", "-e", APPKIT_FONT_FILES_SCRIPT, ...names],
+          { timeout: 20_000, maxBuffer: 8 * 1024 * 1024 },
+          (error, stdout) =>
+            error ? reject(error) : resolve(JSON.parse(String(stdout)) as Record<string, string>),
+        );
+      }),
+    read: async (path) => new Uint8Array(await readFile(path)),
+  };
+}
+
+/** A face's bytes by PostScript name (cached paths; files are read each time, faces sliced). */
+export class FontFiles {
+  private paths = new Map<string, string | null>();
+
+  constructor(private readonly deps: FontFileDeps = defaultFontFileDeps()) {}
+
+  async read(postscriptName: string): Promise<Uint8Array | null> {
+    if (!/^[\w .-]{1,128}$/.test(postscriptName)) return null;
+    if (!this.paths.has(postscriptName)) {
+      const found = await this.deps.locate([postscriptName]).catch(() => ({}));
+      this.paths.set(
+        postscriptName,
+        (found as Record<string, string | null>)[postscriptName] ?? null,
+      );
+    }
+    const path = this.paths.get(postscriptName);
+    if (!path || !/\.(ttf|otf|ttc|otc|dfont)$/i.test(path)) return null;
+    const bytes = await this.deps.read(path).catch(() => null);
+    if (!bytes || bytes.length > MAX_FONT_FILE_BYTES) return null;
+    return faceOfFile(bytes, postscriptName);
   }
 }

@@ -12,7 +12,7 @@ import {
   type SettingsPatch,
 } from "../shared/ipc.ts";
 import { createSecretStore, setupAccounts } from "./accounts/setup.ts";
-import { FontLister } from "./fonts.ts";
+import { FontFiles, FontLister } from "./fonts.ts";
 import { DnsSdAdvertiser } from "./host/bonjour.ts";
 import { defaultRepoPath, stateDirectory } from "./host/environment.ts";
 import { defaultHostDeps, type HostConfiguration, LocalHost } from "./host/local-host.ts";
@@ -176,6 +176,10 @@ function registerIpc(): void {
   const fonts = new FontLister();
   ipcMain.handle(FONTS_IPC.list, (_event, options?: { refresh?: boolean }) =>
     fonts.list({ refresh: options?.refresh === true }),
+  );
+  const fontFiles = new FontFiles();
+  ipcMain.handle(FONTS_IPC.read, (_event, postscriptName: unknown) =>
+    typeof postscriptName === "string" ? fontFiles.read(postscriptName) : null,
   );
   host.onChange((snapshot) => send(IPC.hostChanged, snapshot));
   setupAccounts({

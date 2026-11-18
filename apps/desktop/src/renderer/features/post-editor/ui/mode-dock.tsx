@@ -1,8 +1,8 @@
 // The one floating object at the bottom of the canvas (Wecra's bottom toolbar: tools, a
 // full-height line, the mode switch at the right). Its mode switch is Sohbet / Düzenle:
-// Düzenle shows the edit tools (select ▾, text, shape, image, undo / redo, safe area, view ▾,
-// zoom ▾), Sohbet turns the same object into the post's message box — the capsule morphs
-// (width, height and content, `motion` layout animation) and back.
+// Düzenle shows Wecra's own tools (its bottom toolbar's tool set: Move ▾, Region ▾, Shape ▾,
+// Creation ▾, Text ▾), Sohbet turns the same object into the post's message box — the capsule
+// morphs (width, height and content, `motion` layout animation) and back.
 import { AnimatePresence, LayoutGroup, MotionConfig, motion } from "motion/react";
 import {
   forwardRef,
@@ -14,33 +14,11 @@ import {
   useState,
 } from "react";
 import { cn, IconButton } from "../../../components/ui/controls.tsx";
-import {
-  IconChat,
-  IconClose,
-  IconEye,
-  IconPencil,
-  IconRedo,
-  IconUndo,
-} from "../../../components/ui/icons.tsx";
-import { MenuButton, type MenuEntry } from "../../../components/ui/menu.tsx";
+import { IconChat, IconClose, IconPencil } from "../../../components/ui/icons.tsx";
 import { Popover } from "../../../components/ui/popover.tsx";
-import type { CanvasTool } from "../canvas/controller.ts";
-import type { EditorSession } from "../session.ts";
+import type { ChatLayers } from "../wecra/scope.ts";
 import type { WorkspaceMode } from "../workspace-store.ts";
-import { useCanvasView } from "./canvas-view.tsx";
-import {
-  IconArrowUp,
-  IconAt,
-  IconChevronDown,
-  IconHand,
-  IconImagePlus,
-  IconPhoneFrame,
-  IconPointer,
-  IconScale,
-  IconShape,
-  IconText,
-} from "./glyphs.tsx";
-import { layerTitle } from "./layers-dock.tsx";
+import { IconArrowUp, IconAt } from "./glyphs.tsx";
 
 const SPRING = { type: "spring", duration: 0.42, bounce: 0.16 } as const;
 
@@ -156,224 +134,6 @@ export function ModeSwitch({
   );
 }
 
-// --- Düzenle: the tools -------------------------------------------------------------------------
-
-const MOVE_TOOLS: { tool: CanvasTool; label: string; keys: string; icon: ReactNode }[] = [
-  { tool: "MOVE", label: "Seç", keys: "V", icon: <IconPointer size={15} strokeWidth={1.6} /> },
-  { tool: "HAND", label: "El", keys: "H", icon: <IconHand size={15} strokeWidth={1.6} /> },
-  { tool: "SCALE", label: "Ölçekle", keys: "K", icon: <IconScale size={15} strokeWidth={1.6} /> },
-];
-
-/** An active tool is filled with the accent (Wecra / Figma); the rest are quiet. */
-const TOOL_CLASS =
-  "rounded-full data-[selected]:bg-accent data-[selected]:text-on-accent data-[selected]:hover:bg-accent-hover";
-
-function Divider() {
-  return <span aria-hidden="true" className="mx-1 h-5 w-px shrink-0 bg-hairline" />;
-}
-
-export function EditTools({
-  session,
-  onPlaceImage,
-  viewEntries,
-}: {
-  session: EditorSession;
-  onPlaceImage(): void;
-  /** The view menu's entries (focus, snapping, rulers, preview format). */
-  viewEntries: () => MenuEntry[];
-}) {
-  const { canvas, canvasState: s, draft, draftState: d } = session;
-  const view = useCanvasView(canvas);
-  const engineReady = s.engine === "ready";
-  // The move slot shows the last of its tools used (Wecra's slots).
-  const [moveTool, setMoveTool] = useState<CanvasTool>("MOVE");
-  const current = MOVE_TOOLS.find((t) => t.tool === s.tool);
-  if (current && current.tool !== moveTool) setMoveTool(current.tool);
-  const slot = MOVE_TOOLS.find((t) => t.tool === moveTool) ?? MOVE_TOOLS[0];
-  const pick = (tool: CanvasTool) => {
-    canvas.setTool(tool);
-    canvas.focusCanvas();
-  };
-  const lastUndo = d.undo.at(-1);
-  const lastRedo = d.redo.at(-1);
-  const zoom = Math.round(view.camera.zoom * 100);
-
-  return (
-    <div role="toolbar" aria-label="Araçlar" className="flex h-8 items-center gap-0.5">
-      {slot && (
-        <IconButton
-          size={32}
-          icon={slot.icon}
-          label={slot.label}
-          shortcut={slot.keys}
-          selected={MOVE_TOOLS.some((t) => t.tool === s.tool)}
-          disabled={!engineReady}
-          className={TOOL_CLASS}
-          onClick={() => pick(slot.tool)}
-        />
-      )}
-      <MenuButton
-        label="Seçim araçları"
-        placement="top-start"
-        width={190}
-        entries={MOVE_TOOLS.map((t) => ({
-          id: t.tool,
-          label: t.label,
-          shortcut: t.keys,
-          icon: t.icon,
-          checked: s.tool === t.tool,
-          disabled: !engineReady,
-          onSelect: () => pick(t.tool),
-        }))}
-      >
-        {({ ref, onClick, onKeyDown, open, ...aria }) => (
-          <button
-            ref={ref}
-            type="button"
-            aria-label="Seçim araçları"
-            onClick={onClick}
-            onKeyDown={onKeyDown}
-            {...aria}
-            className={cn(
-              "no-drag -ml-0.5 flex h-8 w-4 items-center justify-center rounded-full text-fg-3 hover:bg-control hover:text-fg",
-              open && "bg-control text-fg",
-            )}
-          >
-            <IconChevronDown size={11} />
-          </button>
-        )}
-      </MenuButton>
-      <IconButton
-        size={32}
-        icon={<IconText size={15} strokeWidth={1.6} />}
-        label="Metin"
-        shortcut="T"
-        selected={s.tool === "TEXT"}
-        className={TOOL_CLASS}
-        onClick={() => pick("TEXT")}
-      />
-      <IconButton
-        size={32}
-        icon={<IconShape size={15} strokeWidth={1.6} />}
-        label="Şekil"
-        shortcut="R"
-        selected={s.tool === "RECTANGLE"}
-        disabled={!engineReady}
-        className={TOOL_CLASS}
-        onClick={() => pick("RECTANGLE")}
-      />
-      <IconButton
-        size={32}
-        icon={<IconImagePlus size={15} strokeWidth={1.6} />}
-        label="Görsel yerleştir"
-        shortcut="⇧⌘K"
-        onClick={onPlaceImage}
-      />
-      <span className="hidden items-center gap-0.5 @[560px]:flex">
-        <Divider />
-        <IconButton
-          size={32}
-          icon={<IconUndo size={15} strokeWidth={1.6} />}
-          label={lastUndo ? `Geri al: ${lastUndo.name}` : "Geri al"}
-          shortcut="⌘Z"
-          disabled={!lastUndo}
-          onClick={() => draft.undo()}
-        />
-        <IconButton
-          size={32}
-          icon={<IconRedo size={15} strokeWidth={1.6} />}
-          label={lastRedo ? `Yinele: ${lastRedo.name}` : "Yinele"}
-          shortcut="⇧⌘Z"
-          disabled={!lastRedo}
-          onClick={() => draft.redo()}
-        />
-      </span>
-      <Divider />
-      <IconButton
-        size={32}
-        icon={<IconPhoneFrame size={15} strokeWidth={1.6} />}
-        label="Güvenli alan"
-        shortcut="⌘'"
-        selected={s.safeArea}
-        onClick={() => canvas.setSafeArea(!s.safeArea)}
-      />
-      <MenuButton label="Görünüm" placement="top-end" width={250} entries={viewEntries}>
-        {({ ref, onClick, onKeyDown, open, ...aria }) => (
-          <IconButton
-            ref={ref}
-            size={32}
-            icon={<IconEye size={15} strokeWidth={1.6} />}
-            label="Görünüm"
-            selected={open}
-            onClick={onClick}
-            onKeyDown={onKeyDown}
-            {...aria}
-          />
-        )}
-      </MenuButton>
-      <MenuButton
-        label="Yakınlaştırma"
-        placement="top-end"
-        width={220}
-        entries={[
-          {
-            id: "in",
-            label: "Yakınlaştır",
-            shortcut: "⌘+",
-            onSelect: () => canvas.command("ZOOM_IN"),
-          },
-          {
-            id: "out",
-            label: "Uzaklaştır",
-            shortcut: "⌘−",
-            onSelect: () => canvas.command("ZOOM_OUT"),
-          },
-          { type: "separator" },
-          {
-            id: "fit",
-            label: "Tüm kareleri sığdır",
-            shortcut: "⇧1",
-            onSelect: () => canvas.command("ZOOM_TO_FIT"),
-          },
-          {
-            id: "selection",
-            label: "Seçime yakınlaştır",
-            shortcut: "⇧2",
-            onSelect: () =>
-              s.selection.length
-                ? canvas.command("ZOOM_TO_SELECTION")
-                : canvas.zoomToSlide(s.activeSlide),
-          },
-          {
-            id: "100",
-            label: "%100",
-            shortcut: "⌘0",
-            onSelect: () => canvas.command("ZOOM_TO_100"),
-          },
-        ]}
-      >
-        {({ ref, onClick, onKeyDown, open, ...aria }) => (
-          <button
-            ref={ref}
-            type="button"
-            aria-label={`Yakınlaştırma %${zoom}`}
-            onClick={onClick}
-            onKeyDown={onKeyDown}
-            {...aria}
-            className={cn(
-              "no-drag flex h-8 items-center gap-0.5 rounded-full pr-1.5 pl-2.5 text-footnote text-fg tabular-nums hover:bg-control",
-              open && "bg-control",
-            )}
-          >
-            %{zoom}
-            <IconChevronDown size={11} className="text-fg-3" />
-          </button>
-        )}
-      </MenuButton>
-    </div>
-  );
-}
-
 // --- Sohbet: the message box --------------------------------------------------------------------
 
 export interface ChatInputHandle {
@@ -384,22 +144,22 @@ export interface ChatInputHandle {
 export const ChatInput = forwardRef<
   ChatInputHandle,
   {
-    session: EditorSession;
+    /** The canvas's layers the message may be about (`@`, the selection). */
+    layers: ChatLayers;
     working: boolean;
     disabled: string | null;
     placeholder?: string;
     onSend(text: string, scope: readonly string[]): Promise<boolean>;
     onStop(): void;
   }
->(function ChatInput({ session, working, disabled, placeholder, onSend, onStop }, ref) {
-  const { canvas, canvasState: s } = session;
+>(function ChatInput({ layers, working, disabled, placeholder, onSend, onStop }, ref) {
   const input = useRef<HTMLTextAreaElement | null>(null);
   const [text, setText] = useState("");
   const [picked, setPicked] = useState<string[] | null>(null);
   const [mention, setMention] = useState<{ query: string; start: number } | null>(null);
   const [active, setActive] = useState(0);
   const [sending, setSending] = useState(false);
-  const scope = picked ?? s.selection;
+  const scope = picked ?? layers.selection;
 
   useImperativeHandle(ref, () => ({
     focus(prefill, scopeKeys) {
@@ -423,19 +183,7 @@ export const ChatInput = forwardRef<
     el.style.height = text ? `${Math.min(el.scrollHeight, 132)}px` : "22px";
   }, [text]);
 
-  const options = useMemo(() => {
-    if (!mention) return [];
-    const q = mention.query.toLocaleLowerCase("tr-TR");
-    const out: { key: string; label: string; detail: string }[] = [];
-    canvas.editorSlides.forEach((slide) => {
-      for (const layer of slide.layers) {
-        const label = layerTitle(layer);
-        if (q && !label.toLocaleLowerCase("tr-TR").includes(q) && !layer.id.includes(q)) continue;
-        out.push({ key: layer.key, label, detail: `Kare ${slide.index + 1}` });
-      }
-    });
-    return out.slice(0, 8);
-  }, [mention, canvas.editorSlides]);
+  const options = useMemo(() => (mention ? layers.search(mention.query) : []), [mention, layers]);
 
   const pick = (key: string) => {
     if (!mention) return;
@@ -456,10 +204,7 @@ export const ChatInput = forwardRef<
     }
   };
 
-  const chips = scope.map((key) => {
-    const layer = canvas.layer(key);
-    return { key, label: layer ? layerTitle(layer) : key };
-  });
+  const chips = scope.map((key) => ({ key, label: layers.label(key) }));
   const canSend = !!text.trim() && !disabled && !sending;
 
   return (
@@ -476,9 +221,7 @@ export const ChatInput = forwardRef<
                 type="button"
                 aria-label={`${c.label} kapsamdan çıkar`}
                 onClick={() =>
-                  picked
-                    ? setPicked(picked.filter((k) => k !== c.key))
-                    : canvas.selectLayers(s.selection.filter((k) => k !== c.key))
+                  picked ? setPicked(picked.filter((k) => k !== c.key)) : layers.deselect(c.key)
                 }
                 className="flex size-5 items-center justify-center rounded-full hover:bg-accent/20"
               >

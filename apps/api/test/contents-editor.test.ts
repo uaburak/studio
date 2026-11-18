@@ -4,6 +4,7 @@ import {
   ContentVersion,
   ContentVersionList,
   type SlideLayout,
+  WECRA_DOCUMENT_MIME,
 } from "@studio/contract";
 import { describe, expect, it } from "vitest";
 import {
@@ -30,6 +31,16 @@ async function uploadImage(brandId: string): Promise<Asset> {
   const res = await localFetch(`${BASE}/api/assets`, { method: "POST", body: form });
   expect(res.status).toBe(201);
   return Asset.parse(await res.json());
+}
+
+/** A Wecra document bundle (a zip: what the post editor saves its canvas as). */
+async function uploadWecraDocument(brandId: string, type = WECRA_DOCUMENT_MIME): Promise<Response> {
+  const form = new FormData();
+  form.set("brandId", brandId);
+  form.set("kind", "document");
+  const zip = new Uint8Array([0x50, 0x4b, 0x03, 0x04, 0x14, 0x00, 0x00, 0x00, 1, 2, 3, 4]);
+  form.set("file", new File([zip], "post.wecra", { type }));
+  return localFetch(`${BASE}/api/assets`, { method: "POST", body: form });
 }
 
 const layout = (id: string, x = 72): SlideLayout => [
@@ -238,5 +249,80 @@ describe("contents editor endpoints", () => {
       },
     });
     expect(ok.status, JSON.stringify(ok.body)).toBe(201);
+  });
+
+  it("keeps a version's editor document (the canvas's Wecra bundle) and copies it on restore and duplicate", async () => {
+    const brand = await createBrand();
+    const content = await createContent(brand.id);
+    const render = await uploadImage(brand.id);
+    const docRes = await uploadWecraDocument(brand.id);
+    expect(docRes.status).toBe(201);
+    const doc = Asset.parse(await docRes.json());
+    expect(doc).toMatchObject({ kind: "document", mimeType: WECRA_DOCUMENT_MIME });
+
+    const plain = await addVersion(content.id);
+    expect(plain.editorDocument).toBeNull();
+    const canvas = await addVersion(content.id, {
+      origin: "manual_edit",
+      slides: [slide('<html><body><img data-layer="canvas" src="/media/r.png"></body></html>')],
+      renderedAssetIds: [render.id],
+      editorDocument: { kind: "wecra", assetId: doc.id, format: 1 },
+    });
+    expect(canvas.editorDocument).toEqual({ kind: "wecra", assetId: doc.id, format: 1 });
+    expect(canvas.slides[0]?.renderedAssetId).toBe(render.id);
+    const got = await api<ContentVersion>(
+      "GET",
+      `/api/contents/${content.id}/versions/${canvas.version}`,
+    );
+    expect(got.body.editorDocument).toEqual({ kind: "wecra", assetId: doc.id, format: 1 });
+
+    // Restoring the canvas version (or an older plain one) carries its own document, or none.
+    const restored = await api<ContentVersion>(
+      "POST",
+      `/api/contents/${content.id}/versions/${canvas.version}/restore`,
+      {},
+    );
+    expect(restored.status).toBe(201);
+    expect(restored.body.editorDocument).toEqual({ kind: "wecra", assetId: doc.id, format: 1 });
+    expect(restored.body.contentHash).toBe(canvas.contentHash);
+    const back = await api<ContentVersion>(
+      "POST",
+      `/api/contents/${content.id}/versions/${plain.version}/restore`,
+      {},
+    );
+    expect(back.body.editorDocument).toBeNull();
+
+    // A duplicate's version 1 is the current version, its document included.
+    await api("POST", `/api/contents/${content.id}/versions/${canvas.version}/restore`, {});
+    const copy = await api<Content>("POST", `/api/contents/${content.id}/duplicate`, {});
+    expect(copy.status).toBe(201);
+    const copied = await api<ContentVersion>("GET", `/api/contents/${copy.body.id}/versions/1`);
+    expect(copied.body.editorDocument).toEqual({ kind: "wecra", assetId: doc.id, format: 1 });
+  });
+
+  it("refuses an editor document that isn't a Wecra bundle of the brand", async () => {
+    const brand = await createBrand();
+    const other = await createBrand();
+    const content = await createContent(brand.id);
+    const image = await uploadImage(brand.id);
+    const foreign = Asset.parse(await (await uploadWecraDocument(other.id)).json());
+    const create = (assetId: string) =>
+      api("POST", `/api/contents/${content.id}/versions`, {
+        origin: "manual_edit",
+        slides: [slide()],
+        editorDocument: { kind: "wecra", assetId, format: 1 },
+      });
+    expectError(await create(image.id), 400, "validation_error");
+    expectError(await create(foreign.id), 400, "validation_error");
+    expectError(await create("missing-asset"), 404, "not_found");
+    // Not a zip: refused at upload.
+    const fake = new FormData();
+    fake.set("brandId", brand.id);
+    fake.set(
+      "file",
+      new File([new Uint8Array([1, 2, 3, 4])], "x.wecra", { type: WECRA_DOCUMENT_MIME }),
+    );
+    const res = await localFetch(`${BASE}/api/assets`, { method: "POST", body: fake });
+    expect(res.status).toBe(415);
   });
 });

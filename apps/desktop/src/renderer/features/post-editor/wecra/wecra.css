@@ -1,0 +1,249 @@
+/*
+ * Wecra's editor inside Studio (stands in for Wecra's ds/global.css, see wecra.vite.ts).
+ *
+ * Wecra's components and layout are kept as they are; only the look is Studio's:
+ *  1. Wecra's design tokens (its generated tokens.css: sizes, type, spacing, colours per theme);
+ *  2. Wecra's base rules, scoped to the editor's places — `[data-wecra-region]` (the canvas, the
+ *     Design panel, the layers card, the dock) and `#ds-overlays` (its menus, popovers, dialogs) —
+ *     never on Studio's own elements;
+ *  3. Studio's colours: Wecra's colour tokens mapped onto Studio's palette, per theme (raw palette
+ *     values, so a forced-dark Wecra menu reads Studio's dark colours in light mode too);
+ *  4. Studio's radii: controls (fields, buttons, segmented controls, tools, layer rows) full
+ *     round, cards Studio's 14.
+ * The canvas itself (the engine's WebGL drawing, its selection colour) is Wecra's.
+ */
+@import "../../../vendor/wecra-editor/src/renderer/src/ds/tokens.css";
+
+/* Wecra's interface font: Inter 3.19 (variable), the file the engine bundles; its key glyphs. */
+@font-face {
+  font-family: "Inter Variable";
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: block;
+  src: url("../../../vendor/wecra-editor/src/renderer/src/engine/fonts/Inter-3.19.ttf")
+    format("truetype");
+}
+@font-face {
+  font-family: "Inter Symbols";
+  font-style: normal;
+  font-weight: 100 900;
+  src: url("../../../vendor/wecra-editor/src/renderer/src/engine/fonts/Inter-3.19.ttf")
+    format("truetype");
+  unicode-range:
+    U+02DA, U+2190-2193, U+21B5, U+21E5, U+21E7, U+21EA, U+2303, U+2318, U+2324-2326, U+232B,
+    U+238B, U+23CE;
+}
+
+/* 2. Wecra's base rules, in its places only. */
+@layer base {
+  [data-wecra-region],
+  #ds-overlays {
+    font: var(--ds-font-body-medium);
+    letter-spacing: var(--ds-tracking-body-medium);
+    color: var(--figma-color-text);
+    -webkit-font-smoothing: antialiased;
+    user-select: none;
+  }
+  :is([data-wecra-region], #ds-overlays) :is(*, *::before, *::after) {
+    box-sizing: border-box;
+  }
+  :is([data-wecra-region], #ds-overlays) :is(h1, h2, h3, h4, p, ul, ol, figure) {
+    margin: 0;
+  }
+  :is([data-wecra-region], #ds-overlays) button {
+    font: inherit;
+    color: inherit;
+    cursor: default;
+  }
+  :is([data-wecra-region], #ds-overlays) img {
+    -webkit-user-drag: none;
+  }
+  /* Tailwind's preflight makes every svg a block: Wecra's glyphs sit inline. */
+  :is([data-wecra-region], #ds-overlays) svg {
+    display: inline-block;
+  }
+  :is([data-wecra-region], #ds-overlays) :is(input, textarea, [contenteditable]) {
+    user-select: text;
+  }
+  :is([data-wecra-region], #ds-overlays) ::selection {
+    background: var(--ds-color-text-selection);
+  }
+  :is([data-wecra-region], #ds-overlays) ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+    background: transparent;
+  }
+  :is([data-wecra-region], #ds-overlays) ::-webkit-scrollbar-thumb {
+    border: 2px solid transparent;
+    border-radius: var(--ds-radius-full);
+    background: var(--ds-color-scrollbar-thumb) padding-box;
+  }
+  [data-ds-scrub-handle] {
+    cursor: ew-resize;
+    touch-action: none;
+    user-select: none;
+  }
+  html[data-cursor="ew-resize"],
+  html[data-cursor="ew-resize"] * {
+    /* biome-ignore lint/complexity/noImportantStyles: Wecra's drag cursor wins over every element's own (as in Wecra) */
+    cursor: ew-resize !important;
+  }
+  html[data-cursor="col-resize"],
+  html[data-cursor="col-resize"] * {
+    /* biome-ignore lint/complexity/noImportantStyles: Wecra's drag cursor wins over every element's own (as in Wecra) */
+    cursor: col-resize !important;
+  }
+  html[data-cursor="row-resize"],
+  html[data-cursor="row-resize"] * {
+    /* biome-ignore lint/complexity/noImportantStyles: Wecra's drag cursor wins over every element's own (as in Wecra) */
+    cursor: row-resize !important;
+  }
+}
+
+/* 3. Studio's colours (after Wecra's own in the same layer: these win). */
+@layer tokens {
+  [data-theme="light"] {
+    --figma-color-bg: var(--gray-0);
+    --figma-color-bg-secondary: var(--black-a6);
+    --figma-color-bg-tertiary: var(--gray-80);
+    --figma-color-bg-hover: var(--black-a6);
+    --figma-color-bg-pressed: var(--black-a10);
+    --figma-color-bg-brand: var(--orange-500);
+    --figma-color-bg-brand-hover: var(--orange-600);
+    --figma-color-bg-brand-pressed: var(--orange-700);
+    --figma-color-bg-brand-secondary: var(--orange-600);
+    --figma-color-bg-brand-tertiary: var(--orange-a16);
+    --figma-color-border: var(--black-a8);
+    --figma-color-border-strong: var(--gray-850);
+    --figma-color-border-brand: var(--orange-200);
+    --figma-color-border-brand-strong: var(--orange-600);
+    --figma-color-border-onbrand: var(--orange-600);
+    --figma-color-text: var(--gray-850);
+    --figma-color-text-hover: var(--gray-850);
+    --figma-color-text-secondary: var(--gray-500);
+    --figma-color-text-secondary-hover: var(--gray-850);
+    --figma-color-text-tertiary: var(--gray-350);
+    --figma-color-text-tertiary-hover: var(--gray-850);
+    --figma-color-text-brand: var(--orange-600);
+    --figma-color-text-brand-secondary: var(--orange-600);
+    --figma-color-text-brand-tertiary: var(--orange-600);
+    --figma-color-text-onbrand: var(--gray-0);
+    --figma-color-icon: var(--gray-650);
+    --figma-color-icon-hover: var(--gray-850);
+    --figma-color-icon-secondary: var(--gray-450);
+    --figma-color-icon-secondary-hover: var(--gray-850);
+    --figma-color-icon-tertiary: var(--gray-300);
+    --figma-color-icon-tertiary-hover: var(--gray-850);
+    --figma-color-icon-brand: var(--orange-600);
+    --figma-color-icon-brand-pressed: var(--orange-700);
+    --figma-color-icon-brand-secondary: var(--orange-300);
+    --figma-color-icon-brand-tertiary: var(--orange-200);
+    --figma-color-icon-onbrand: var(--gray-0);
+    --ds-focus-color: var(--orange-500);
+    --ds-color-menu-highlight: var(--orange-500);
+    --ds-color-canvas-default: var(--gray-30);
+  }
+  [data-theme="dark"] {
+    --figma-color-bg: var(--gray-800);
+    --figma-color-bg-secondary: var(--white-a8);
+    --figma-color-bg-tertiary: var(--gray-700);
+    --figma-color-bg-hover: var(--white-a8);
+    --figma-color-bg-pressed: var(--white-a14);
+    --figma-color-bg-brand: var(--orange-500);
+    --figma-color-bg-brand-hover: var(--orange-400);
+    --figma-color-bg-brand-pressed: var(--orange-600);
+    --figma-color-bg-brand-secondary: var(--orange-400);
+    --figma-color-bg-brand-tertiary: var(--orange-a16);
+    --figma-color-border: var(--white-a10);
+    --figma-color-border-strong: var(--gray-40);
+    --figma-color-border-brand: var(--orange-a40);
+    --figma-color-border-brand-strong: var(--orange-400);
+    --figma-color-border-onbrand: var(--orange-400);
+    --figma-color-text: var(--gray-40);
+    --figma-color-text-hover: var(--gray-40);
+    --figma-color-text-secondary: var(--gray-300);
+    --figma-color-text-secondary-hover: var(--gray-40);
+    --figma-color-text-tertiary: var(--gray-450);
+    --figma-color-text-tertiary-hover: var(--gray-40);
+    --figma-color-text-brand: var(--orange-400);
+    --figma-color-text-brand-secondary: var(--orange-400);
+    --figma-color-text-brand-tertiary: var(--orange-400);
+    --figma-color-text-onbrand: var(--gray-0);
+    --figma-color-icon: var(--gray-200);
+    --figma-color-icon-hover: var(--gray-40);
+    --figma-color-icon-secondary: var(--gray-350);
+    --figma-color-icon-secondary-hover: var(--gray-40);
+    --figma-color-icon-tertiary: var(--gray-500);
+    --figma-color-icon-tertiary-hover: var(--gray-40);
+    --figma-color-icon-brand: var(--orange-400);
+    --figma-color-icon-brand-pressed: var(--orange-500);
+    --figma-color-icon-brand-secondary: var(--orange-300);
+    --figma-color-icon-brand-tertiary: var(--orange-a40);
+    --figma-color-icon-onbrand: var(--gray-0);
+    --ds-focus-color: var(--orange-400);
+    --ds-color-menu-bg: var(--gray-750);
+    --ds-color-menu-separator: var(--white-a10);
+    --ds-color-menu-highlight: var(--orange-500);
+    --ds-color-canvas-default: var(--gray-810);
+  }
+}
+
+/* 4. Studio's radii: controls full round, cards Studio's. */
+:is([data-wecra-region], #ds-overlays)
+  :is(
+    [data-ds="NumericInput"],
+    [data-ds="TextInput"],
+    [data-ds="ColorInput"],
+    [data-ds="Select"],
+    [data-ds="Button"],
+    [data-ds="IconButton"],
+    [data-ds="ToggleIconButton"],
+    [data-ds="MenuButton"],
+    [data-ds="SegmentedControl"],
+    [data-ds="SearchField"],
+    [data-ds="ToolButton"],
+    [data-ds="ToolTextButton"],
+    [data-ds="LayerRow"],
+    [data-ds="EditorToolbar"],
+    [data-ds="PropertyRow"]
+  ) {
+  --ds-radius-medium: 9999px;
+  --ds-radius-medium-large: 9999px;
+}
+:is([data-wecra-region], #ds-overlays)
+  :is([data-ds="Popover"], [data-ds="Menu"], [data-ds="Dialog"]) {
+  --ds-radius-large: var(--radius-card-14);
+}
+
+/* Wecra's EditorApp inside the centre column (it fills the window in Wecra). */
+.wecra-canvas [data-editor] {
+  position: absolute;
+}
+/* The part of the canvas Studio's layers card and dock leave visible: Wecra fits and centres in it. */
+.wecra-canvas [data-canvas-view] {
+  margin: 0 0 var(--wecra-inset-bottom, 0) var(--wecra-inset-left, 0);
+}
+
+/* Wecra's toolbar in Studio's dock: the dock is the toolbar's container. */
+.wecra-toolbar {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+.wecra-toolbar [data-ds="EditorToolbar"] {
+  height: 32px;
+  padding: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+/* Wecra's Layers in Studio's layers card. */
+.wecra-layers {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+}
+.wecra-layers > [data-ds="PanelSection"] > :first-child {
+  padding-right: 36px;
+}

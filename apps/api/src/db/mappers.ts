@@ -198,9 +198,18 @@ export function toVersionSummary(r: ContentVersionRow): ContentVersionSummary {
   };
 }
 
-export function toVersion(r: ContentVersionRow, slides: SlideRow[]): ContentVersion {
+export type EditorDocumentRow = typeof schema.contentVersionDocuments.$inferSelect;
+
+export function toVersion(
+  r: ContentVersionRow,
+  slides: SlideRow[],
+  document: EditorDocumentRow | null = null,
+): ContentVersion {
   return {
     ...toVersionSummary(r),
+    editorDocument: document
+      ? { kind: document.kind, assetId: document.assetId, format: document.format }
+      : null,
     slides: [...slides]
       .sort((a, b) => a.position - b.position)
       .map((s) => ({

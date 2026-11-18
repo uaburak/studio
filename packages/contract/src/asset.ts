@@ -87,6 +87,13 @@ export const ASSET_MIME_RULES = {
     maxBytes: 50 * MiB,
     ext: ".pdf",
   },
+  /** The post editor's canvas document (`EditorDocument`, a zip bundle). */
+  "application/vnd.wecra.document+zip": {
+    defaultKind: "document",
+    kinds: ["document"],
+    maxBytes: 50 * MiB,
+    ext: ".wecra",
+  },
 } as const satisfies Record<string, AssetMimeRule>;
 
 export type AssetMimeType = keyof typeof ASSET_MIME_RULES;

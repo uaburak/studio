@@ -45,6 +45,7 @@ const bridge: StudioBridge = {
   },
   fonts: {
     list: (options) => ipcRenderer.invoke(FONTS_IPC.list, options),
+    read: (postscriptName) => ipcRenderer.invoke(FONTS_IPC.read, postscriptName),
   },
   system: {
     info: () => ipcRenderer.invoke(A.systemInfo),

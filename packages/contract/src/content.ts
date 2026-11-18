@@ -212,6 +212,30 @@ export const ContentVersionOrigin = z
   .meta({ id: "ContentVersionOrigin" });
 export type ContentVersionOrigin = z.infer<typeof ContentVersionOrigin>;
 
+/**
+ * An editor's own document of a version, beside its slides: `wecra` — the post editor's canvas
+ * (Wecra's document: the slides as top-level frames with their layers, auto layout, text and
+ * images, as one bundle). A version saved from the canvas has its slides rendered by that
+ * editor (the slide HTML shows those renders, so the content hash covers them); the document is
+ * what the canvas opens the next time. Not part of the content hash.
+ */
+export const EditorDocumentKind = z.enum(["wecra"]).meta({ id: "EditorDocumentKind" });
+export type EditorDocumentKind = z.infer<typeof EditorDocumentKind>;
+
+/** Mime type of a Wecra document bundle (a zip: the document, its images, meta.json). */
+export const WECRA_DOCUMENT_MIME = "application/vnd.wecra.document+zip";
+
+export const EditorDocument = z
+  .object({
+    kind: EditorDocumentKind,
+    /** The bundle, an asset of the content's brand (`WECRA_DOCUMENT_MIME`). */
+    assetId: EntityId,
+    /** The bundle's format version (1). */
+    format: z.number().int().min(1).max(1000),
+  })
+  .meta({ id: "EditorDocument" });
+export type EditorDocument = z.infer<typeof EditorDocument>;
+
 const VersionNote = z.string().max(2_000);
 const RenderedAssetIds = z.array(EntityId.nullable()).max(SLIDE_LIMITS.carousel.max);
 /** Empty, or one layout per slide (`null` = not measured). */
@@ -240,6 +264,8 @@ export type ContentVersionSummary = z.infer<typeof ContentVersionSummary>;
 
 export const ContentVersion = ContentVersionSummary.extend({
   slides: z.array(Slide),
+  /** The editor's document of this version (`null`: none; absent from older servers). */
+  editorDocument: EditorDocument.nullable().optional(),
 }).meta({ id: "ContentVersion" });
 export type ContentVersion = z.infer<typeof ContentVersion>;
 
@@ -254,6 +280,8 @@ export const ContentVersionCreate = z
     renderedAssetIds: RenderedAssetIds.optional(),
     /** Empty, or exactly one layer layout per slide, measured with `renderedAssetIds`. */
     layouts: SlideLayouts.optional(),
+    /** The editor's document the slides were rendered from (the post editor's canvas). */
+    editorDocument: EditorDocument.optional(),
   })
   .meta({ id: "ContentVersionCreate" });
 export type ContentVersionCreate = z.input<typeof ContentVersionCreate>;
@@ -370,7 +398,7 @@ export type ContentTransition = z.input<typeof ContentTransition>;
 
 /**
  * `POST /api/contents/{id}/duplicate`: a new draft with the same brief, caption,
- * platforms and a copy of the current version (slides, renders, layouts).
+ * platforms and a copy of the current version (slides, renders, layouts, editor document).
  * Approval and schedules are not copied.
  */
 export const ContentDuplicate = z
@@ -383,8 +411,8 @@ export type ContentDuplicate = z.input<typeof ContentDuplicate>;
 
 /**
  * `POST /api/contents/{id}/versions/{version}/restore`: add a new version that is
- * an exact copy of an older one (same slides, so the same hash; renders and
- * layouts are reused). Like any new version it returns the content to draft.
+ * an exact copy of an older one (same slides, so the same hash; renders,
+ * layouts and the editor document are reused). Like any new version it returns the content to draft.
  */
 export const ContentVersionRestore = z
   .object({

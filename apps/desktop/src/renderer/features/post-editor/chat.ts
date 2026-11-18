@@ -18,6 +18,7 @@ import {
   useConversationUpdater,
   useOptionalSettings,
 } from "../../state/studio.tsx";
+import { canvasOrigin } from "./wecra/slide-html.ts";
 import { useWorkspaceStore } from "./workspace-store.ts";
 
 /** The scope line an AI request gets in front of it (the layers it may change). */
@@ -35,12 +36,19 @@ export function scopedInstruction(
   return `Kapsam: ${parts.join(", ")}. Yalnızca bu katmanları değiştir; diğerlerini olduğu gibi bırak.\n${text}`;
 }
 
-/** What the conversation's first message says about the post it is bound to. */
+/**
+ * What the conversation's first message says about the post it is bound to. A version saved
+ * from the canvas has its slides as Wecra's renders (one image each): the AI is pointed at the
+ * HTML version the canvas started from; the version it makes opens on the canvas, imported anew.
+ */
 export function postReference(
   content: Pick<Content, "id" | "title">,
-  version: Pick<ContentVersion, "version"> | null,
+  version: (Pick<ContentVersion, "version"> & { slides?: ContentVersion["slides"] }) | null,
 ): string {
-  return `“${content.title}” postu (id: ${content.id}${version ? `, v${version.version}` : ""}) için:`;
+  const head = `“${content.title}” postu (id: ${content.id}${version ? `, v${version.version}` : ""}) için:`;
+  const origin = canvasOrigin(version?.slides?.[0]?.html);
+  if (!origin.canvas) return head;
+  return `${head}\n(v${version?.version} tuvalde, Wecra ile düzenlendi: kareleri Wecra'nın render'ı, HTML'de her kare tek görsel katman.${origin.sourceVersion ? ` Metin ve katman değişikliklerini v${origin.sourceVersion} HTML'si üzerinden yap;` : " Değişikliği yeni bir HTML sürümüyle yap;"} yeni sürüm tuvale yeniden aktarılır.)`;
 }
 
 /** The text sent for a request: the post's reference on the first one, the scope, the request. */

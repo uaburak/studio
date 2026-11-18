@@ -4,252 +4,228 @@ Opening a post (a card on Postlar, click or ↩; a chat card; the calendar) open
 the canvas, **inside the app's layout** (`src/renderer/features/post-editor/workspace.tsx`): the
 sidebar stays the app's, the top bar stays the app's top bar, and
 
-- **the centre column becomes the canvas**: slides as artboards on an infinite canvas, the
-  floating layers list docked on its left edge, one floating dock at its bottom;
+- **the centre column becomes Wecra's editor**: Wecra's own `EditorApp` — its engine draws the
+  slides as frames and does everything Wecra does there: selection, handles, smart guides,
+  snapping, auto layout, constraints, its text engine, images, effects, vector editing, its keys,
+  clipboard, context menu, dialogs and overlays. Wecra's Layers sit on a card at its left edge and
+  one floating dock sits at its bottom;
 - **the right panel becomes the post's panel** (same container as Ayrıntılar & co.: same width,
-  resizable, expandable, its header in the top bar's panel segment; a first tool icon switches
-  back to it when another pane was picked);
-- **the top bar's title area shows the post**: back (to where it was opened from), the title with
-  the post's menu (quick look, copy caption, open in chat, duplicate, delete), its state, the
-  version chip (versions popover), the save state, Onayla and Zamanla.
+  resizable, expandable, its header in the top bar's panel segment): on Düzenle **Wecra's Design
+  panel** (tab Tasarım; Wecra's zoom menu in the header) and the caption (tab Açıklama); on Sohbet
+  the post's conversation;
+- **the top bar's title area shows the post**: the title with the post's menu (quick look, copy
+  caption, open in chat, duplicate, delete), its state, the version chip (versions popover), the
+  save state, Onayla and Zamanla.
 
-Back (the title area's ‹, the window's back, ⌘[ or a swipe) returns to the board. Reels keep the
-post detail over the centre (they have no slides to edit; they are edited in chat).
+**Back is only the app's**: the top bar's ‹ › (⌘[ ⌘], a swipe). The title area, the canvas and
+the loading view have no back or close button of their own (there used to be a "‹ Postlar" in the
+title area beside the app's ‹ — two backs). Reels keep the post detail over the centre (they are
+edited in chat); its breadcrumb is plain text there too.
+
+## Wecra's editor stack, vendored
+
+Burak's Wecra (DesignerV2, closed source) is copied into
+`src/renderer/vendor/wecra-editor/` by `scripts/vendor-wecra.mjs`, from DesignerV2's **git
+history** (`git archive <ref>`, never its working tree, never written back): `src/renderer/src`
+(the editor, the engine glue and the committed Wasm build, the design system, the store's browser
+half), `src/shared`, `src/store`, `src/viewer` and Wecra's page-capture converter
+(`src/main/agents/reach/webSpec.ts`). Tests are left out. Every `.ts`/`.tsx` gets `// @ts-nocheck`
+(Wecra's compiler options are not Studio's; its own `tsconfig.json` is generated next to the copy,
+Vite's transform reads it). `VERSION.json` records the Wecra version, the commit, the engine's
+commit and ABI and the SHA-256 of every file.
+
+**The copy is gitignored** (`apps/desktop/src/renderer/vendor/` in `.gitignore`): Studio's
+repository is public and Wecra is closed source. `git status --porcelain
+apps/desktop/src/renderer/vendor` must stay empty.
+
+```sh
+node apps/desktop/scripts/vendor-wecra.mjs                # HEAD of ../DesignerV2 (or --repo, WECRA_REPO)
+node apps/desktop/scripts/vendor-wecra.mjs --ref <commit> # a given Wecra
+node apps/desktop/scripts/vendor-wecra.mjs --check        # the copy matches VERSION.json
+```
+
+Without the copy the app still runs: opening a post says what to run
+(`wecra/vendored.ts`), `electron-vite dev` warns at start, the engine tests stop with the same
+message. A production build needs it.
+
+### Embedding patches (the only changes to Wecra's code)
+
+Applied by the script as exact text replacements (it stops when one no longer matches) and all
+reading `globalThis.__wecraEmbed`, which `wecra/embed.ts` sets; without it Wecra behaves as in its
+own app:
+
+| File                                                                 | Patch                                                                                                                                                                                                      |
+| -------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `editor/EditorApp.tsx`                                               | embedded: no rail, left / right panels, bottom toolbar or "?"; the theme on its own elements, not on `<html>`                                                                                              |
+| `editor/canvas/BottomToolbar.tsx`, `ds/components/EditorToolbar.tsx` | `embedded`: in flow (the dock), no mode switch, no Comment group, no Actions                                                                                                                               |
+| `editor/keyboard.ts`, `editor/clipboardIO.ts`                        | keys / clipboard only from the editor's places (`[data-wecra-region]`, Wecra's overlays) or from nowhere — Studio's fields, buttons and chat keep theirs, text selected in Studio is copied by the browser |
+| `store/index.ts`                                                     | Wecra's browser store without its demo files, nothing kept in Studio's localStorage                                                                                                                        |
+
+Build glue (`wecra.vite.ts`): Wecra's aliases `@/…` (its renderer) and `@shared/…`; stand-ins for
+the packages of features the post editor leaves out (visual search and image models:
+transformers.js, onnxruntime; plugins: QuickJS); Wecra's page-wide `ds/global.css` replaced by
+`wecra/wecra.css`. Wecra's small runtime packages are Studio dependencies (clsx, fuse.js,
+kiwi-schema, fzstd, gifenc, mp4-muxer, webm-muxer, qrcode-generator).
+
+### Studio's places (`wecra/host.tsx`)
+
+Wecra's components drawn in Studio's layout on the same editor (`EditorContext`), nothing
+re-implemented:
+
+| Studio               | Wecra                                                                                                                                                                                        |
+| -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| centre column        | `EditorApp` (embedded)                                                                                                                                                                       |
+| right panel, Tasarım | `DesignPanel` (Frame / Text header with Status, Position, Auto layout / Layout, Appearance, Typography, Fill, Stroke, Effects, Selection colors, Layout guide, Export), Tab order as Wecra's |
+| panel header         | `ZoomMenu` (zoom, pixel preview, rulers, outlines …)                                                                                                                                         |
+| layers card          | `Layers` (Wecra's tree: select, ⇧ / ⌘ ranges, rename, eye, lock, drag to reorder and regroup, collapse)                                                                                      |
+| dock, Düzenle        | `BottomToolbar` (embedded): Move ▾, Region ▾, Shape ▾, Creation ▾, Text ▾                                                                                                                    |
+
+Hidden (a post editor doesn't need them): Prototype tab, Dev Mode and the mode switch, comments,
+the rail (Assets, Agents, Brands), Pages, Actions, sharing, multiplayer chrome, the file menu.
+Wecra's own dialogs that commands open still work (export, nudge, shortcuts …).
+
+**Look** (`wecra/wecra.css`): Wecra's tokens and components unchanged; its colour tokens mapped
+onto Studio's palette per theme (Studio's orange for "brand": the active tool, primary buttons,
+focus rings; Wecra's blue stays for _selection_, which the engine draws on the canvas in blue);
+controls (fields, selects, buttons, segmented controls, tools, layer rows) full round, menus and
+popovers Studio's 14 px radius; its UI font stays Inter (the bundled 3.19), as Wecra's panel
+layout is measured for it. The canvas (WebGL) is Wecra's: its page colour and selection colour are
+the engine's.
+
+**Layers on a card, not a tab**: the right panel switches between Düzenle (Wecra's Design panel)
+and Sohbet, while the layers are needed in both (picking what to talk about is picking layers); a
+card on the canvas keeps Wecra's / Figma's arrangement (layers left of the canvas, properties
+right) without changing the app's layout, and the Design panel keeps the right panel's full
+height. It folds into a "Katmanlar" pill (remembered, `workspace-store.ts`); zoom to fit keeps
+clear of it and of the dock (Wecra's view insets).
 
 ### Sohbet / Düzenle
 
-The dock is one object (Wecra's bottom toolbar): its content, a full-height line, and the mode
-switch **Sohbet / Düzenle** at its right. On Düzenle it holds the edit tools (Seç ▾ / El / Ölçekle,
-Metin, Şekil, Görsel, undo / redo, Güvenli alan, Görünüm ▾ (all slides / focus, layers list,
-snapping, rulers, preview format), zoom ▾) and the right panel is the edit panel. On Sohbet the same
-capsule morphs (`motion` layout animation: width, height and content) into the post's message box
-and the right panel shows the post's conversation. The mode is remembered per post on this Mac
-(`workspace-store.ts`); a tool key (V, H, K, T, R) goes to Düzenle, ⌘K to Sohbet.
+The dock is one object: its content, a full-height line, and the mode switch **Sohbet / Düzenle**
+at its right. On Düzenle it holds Wecra's tools; on Sohbet it morphs (`motion` layout animation)
+into the post's message box and the right panel shows the post's conversation (`chat.ts`). A tool
+picked on the canvas (V, T, R … ) goes to Düzenle. `@` chips and the canvas selection are Wecra's
+layers (`wecra/scope.ts`: "Kare 2 › headline").
 
-The **edit panel** is Wecra's properties panel in Studio's controls (`ui/edit-panel.tsx`,
-`ui/fields.tsx`: 40 px section headers, a two-column grid with a 24 px action column, capsule
-fields). Tabs in its header: **Tasarım** and **Açıklama** (the caption editor). Tasarım, by
-selection: the header (what is selected, its "…" menu), Konum (alignment, X / Y, lock, rotation),
-Boyut, Görünüm (visibility, blend mode, opacity, corner radius), Metin (Studio: the text),
-Tipografi (FontPicker with the Mac's fonts and the brand's pinned, weight, size, leading,
-tracking, alignment, case, the brand's font roles), Dolgu (colour and alpha, brand swatches),
-Kenarlık (a border the design already has: its colour), Görsel (Studio: replace, AI, fit, crop,
-adjustments), Efektler (layer blur), AI ile düzenle. Nothing selected: the slide's header, Biçim
-(preview format, safe area on / off, the insets), Uyarılar (safe-area collisions), Kontroller (the
-checks list), AI ile düzenle, Dışa aktar (each slide's rendered PNG; unsaved edits are saved first).
+## The data model: a Wecra document per version
 
-**Layers** float on the canvas's left edge (`ui/layers-dock.tsx`), not in the right panel: the
-right panel switches between Düzenle and Sohbet, while the layers are needed in both (picking what
-to talk about is picking layers); it keeps Figma's / Wecra's arrangement (layers left of the
-canvas, properties right); and the properties keep the panel's full height. Slides are its
-top-level rows (as Figma's frames) with their layers inside; it folds into a "Katmanlar" pill
-(remembered), and fitted slides keep clear of it.
+### Opening (`wecra/session.ts`)
 
-The **Sohbet** is a conversation bound to the post (`chat.ts`): this Mac remembers which
-conversation belongs to which post. The first message creates it (in the post's brand, named
-after the post) and starts with the post's reference (`“Başlık” postu (id: …, vN) için:`); `@`
-layer chips (or the canvas selection) become the scope line (`Kapsam: Kare 1 › headline …`).
-The draft is saved before each message. The panel shows the app's own transcript (messages,
-steps, cards, working line, queue); ↩ sends (queues while a reply runs), the empty send button
-stops the reply. When a reply ends the post is re-read, and finished jobs of the post do the same
-(post-detail.tsx), so versions the agent made land on the canvas. "Sohbette tam ekran aç" opens
-the conversation in the chat; "Bu post için yeni sohbet" starts over. The edit panel's AI chips and
-the selection toolbar's "Sohbette düzenle" go to the Sohbet.
+- A version **saved from the canvas** carries an editor document (`ContentVersion.editorDocument`,
+  `{ kind: "wecra", assetId, format: 1 }`): that bundle opens.
+- **Any other version** (generated or revised by the AI: design-contract HTML) is **imported once**
+  into a blank Wecra document as the editor comes up (`wecra/import.ts`), by Wecra's own importer —
+  the one its agents use for web pages (`capture_web_design`): each slide is rendered as before
+  (brand.css inlined, `/brand/` and `/media/` mapped, `html/slide-document.ts`) in a hidden frame,
+  Wecra's DOM walker reads it as laid out (boxes, fills, borders, radii, shadows, linear gradients,
+  flex → auto layout when the positions prove it, text runs with their fonts), Wecra's converter
+  turns it into create_nodes specs and Wecra's `create_nodes` makes the layers — outside the undo
+  history. Slide _i_ → top-level frame "Kare _i_" (its size, clipped, 120 px apart; Kare 1 on top
+  in Layers); `data-layer` → the layer's name (a text too when it is its layer's only text);
+  `<img>` / `url()` → an image fill with the file's own bytes (cover → FILL, contain → FIT, fill →
+  CROP; SVG files drawn to PNG at 2×); inline `<svg>` → vector layers. A picture Wecra can't take
+  is left out (the import goes on, a toast says so). Not carried over: `text-wrap: balance`,
+  `object-position` (pictures are centred), filters on pictures, blend modes.
 
-The canvas follows Wecra's "Post Editor" draft (file *Studio*, page *Claude Code*, section *Post
-Editor*), not pixel for pixel: where the draft and the design contract disagree, the contract
-wins (see "What the contract allows" below).
+### Saving
 
-## Decision: Wecra's engine for interaction, the slide's own HTML for pixels
+⌘S, "Sürüm kaydet" (with a name = the note), 6 s after the last edit (not during a gesture), and
+before approve, schedule, a Sohbet message and leaving the post (the closing save reads everything
+from the editor at once, before it goes):
 
-**Wecra's engine is vendored as a versioned WebAssembly build and drives the canvas**: camera
-(zoom, pan, pinch, space-drag), picking, hover, multi-selection, marquee, handles (move, resize,
-rotate), smart guides with spacing labels, snapping, nudging, ⌥-drag copies, the scale tool,
-alignment and stacking commands, focus view and the safe-area bands. Its document is an adapter
-image of the post (below).
+1. the slides are the page's top-level frames in reading order (Wecra's `pageFrames`); their count
+   must fit the post type (`SLIDE_LIMITS`: frames can be added, duplicated and deleted on the
+   canvas now) and their size 1–4096 px;
+2. **each frame is exported by Wecra's engine** (its exporter, PNG 1x, sRGB);
+3. the document is bundled (`wecra/bundle.ts`, a zip by Wecra's own writer): `meta.json`
+   (format, Wecra's version and commit, the slides, the images, the HTML version it came from),
+   `document.kiwi` (the engine's own kiwi snapshot: lossless) and `images/<sha1>`;
+4. renders and bundle are uploaded as the brand's assets (the bundle as
+   `application/vnd.wecra.document+zip`, kind `document`) and a new `manual_edit` version is
+   created: its slides are the renders (`wecra/slide-html.ts`: the render as the artboard's one
+   image layer, **its SHA-256 in the HTML**, the slide's texts as alt), `renderedAssetIds` are the
+   renders, `layouts` that one layer (measured: no measuring render replaces the engine's PNG),
+   `editorDocument` the bundle;
+5. a `content.check` job (no model pass) checks the new version; the post re-reads its versions
+   and the new one is shown — the document on the canvas is the one just saved (no reload).
 
-**What the canvas shows is the slide itself**: every slide is its design-contract HTML in a
-sandboxed `<iframe>` (no scripts), with the brand's `brand.css` generated by design-kit exactly as
-the Mac worker generates it, the same `/brand/` and `/media/` files, the same Chromium and the
-Mac's installed fonts. The worker renders that same HTML with Playwright's Chromium, so the canvas
-is the render (WYSIWYG by construction), including CSS the engine has no model for (flex/grid
-groups, `text-wrap: balance`, blend modes, gradients, `color-mix`, filters).
+So the **content hash — what approval is bound to — covers the renders' pixels**; approving
+recomputes it from the shown version as before (unchanged code path), scheduling and publishing
+use the version's renders, previews and the board show them. Restoring and duplicating a version
+carry its document.
 
-Why not let the engine draw the slides: the engine is a Figma-model renderer (its own text
-layout on HarfBuzz, its own paints). Turning contract HTML/CSS into engine nodes would be a
-re-implementation of CSS layout that drifts from the render — the fidelity rule forbids exactly
-that. Why not a TS canvas: the engine already is the interaction model Burak wants ("seçim,
-kılavuz ve denetçi Wecra ile aynı mantıkta çalışır"), tested and Figma-calibrated.
+### The AI
 
-### Making the engine's canvas transparent (no engine change)
+AI revisions still produce HTML versions; such a version has no editor document, so the canvas
+**imports it anew** when it is shown (the simple path). A canvas-saved version's HTML is one image
+per slide: the Sohbet's first message tells the agent (`chat.ts postReference`) that the version
+was edited on the canvas and which HTML version the canvas started from (`studio:source-version`),
+to make text and layer changes from there. **Gap**: the agent's new version does not carry the
+canvas's hand edits made after that import (a Wecra-aware agent tool — editing the Wecra document
+through Wecra's own MCP tools — is the next step).
 
-The engine clears its WebGL2 canvas opaque with the page colour (`Renderer.cpp`: clear alpha 1).
-The editor's page is black and every layer node paints nothing, so after a frame each pixel is
-an overlay composited over black, i.e. its premultiplied colour. `engine/alpha-pass.ts` runs right
-after each engine render on the same context: alpha = the brightest channel (exact for the
-engine's overlay colours, which all have a channel at full strength), and the engine's selection
-blue becomes the app's accent (orange, as in the draft). All GL state it touches is restored (the
-engine re-binds its own state at every pass start). Frame titles are not drawn by the engine
-(frames are unnamed): the editor draws theme-aware titles itself. The engine runs on WebGL2 only
-(`gfx: "webgl2"`), since the pass needs the GL context.
+## API (migration `0016_editor_documents`)
 
-If WebGL2 or Wasm is unavailable the editor degrades: the slides still render, layers are picked
-from the panel and edited from the inspector (`canvasState.engine === "unavailable"`).
+- `content_version_documents` (version → one editor document: kind `wecra`, the bundle asset,
+  the format; goes with the version; not part of the hash).
+- `ContentVersionCreate.editorDocument` (checked: an asset of the post's brand, a Wecra bundle);
+  `ContentVersion.editorDocument` (`null`: none; absent from older servers); restore and duplicate
+  copy it.
+- Assets accept `application/vnd.wecra.document+zip` (kind `document`, ≤ 50 MB, sniffed as a zip).
 
-## Engine source and version
+## Fonts
 
-`src/renderer/vendor/wecra-engine/` is a verbatim copy, read from DesignerV2's **git history**
-(never its working tree): the committed Emscripten build (`engine.mjs` + `engine.wasm`,
-wasm-release, emsdk 6.0.11), the C ABI wrapper `EngineExports.ts`, `abi.ts`, the JSON codec
-types (`codec.ts`), the input helpers, Figma's cursor pictures and the bundled Inter (the
-overlays' labels). `VERSION.json` records the commit, the last engine commit, the ABI version and
-the SHA-256 of every file. A blank engine document (DOCUMENT + one page, kiwi-encoded with
-DesignerV2's generated codec, since `engine_load` takes kiwi only) is generated alongside;
-everything else goes in as JSON changes (`engine_apply_changes` takes either).
+Wecra's text engine shapes with the font files themselves (`wecra/fonts.ts`, Wecra's
+`FontSource`): Wecra's bundled Inter; the fonts installed on this Mac (Studio's font list; a face's
+bytes from the main process, `fonts:read` — `main/fonts.ts FontFiles`: the file located through
+AppKit, a face of a `.ttc` / `.otc` cut out as a font of its own); the brand's uploaded TTF / OTF
+files under their role's family. WOFF / WOFF2 files are not read by the engine: such a family is
+"missing" in Wecra's Design panel (the text draws in Inter) unless it is installed.
 
-```sh
-node apps/desktop/scripts/vendor-engine.mjs                # HEAD of ../DesignerV2
-node apps/desktop/scripts/vendor-engine.mjs --ref <commit> # a given engine build
-node apps/desktop/scripts/vendor-engine.mjs --check        # vendored files match VERSION.json
-```
+## Gaps
 
-To move to a newer engine: build and commit it in DesignerV2 (`npm run engine:build`), re-run the
-script, then `pnpm --filter @studio/desktop test` (the `engine` project drives the real Wasm
-build headless in Node). The renderer's CSP allows `'wasm-unsafe-eval'` for it.
-
-Our facade is `engine/studio-engine.ts` (the slice of DesignerV2's `Engine.ts` the editor needs:
-lifecycle, event pump, frames, input, camera, selection, commands, safe areas, focus).
-
-## The adapter: post ⇄ engine document
-
-`model/scene.ts`:
-
-| Studio | Engine |
-|---|---|
-| slide *i* (`width × height`) | top-level `FRAME` `7:i+1`, unnamed, no fill, side by side 120 px apart |
-| layer (`data-layer`) | `ROUNDED_RECTANGLE` (a group: `FRAME`, children inside), no fills / strokes, `name` = `"slide:id"` |
-| painted box (measured) | node `size` + `transform` (turn about the centre) relative to its parent |
-| `data-hidden` | `visible: false` |
-| editor lock (per post, this Mac) | `locked: true` |
-| logo | `proportionsConstrained` |
-
-Boxes come from the live slide documents (`html/measure.ts`: centre from the bounding box, size
-from the layout box × the scales on the way to the artboard, angle the sum of the turns), and
-before a frame has loaded from the version's measured layouts. Every change rebuilds the wanted
-node set and sends only the difference (`diffScene`, applied as remote changes: not undoable, not
-echoed). The engine's own edits come back as `DOCUMENT_CHANGED` and are classified
-(`classifyChanges`): geometry, ⌥-drag duplicate, a drawn shape, delete, reorder, visibility,
-lock; moving or resizing an artboard is undone.
-
-`model/geometry.ts` turns a box the engine moved / resized / turned / scaled into the contract's
-editor-owned CSS: `translate` (in the parent's frame), `rotate`, `scale` (the Scale tool, K) and
-`width` / `height` (`resize` op; text keeps its automatic height unless dragged only vertically).
-After the re-measure a reflowed layer's top-left corner is put back where the engine left it (a
-correction merged into the same undo step), so resizing works for absolutely positioned layers and
-flex/grid children alike. During a gesture the dragged layer is previewed in its frame with the
-same CSS, so text reflows live.
-
-## Edits, saving, undo
-
-`model/draft.ts` (`DraftSession`) holds the working copy: every edit is a list of design-kit ops
-applied with design-kit's own `applyPatch` (the worker's code), instant on the canvas (the frames
-are morphed in place, not reloaded), with design-kit's inverses on the undo stack. Saving is the
-existing flow: pending ops go out as **one `content.render` job** with `patches`
-(`PostEditor.commitPatches`), the worker stores a `manual_edit` version and renders it; the editor
-adopts it and re-applies anything edited meanwhile. It saves on its own after a 1.8 s pause (never
-during a gesture or text editing), on ⌘S / "Sürüm kaydet" (with a name = the version note), and
-before approve, schedule, a Sohbet message, switching versions and closing. A failed save keeps the
-edits (an offline worker) with "Yeniden dene"; unsaved edits survive a closed window (localStorage,
-per post and base version). Undo/redo are local and instant; the inverses go to the server as
-edits. Approve still checks the hash recomputed from the shown version (unchanged code path).
-
-## Features
-
-- Canvas: all slides / focus, zoom ⌘+ ⌘− ⌘0 ⇧1 ⇧2, pinch, space-drag, trackpad pan,
-  multi-select, marquee, handles (move / resize / rotate), smart guides, spacing, snapping
-  (⌘; toggles), nudge (⇧ ×10), ⌥-drag copies, the scale tool (K), rectangle tool (R → a shape
-  layer), text tool (T → a text layer, editing at once), image placement (⇧⌘K, uploads),
-  in-place text editing (double click / ↩; ⌘↩ applies, Esc cancels) in the slide's own fonts,
-  image crop (focal point by dragging; double click or Kırp), rulers (⇧R, in artboard px),
-  safe areas (⌘′) with the platform's bands, labels and collision chips. Fitted slides keep
-  clear of the layers list and the dock and follow the canvas's size until you pan or zoom.
-- Layers: the floating list (above), select / shift-select, hover highlights on canvas, hide,
-  lock, drag to reorder within a container.
-- Edit panel: above. Stacking is ⌥⌘] / ⌥⌘[ (⌘[ / ⌘] are the app's back / forward).
-- Sohbet: above.
-- Versions popover (the title area's chip, ⇧⌘V): the list, show / restore, "Sürüm kaydet" with
-  a name.
-- Caption (Açıklama tab, ⌘E): platform tabs with limits, the feed's preview cut, hashtag chips
-  with the platform's limit, save.
-- Shortcuts: `model/shortcuts.ts` (the draft's table of 32 plus K and ⌘A).
-
-## What the contract allows (and where the draft goes further)
-
-Additive design-kit changes made for this editor (`packages/design-kit`, with tests):
-`font-family` takes a quoted installed family (`"Futura", sans-serif`) besides `var(--font-*)`;
-`filter` takes picture adjustments (brightness / contrast / saturate / grayscale / sepia / invert /
-hue-rotate / blur, bounded); `NEUTRAL_BRAND_TOKENS` (the worker's neutral default, so the editor
-builds the same brand.css; the worker keeps its own copy — they should be unified).
-
-Not done (gaps):
-
-- Adding, duplicating, deleting and reordering **slides** (F, ⇧⌘D): there is no patch op for
-  slides; it needs `contents.versions.create` + a render, or a new op. The commands explain this.
-- Grouping (⌘G), renaming layers (the contract's ids are stable semantic ids), copy / paste.
-- First comment and per-slide alt text: the content model has no fields for them (the publishers
-  support alt text); the fields are shown disabled.
-- Hashtag suggestions, caption AI buttons, image generation from the canvas (routes to Sohbet).
-- Stroke width / style and shadows: the contract's style allow-list has `border-color` and
-  `filter` (blur) only; Kenarlık recolours an existing border, Efektler is the layer blur.
-- The Sohbet sends text only (no image attachments from the dock); the conversation ↔ post link
-  lives on this Mac (localStorage), not on the server; a conversation deleted elsewhere needs
-  "Bu post için yeni sohbet".
-- The workspace has no own back/forward inside the post (versions are the history).
-- Moving a layer to another slide (a drag across artboards is kept on its slide).
-- Dark overlay pixels lose opacity in the alpha pass (none of the editor's overlays use them);
-  engine rulers are not used (they are dark and opaque) — the editor draws its own.
-- The canvas and the in-layout workspace were checked headless (Chromium + SwiftShader WebGL2,
-  `?demo=post-editor`, which now shows the app's top bar and right panel around it); the real
-  look and feel in the app is for Burak to judge.
+- The canvas's selection and page colours are the engine's (blue selection): the engine has no
+  colour option; making it Studio's orange needs a change in Wecra.
+- Safe-area bands and collision chips (the old editor's) are not on Wecra's canvas yet (Wecra's
+  Social mode has its own safe areas: a candidate to switch on).
+- Unsaved edits live only in memory until the save 6 s later (no localStorage draft of the
+  document).
+- First comment and per-slide alt text fields: as before, not in the content model.
+- Checked headless (Chromium + SwiftShader, `?demo=post-editor`; WebGPU is off there, the engine
+  runs on WebGL2): opening, the import, selection, the Design panel, ⌘S → a version with renders
+  and the bundle. The look and feel in the app is for Burak to judge.
 
 ## Files
 
 ```
-scripts/vendor-engine.mjs           vendor / check the engine
-src/renderer/vendor/wecra-engine/   the vendored engine (do not edit)
-features/post-detail/post-detail.tsx  the opened post: canvas workspace (or the reel detail)
-features/post-detail/post-facts.ts    state line, approve / schedule rules, the post's menu
+scripts/vendor-wecra.mjs            vendor / check Wecra (gitignored copy)
+wecra.vite.ts                       Wecra's aliases, stand-ins, its stylesheet → Studio's
+src/renderer/vendor/wecra-editor/   the vendored Wecra (do not edit, never commit)
+features/post-detail/post-detail.tsx  the opened post: the canvas workspace (lazy) or the reel detail
 features/post-editor/
-  workspace.tsx                     the post workspace (canvas, dock, portals into the shell)
-  workspace-store.ts                mode per post, edit tab, layers list, post → conversation
+  workspace.tsx                     the post workspace (Wecra's editor in Studio's places)
+  workspace-store.ts                mode per post, edit tab, layers card, post → conversation
   slots.tsx                         the shell's slots (title area, panel header, panel)
   chat.ts                           the post's Sohbet (conversation binding, message text)
-  session.ts                        draft + canvas + toasts of one open post
-  engine/studio-engine.ts           facade over the C ABI (events, frames, input, camera …)
-  engine/alpha-pass.ts              transparent canvas + accent selection colour
-  engine/canvas-host.ts             DOM input → engine (after Wecra's CanvasController)
-  canvas/controller.ts              PostCanvas: frames + engine + adapter + edits
-  canvas/reader.ts                  engine reads for the adapter
-  html/slide-document.ts            slide srcdoc (brand.css inlined, URLs mapped), morphing
-  html/measure.ts                   layer boxes from the live document
-  model/document.ts                 slides × layers (design-kit parser), labels
-  model/scene.ts                    post ⇄ engine document, change classification
-  model/geometry.ts                 boxes, matrices, edits → design-kit ops
-  model/draft.ts                    working copy, saves, undo / redo
-  model/brand-kit.ts                brand.css / patch context as the worker builds them
-  model/safe-areas.ts               presets, bands, collisions
-  model/shortcuts.ts, style-values.ts
-  ui/title-bar.tsx                  the top bar's title area, versions popover
-  ui/mode-dock.tsx                  the dock: morph, mode switch, edit tools, message box
-  ui/layers-dock.tsx                the floating layers list
-  ui/edit-panel.tsx, ui/fields.tsx  the edit panel (Wecra's properties panel, Studio controls)
-  ui/caption-panel.tsx              the Açıklama tab
-  ui/chat-panel.tsx                 the Sohbet panel (the app's transcript in panel form)
-  ui/canvas-view.tsx                canvas, chrome (titles, safe areas, crop, rulers)
-  demo/                             `?demo=post-editor[&format=story]` (in-memory API and chat,
-                                    inside a stand-in of the app's layout)
-test/engine/adapter.test.ts         the real engine: round trip, drag + snapping, resize, ⌥-drag, turn, reorder
-test/renderer/post-canvas-model.test.ts
-test/renderer/post-workspace.test.tsx  open → canvas, back → board, mode memory, the dock's
-                                    morph, panel switching, the Sohbet bound to the post
+  wecra/embed.ts                    what the embedding patches read (places, store, keys)
+  wecra/host.tsx                    EditorApp, Design panel, Layers, toolbar, zoom menu in Studio
+  wecra/wecra.css                   Wecra's base rules in its places, Studio's colours and radii
+  wecra/session.ts                  open (bundle or import), dirty, save (engine export → version)
+  wecra/import.ts                   HTML slides → Wecra layers (Wecra's walker + converter)
+  wecra/bundle.ts                   the Wecra document bundle
+  wecra/slide-html.ts               a canvas-saved slide's HTML (render, hash, alt)
+  wecra/fonts.ts                    Wecra's font source in Studio
+  wecra/scope.ts                    the Sohbet's layers (selection, @)
+  wecra/vendored.ts                 is Wecra vendored here, what to do when not
+  html/slide-document.ts            slide srcdoc (brand.css inlined, URLs mapped)
+  model/brand-kit.ts                brand.css / fonts as the worker builds them
+  ui/title-bar.tsx                  the top bar's title area (no back of its own), versions popover
+  ui/mode-dock.tsx                  the dock: morph, mode switch, message box
+  ui/layers-card.tsx                the layers card / pill
+  ui/caption-panel.tsx, ui/chat-panel.tsx
+  demo/                             `?demo=post-editor[&format=story]` (in-memory API and chat)
+test/engine/wecra-post.test.ts      the real engine: import, bundle round trip, export, save, fonts
+test/renderer/post-workspace.test.tsx  layout, single back, panels, layers card, mode, Sohbet
+test/renderer/post-editor-model.test.ts  slide documents, saved slide HTML / hash, keys, AI note
+apps/api/test/contents-editor.test.ts  editor documents on versions
 ```
