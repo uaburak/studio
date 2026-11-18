@@ -19,6 +19,7 @@ const USAGE_GROUP: Record<AssetUsage["kind"], string> = {
   product: "Ürünlerde",
   brand_kit: "Marka kitinde",
   conversation: "Sohbetlerde",
+  template: "Şablonlarda",
 };
 
 /** The blocking usages first, grouped as the dialog shows them. */

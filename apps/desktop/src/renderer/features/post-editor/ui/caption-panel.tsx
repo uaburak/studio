@@ -13,6 +13,7 @@ import {
   splitCaption,
 } from "../../post-detail/caption.ts";
 import { type EditorSnapshot, isLocked, type PostEditor } from "../../post-detail/editor.ts";
+import { PostLinks } from "../../posts/post-links.tsx";
 import { Body, Section } from "./fields.tsx";
 
 const PLATFORM_LABEL: Record<Platform, string> = {
@@ -74,6 +75,10 @@ export function CaptionPanel({
 
   return (
     <div className="flex flex-col">
+      <PostLinks
+        content={content}
+        className="flex flex-col gap-1.5 border-b border-hairline px-4 py-3 text-footnote text-fg-2"
+      />
       <div className="px-4 pt-3">
         <div role="tablist" aria-label="Platform" className="flex rounded-full bg-field p-0.5">
           {platforms.map((p) => (

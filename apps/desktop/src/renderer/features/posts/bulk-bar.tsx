@@ -1,8 +1,8 @@
 // The bulk bar of the posts board (N1): shown while cards are picked (⌘-click, ⇧-click,
 // "Tümünü seç"). Onayla (through the checks gate: blocked posts are listed, "yalnızca sorunsuzları
 // onayla" / "yine de hepsini onayla"), Zamanla (one time per post over the chosen days, or each
-// post's planned day), Talimat uygula (N3, with the estimate for many posts: N4), Çoğalt and Sil
-// (to the trash, with "Geri al").
+// post's planned day), Talimat uygula (N3, with the estimate for many posts: N4), Dönüştür (story
+// or Reels from each post, N10), Çoğalt and Sil (to the trash, with "Geri al").
 import type { SocialAccount } from "@studio/contract";
 import { useQueryClient } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
@@ -27,6 +27,7 @@ import {
   schedulable,
   spreadTimes,
 } from "./bulk.ts";
+import { ConvertDialog } from "./convert-dialog.tsx";
 import { invalidatePosts } from "./data.ts";
 import { dateInput, shortDayTime } from "./dates.ts";
 import { EstimateDialog, needsEstimate } from "./estimate.tsx";
@@ -52,6 +53,7 @@ export function BulkBar({
   const [gated, setGated] = useState<{ checked: Gated[]; skipped: Excluded[] } | null>(null);
   const [scheduling, setScheduling] = useState(false);
   const [revising, setRevising] = useState(false);
+  const [converting, setConverting] = useState(false);
   const clear = () => usePostsStore.getState().clearPicked();
 
   const approveAll = async (list: Gated[], acknowledge: boolean) => {
@@ -189,6 +191,9 @@ export function BulkBar({
           <Button variant="ghost" onClick={() => setRevising(true)}>
             Talimat uygula
           </Button>
+          <Button variant="ghost" onClick={() => setConverting(true)}>
+            Dönüştür
+          </Button>
           <Button variant="ghost" onClick={() => void duplicate()}>
             Çoğalt
           </Button>
@@ -273,6 +278,15 @@ export function BulkBar({
         onClose={() => setScheduling(false)}
         onDone={() => {
           setScheduling(false);
+          clear();
+        }}
+      />
+      <ConvertDialog
+        open={converting}
+        cards={picked}
+        onClose={() => setConverting(false)}
+        onDone={() => {
+          setConverting(false);
           clear();
         }}
       />

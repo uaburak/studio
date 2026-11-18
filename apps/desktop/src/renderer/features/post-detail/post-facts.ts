@@ -106,6 +106,7 @@ export function postMenu({
   openInChat,
   cancelSchedule,
   exportEntries = [],
+  conversionEntries = [],
 }: {
   content: Content;
   version: ContentVersion | null;
@@ -116,6 +117,8 @@ export function postMenu({
   cancelSchedule?: (() => void) | null;
   /** "Dışa aktar ▸" and "Paylaş…" (posts/export.ts). */
   exportEntries?: MenuEntry[];
+  /** "Şablon olarak kaydet…", "Story'ye / Reels'e dönüştür" (posts/post-links.tsx). */
+  conversionEntries?: MenuEntry[];
 }): MenuEntry[] {
   const blocker = deletionBlocker(content);
   const cancel: MenuEntry[] = cancelSchedule
@@ -138,6 +141,7 @@ export function postMenu({
     ...exportEntries,
     { id: "chat", label: "Sohbette aç", onSelect: openInChat },
     ...cancel,
+    ...(conversionEntries.length ? [{ type: "separator" as const }, ...conversionEntries] : []),
     { type: "separator" },
     {
       id: "duplicate",
