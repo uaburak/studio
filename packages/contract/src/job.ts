@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { ClaudeAccount, GeminiAccount } from "./agent.ts";
 import { AiProviderStatus } from "./ai.ts";
+import { MediaAnalyzePayload } from "./asset-analysis.ts";
 import { BrandSkillDraftPayload } from "./brand-skill.ts";
 import {
   AgentEffort,
@@ -35,6 +36,8 @@ export type JobId = z.infer<typeof JobId>;
  * - `canvas.read` / `canvas.apply` read and edit a canvas version's Wecra document (S1) with
  *   Wecra's own design operations. They run in the Mac app's hidden canvas runner (Wecra's
  *   engine, in an Electron page), not in the worker: `CANVAS_JOB_TYPES`.
+ * - `media.analyze` tags uploaded pictures on the Mac with Apple's Vision (N12,
+ *   `MediaAnalyzePayload`); the API queues it after an upload and for the backfill.
  */
 export const JobType = z
   .enum([
@@ -49,6 +52,7 @@ export const JobType = z
     "content.check",
     "canvas.read",
     "canvas.apply",
+    "media.analyze",
   ])
   .meta({ id: "JobType" });
 export type JobType = z.infer<typeof JobType>;
@@ -71,6 +75,7 @@ export const JOB_TYPE_REQUIREMENTS = {
   "content.check": { brand: true, content: true },
   "canvas.read": { brand: true, content: true },
   "canvas.apply": { brand: true, content: true },
+  "media.analyze": { brand: false, content: false },
 } as const satisfies Record<JobType, { brand: boolean; content: boolean }>;
 
 export const MAX_JOB_PAYLOAD_BYTES = 100_000;
@@ -223,6 +228,15 @@ export const ContentRenderPayload = z
 export type ContentRenderPayload = z.infer<typeof ContentRenderPayload>;
 export type ContentRenderPayloadInput = z.input<typeof ContentRenderPayload>;
 
+/**
+ * Where the real product goes in a label-preserving composite (U9). `auto`: the emptiest of the
+ * usual spots in the generated scene (Vision saliency), lower centre when that cannot be read.
+ */
+export const ProductPosition = z
+  .enum(["auto", "center", "bottom-center", "bottom-left", "bottom-right", "left", "right"])
+  .meta({ id: "ProductPosition" });
+export type ProductPosition = z.infer<typeof ProductPosition>;
+
 export const ImageGeneratePayload = z
   .object({
     prompt: z.string().trim().min(1).max(4000),
@@ -233,6 +247,15 @@ export const ImageGeneratePayload = z
     targetContentId: EntityId.optional(),
     targetSlotId: z.string().max(128).optional(),
     model: z.string().max(128).optional(),
+    /** Label preservation (U9): where the product is placed in the scene. */
+    productPosition: ProductPosition.optional(),
+    /** Label preservation (U9): the product's height as a share of the picture's (0.2…0.9). */
+    productScale: z.number().min(0.2).max(0.9).optional(),
+    /**
+     * Label preservation (U9): the label's exact text when the owner has it (more reliable than
+     * reading the photo); checked against the final picture.
+     */
+    labelText: z.string().trim().max(4000).optional(),
   })
   .meta({ id: "ImageGeneratePayload" });
 export type ImageGeneratePayload = z.infer<typeof ImageGeneratePayload>;
@@ -417,6 +440,7 @@ export const JOB_PAYLOAD_SCHEMAS: Partial<Record<JobType, z.ZodType>> = {
   "content.check": ContentCheckPayload,
   "canvas.read": CanvasReadPayload,
   "canvas.apply": CanvasApplyPayload,
+  "media.analyze": MediaAnalyzePayload,
 };
 
 // --- Live updates and worker presence (F1-6) --------------------------------

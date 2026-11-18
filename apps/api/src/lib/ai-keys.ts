@@ -374,6 +374,7 @@ export function toPreferences(row: AiSettingsRow | null, nowMs = Date.now()): Ai
     monthlyBudgetUsd: row?.geminiMonthlyBudgetUsd ?? null,
     stopAtBudget: row?.stopAtBudget ?? false,
     limitDecision: activeDecision(row, nowMs),
+    mediaCaptions: row?.mediaCaptions ?? false,
     updatedAt: row ? row.updatedAt.toISOString() : null,
   };
 }
@@ -403,6 +404,7 @@ export async function savePreferences(
     claudeLimit?: ClaudeLimitMode;
     monthlyBudgetUsd?: number | null;
     stopAtBudget?: boolean;
+    mediaCaptions?: boolean;
   },
 ): Promise<void> {
   const patch: SettingsPatch = {};
@@ -417,6 +419,7 @@ export async function savePreferences(
   }
   if (input.monthlyBudgetUsd !== undefined) patch.geminiMonthlyBudgetUsd = input.monthlyBudgetUsd;
   if (input.stopAtBudget !== undefined) patch.stopAtBudget = input.stopAtBudget;
+  if (input.mediaCaptions !== undefined) patch.mediaCaptions = input.mediaCaptions;
   if (Object.keys(patch).length === 0) return;
   await patchSettings(db, patch);
 }

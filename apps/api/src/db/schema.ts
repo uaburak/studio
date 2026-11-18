@@ -61,6 +61,8 @@ export const ENUMS = {
   checkStrictness: ["relaxed", "standard", "strict"],
   // --- editor documents (the post editor's canvas, 0016) ---
   editorDocumentKind: ["wecra"],
+  // --- media tagging (N12, 0022) ---
+  assetAnalysisStatus: ["complete", "partial", "failed"],
 } as const;
 
 /** `col in ('a', 'b')` for CHECK constraints (values are constants above, never input). */
@@ -290,6 +292,48 @@ export const assets = sqliteTable(
     check("assets_kind_check", oneOf(t.kind, ENUMS.assetKind)),
     check("assets_source_check", oneOf(t.source, ENUMS.assetSource)),
     check("assets_bytes_check", sql`${t.bytes} >= 0`),
+  ],
+);
+
+// --- asset analyses (N12, 0022) ------------------------------------------------------
+// What Apple's Vision read in a picture on the Mac (the worker's `studio-vision` helper): Turkish
+// tags, OCR text, main colours, shape, cutout / logo-like flags, a feature print for "Benzerleri"
+// and an optional AI caption. One row per picture; it goes with the asset (cascade on purge).
+
+export const assetAnalyses = sqliteTable(
+  "asset_analyses",
+  {
+    assetId: text("asset_id")
+      .primaryKey()
+      .references(() => assets.id, { onDelete: "cascade" }),
+    status: text("status", { enum: ENUMS.assetAnalysisStatus }).notNull(),
+    /** ASSET_ANALYSIS_VERSION the worker used; older ones are redone by the backfill. */
+    version: integer("version").notNull(),
+    /** AssetTag[] */
+    tags: text("tags", { mode: "json" })
+      .$type<{ id: string; label: string; confidence: number }[]>()
+      .notNull(),
+    text: text("text").notNull().default(""),
+    /** AssetColor[] */
+    colors: text("colors", { mode: "json" })
+      .$type<{ hex: string; share: number; name: string }[]>()
+      .notNull(),
+    /** AssetOrientation; the API validates it. */
+    orientation: text("orientation"),
+    aspectRatio: real("aspect_ratio"),
+    isCutout: integer("is_cutout", { mode: "boolean" }).notNull().default(false),
+    isLogoLike: integer("is_logo_like", { mode: "boolean" }).notNull().default(false),
+    caption: text("caption"),
+    /** Little-endian Float32 values, base64 (Vision feature print). */
+    featurePrint: text("feature_print"),
+    featureRevision: integer("feature_revision"),
+    note: text("note"),
+    helperVersion: text("helper_version"),
+    analyzedAt: integer("analyzed_at", { mode: "timestamp_ms" }).notNull(),
+  },
+  (t) => [
+    index("asset_analyses_status_idx").on(t.status, t.version),
+    check("asset_analyses_status_check", oneOf(t.status, ENUMS.assetAnalysisStatus)),
   ],
 );
 
@@ -1044,5 +1088,7 @@ export const aiSettings = sqliteTable("ai_settings", {
   limitChoice: text("limit_choice"),
   limitUntil: integer("limit_until", { mode: "timestamp_ms" }),
   limitDecidedAt: integer("limit_decided_at", { mode: "timestamp_ms" }),
+  /** N12 (0022): describe new pictures with the AI (paid, within the budget); off by default. */
+  mediaCaptions: integer("media_captions", { mode: "boolean" }).notNull().default(false),
   updatedAt: updatedAt(),
 });

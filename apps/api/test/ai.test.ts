@@ -301,6 +301,7 @@ describe("AI preferences (S7)", () => {
       monthlyBudgetUsd: null,
       stopAtBudget: false,
       limitDecision: null,
+      mediaCaptions: false,
       updatedAt: null,
     });
   });

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { AssetAnalysis } from "./asset-analysis.ts";
 import { EntityId, PageQuery, pageOf, Timestamp, TrashFilter } from "./common.ts";
 
 export const AssetKind = z
@@ -130,6 +131,11 @@ export const Asset = z
      * meanwhile (old chat messages keep showing it). Absent from older servers (= not deleted).
      */
     deletedAt: Timestamp.nullable().optional(),
+    /**
+     * What Vision read in a picture (N12): Turkish tags, text, colours, shape. Null until the
+     * worker analysed it; absent from older servers and from upload responses.
+     */
+    analysis: AssetAnalysis.nullable().optional(),
   })
   .meta({ id: "Asset" });
 export type Asset = z.infer<typeof Asset>;
@@ -155,6 +161,11 @@ export const AssetListQuery = PageQuery.extend({
   source: AssetSource.optional(),
   /** Trashed files: left out by default (`exclude`). */
   deleted: TrashFilter.optional(),
+  /**
+   * Search (N12): every word must appear in the file name, kind, Turkish tags (or Vision's English
+   * identifiers), the text read on the picture, its colours or the AI caption. Turkish-insensitive.
+   */
+  q: z.string().trim().max(200).optional(),
 });
 export type AssetListQuery = z.input<typeof AssetListQuery>;
 
@@ -242,3 +253,38 @@ export type AssetThumbnailQuery = z.input<typeof AssetThumbnailQuery>;
 export function assetThumbnailPath(assetId: string, width: number): string {
   return `/api/assets/${encodeURIComponent(assetId)}/thumbnail?w=${thumbnailWidth(width)}`;
 }
+
+// --- similar pictures ("Benzerleri", N12) ------------------------------------------------------
+
+export const AssetSimilarQuery = z.object({
+  limit: z.coerce.number().int().min(1).max(50).default(12),
+});
+export type AssetSimilarQuery = z.input<typeof AssetSimilarQuery>;
+
+export const AssetSimilarItem = z
+  .object({
+    asset: Asset,
+    /** Vision feature-print distance (0 = the same picture; unrelated ones ≈ 1 or more). */
+    distance: z.number().min(0),
+    /** 0…1 for display. */
+    similarity: z.number().min(0).max(1),
+  })
+  .meta({ id: "AssetSimilarItem" });
+export type AssetSimilarItem = z.infer<typeof AssetSimilarItem>;
+
+/** `GET /api/assets/{id}/similar`: the brand's pictures closest to this one, nearest first. */
+export const AssetSimilarList = z
+  .object({
+    assetId: EntityId,
+    items: z.array(AssetSimilarItem),
+    /** Turkish, when nothing can be compared yet (the picture is not analysed). */
+    note: z.string().nullable(),
+  })
+  .meta({ id: "AssetSimilarList" });
+export type AssetSimilarList = z.infer<typeof AssetSimilarList>;
+
+/** `GET /api/worker/assets/analysis/pending`: pictures the worker should read. */
+export const AssetAnalysisPendingList = z
+  .object({ items: z.array(Asset) })
+  .meta({ id: "AssetAnalysisPendingList" });
+export type AssetAnalysisPendingList = z.infer<typeof AssetAnalysisPendingList>;

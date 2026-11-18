@@ -20,12 +20,21 @@ import {
 } from "./ai.ts";
 import {
   Asset,
+  AssetAnalysisPendingList,
   AssetList,
   type AssetListQuery,
+  AssetSimilarList,
+  type AssetSimilarQuery,
   type AssetUploadFields,
   AssetUsageList,
   assetThumbnailPath,
 } from "./asset.ts";
+import {
+  type AssetAnalysisBackfillInput,
+  AssetAnalysisBackfillResult,
+  type AssetAnalysisPendingQuery,
+  type AssetAnalysisPut,
+} from "./asset-analysis.ts";
 import {
   Brand,
   type BrandCreate,
@@ -671,6 +680,31 @@ export function createApiClient(options: ApiClientOptions = {}) {
       /** Take it back out of the trash. */
       restore: (id: string, init?: RequestInit) =>
         call(Asset, `/api/assets/${enc(id)}/restore`, { method: "POST", init }),
+      /** The brand's pictures that look most like this one ("Benzerleri", N12). */
+      similar: (id: string, query?: AssetSimilarQuery, init?: RequestInit) =>
+        call(AssetSimilarList, `/api/assets/${enc(id)}/similar`, { query: q(query), init }),
+      /** Queue tagging of every picture not read yet (N12; at most one waiting job). */
+      backfillAnalysis: (input: AssetAnalysisBackfillInput = {}, init?: RequestInit) =>
+        call(AssetAnalysisBackfillResult, "/api/assets/analysis/backfill", {
+          method: "POST",
+          json: input,
+          init,
+        }),
+    },
+
+    /** Mac worker: storing what Vision read in pictures (N12). Needs `workerToken`. */
+    workerAssets: {
+      pending: (query?: AssetAnalysisPendingQuery, init?: RequestInit) =>
+        call(AssetAnalysisPendingList, "/api/worker/assets/analysis/pending", {
+          query: q(query),
+          init,
+        }),
+      putAnalysis: (id: string, input: AssetAnalysisPut, init?: RequestInit) =>
+        call(Asset, `/api/worker/assets/${enc(id)}/analysis`, {
+          method: "PUT",
+          json: input,
+          init,
+        }),
     },
 
     contents: {
