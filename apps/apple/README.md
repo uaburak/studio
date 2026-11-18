@@ -15,7 +15,7 @@ Swift 6 dil modu (tam katı eşzamanlılık), üçüncü taraf bağımlılık yo
 | `.../Services` | `ConversationService` ve `StudioDataService` protokolleri; gerçek API uygulamaları (`RemoteConversationService`, `RemoteStudioDataService`); mesajın tel biçimi tek yerde (`MessageWire`) |
 | `.../Sample` | `SampleBackend`: bellekte, taslaklarla aynı Türkçe örnek veri (önizleme, test ve ekran görüntüsü için). |
 | `StudioMac/` | macOS masaüstü uygulaması (%100 AppKit). Yerel API + Worker + Cloudflare Tunnel (`cloudflared`) gözetmeni içerir. |
-| `StudioIOS/` | iPhone/iPad uzaktan kumanda uygulaması (%100 UIKit). Kök ekran sohbet; çekmeceden Postlar, Takvim, Markalar, Mac durumu ve Ayarlar (kod ile eşleştirme + uzaktan tünel bağlantısı). |
+| `StudioIOS/` | iPhone uzaktan kumanda uygulaması (yalnızca iPhone, `TARGETED_DEVICE_FAMILY = 1`) (%100 UIKit). Kök ekran sohbet; çekmeceden Postlar, Takvim, Markalar, Mac durumu ve Ayarlar (kod ile eşleştirme + uzaktan tünel bağlantısı). |
 | `scripts/` | `generate-project.sh` (macOS), `generate-ios-project.sh` (iOS), yerel API'ye örnek veri, fixture yakalama, ekran görüntüsü betikleri |
 
 ## Proje üretimi ve derleme
