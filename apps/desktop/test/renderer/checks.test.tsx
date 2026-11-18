@@ -1,19 +1,22 @@
-import type {
-  ApiClient,
-  BrandCheckSettings,
-  ContentCheckResult,
-  ContentCheckRun,
+import {
+  type ApiClient,
+  type BrandCheckSettings,
+  CHECK_IDS,
+  type ContentCheckResult,
+  type ContentCheckRun,
 } from "@studio/contract";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { awaitApprovalGate } from "../../src/renderer/features/checks/approval-gate.ts";
 import { checkKeys } from "../../src/renderer/features/checks/checks-data.ts";
 import {
   addBannedWords,
   approvalWarning,
   draftPut,
+  failureCount,
   fixableChecks,
   fromVersion,
   inVersion,
@@ -257,37 +260,257 @@ describe("ChecksPanel and the approve guard", () => {
     expect(usePostsStore.getState().opened?.tab).toBe("edit");
   });
 
-  function GuardHarness({ approve }: { approve(): void }) {
-    const guard = useApproveGuard(snapshot);
+  /** An API whose checks answer from `state` (runs of v3, check jobs, the brand's settings). */
+  function gateApi(
+    state: {
+      runs?: ContentCheckRun[];
+      jobs?: { type: string; status: string; payload: Record<string, unknown> }[];
+      settings?: Partial<BrandCheckSettings>;
+    } = {},
+  ) {
+    const created: unknown[] = [];
+    const listed = vi.fn(async () => ({ items: state.runs ?? [], nextCursor: null }));
+    return {
+      created,
+      listed,
+      api: {
+        contents: { checks: { list: listed } },
+        jobs: {
+          list: async () => ({ items: state.jobs ?? [], nextCursor: null }),
+          create: async (input: unknown) => {
+            created.push(input);
+            return { id: "job_new" };
+          },
+        },
+        brandCheckSettings: {
+          get: async () => ({
+            brandId: "brand_1",
+            disabledChecks: [],
+            bannedWords: [],
+            strictness: "standard",
+            autoFix: true,
+            updatedAt: null,
+            ...state.settings,
+          }),
+        },
+      },
+    };
+  }
+
+  function GuardHarness({ approve }: { approve(acknowledgeChecks: boolean): void }) {
+    const guard = useApproveGuard(snapshot, { pollMs: 5, timeoutMs: 200, startAfterPolls: 1 });
     return (
       <>
-        <button type="button" onClick={() => guard.guard(approve)}>
-          Onayla
+        <button type="button" disabled={guard.waiting} onClick={() => void guard.guard(approve)}>
+          {guard.waiting ? "Kontroller çalışıyor…" : "Onayla"}
         </button>
         {guard.dialog}
       </>
     );
   }
 
-  it("asks before approving a version whose checks failed, and approves on override", async () => {
+  it("asks before approving a version whose checks failed, and acknowledges them on override", async () => {
     const user = userEvent.setup();
     const approve = vi.fn();
-    providers(<GuardHarness approve={approve} />, {}, (q) =>
-      q.setQueryData(checkKeys.run("content_1", 3), run()),
-    );
+    const { api } = gateApi({ runs: [run()] });
+    providers(<GuardHarness approve={approve} />, api);
     await user.click(screen.getByRole("button", { name: "Onayla" }));
+    expect(await screen.findByText("v3'te 1 kontrol geçmedi")).toBeTruthy();
     expect(approve).not.toHaveBeenCalled();
-    expect(screen.getByText("v3'te 1 kontrol geçmedi")).toBeTruthy();
     await user.click(screen.getByRole("button", { name: "Yine de onayla" }));
-    expect(approve).toHaveBeenCalledTimes(1);
+    expect(approve).toHaveBeenCalledExactlyOnceWith(true);
   });
 
-  it("approves right away when the checks passed or never ran", async () => {
+  it("approves at once (no acknowledgement) when the version's checks passed", async () => {
     const user = userEvent.setup();
     const approve = vi.fn();
-    providers(<GuardHarness approve={approve} />);
+    const clean = run({ results: [result("layout.overflow", "pass")] });
+    providers(<GuardHarness approve={approve} />, gateApi({ runs: [clean] }).api);
     await user.click(screen.getByRole("button", { name: "Onayla" }));
-    expect(approve).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(approve).toHaveBeenCalledExactlyOnceWith(false));
+  });
+
+  it("reads the run fresh: ⌘↩ while the cached run loads never approves silently", async () => {
+    const user = userEvent.setup();
+    const approve = vi.fn();
+    // Nothing cached (the panel's query still loading); the server has a failing run.
+    const { api, listed } = gateApi({ runs: [run()] });
+    providers(<GuardHarness approve={approve} />, api);
+    const button = screen.getByRole("button", { name: "Onayla" });
+    await user.click(button);
+    // A second press while it waits is the same approval.
+    await user.click(button);
+    expect(await screen.findByText("v3'te 1 kontrol geçmedi")).toBeTruthy();
+    expect(approve).not.toHaveBeenCalled();
+    expect(listed).toHaveBeenCalledWith("content_1", { version: 3, limit: 1 });
+  });
+
+  it("starts the checks when none came, and asks when they don't finish", async () => {
+    const user = userEvent.setup();
+    const approve = vi.fn();
+    const { api, created } = gateApi();
+    providers(<GuardHarness approve={approve} />, api);
+    await user.click(screen.getByRole("button", { name: "Onayla" }));
+    expect(screen.getByRole("button", { name: "Kontroller çalışıyor…" })).toBeTruthy();
+    expect(await screen.findByText("v3 kontrolleri bitmedi")).toBeTruthy();
+    expect(created).toEqual([
+      {
+        type: "content.check",
+        brandId: "brand_1",
+        contentId: "content_1",
+        payload: { version: 3, model: false },
+      },
+    ]);
+    await user.click(screen.getByRole("button", { name: "Yine de onayla" }));
+    expect(approve).toHaveBeenCalledExactlyOnceWith(true);
+  });
+});
+
+describe("approval gate (E7)", () => {
+  const content = { id: "content_1", brandId: "brand_1" };
+  const fast = { pollMs: 1, timeoutMs: 100, startAfterPolls: 1 };
+
+  function api(o: {
+    runs?: () => ContentCheckRun[];
+    jobs?: () => { type: string; status: string; payload: Record<string, unknown> }[];
+    settings?: Partial<BrandCheckSettings>;
+  }) {
+    const created: unknown[] = [];
+    return {
+      created,
+      contents: {
+        checks: { list: async () => ({ items: o.runs?.() ?? [], nextCursor: null }) },
+      },
+      jobs: {
+        list: async () => ({ items: o.jobs?.() ?? [], nextCursor: null }),
+        create: async (input: unknown) => {
+          created.push(input);
+          return {};
+        },
+      },
+      brandCheckSettings: {
+        get: async () => ({
+          brandId: "brand_1",
+          disabledChecks: [],
+          bannedWords: [],
+          strictness: "standard" as const,
+          autoFix: true,
+          updatedAt: null,
+          ...o.settings,
+        }),
+      },
+    } as never;
+  }
+
+  it("judges the run by the brand's current settings", async () => {
+    const r = run({
+      results: [result("layout.overflow", "fail"), result("text.language", "warn")],
+    });
+    expect(
+      await awaitApprovalGate(api({ runs: () => [r] }), content, { version: 3 }, fast),
+    ).toMatchObject({
+      kind: "problems",
+      warning: { blocking: 1, title: "v3'te 1 kontrol geçmedi" },
+    });
+    const off = api({ runs: () => [r], settings: { disabledChecks: ["layout.overflow"] } });
+    expect(await awaitApprovalGate(off, content, { version: 3 }, fast)).toEqual({ kind: "clear" });
+    const strict = api({
+      runs: () => [r],
+      settings: { disabledChecks: ["layout.overflow"], strictness: "strict" },
+    });
+    expect(await awaitApprovalGate(strict, content, { version: 3 }, fast)).toMatchObject({
+      kind: "problems",
+      warning: { blocking: 1 },
+    });
+  });
+
+  it("waits while a check of the version runs, then takes its run", async () => {
+    let polls = 0;
+    const r = run({ results: [result("layout.overflow", "pass")] });
+    const gate = await awaitApprovalGate(
+      api({
+        runs: () => (polls >= 3 ? [r] : []),
+        jobs: () => {
+          polls++;
+          return polls < 3
+            ? [{ type: "content.check", status: "running", payload: { version: 3 } }]
+            : [];
+        },
+      }),
+      content,
+      { version: 3, id: "ver_3" },
+      fast,
+    );
+    expect(gate).toEqual({ kind: "clear" });
+    expect(polls).toBeGreaterThanOrEqual(3);
+  });
+
+  it("ignores a run of another version row, and never waits when every check is off", async () => {
+    const stale = run({ versionId: "ver_old" });
+    const a = api({ runs: () => [stale] });
+    expect(
+      await awaitApprovalGate(a, content, { version: 3, id: "ver_3" }, { ...fast, timeoutMs: 20 }),
+    ).toMatchObject({ kind: "unfinished", version: 3 });
+    const none = api({
+      runs: () => {
+        throw new Error("not read");
+      },
+      settings: { disabledChecks: [...CHECK_IDS] },
+    });
+    expect(await awaitApprovalGate(none, content, { version: 3 }, fast)).toEqual({ kind: "clear" });
+  });
+
+  it("asks at once when the Mac's worker is away", async () => {
+    const gate = await awaitApprovalGate(
+      api({}),
+      content,
+      { version: 3 },
+      {
+        ...fast,
+        timeoutMs: 60_000,
+        workerOnline: () => false,
+      },
+    );
+    expect(gate).toMatchObject({ kind: "unfinished", reason: expect.stringMatching(/işçi/) });
+  });
+});
+
+describe("Kontroller on the canvas (E6)", () => {
+  it("shows Göster and the place to fix by hand; Düzelt only where it can fix", async () => {
+    const user = userEvent.setup();
+    const onShow = vi.fn();
+    const onFix = vi.fn();
+    const onCanvas = vi.fn();
+    const r = run({
+      results: [
+        result("layout.contrast", "fail", { refs: [{ slide: 0, layer: "baslik" }] }),
+        result("text.hashtags", "warn", { fixable: true }),
+        result("text.caption-length", "warn"),
+      ],
+    });
+    render(
+      <ChecksList
+        run={r}
+        version={3}
+        runLabel="Yeniden kontrol et"
+        onRun={() => {}}
+        onFix={onFix}
+        onShow={onShow}
+        manualFix={(x) =>
+          x.refs[0] ? { label: "Tuvalde düzelt", run: () => onCanvas(x.checkId) } : null
+        }
+      />,
+    );
+    expect(screen.getByRole("button", { name: "Yeniden kontrol et" })).toBeTruthy();
+    // The row is no button of its own: "Göster" is.
+    expect(screen.queryByTitle("Slaytta göster")).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Göster" }));
+    expect(onShow).toHaveBeenCalledWith({ slide: 0, layer: "baslik" });
+    await user.click(screen.getByRole("button", { name: "Tuvalde düzelt" }));
+    expect(onCanvas).toHaveBeenCalledWith("layout.contrast");
+    expect(screen.getAllByRole("button", { name: "Düzelt" })).toHaveLength(1);
+    expect(failureCount(r)).toBe(1);
+    expect(failureCount(r, { disabledChecks: ["layout.contrast"] })).toBe(0);
   });
 });
 

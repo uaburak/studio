@@ -62,7 +62,8 @@ export function TitleBar({
   menu: MenuEntry[];
   onApprove(): void;
   onSchedule(): void;
-  approve: { visible: boolean; disabled: string | null; busy: boolean };
+  /** `busyLabel`: what the busy button says ("Kontroller çalışıyor…"; default "Onaylanıyor…"). */
+  approve: { visible: boolean; disabled: string | null; busy: boolean; busyLabel?: string };
   schedule: { label: string; disabled: string | null };
   versionsOpen: boolean;
   setVersionsOpen(open: boolean): void;
@@ -95,7 +96,7 @@ export function TitleBar({
             ? [
                 {
                   id: "approve",
-                  label: approve.busy ? "Onaylanıyor…" : "Onayla",
+                  label: approve.busy ? (approve.busyLabel ?? "Onaylanıyor…") : "Onayla",
                   shortcut: "⌘↩",
                   disabled: !!approve.disabled,
                   ...(approve.disabled ? { detail: approve.disabled } : {}),
@@ -178,8 +179,13 @@ export function TitleBar({
           title={approve.disabled ?? "Bu sürümü onayla (⌘↩)"}
           className="hidden shrink-0 @[480px]:inline-flex"
         >
-          <Button variant="secondary" disabled={!!approve.disabled} onClick={onApprove}>
-            {approve.busy ? "Onaylanıyor…" : "Onayla"}
+          <Button
+            variant="secondary"
+            disabled={!!approve.disabled}
+            onClick={onApprove}
+            {...(approve.busy && approve.busyLabel ? { icon: <Spinner size={11} /> } : {})}
+          >
+            {approve.busy ? (approve.busyLabel ?? "Onaylanıyor…") : "Onayla"}
           </Button>
         </span>
       )}

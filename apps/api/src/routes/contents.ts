@@ -49,6 +49,7 @@ import {
   jobs,
   schedules,
 } from "../db/schema.ts";
+import { assertChecksAllowApproval } from "../lib/approval-checks.ts";
 import { ApiProblem, badRequest, conflict, invalidTransition, notFound } from "../lib/errors.ts";
 import { newId } from "../lib/ids.ts";
 import { toPage } from "../lib/pagination.ts";
@@ -472,7 +473,11 @@ export const contentRoutes = createRouter()
         "The body carries the hash of the version the user looked at. It must equal the " +
         "current version's hash, otherwise 409 `hash_mismatch` (someone added a newer " +
         "version). Allowed from draft or in_review; repeating it on approved content with " +
-        "the same hash is a no-op.",
+        "the same hash is a no-op. The generation checks gate it: while the latest check " +
+        "run of that version has blocking results under the brand's check settings, or no " +
+        "run of it has finished yet (and the brand has checks on), it is refused with 409 " +
+        "`conflict` (a Turkish message about the checks; `issues` lists the blocking " +
+        "results) unless the body says `acknowledgeChecks: true`.",
       request: { params: IdParams, body: jsonBody(ContentApprove) },
       responses: {
         200: json(Content, "Approved."),
@@ -483,7 +488,7 @@ export const contentRoutes = createRouter()
     }),
     async (c) => {
       const { id } = c.req.valid("param");
-      const { hash } = c.req.valid("json");
+      const { hash, acknowledgeChecks } = c.req.valid("json");
       const db = createDb(c.env.DB);
       const loaded = await loadContent(db, id);
       const { row, current } = loaded;
@@ -507,6 +512,9 @@ export const contentRoutes = createRouter()
           `hash does not match the current version (v${current.version}); reload and review again`,
         );
       }
+      // The checks of this exact version (E7): failures, or none finished yet, need the user's
+      // explicit "approve anyway".
+      if (acknowledgeChecks !== true) await assertChecksAllowApproval(db, row, current);
       const now = new Date();
       const updated = await db
         .update(contents)

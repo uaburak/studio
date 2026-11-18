@@ -17,6 +17,7 @@ import {
   type GeminiCommand,
   type GeminiControl,
   type HubToWorkerMessage,
+  isCanvasRunner,
   isTerminalJobStatus,
   type Job,
   type JobResultMessage,
@@ -340,7 +341,7 @@ export class Hub extends DurableObject<Env> {
    */
   async claudeControl(command?: ClaudeCommand): Promise<ClaudeControl> {
     return this.serial(async () => {
-      const workers = this.workerSockets().filter((w) => !w.att.draining);
+      const workers = this.macWorkers().filter((w) => !w.att.draining);
       let sent = 0;
       if (command) {
         for (const { ws } of workers) {
@@ -360,7 +361,7 @@ export class Hub extends DurableObject<Env> {
   /** The Mac's Gemini readiness. With a command, asks connected workers to re-check. */
   async geminiControl(command?: GeminiCommand): Promise<GeminiControl> {
     return this.serial(async () => {
-      const workers = this.workerSockets().filter((w) => !w.att.draining);
+      const workers = this.macWorkers().filter((w) => !w.att.draining);
       let sent = 0;
       if (command) {
         for (const { ws } of workers) {
@@ -383,7 +384,7 @@ export class Hub extends DurableObject<Env> {
    */
   async providersControl(command?: WorkerCommand): Promise<AiProvidersControl> {
     return this.serial(async () => {
-      const workers = this.workerSockets().filter((w) => !w.att.draining);
+      const workers = this.macWorkers().filter((w) => !w.att.draining);
       let sent = 0;
       if (command) {
         for (const { ws } of workers) {
@@ -409,7 +410,11 @@ export class Hub extends DurableObject<Env> {
   ): Promise<void> {
     const now = Date.now();
     att.lastSeenAt = now;
-    if (att.workerId && now - (att.persistedAt ?? 0) > HUB_TIMING.presencePersistMs) {
+    if (
+      att.workerId &&
+      !isCanvasRunner(att.capabilities ?? []) &&
+      now - (att.persistedAt ?? 0) > HUB_TIMING.presencePersistMs
+    ) {
       att.persistedAt = now;
       await this.ctx.storage.put(LAST_SEEN_KEY, now);
     }
@@ -561,7 +566,8 @@ export class Hub extends DurableObject<Env> {
       ...(hello.workerVersion ? { workerVersion: hello.workerVersion } : {}),
     });
     ws.serializeAttachment(att);
-    await this.ctx.storage.put(LAST_SEEN_KEY, att.lastSeenAt);
+    if (!isCanvasRunner(hello.capabilities))
+      await this.ctx.storage.put(LAST_SEEN_KEY, att.lastSeenAt);
 
     if (hello.activeJobIds) await this.reconcile(ws, hello.workerId, hello.activeJobIds);
     await this.dispatchQueued();
@@ -685,7 +691,8 @@ export class Hub extends DurableObject<Env> {
     for (const { ws, att } of this.workerSockets()) {
       if (now - att.lastSeenAt > HUB_TIMING.staleWorkerMs) {
         console.warn(`hub: worker ${att.workerId} silent for too long; closing`);
-        await this.ctx.storage.put(LAST_SEEN_KEY, att.lastSeenAt);
+        if (!isCanvasRunner(att.capabilities ?? []))
+          await this.ctx.storage.put(LAST_SEEN_KEY, att.lastSeenAt);
         ws.serializeAttachment({ ...att, workerId: undefined });
         try {
           ws.close(CLOSE.stale, "no message within the stale timeout");
@@ -745,7 +752,8 @@ export class Hub extends DurableObject<Env> {
   private async onSocketGone(ws: WebSocket): Promise<void> {
     const att = attachmentOf(ws);
     if (att.role !== "worker" || !att.workerId) return;
-    await this.ctx.storage.put(LAST_SEEN_KEY, att.lastSeenAt);
+    if (!isCanvasRunner(att.capabilities ?? []))
+      await this.ctx.storage.put(LAST_SEEN_KEY, att.lastSeenAt);
     // Running jobs keep their lease: a quick reconnect (hello.activeJobIds)
     // keeps them; otherwise the alarm requeues them when the lease runs out.
     await this.serial(async () => {
@@ -755,7 +763,11 @@ export class Hub extends DurableObject<Env> {
   }
 
   private async computePresence(exclude?: WebSocket): Promise<WorkerPresence> {
-    const workers = this.workerSockets().filter(({ ws }) => ws !== exclude);
+    // The Mac worker first; the Mac app's canvas runner (canvas jobs only) after it, never what
+    // makes the Mac "online" or its last-seen time.
+    const all = this.workerSockets().filter(({ ws }) => ws !== exclude);
+    const mac = all.filter((w) => !isCanvasRunner(w.att.capabilities ?? []));
+    const workers = [...mac, ...all.filter((w) => !mac.includes(w))];
     const [running, queueLength, stored, usage, claude, gemini, providers] = await Promise.all([
       this.store.running(),
       this.store.queueLength(),
@@ -765,9 +777,9 @@ export class Hub extends DurableObject<Env> {
       this.ctx.storage.get<GeminiAccount>(GEMINI_KEY),
       this.ctx.storage.get<AiProviderStatus[]>(PROVIDERS_KEY),
     ]);
-    const lastSeen = Math.max(stored ?? 0, ...workers.map((w) => w.att.lastSeenAt));
+    const lastSeen = Math.max(stored ?? 0, ...mac.map((w) => w.att.lastSeenAt));
     return {
-      online: workers.some((w) => !w.att.draining),
+      online: mac.some((w) => !w.att.draining),
       lastSeenAt: lastSeen > 0 ? new Date(lastSeen).toISOString() : null,
       workers: workers.map(({ att }) => ({
         workerId: att.workerId,
@@ -923,6 +935,11 @@ export class Hub extends DurableObject<Env> {
   private sendToWorker(workerId: string, message: HubToWorkerMessage): void {
     const target = this.workerSockets().find((w) => w.att.workerId === workerId);
     if (target) trySend(target.ws, encodeMessage(message));
+  }
+
+  /** The Mac worker's sockets: every identified worker but the Mac app's canvas runner. */
+  private macWorkers(): WorkerSocket[] {
+    return this.workerSockets().filter((w) => !isCanvasRunner(w.att.capabilities ?? []));
   }
 
   /** Identified (post-hello) worker sockets. */

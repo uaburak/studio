@@ -108,6 +108,11 @@ export const CanvasMark = z.object({
   /** Wecra's image key of that file right after the import (unchanged = still that file). */
   image: z.string().max(64).nullable(),
   allowOverlap: z.boolean(),
+  /**
+   * A logo imported as its SVG file's vectors (a frame of vector layers, no picture): still the
+   * brand's logo (whether its vectors were edited since is not known).
+   */
+  vector: z.boolean().optional(),
   slot: z
     .object({
       ratio: z.string().max(16).nullable(),

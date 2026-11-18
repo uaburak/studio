@@ -1,5 +1,13 @@
 import Foundation
 
+/// What the post screen needs of the chat (S1): a request about a version saved from the Mac's
+/// canvas goes to the post's conversation, as on the Mac. Every `ConversationService` is one.
+public protocol PostChatSender: Sendable {
+    func createConversation(brandId: EntityID?, title: String?) async throws -> Conversation
+    func send(_ message: OutgoingMessage, to conversationId: EntityID) async throws -> UserMessageResult
+    func cancelRun(_ runId: EntityID) async throws -> AgentRun
+}
+
 /// The AI chat, as the apps see it.
 ///
 /// Two implementations:
@@ -7,7 +15,7 @@ import Foundation
 ///   (`/api/conversations`, `/api/plans`, the conversation stream). Default.
 /// - `SampleBackend`: in memory, Turkish sample data matching the approved
 ///   drafts. Only for previews, tests and screenshot renders.
-public protocol ConversationService: Sendable {
+public protocol ConversationService: PostChatSender {
     /// Active conversations, most recently active first.
     func conversations() async throws -> [Conversation]
     func createConversation(brandId: EntityID?, title: String?) async throws -> Conversation
@@ -76,8 +84,9 @@ public protocol StudioDataService: Sendable {
     func scheduleLogs(scheduleId: EntityID) async throws -> [PublishLog]
     /// Replace the caption (revokes an approval on the server).
     func updateCaption(contentId: EntityID, caption: String) async throws -> Content
-    /// Approve by the hash of the version the user looked at.
-    func approve(contentId: EntityID, hash: String) async throws -> Content
+    /// Approve by the hash of the version the user looked at. `acknowledgeChecks`: the user
+    /// confirmed approving although the checks hold it back (E7; never without that answer).
+    func approve(contentId: EntityID, hash: String, acknowledgeChecks: Bool) async throws -> Content
     func createSchedule(_ input: ScheduleCreate) async throws -> Schedule
     /// Ask the generator for a new version with `instructions` (a `content.generate` job).
     func requestEdit(of content: Content, instructions: String) async throws -> Job
@@ -146,6 +155,14 @@ public protocol StudioDataService: Sendable {
     func linkedInOAuth(_ input: LinkedInOAuthInput) async throws -> SocialAccount
     func checkSocialAccount(id: EntityID, _ input: SocialAccountCheckInput) async throws -> SocialAccount
     func disconnectSocialAccount(id: EntityID) async throws -> SocialAccount
+}
+
+/// Approval without the checks' acknowledgement (E7): what every caller sends unless the user
+/// confirmed "Yine de onaylansın mı?".
+extension StudioDataService {
+    public func approve(contentId: EntityID, hash: String) async throws -> Content {
+        try await approve(contentId: contentId, hash: hash, acknowledgeChecks: false)
+    }
 }
 
 /// P3 defaults: the sample and test backends publish nothing.
@@ -393,8 +410,8 @@ public struct RemoteStudioDataService: StudioDataService {
         try await client.updateContent(contentId, ContentUpdate(caption: caption))
     }
 
-    public func approve(contentId: EntityID, hash: String) async throws -> Content {
-        try await client.approveContent(contentId, hash: hash)
+    public func approve(contentId: EntityID, hash: String, acknowledgeChecks: Bool) async throws -> Content {
+        try await client.approveContent(contentId, hash: hash, acknowledgeChecks: acknowledgeChecks)
     }
 
     public func createSchedule(_ input: ScheduleCreate) async throws -> Schedule {

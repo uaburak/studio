@@ -19,13 +19,17 @@ export type EditLock =
   | { kind: "old-version"; shown: number; current: number | null; message: string }
   | { kind: "busy"; message: string };
 
-/** A job of this post that may make a new version (a revision, a render with edits). */
+/**
+ * A job of this post that may make a new version (a revision, a render with edits, the agent's
+ * canvas edit — from any conversation or the iPhone).
+ */
 export function versionJobRunning(jobs: readonly Job[], contentId: string): boolean {
   return jobs.some(
     (j) =>
       j.contentId === contentId &&
       !isTerminalJobStatus(j.status) &&
       (j.type === "content.generate" ||
+        j.type === "canvas.apply" ||
         (j.type === "content.render" &&
           Array.isArray((j.payload as { patches?: unknown } | null)?.patches))),
   );

@@ -1,7 +1,8 @@
 // "Kontroller" in the opened post (roadmap 13): the latest check run of the version shown —
-// problems first with their place (click: the slide and the layer on Düzenle), "Düzelt" where an
-// automatic fix exists, the passed checks folded — "Yeniden çalıştır", and the approve guard that
-// asks before approving a version whose checks did not pass.
+// problems first with their place (click: the slide and the layer on Düzenle; on the canvas
+// "Göster"), "Düzelt" where an automatic fix exists, the passed checks folded — "Yeniden
+// çalıştır", and the approve guard that waits for the approved version's checks and asks before
+// approving one whose checks did not pass (E7).
 //
 // Mounted into the post detail with one line each (the post detail itself is not changed).
 import type {
@@ -11,7 +12,7 @@ import type {
   ContentCheckResult,
   ContentCheckRun,
 } from "@studio/contract";
-import { type ReactNode, useCallback, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import { Button, cn, Spinner, TagPill } from "../../components/ui/controls.tsx";
 import { ConfirmDialog } from "../../components/ui/dialog.tsx";
 import {
@@ -24,12 +25,13 @@ import {
   IconSparkles,
   IconWarning,
 } from "../../components/ui/icons.tsx";
-import { describeError } from "../../lib/api.ts";
+import { describeError, useApi } from "../../lib/api.ts";
 import { formatAgo } from "../../lib/format.ts";
+import { useJobsSnapshot } from "../../state/studio.tsx";
 import { usePostsStore } from "../posts/store.ts";
+import { type ApprovalGate, awaitApprovalGate, type GateOptions } from "./approval-gate.ts";
 import { useCheckActions, useCheckJobs, useCheckRun } from "./checks-data.ts";
 import {
-  approvalWarning,
   checkLabel,
   fixableChecks,
   fromVersion,
@@ -72,6 +74,15 @@ export interface ChecksListProps {
   onRun?(): void;
   onFix?(checks: CheckId[]): void;
   onLocate?(ref: CheckRef): void;
+  /** The run button's label ("Yeniden çalıştır"; the canvas: "Yeniden kontrol et"). */
+  runLabel?: string;
+  /** "Göster" on each problem with a place (the canvas: selects and zooms to its layer). */
+  onShow?(ref: CheckRef): void;
+  /**
+   * Where a problem without an automatic fix is fixed by hand ("Tuvalde düzelt",
+   * "Açıklamada düzelt"), or null.
+   */
+  manualFix?(result: ContentCheckResult): { label: string; run(): void } | null;
 }
 
 /** The list itself (also in the component gallery). */
@@ -85,6 +96,9 @@ export function ChecksList({
   onRun,
   onFix,
   onLocate,
+  runLabel,
+  onShow,
+  manualFix,
 }: ChecksListProps) {
   const [showRest, setShowRest] = useState(false);
   const view = run ? listView(run) : null;
@@ -108,7 +122,7 @@ export function ChecksList({
               icon={<IconRefresh size={12} strokeWidth={2} />}
               onClick={onRun}
             >
-              {run ? "Yeniden çalıştır" : "Kontrolleri çalıştır"}
+              {run ? (runLabel ?? "Yeniden çalıştır") : "Kontrolleri çalıştır"}
             </Button>
           )
         )}
@@ -154,6 +168,8 @@ export function ChecksList({
                 key={`${r.checkId}-${i}`}
                 result={r}
                 onLocate={onLocate}
+                onShow={onShow}
+                manualFix={manualFix?.(r) ?? null}
                 fix={
                   r.fixable && (r.status === "fail" || r.status === "warn") && onFix
                     ? {
@@ -200,15 +216,21 @@ function ResultRow({
   compact = false,
   fix = null,
   onLocate,
+  onShow,
+  manualFix = null,
 }: {
   result: ContentCheckResult;
   compact?: boolean;
   fix?: { disabledReason: string | null; onFix(): void } | null;
   onLocate?: ((ref: CheckRef) => void) | undefined;
+  onShow?: ((ref: CheckRef) => void) | undefined;
+  manualFix?: { label: string; run(): void } | null;
 }) {
   const place = placeLabel(result);
   const ref = result.refs.find((r) => r.slide !== null);
-  const locate = ref && onLocate ? () => onLocate(ref) : null;
+  // With "Göster" the row itself is not a button.
+  const locate = ref && onLocate && !onShow ? () => onLocate(ref) : null;
+  const show = ref && onShow && !compact ? () => onShow(ref) : null;
   const body = (
     <>
       <span className="pt-0.5">
@@ -258,13 +280,22 @@ function ResultRow({
         <div className="flex min-w-0 flex-1 items-start gap-2.5">{body}</div>
       )}
       {!compact && result.status !== "pass" && result.status !== "skipped" && (
-        <span className="flex shrink-0 items-center gap-1.5 pt-0.5">
+        <span className="flex shrink-0 flex-wrap items-center justify-end gap-1.5 pt-0.5">
+          {show && (
+            <Button size="sm" variant="ghost" onClick={show}>
+              Göster
+            </Button>
+          )}
           {fix ? (
             <span title={fix.disabledReason ?? "Otomatik düzelt (yeni sürüm)"}>
               <Button size="sm" disabled={!!fix.disabledReason} onClick={fix.onFix}>
                 Düzelt
               </Button>
             </span>
+          ) : manualFix && result.status !== "fixed" ? (
+            <Button size="sm" variant="secondary" onClick={manualFix.run}>
+              {manualFix.label}
+            </Button>
           ) : (
             <TagPill tone={STATUS_TONE[result.status]}>{STATUS_LABEL[result.status]}</TagPill>
           )}
@@ -331,54 +362,124 @@ export function ChecksPanel({ snapshot, editor }: ChecksHost) {
   );
 }
 
-/**
- * Approval with a question first when the current version's checks did not pass ("Yine de
- * onayla" approves anyway). `guard(approve)` runs `approve` right away when nothing blocks.
- */
-export function useApproveGuard(snapshot: ChecksHost["snapshot"]): {
-  guard(approve: () => void): void;
+/** What `useApproveGuard` gives the post: approving through the checks (E7). */
+export interface ApproveGuard {
+  /**
+   * Approves `version` (default: the current one) through its checks: waits for its run
+   * ("Kontroller çalışıyor…"), approves at once when nothing holds it back, otherwise asks — and
+   * calls `approve(true)` (send `acknowledgeChecks`) only after the user confirmed. A second call
+   * while one waits is ignored (⌘↩ twice).
+   */
+  guard(
+    approve: (acknowledgeChecks: boolean) => void,
+    version?: { version: number; id?: string | null } | null,
+  ): Promise<void>;
+  /** The checks of the version are being waited for. */
+  waiting: boolean;
   dialog: ReactNode;
-} {
-  const { content } = snapshot;
-  const run = useCheckRun(content, snapshot.current?.version ?? null);
-  const [pending, setPending] = useState<(() => void) | null>(null);
-  const warning = approvalWarning(run.data);
-  const guard = useCallback(
-    (approve: () => void) => {
-      if (!warning) approve();
-      else setPending(() => approve);
+}
+
+/**
+ * Approval through the checks of the exact version being approved, read fresh when it is asked
+ * for (never a cached run that may still be loading: E7). Nothing holds it back → approve at
+ * once; failures (by the brand's current settings) → the list and "Yine de onayla"; no finished
+ * run in time → "Kontroller bitmedi" and "Yine de onayla". The API refuses the same cases unless
+ * the approval acknowledges the checks, which only the confirmations here send.
+ */
+export function useApproveGuard(
+  snapshot: ChecksHost["snapshot"],
+  options: Omit<GateOptions, "signal" | "workerOnline" | "onWait"> = {},
+): ApproveGuard {
+  const api = useApi();
+  const { presence } = useJobsSnapshot();
+  const latest = useRef({ snapshot, presence, options });
+  latest.current = { snapshot, presence, options };
+  const [pending, setPending] = useState<{
+    gate: Exclude<ApprovalGate, { kind: "clear" }>;
+    approve: (acknowledgeChecks: boolean) => void;
+  } | null>(null);
+  const [waiting, setWaiting] = useState(false);
+  const busy = useRef(false);
+  const abort = useRef<AbortController | null>(null);
+  useEffect(() => () => abort.current?.abort(), []);
+
+  const guard = useCallback<ApproveGuard["guard"]>(
+    async (approve, version) => {
+      if (busy.current) return;
+      const { snapshot: s, options: o } = latest.current;
+      const target = version ?? s.current;
+      if (!target) {
+        // No version: the approve call itself says why.
+        approve(false);
+        return;
+      }
+      busy.current = true;
+      setWaiting(true);
+      const controller = new AbortController();
+      abort.current = controller;
+      try {
+        const gate = await awaitApprovalGate(
+          api,
+          { id: s.content.id, brandId: s.content.brandId },
+          target,
+          {
+            ...o,
+            signal: controller.signal,
+            workerOnline: () => latest.current.presence?.online ?? true,
+          },
+        );
+        if (controller.signal.aborted) return;
+        if (gate.kind === "clear") approve(false);
+        else setPending({ gate, approve });
+      } finally {
+        busy.current = false;
+        if (abort.current === controller) abort.current = null;
+        setWaiting(false);
+      }
     },
-    [warning],
+    [api],
   );
+
+  const gate = pending?.gate ?? null;
+  const title =
+    gate?.kind === "problems"
+      ? gate.warning.title
+      : gate
+        ? `v${gate.version} kontrolleri bitmedi`
+        : "";
   // Keys typed in the dialog stay there (the post detail's shortcuts listen on its root).
   const dialog = (
     // biome-ignore lint/a11y/noStaticElementInteractions: only stops key events bubbling out of the dialog
     <div className="contents" onKeyDown={(e) => e.stopPropagation()}>
       <ConfirmDialog
-        open={pending !== null && warning !== null}
-        title={warning?.title ?? ""}
+        open={pending !== null}
+        title={title}
         message={
           <div className="flex flex-col gap-2">
-            <ul className="flex flex-col gap-1">
-              {warning?.lines.map((line) => (
-                <li key={line} className="flex gap-1.5">
-                  <IconCircleX size={14} className="mt-0.5 shrink-0 text-danger" />
-                  <span>{line}</span>
-                </li>
-              ))}
-            </ul>
+            {gate?.kind === "problems" ? (
+              <ul className="flex flex-col gap-1">
+                {gate.warning.lines.map((line) => (
+                  <li key={line} className="flex gap-1.5">
+                    <IconCircleX size={14} className="mt-0.5 shrink-0 text-danger" />
+                    <span>{line}</span>
+                  </li>
+                ))}
+              </ul>
+            ) : gate ? (
+              <span>{gate.reason} Sonuçları görmeden onaylamış olursun.</span>
+            ) : null}
             <span>Yine de onaylamak istiyor musun?</span>
           </div>
         }
         confirmLabel="Yine de onayla"
         onClose={() => setPending(null)}
         onConfirm={() => {
-          const approve = pending;
+          const approve = pending?.approve;
           setPending(null);
-          approve?.();
+          approve?.(true);
         }}
       />
     </div>
   );
-  return { guard, dialog };
+  return { guard, waiting, dialog };
 }

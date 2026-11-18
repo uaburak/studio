@@ -227,6 +227,23 @@ export function canvasLayers(facts: CanvasFacts): CanvasLayer[] {
       continue;
     }
     if (inSlot(n)) continue;
+    // A logo imported as its SVG's vectors (no picture): the brand's logo by its file.
+    if (n.mark?.type === "logo" && n.mark.vector && !topImage(n.fills)) {
+      const src = n.mark.src && isVirtualAssetUrl(n.mark.src) ? n.mark.src : null;
+      if (src?.startsWith(LOGO_PREFIX)) {
+        out.push({
+          id: idFor(n, "logo"),
+          node: n,
+          type: "logo",
+          role: roleOf(n),
+          rect: round(n.bounds),
+          src,
+          image: null,
+          slot: null,
+        });
+        continue;
+      }
+    }
     const image = topImage(n.fills);
     if (!image || n.type === "group") continue;
     const unchanged = sameImage(n.mark, image);

@@ -32,6 +32,9 @@ export type JobId = z.infer<typeof JobId>;
  * - `brand.skill_draft` drafts a brand skill with AI (`BrandSkillDraftPayload`).
  * - `content.check` runs the generation checks on a version and fixes the fixable findings on
  *   request (`ContentCheckPayload`, roadmap 13).
+ * - `canvas.read` / `canvas.apply` read and edit a canvas version's Wecra document (S1) with
+ *   Wecra's own design operations. They run in the Mac app's hidden canvas runner (Wecra's
+ *   engine, in an Electron page), not in the worker: `CANVAS_JOB_TYPES`.
  */
 export const JobType = z
   .enum([
@@ -44,6 +47,8 @@ export const JobType = z
     "chat.turn",
     "brand.skill_draft",
     "content.check",
+    "canvas.read",
+    "canvas.apply",
   ])
   .meta({ id: "JobType" });
 export type JobType = z.infer<typeof JobType>;
@@ -64,6 +69,8 @@ export const JOB_TYPE_REQUIREMENTS = {
   "chat.turn": { brand: false, content: false },
   "brand.skill_draft": { brand: true, content: false },
   "content.check": { brand: true, content: true },
+  "canvas.read": { brand: true, content: true },
+  "canvas.apply": { brand: true, content: true },
 } as const satisfies Record<JobType, { brand: boolean; content: boolean }>;
 
 export const MAX_JOB_PAYLOAD_BYTES = 100_000;
@@ -261,6 +268,115 @@ export const SchedulePublishPayload = z
   .meta({ id: "SchedulePublishPayload" });
 export type SchedulePublishPayload = z.infer<typeof SchedulePublishPayload>;
 
+// --- canvas.read / canvas.apply (S1) ------------------------------------------------------
+//
+// A version saved from the post editor's canvas has a Wecra document (`editorDocument`): that
+// document is the design. The chat agent reads it (`canvas.read`, or the facts its slide HTML
+// carries) and edits it with Wecra's own design operations (`canvas.apply`): each operation is
+// one of Wecra's MCP write tools with its arguments, as Wecra's agents call them (Figma's Plugin
+// API vocabulary: `update_nodes {updates: [{nodeId, characters, fills, fontSize …}]}` …). The
+// Mac app's canvas runner (a hidden Electron page with Wecra's engine) loads the version's
+// document, applies them, exports the slides and stores a new `ai_edit` version whose document is
+// the edited one — the hand edits made on the canvas stay.
+
+/** Job types the Mac app's canvas runner executes (Wecra's engine), never the worker. */
+export const CANVAS_JOB_TYPES = [
+  "canvas.read",
+  "canvas.apply",
+] as const satisfies readonly JobType[];
+
+/**
+ * A connected worker that only runs canvas jobs: the Mac app's canvas runner. It is not "the Mac
+ * worker" (presence `online`, Claude / Gemini commands): only the jobs it announces go to it.
+ */
+export function isCanvasRunner(capabilities: readonly string[]): boolean {
+  return (
+    capabilities.length > 0 &&
+    capabilities.every((c) => (CANVAS_JOB_TYPES as readonly string[]).includes(c))
+  );
+}
+
+/** Wecra's MCP write tools a `canvas.apply` operation may name. */
+export const CANVAS_EDIT_TOOLS = [
+  "update_nodes",
+  "create_nodes",
+  "set_properties",
+  "delete_nodes",
+  "duplicate_nodes",
+  "reparent_nodes",
+  "set_auto_layout",
+  "place_image",
+] as const;
+export type CanvasEditTool = (typeof CANVAS_EDIT_TOOLS)[number];
+
+export const MAX_CANVAS_OPERATIONS = 60;
+
+export const CanvasOperation = z
+  .object({
+    tool: z.enum(CANVAS_EDIT_TOOLS),
+    /**
+     * The tool's arguments as Wecra's MCP server takes them. `place_image` takes `assetId` (a
+     * picture of the brand's media) instead of a file path or the bytes.
+     */
+    args: z.record(z.string(), z.unknown()).default({}),
+  })
+  .meta({ id: "CanvasOperation" });
+export type CanvasOperation = z.infer<typeof CanvasOperation>;
+
+export const CanvasApplyPayload = z
+  .object({
+    /**
+     * The version the operations were written against. It must still be the post's current
+     * version, else the job fails without a change (the post was edited meanwhile: read again).
+     */
+    version: z.number().int().min(1),
+    operations: z.array(CanvasOperation).min(1).max(MAX_CANVAS_OPERATIONS),
+    /** The new version's note (default "AI tuvalde düzenledi."). */
+    note: z.string().trim().max(500).optional(),
+    /** The conversation that asked for it. */
+    conversationId: EntityId.optional(),
+  })
+  .meta({ id: "CanvasApplyPayload" });
+export type CanvasApplyPayload = z.infer<typeof CanvasApplyPayload>;
+export type CanvasApplyPayloadInput = z.input<typeof CanvasApplyPayload>;
+
+/** What one operation did (Wecra's own read back: what was applied, refused, did not take). */
+export const CanvasOperationResult = z
+  .object({
+    tool: z.enum(CANVAS_EDIT_TOOLS),
+    ok: z.boolean(),
+    /** Wecra's summary line ("update_nodes: everything applied." …), or the error. */
+    summary: z.string().max(2_000),
+    /** Layers it changed or made. */
+    touched: z.array(z.string()).max(200).default([]),
+  })
+  .meta({ id: "CanvasOperationResult" });
+export type CanvasOperationResult = z.infer<typeof CanvasOperationResult>;
+
+export const CanvasApplyOutput = z
+  .object({
+    contentId: EntityId,
+    /** The new version (the edited document, its renders). */
+    version: z.number().int().min(1),
+    baseVersion: z.number().int().min(1),
+    results: z.array(CanvasOperationResult).max(MAX_CANVAS_OPERATIONS),
+    slides: z.number().int().min(1),
+    /** The `content.check` job over the new version (null: it could not be queued). */
+    checkJobId: JobId.nullable(),
+  })
+  .meta({ id: "CanvasApplyOutput" });
+export type CanvasApplyOutput = z.infer<typeof CanvasApplyOutput>;
+
+export const CanvasReadPayload = z
+  .object({
+    /** Default: the post's current version. */
+    version: z.number().int().min(1).optional(),
+    /** Layers to read in full (Wecra's `get_design_context`: layout, effects, constraints …). */
+    nodeIds: z.array(z.string().min(1).max(64)).max(20).optional(),
+  })
+  .meta({ id: "CanvasReadPayload" });
+export type CanvasReadPayload = z.infer<typeof CanvasReadPayload>;
+
 /** Job types only the API itself creates; `POST /api/jobs` refuses them. */
 export const INTERNAL_JOB_TYPES = ["chat.turn"] as const satisfies readonly JobType[];
 
@@ -273,6 +389,8 @@ export const JOB_PAYLOAD_SCHEMAS: Partial<Record<JobType, z.ZodType>> = {
   "schedule.publish": SchedulePublishPayload,
   "brand.skill_draft": BrandSkillDraftPayload,
   "content.check": ContentCheckPayload,
+  "canvas.read": CanvasReadPayload,
+  "canvas.apply": CanvasApplyPayload,
 };
 
 // --- Live updates and worker presence (F1-6) --------------------------------

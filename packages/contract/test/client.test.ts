@@ -92,6 +92,18 @@ describe("api client: core resources", () => {
     expect(err).toMatchObject({ status: 409, code: "hash_mismatch" });
   });
 
+  it("approves with the hash alone, or acknowledging the checks (E7)", async () => {
+    const hash = "a".repeat(64);
+    const { calls, fetchImpl } = recordingFetch({});
+    const client = createApiClient({ fetch: fetchImpl });
+    await client.contents.approve("c1", hash).catch(() => {});
+    await client.contents.approve("c1", { hash, acknowledgeChecks: true }).catch(() => {});
+    expect(calls.map((c) => [c.url, c.init?.method, JSON.parse(String(c.init?.body))])).toEqual([
+      ["/api/contents/c1/approve", "POST", { hash }],
+      ["/api/contents/c1/approve", "POST", { hash, acknowledgeChecks: true }],
+    ]);
+  });
+
   it("handles 204 deletes and multipart uploads", async () => {
     const del = recordingFetch(null, 204);
     await expect(

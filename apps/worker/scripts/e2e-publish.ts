@@ -221,7 +221,8 @@ const version = await api.contents.versions.create(content.id, {
   ],
   renderedAssetIds: [cover.id],
 });
-await api.contents.approve(content.id, version.contentHash);
+// No check run for a hand-made version: approve past the checks gate (E7).
+await api.contents.approve(content.id, { hash: version.contentHash, acknowledgeChecks: true });
 const preflight = await api.schedules.preflight({
   contentId: content.id,
   socialAccountIds: [account.id],
@@ -256,7 +257,7 @@ const v2 = await api.contents.versions.create(content2.id, {
   origin: "generated",
   slides: [{ html: "<html><body>2</body></html>", width: 1080, height: 1350 }],
 });
-await api.contents.approve(content2.id, v2.contentHash);
+await api.contents.approve(content2.id, { hash: v2.contentHash, acknowledgeChecks: true });
 const s2 = await api.schedules.create({
   contentId: content2.id,
   socialAccountId: li.id,

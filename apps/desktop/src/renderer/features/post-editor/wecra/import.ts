@@ -11,11 +11,17 @@
 //   [data-layer]    → its layer, named after the design's layer id (a text too, when it is
 //                     its layer's only text: "headline", "cta" — the names the AI uses), its
 //                     type, role, slot and picture file kept on it as plugin data (markLayers)
-//   <img>, url()    → an image fill (object-fit cover → FILL, contain → FIT, fill → CROP)
+//   <img>, url()    → an image paint placed as the browser drew it (object-fit and
+//                     object-position, background-size and -position: Fill, Fit or a Crop
+//                     window); an SVG <img> → vector layers (a logo's marked `vector`: the
+//                     checks still know it as the brand's logo by its file)
 //   inline <svg>    → vector layers (Wecra's SVG import)
 //
-// Not carried over (CSS the engine has no model for): text-wrap: balance (lines may break
-// elsewhere), object-position (pictures are centred), filters on pictures, blend modes.
+// Between Wecra's converter and create_nodes, `fidelity.ts` puts back what the converter leaves
+// out (gradients at any angle, radial and conic; transforms; z-index; text shadows; filters,
+// blend modes, clip paths; balanced lines) from what `capture.ts` read next to the walker, and
+// lists what Wecra's document can't hold — the import report (`CapturedSlide.report`), which the
+// canvas shows when the post is first opened.
 
 import {
   foldText,
@@ -29,11 +35,19 @@ import type { CanvasMark } from "@studio/design-kit/canvas";
 import { runTool, type ToolEnv } from "@/editor/agents/mcpTools";
 import type { EditorController } from "@/editor/controller";
 import { pageFrames } from "@/editor/exporting";
+import { svgToMessage } from "@/editor/model/svgImport";
 import { fontOf } from "../../../vendor/wecra-editor/src/main/agents/reach/webSpec";
 import { installWalker } from "../../../vendor/wecra-editor/studio/walker.mjs";
 import { slideDocument } from "../html/slide-document.ts";
 import type { RenderKit } from "../model/brand-kit.ts";
+import {
+  type CaptureResult,
+  captureInWindow,
+  type ElementExtras,
+  type InstallWalker,
+} from "./capture.ts";
 import { LAYER_KEY, STUDIO_PLUGIN } from "./facts.ts";
+import { enrichSlide, type ImportChange, PICTURE_KEY, type PicturePlan } from "./fidelity.ts";
 
 export interface SlideSource {
   html: string;
@@ -57,6 +71,10 @@ export interface CapturedSlide {
   missing: string[];
   /** The slide's contract layers (kept on their Wecra layers: slots, logos, roles survive). */
   marks?: LayerMark[];
+  /** Its pictures (`{ type: "IMAGE", __picture: k }` in the spec's fills), with their bytes. */
+  pictures?: PicturePlan[];
+  /** What the import changed or could not carry over (fidelity.ts). */
+  report?: ImportChange[];
 }
 
 /**
@@ -163,30 +181,59 @@ export function markLayers(ed: EditorController, frame: string, marks: readonly 
   });
 }
 
-const SCALE: Record<string, "FILL" | "FIT" | "CROP"> = {
-  cover: "FILL",
-  contain: "FIT",
-  "scale-down": "FIT",
-  fill: "CROP",
-  none: "FILL",
-};
-
-function base64(bytes: Uint8Array): string {
-  let out = "";
-  for (let i = 0; i < bytes.length; i += 0x8000)
-    out += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
-  return btoa(out);
+/** An SVG file's text when `bytes` are one (by type or by its first bytes), else null. */
+function svgText(bytes: Uint8Array, type: string): string | null {
+  const start = new TextDecoder().decode(bytes.subarray(0, 256));
+  if (!type.includes("svg") && !/^\s*(<\?xml|<!--|<svg)/.test(start)) return null;
+  const text = new TextDecoder().decode(bytes);
+  return /<svg[\s>]/.test(text) ? text : null;
 }
 
-/** An SVG file drawn into a PNG at twice its shown size (the engine's images are bitmaps). */
-async function rasterizeSvg(bytes: Uint8Array, width: number, height: number): Promise<Uint8Array> {
+/** preserveAspectRatio for an SVG picture's object-fit. */
+const ASPECT: Record<string, string> = {
+  cover: "xMidYMid slice",
+  contain: "xMidYMid meet",
+  "scale-down": "xMidYMid meet",
+  fill: "none",
+  none: "xMidYMid meet",
+};
+
+/**
+ * An SVG picture as vector markup the size of its box (its viewBox kept, fitted as object-fit
+ * says), or null when Wecra's SVG import draws nothing from it.
+ */
+export function sizedSvg(text: string, box: { w: number; h: number }, fit?: string): string | null {
+  const doc = new DOMParser().parseFromString(text, "image/svg+xml");
+  const svg = doc.documentElement;
+  if (svg?.nodeName.toLowerCase() !== "svg" || doc.querySelector("parsererror")) return null;
+  const w = Number.parseFloat(svg.getAttribute("width") ?? "");
+  const h = Number.parseFloat(svg.getAttribute("height") ?? "");
+  if (!svg.getAttribute("viewBox") && w > 0 && h > 0) svg.setAttribute("viewBox", `0 0 ${w} ${h}`);
+  svg.setAttribute("width", String(Math.round(box.w * 100) / 100));
+  svg.setAttribute("height", String(Math.round(box.h * 100) / 100));
+  svg.setAttribute("preserveAspectRatio", ASPECT[fit ?? "contain"] ?? "xMidYMid meet");
+  const markup = new XMLSerializer().serializeToString(svg);
+  try {
+    return svgToMessage(markup).message?.nodeChanges.length ? markup : null;
+  } catch {
+    return null;
+  }
+}
+
+/** An SVG drawn into a PNG at `scale` × its shown size (a logo: the checks know it as a picture). */
+async function rasterizeSvg(
+  bytes: Uint8Array,
+  width: number,
+  height: number,
+  scale: number,
+): Promise<Uint8Array> {
   const url = URL.createObjectURL(new Blob([bytes as BlobPart], { type: "image/svg+xml" }));
   try {
     const img = new Image();
     img.src = url;
     await img.decode();
-    const w = Math.max(1, Math.round(width * 2));
-    const h = Math.max(1, Math.round(height * 2));
+    const w = Math.max(1, Math.round(width * scale));
+    const h = Math.max(1, Math.round(height * scale));
     const canvas = document.createElement("canvas");
     canvas.width = w;
     canvas.height = h;
@@ -199,41 +246,42 @@ async function rasterizeSvg(bytes: Uint8Array, width: number, height: number): P
   }
 }
 
-/** A picture's bytes for create_nodes (`image: { data, scaleMode }`), or null. */
-async function pictureArg(
-  url: string,
-  box: { w: number; h: number },
-  fit: string | undefined,
-  onPicture?: PictureListener,
-): Promise<{ data: string; scaleMode: string } | null> {
+/** An SVG drawn as a bitmap (a logo's that Wecra's SVG import can't take: this many times its
+ * shown size, crisp when the canvas zooms in; an SVG background twice). */
+const LOGO_SVG_SCALE = 4;
+
+/** Reads one picture's bytes into it (an SVG: vectors, or a logo's 4× bitmap); false: unreadable. */
+async function readPicture(
+  p: PicturePlan,
+  onPicture: PictureListener | undefined,
+  fetchFile: (url: string) => Promise<Response>,
+): Promise<boolean> {
   try {
-    const res = await fetch(url);
-    if (!res.ok) return null;
+    const res = await fetchFile(p.url);
+    if (!res.ok) return false;
     let bytes: Uint8Array = new Uint8Array(await res.arrayBuffer());
-    const type = res.headers.get("content-type") ?? "";
-    let drawn = false;
-    if (
-      type.includes("svg") ||
-      /^\s*(<\?xml|<svg)/.test(new TextDecoder().decode(bytes.subarray(0, 64)))
-    ) {
-      bytes = await rasterizeSvg(bytes, box.w, box.h);
-      drawn = true;
-    }
+    const svg = svgText(bytes, res.headers.get("content-type") ?? "");
+    if (svg) {
+      // An SVG picture (a logo too) becomes its vectors; a background, or an SVG Wecra's SVG
+      // import draws nothing from, a bitmap.
+      if (p.kind === "img") {
+        const markup = sizedSvg(svg, p.box, p.fit);
+        if (markup) {
+          p.svg = markup;
+          return true;
+        }
+      }
+      bytes = await rasterizeSvg(bytes, p.box.w, p.box.h, p.type === "logo" ? LOGO_SVG_SCALE : 2);
+    } else onPicture?.(p.url, bytes);
     // A file the browser can't decode would stop Wecra's create_nodes: left out here instead.
     if (typeof createImageBitmap === "function")
       (await createImageBitmap(new Blob([bytes as BlobPart]))).close();
-    // The file as it is (not an SVG drawn here): the session knows which asset it is.
-    if (!drawn) onPicture?.(url, bytes);
-    return { data: base64(bytes), scaleMode: SCALE[fit ?? "cover"] ?? "FILL" };
+    p.bytes = bytes;
+    return true;
   } catch {
-    return null;
+    return false;
   }
 }
-
-const cssUrl = (bgi: string | null | undefined): string | null =>
-  /url\(\s*["']?([^"')]+)["']?\s*\)/.exec(bgi ?? "")?.[1] ?? null;
-
-const hasText = (n: WNode): boolean => n.kind === "text" || n.children.some(hasText);
 
 function load(frame: HTMLIFrameElement): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -249,39 +297,34 @@ function load(frame: HTMLIFrameElement): Promise<void> {
   });
 }
 
-/** A picture of a slide: the spec that gets it, where its bytes are, how it fits its box. */
-export interface SlidePicture {
-  spec: Spec;
-  url: string;
-  box: { w: number; h: number };
-  fit: string | undefined;
-}
+/** A picture of a slide: its URL, where it goes and how it fills its layer (fidelity.ts). */
+export type SlidePicture = PicturePlan;
 
 /**
  * A captured slide (Wecra's walker tree) as one create_nodes spec, by Wecra's converter: the
  * frame of the slide with its layers, named after the design's layer ids (`layerOf`: a captured
- * element's `data-layer`); its pictures still to be read (`pictures`).
+ * element's `data-layer`), with what the converter leaves out put back from `extras`
+ * (capture.ts; none: what the walker's tree alone says) — `report` lists what couldn't be; its
+ * pictures still to be read (`pictures`).
  */
 export function slideSpec(
   tree: WNode,
   layerOf: (elementIndex: number) => string | null,
   index: number,
-): { spec: Spec; fonts: string[]; pictures: SlidePicture[] } {
+  extras: readonly ElementExtras[] = [],
+): { spec: Spec; fonts: string[]; pictures: PicturePlan[]; report: ImportChange[] } {
   const fonts = new Set<string>();
+  const font = (css: string | undefined) => {
+    const family = fontOf(css);
+    fonts.add(family);
+    return family;
+  };
   const node = foldText(prep(tree));
-  const spec = toSpec(
-    node,
-    { parentAL: "NONE", px: node.x, py: node.y, depth: 0 },
-    {
-      font: (css) => {
-        const family = fontOf(css);
-        fonts.add(family);
-        return family;
-      },
-    },
-  );
+  const spec = toSpec(node, { parentAL: "NONE", px: node.x, py: node.y, depth: 0 }, { font });
   if (!spec) throw new Error(`${slideName(index)} boş.`);
-  const pictures: SlidePicture[] = [];
+  const pictures: PicturePlan[] = [];
+  const report: ImportChange[] = [];
+  enrichSlide(spec, { slide: index, extras, pictures, report, layerOf }, (css) => font(css));
   // A text named after its layer when it is that layer's only text (else after its text, as Wecra does).
   const textsOf = new Map<number, number>();
   const count = (s: Spec) => {
@@ -296,36 +339,28 @@ export function slideSpec(
     if (src) {
       const layer = layerOf((src.i ?? src.ci ?? -1) as number);
       if (layer && (src.kind !== "text" || textsOf.get(src.ci as number) === 1)) s.name = layer;
-      if (src.kind === "svg" && typeof src.svg === "string") {
-        // Inline SVG: vector layers (create_nodes' `svg`), at the same place and size.
-        s.svg = src.svg;
-      } else if (src.kind === "img" && typeof src.src === "string") {
-        pictures.push({ spec: s, url: src.src, box: src, fit: src.fit as string | undefined });
-      } else if (src.kind === "box" && !hasText(src)) {
-        const url = cssUrl(src.bgi);
-        if (url) pictures.push({ spec: s, url, box: src, fit: "cover" });
-      }
+      // Inline SVG: vector layers (create_nodes' `svg`), at the same place and size.
+      if (src.kind === "svg" && typeof src.svg === "string") s.svg = src.svg;
     }
     for (const c of s.children ?? []) visit(c);
   };
   visit(spec);
-  return { spec, fonts: [...fonts], pictures };
+  return { spec, fonts: [...fonts], pictures, report };
 }
 
 /** A picture's bytes as read for the import (its URL, the file's bytes). */
 export type PictureListener = (url: string, bytes: Uint8Array) => void;
 
-/** Reads the pictures' bytes into their specs; returns the ones that could not be read. */
+/** Reads the pictures' bytes into them; returns the ones that could not be read. */
 export async function loadPictures(
-  pictures: readonly SlidePicture[],
+  pictures: readonly PicturePlan[],
   onPicture?: PictureListener,
+  fetchFile: (url: string) => Promise<Response> = (url) => fetch(url),
 ): Promise<string[]> {
   const missing: string[] = [];
   await Promise.all(
     pictures.map(async (p) => {
-      const image = await pictureArg(p.url, p.box, p.fit, onPicture);
-      if (image) p.spec.image = image;
-      else missing.push(p.url);
+      if (!(await readPicture(p, onPicture, fetchFile))) missing.push(p.url);
     }),
   );
   return missing;
@@ -347,6 +382,34 @@ export function finishSlide(
     clipsContent: true,
   });
   return clean;
+}
+
+/** A slide as `captureInWindow` read it → its spec, fonts, pictures and import report. */
+export function slideFromCapture(
+  captured: CaptureResult,
+  index: number,
+): { spec: Spec; fonts: string[]; pictures: PicturePlan[]; report: ImportChange[] } {
+  const { tree, extras, bodyBackground } = captured;
+  if (!tree) throw new Error(`${slideName(index)} boş.`);
+  // The artboard draws the slide's background even when the design leaves it to brand.css.
+  if (tree.c && !tree.c.bg) {
+    const bg = bodyBackground;
+    tree.c.bg = /^rgba?\(/.test(bg) && !/,\s*0\)$/.test(bg) ? bg : "#ffffff";
+  }
+  return slideSpec(tree, (i) => extras[i]?.own ?? null, index, extras);
+}
+
+/**
+ * Reads a slide in a window (the hidden frame here; the fidelity test's Chromium page runs the
+ * same `captureInWindow`) with Wecra's walker and Studio's extras (capture.ts): its spec.
+ */
+export async function readSlide(
+  win: Window,
+  root: Element,
+  index: number,
+  install: InstallWalker = installWalker,
+): Promise<{ spec: Spec; fonts: string[]; pictures: PicturePlan[]; report: ImportChange[] }> {
+  return slideFromCapture(await captureInWindow(win, install, root), index);
 }
 
 /** Renders one slide in a hidden frame and reads it with Wecra's walker. */
@@ -372,25 +435,9 @@ export async function captureSlide(
     await doc.fonts.ready;
     await Promise.all(Array.from(doc.images, (img) => img.decode().catch(() => {})));
     await new Promise((r) => requestAnimationFrame(() => r(null)));
-    const uikit = installWalker(win) as {
-      capture(el: Element, viewportClip: boolean): WNode | null;
-      els: Element[];
-    };
     const root = doc.querySelector("[data-artboard]") ?? doc.body;
-    const tree = uikit.capture(root, false);
-    if (!tree) throw new Error(`${slideName(index)} boş.`);
-    const els = uikit.els;
-    // The artboard draws the slide's background even when the design leaves it to brand.css.
-    if (tree.c && !tree.c.bg) {
-      const bg = win.getComputedStyle(doc.body).backgroundColor;
-      tree.c.bg = /^rgba?\(/.test(bg) && !/,\s*0\)$/.test(bg) ? bg : "#ffffff";
-    }
     const size = { width: slide.width, height: slide.height };
-    const { spec, fonts, pictures } = slideSpec(
-      tree,
-      (i) => els[i]?.getAttribute?.("data-layer") ?? null,
-      index,
-    );
+    const { spec, fonts, pictures, report } = await readSlide(win, root, index);
     for (const p of pictures) p.url = new URL(p.url, doc.baseURI).href;
     const missing = await loadPictures(pictures, onPicture);
     return {
@@ -399,18 +446,20 @@ export async function captureSlide(
       spec: finishSlide(spec, index, size),
       fonts,
       missing,
-      marks: layerMarks(slide.html),
+      marks: vectorLogos(layerMarks(slide.html), pictures),
+      pictures,
+      report,
     };
   } finally {
     frame.remove();
   }
 }
 
-const hasImage = (s: Spec): boolean => !!s.image || (s.children ?? []).some(hasImage);
-const withoutImages = (s: Spec): Spec => {
-  const { image: _image, children, ...rest } = s;
-  return { ...rest, ...(children ? { children: children.map(withoutImages) } : {}) } as Spec;
-};
+/** Logos whose SVG became vectors, marked so (the checks still know them as the brand's logo). */
+export function vectorLogos(marks: LayerMark[], pictures: readonly PicturePlan[]): LayerMark[] {
+  const vectors = new Set(pictures.filter((p) => p.svg && p.type === "logo").map((p) => p.layer));
+  return marks.map((m) => (m.type === "logo" && vectors.has(m.layer) ? { ...m, vector: true } : m));
+}
 
 /** Every slide, in order (`onPicture`: each picture file read, for the save's dedupe). */
 export async function captureSlides(
@@ -423,15 +472,127 @@ export async function captureSlides(
   return out;
 }
 
+/** A picture's bytes in the document's images (Wecra's ImageManager by default). */
+export type ImportImage = (
+  bytes: Uint8Array,
+  name: string,
+) => Promise<{ hash: string; width: number; height: number } | null>;
+
+const sniffMime = (b: Uint8Array): string =>
+  b[0] === 0x89 && b[1] === 0x50
+    ? "image/png"
+    : b[0] === 0xff && b[1] === 0xd8
+      ? "image/jpeg"
+      : b[0] === 0x47 && b[1] === 0x49
+        ? "image/gif"
+        : b[0] === 0x52 && b[1] === 0x49
+          ? "image/webp"
+          : "application/octet-stream";
+
+function defaultImport(ed: EditorController): ImportImage {
+  return async (bytes, name) => {
+    const mime = sniffMime(bytes);
+    const file = new File([bytes as BlobPart], `${name}.${mime.split("/")[1] ?? "bin"}`, {
+      type: mime,
+    });
+    const [img] = await ed.images.import([file]);
+    return img ? { hash: img.hash, width: img.width, height: img.height } : null;
+  };
+}
+
+/**
+ * The slide's picture placeholders resolved: an image paint on the document's image (Fill / Fit /
+ * Crop with its window), a vector SVG in place of its layer, or left out (unreadable).
+ */
+async function resolvePictures(
+  spec: Spec,
+  pictures: readonly PicturePlan[],
+  importImage: ImportImage,
+  missing: string[],
+): Promise<void> {
+  const hashes = await Promise.all(
+    pictures.map(async (p) => {
+      if (!p.bytes) return null;
+      try {
+        return await importImage(
+          p.bytes,
+          (p.url.split("/").pop() ?? "görsel").replace(/\.[^.]+$/, ""),
+        );
+      } catch {
+        return null;
+      }
+    }),
+  );
+  const visit = (s: Spec) => {
+    if (Array.isArray(s.fills)) {
+      const fills: unknown[] = [];
+      for (const f of s.fills as unknown[]) {
+        const k =
+          f && typeof f === "object" ? (f as Record<string, unknown>)[PICTURE_KEY] : undefined;
+        if (typeof k !== "number") {
+          fills.push(f);
+          continue;
+        }
+        const p = pictures[k];
+        const img = hashes[k];
+        if (p?.svg && !(s.children ?? []).length && (s.fills as unknown[]).length === 1) {
+          // The layer becomes the SVG's vectors (a frame its size), where it was.
+          s.svg = p.svg;
+          for (const key of ["fills", "cornerRadius", "type"]) delete s[key];
+          return;
+        }
+        if (!p || !img) {
+          if (p && !p.svg && !missing.includes(p.url)) missing.push(p.url);
+          continue;
+        }
+        fills.push({
+          type: "IMAGE",
+          imageRef: img.hash,
+          scaleMode: p.scaleMode,
+          ...(p.transform && p.scaleMode === "CROP" ? { transform: p.transform } : {}),
+          ...(p.blendMode ? { blendMode: p.blendMode } : {}),
+        });
+      }
+      s.fills = fills;
+    }
+    for (const c of s.children ?? []) visit(c);
+  };
+  visit(spec);
+}
+
+const hasImage = (s: Spec): boolean =>
+  (Array.isArray(s.fills) &&
+    (s.fills as unknown[]).some(
+      (f) => !!f && typeof f === "object" && (f as { type?: string }).type === "IMAGE",
+    )) ||
+  (s.children ?? []).some(hasImage);
+const withoutImages = (s: Spec): Spec => {
+  const { children, ...rest } = s;
+  const fills = Array.isArray(rest.fills)
+    ? (rest.fills as unknown[]).filter(
+        (f) => !(f && typeof f === "object" && (f as { type?: string }).type === "IMAGE"),
+      )
+    : rest.fills;
+  return {
+    ...rest,
+    ...(fills !== undefined ? { fills } : {}),
+    ...(children ? { children: children.map(withoutImages) } : {}),
+  } as Spec;
+};
+
 /**
  * Makes the captured slides' layers on the editor's page with Wecra's create_nodes — outside the
- * undo history (the import is where the document starts, not an edit). Returns the slide frames
- * in reading order.
+ * undo history (the import is where the document starts, not an edit). Their pictures go into
+ * the document's images first (`importImage`: Wecra's own import by default). Returns the slide
+ * frames in reading order.
  */
 export async function importSlides(
   ed: EditorController,
   captured: readonly CapturedSlide[],
+  options: { importImage?: ImportImage } = {},
 ): Promise<{ ref: string; name: string }[]> {
+  const importImage = options.importImage ?? defaultImport(ed);
+  for (const c of captured) await resolvePictures(c.spec, c.pictures ?? [], importImage, c.missing);
   const env: ToolEnv = { ed, write: (_label, fn) => ed.engine.ignoringUndo(fn) };
   const create = (nodes: Spec[]) =>
     runTool(env, "create_nodes", { parentId: ed.store.page, nodes });

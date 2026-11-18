@@ -5,9 +5,12 @@ import Foundation
 /// from an HTML version, `<meta name="studio:source-version" content="N">`
 /// (`canvasOrigin` in apps/desktop/src/renderer/features/post-editor/wecra/slide-html.ts).
 ///
-/// The real design lives in a `.wecra` document only the Mac can edit; the slide HTML is the
-/// canvas render (plus, possibly, transparent layers that only describe it). The phone must not
-/// edit such a version layer by layer, and an AI request must not use it as the design to revise.
+/// The real design lives in a `.wecra` document (S1): the slide HTML is the canvas render (plus
+/// transparent layers that only describe it). The phone does not edit such a version layer by
+/// layer, and an AI request about it goes the Mac's way — a message to the post's conversation,
+/// where the agent edits the Wecra document with the canvas tools (`canvas_outline`,
+/// `canvas_edit`) and the hand edits made on the canvas stay — never a `content.generate`
+/// revision of its HTML.
 public struct CanvasOrigin: Sendable, Hashable {
     /// The HTML version the canvas document was imported from (the AI edits from there).
     public var sourceVersion: Int?
@@ -33,19 +36,27 @@ public struct CanvasOrigin: Sendable, Hashable {
     /// Shown where the phone would edit the design (layers, slots, pictures).
     public static let editNote = "Bu post Mac'teki tasarım tuvalinde düzenlendi; tasarımı Mac'te düzenleyebilirsin."
 
-    /// The line the Mac puts in front of an AI request about a canvas version (`postReference`
-    /// in apps/desktop/src/renderer/features/post-editor/chat.ts), word for word.
-    public func referenceNote(version: Int) -> String {
-        let how = sourceVersion.map { " Metin ve katman değişikliklerini v\($0) HTML'si üzerinden yap;" } ?? " Değişikliği yeni bir HTML sürümüyle yap;"
-        return "(v\(version) tuvalde, Wecra ile düzenlendi: kareleri Wecra'nın render'ı; HTML'de render en altta, metinler, görsel yuvaları ve logolar üstünde görünmez katmanlar, tüm katmanlar studio:canvas bilgisinde.\(how) yeni sürüm tuvale yeniden aktarılır.)"
+    /// Shown when the phone has no conversation to send a canvas request to.
+    public static let chatMissingNote = "Bu post Mac'teki tasarım tuvalinde düzenlendi; AI isteği sohbet üzerinden gider ama sohbet bağlantısı yok."
+
+    /// The note the Mac puts in a request about a canvas version (`canvasNote` in
+    /// apps/desktop/src/renderer/features/post-editor/chat.ts), word for word.
+    public static func referenceNote(version: Int) -> String {
+        "(v\(version) Mac'teki tasarım tuvalinde kaydedildi: tasarım bu sürümün Wecra belgesidir, tuvalde elle yapılan değişiklikler onda. Değişikliği canvas_outline ile okuyup canvas_edit ile yap; HTML'den yeniden üretme.)"
     }
 
-    /// The "Neyi değiştireyim?" request for canvas version `version`: the same note the Mac
-    /// writes, and the HTML version it points at as the base (never the canvas render itself).
-    /// Without a source version there is no HTML design to revise: no base, a new HTML version.
-    public func revisionRequest(version: Int, instruction: String) -> (baseVersion: Int?, instructions: String) {
-        let base = sourceVersion.flatMap { $0 != version ? $0 : nil }
-        return (base, "\(referenceNote(version: version))\n\(instruction)")
+    /// The post's line in every request (`postReference` in chat.ts, word for word): the post and
+    /// its current version; for a canvas version, the note.
+    public static func postReference(title: String, contentId: EntityID, version: Int?, canvas: Bool) -> String {
+        let head = "“\(title)” postu (id: \(contentId)\(version.map { ", güncel sürüm v\($0)" } ?? "")) için:"
+        guard canvas, let version else { return head }
+        return "\(head)\n\(referenceNote(version: version))"
+    }
+
+    /// The "Neyi değiştireyim?" message for canvas version `version` of `content`: what the Mac's
+    /// post chat sends (`postChatText`), the request after the post's line.
+    public static func chatRequest(content: Content, version: Int, instruction: String) -> String {
+        "\(postReference(title: content.title, contentId: content.id, version: version, canvas: true))\n\(instruction)"
     }
 
     // MARK: - Meta tags

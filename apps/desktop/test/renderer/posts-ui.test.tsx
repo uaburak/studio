@@ -254,8 +254,42 @@ describe("opened post", () => {
     fake.add(c, list);
     const editor = new PostEditor(fake.api as unknown as EditorApi, c, current, { pollMs: 0 });
     usePostsStore.getState().open("p1");
+    // The current version's checks passed (approving reads them: E7).
+    const passed = {
+      id: "run1",
+      contentId: "p1",
+      brandId: "b1",
+      version: current.version,
+      versionId: current.id,
+      trigger: "render",
+      jobId: null,
+      strictness: "standard",
+      summary: { pass: 1, warn: 0, fail: 0, fixed: 0, skipped: 0 },
+      blocking: 0,
+      results: [],
+      model: null,
+      fromVersion: null,
+      fixedVersion: null,
+      note: "",
+      createdAt: current.createdAt,
+    };
     const view = providers(<EditorHarness editor={editor} />, {
       ...fake.api,
+      contents: {
+        ...fake.api.contents,
+        checks: { list: async () => ({ items: [passed], nextCursor: null }) },
+      },
+      jobs: { ...fake.api.jobs, list: async () => ({ items: [], nextCursor: null }) },
+      brandCheckSettings: {
+        get: async () => ({
+          brandId: "b1",
+          disabledChecks: [],
+          bannedWords: [],
+          strictness: "standard",
+          autoFix: true,
+          updatedAt: null,
+        }),
+      },
       schedules: { list: vi.fn() },
       publishing: { status: vi.fn() },
     });
@@ -283,6 +317,8 @@ describe("opened post", () => {
     expect(fake.approveCalls[0]?.hash).toBe(
       editor.getSnapshot().content.currentVersion?.contentHash,
     );
+    // The checks passed: no acknowledgement sent.
+    expect(fake.approveCalls[0]).not.toHaveProperty("acknowledgeChecks");
     expect(await screen.findByText("Onaylandı.")).toBeInTheDocument();
   });
 

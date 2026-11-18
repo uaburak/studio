@@ -43,6 +43,13 @@ draft ──► in_review ──► approved ──► scheduled ──► publi
 - **Onay hash'e bağlıdır.** `POST /api/contents/{id}/approve` gövdesi `{ hash }` taşır; hash güncel sürümün
   `contentHash` değerine eşit olmalıdır, değilse `409 hash_mismatch`. Hash'i sunucu hesaplar
   (`computeContentHash`: slaytların sırayla `{width, height, html}` JSON'unun SHA-256'sı); istemci aynı fonksiyonla doğrulayabilir.
+- **Onay kontrollere bağlıdır (E7).** O sürümün en son kontrol çalışmasında markanın güncel ayarlarına göre
+  onayı tutan sonuç varsa (kapatılan kontroller sayılmaz; `fail`, sıkı ayarda `warn` da) ya da o sürüm için
+  henüz biten bir çalışma yoksa (marka tüm kontrolleri kapatmadıysa) onay `409 conflict` ile reddedilir
+  (Türkçe mesaj "kontrol" içerir; `issues` onayı tutan sonuçları listeler). Kullanıcı sonuçları görüp yine de
+  onaylıyorsa gövde `{ hash, acknowledgeChecks: true }` olur. Alanı göndermeyen eski istemciler 409 alır.
+  Onay yalnızca bu uçtan verilir: zamanlama ve "şimdi yayınla" onaylı içerik ister, `failed → approved`
+  yalnızca daha önce verilmiş onayı geri getirir.
 - **Yeni sürüm içeriği taslağa döndürür.** Onay temizlenir, bekleyen zamanlamalar iptal edilir. `publishing` ve `published` içerikte yeni sürüm eklenemez (`409`).
 - **Açıklama metni ya da hedef platform değişirse** onay düşer (taslağa döner). Başlık ve brif serbestçe değişir.
 - Elle istenebilen geçişler: `draft → in_review`, `in_review → draft`, `approved → draft` (geri çekme), `failed → draft`, `failed → approved`.

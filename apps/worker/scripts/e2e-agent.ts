@@ -130,7 +130,11 @@ async function seed() {
     { html: "<html><body><h1>Kış bakımı</h1></body></html>", width: 1080, height: 1350 },
   ];
   await api.contents.versions.create(content.id, { origin: "generated", slides });
-  const approved = await api.contents.approve(content.id, await computeContentHash(slides));
+  // No check run for a hand-made version: approve past the checks gate (E7).
+  const approved = await api.contents.approve(content.id, {
+    hash: await computeContentHash(slides),
+    acknowledgeChecks: true,
+  });
   const conversation = await api.conversations.create({
     brandId: brand.id,
     title: "A5 canlı deneme",

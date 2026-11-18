@@ -62,6 +62,17 @@ struct APIClientTests {
         #expect(try JSONSerialization.jsonObject(with: body) as? [String: String] == ["hash": "abc"])
     }
 
+    @Test func approveSendsTheChecksAcknowledgementOnlyWhenAsked() async throws {
+        let content = try Fixture.data("content")
+        let (api, host) = client { _, _ in .init(status: 200, body: content) }
+        _ = try await api.approveContent("c1", hash: "abc")
+        _ = try await api.approveContent("c1", hash: "abc", acknowledgeChecks: true)
+        let bodies = StubURLProtocol.recorded(host: host).map(\.1)
+        #expect(bodies.count == 2)
+        #expect(try JSONSerialization.jsonObject(with: bodies[0]) as? NSDictionary == ["hash": "abc"])
+        #expect(try JSONSerialization.jsonObject(with: bodies[1]) as? NSDictionary == ["hash": "abc", "acknowledgeChecks": true])
+    }
+
     @Test func mapsTheErrorShape() async throws {
         let mismatch = try Fixture.data("error-hash-mismatch")
         let (api, _) = client { _, _ in .init(status: 409, body: mismatch) }

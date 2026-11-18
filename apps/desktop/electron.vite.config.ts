@@ -113,7 +113,11 @@ export default defineConfig({
     build: {
       outDir: resolve(import.meta.dirname, "out/renderer"),
       rolldownOptions: {
-        input: { index: resolve(import.meta.dirname, "src/renderer/index.html") },
+        input: {
+          index: resolve(import.meta.dirname, "src/renderer/index.html"),
+          // The hidden canvas runner (Wecra's engine for the chat agent's canvas jobs).
+          "canvas-runner": resolve(import.meta.dirname, "src/renderer/canvas-runner.html"),
+        },
       },
     },
   },

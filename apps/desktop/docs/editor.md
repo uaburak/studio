@@ -14,8 +14,8 @@ top bar stays the app's top bar, and
   clipboard, context menu, dialogs and overlays. One floating dock sits at its bottom;
 - **the right panel becomes the post's panel** (same container as Ayrıntılar & co.: same width,
   resizable, expandable, its header in the top bar's panel segment): on Düzenle **Wecra's Design
-  panel** (tab Tasarım; Wecra's zoom menu in the header) and the caption (tab Açıklama); on Sohbet
-  the post's conversation;
+  panel** (tab Tasarım; Wecra's zoom menu in the header), the caption (tab Açıklama) and the
+  checks (tab Kontroller, see below); on Sohbet the post's conversation;
 - **the top bar's title area shows the post**: the title with the post's menu (quick look, copy
   caption, open in chat, duplicate, delete), its state, the version chip (versions popover), the
   save state, Onayla and Zamanla.
@@ -49,8 +49,14 @@ node apps/desktop/scripts/vendor-wecra.mjs --check        # the copy matches VER
 ```
 
 Without the copy the app still runs: opening a post says what to run
-(`wecra/vendored.ts`), `electron-vite dev` warns at start, the engine tests stop with the same
-message. A production build needs it.
+(`wecra/vendored.ts`), `electron-vite dev` warns at start. The desktop's `typecheck`, `test` and
+`build` go through `scripts/wecra-guard.mjs` (E18): with the copy it runs `vendor-wecra.mjs
+--check` first (the copy must be the one `VERSION.json` records), then the command; without it it
+says (Turkish and English) how to vendor and stops with 1 — `pnpm --filter @studio/desktop
+typecheck` fails fast with that message instead of hundreds of `@/…` errors. The root's `pnpm
+typecheck` / `test` / `build` set `STUDIO_WECRA_OPTIONAL=1`: the desktop's part is then reported
+as skipped (the main process's typecheck and tests still run) and the rest of the monorepo goes on.
+A production build needs the copy.
 
 ### Embedding patches (the only changes to Wecra's code)
 
@@ -64,6 +70,12 @@ own app:
 | `editor/canvas/BottomToolbar.tsx`, `ds/components/EditorToolbar.tsx` | `embedded`: in flow (the dock), no mode switch, no Comment group, no Actions                                                                                                                               |
 | `editor/keyboard.ts`, `editor/clipboardIO.ts`                        | keys / clipboard only from the editor's places (`[data-wecra-region]`, Wecra's overlays) or from nowhere — Studio's fields, buttons and chat keep theirs, text selected in Studio is copied by the browser |
 | `store/index.ts`                                                     | Wecra's browser store without its demo files, nothing kept in Studio's localStorage                                                                                                                        |
+| `editor/commands.ts` (command-stub)                                  | a command Studio left out of the registry reads as a disabled stand-in where a panel asks for it (instead of throwing)                                                                                     |
+| `editor/menus.ts` (canvas-menu)                                      | the canvas / layer-row menu through Studio's filter (`wecra/commands.ts postEditorMenu`)                                                                                                                   |
+| `editor/panels/RightPanel.tsx` (view-menu)                           | the zoom menu (Studio's view menu) through Studio's filter, with Studio's "Güvenli alanlar"                                                                                                                |
+| `editor/panels/design/Header.tsx` (header-actions)                   | the Design panel header's buttons Studio keeps (mask, boolean, edit object, select matching, more)                                                                                                         |
+| `ds/components/EditorToolbar.tsx` (tool-menus)                       | the toolbar's tool menus without the tools Studio leaves out (Section, Slice …)                                                                                                                            |
+| `editor/panels/design/DesignPanel.tsx` (design-panel)                | no plugin relaunch buttons, canvas buttons, page Export or MCP section (the selection's Export stays)                                                                                                      |
 
 Build glue (`wecra.vite.ts`): Wecra's aliases `@/…` (its renderer) and `@shared/…`; stand-ins for
 the packages of features the post editor leaves out (visual search and image models:
@@ -86,7 +98,20 @@ re-implemented:
 
 Hidden (a post editor doesn't need them): Prototype tab, Dev Mode and the mode switch, comments,
 the rail (Assets, Agents, Brands), Pages, Actions, sharing, multiplayer chrome, the file menu.
-Wecra's own dialogs that commands open still work (export, nudge, shortcuts …).
+
+**Commands: an allowlist (E16, `wecra/commands.ts`).** Wecra's command registry (`COMMANDS`) feeds
+its keys, canvas menu, Actions palette and panel buttons; `restrictWecraCommands` (run once by
+`host.tsx`) keeps only the commands a social post editor has — tools for frames, shapes, pen /
+pencil, text and images; selection, transform, align / distribute / arrange, group, frame, mask,
+boolean groups and Wecra's other vector operations; text formatting; layers (rename, show / hide,
+lock, order); zoom, rulers, outlines, guides; undo / redo; the clipboard (Copy as PNG / SVG / text)
+— and adds Studio's own (`studio.safe-areas`). Everything else leaves the registry: components and
+libraries, branching, version history and "save version", Dev Mode and its statuses, Motion /
+Draw, comments, plugins and widgets, prototype and present, variables, Social mode, Actions,
+cursor chat, help, preferences. So their keys do nothing (⇧D, C, ⌥⌘K, ⌥⌘S, ⌘\, ⌘S …) and no menu
+row or panel button shows them; a command a newer Wecra adds stays out until it is listed. Wecra's
+Export of the selection is kept (⇧⌘E and the Design panel's Export section — Studio has no export
+of its own yet); Export frames to PDF is not.
 
 **Look** (`wecra/wecra.css`): Wecra's tokens and components unchanged; its colour tokens mapped
 onto Studio's palette per theme (Studio's orange for "brand": the active tool, primary buttons,
@@ -115,11 +140,18 @@ The dock is one object: its content, a full-height line, and the mode switch **S
 at its right. On Düzenle it holds Wecra's tools; on Sohbet it morphs (`motion` layout animation)
 into the post's message box and the right panel shows the post's conversation (`chat.ts`). A tool
 picked on the canvas (V, T, R … ) goes to Düzenle. `@` chips and the canvas selection are Wecra's
-layers (`wecra/scope.ts`: "Kare 2 › headline").
+layers (`wecra/scope.ts`), sent as `Kare 2 › “headline” (metin, id 12:34)`: the id is what the
+agent's `canvas_edit` takes.
 
 ## The data model: a Wecra document per version
 
 ### Opening (`wecra/session.ts`)
+
+Nothing opens before the brand's kit is known (E10, `data.ts useRenderKitState`): while the
+brand's profile loads the canvas says "Marka kiti yükleniyor…" (the neutral kit that stands in
+meanwhile would bake its fonts, colours and logos into an import); when it can't be read it says so
+with "Yeniden dene" instead of importing with the neutral kit. A brand without an approved profile
+opens with the neutral kit, as the worker renders it.
 
 - A version **saved from the canvas** carries an editor document (`ContentVersion.editorDocument`,
   `{ kind: "wecra", assetId, format: 1 }`): that bundle opens.
@@ -132,10 +164,40 @@ layers (`wecra/scope.ts`: "Kare 2 › headline").
   turns it into create_nodes specs and Wecra's `create_nodes` makes the layers — outside the undo
   history. Slide _i_ → top-level frame "Kare _i_" (its size, clipped, 120 px apart; Kare 1 on top
   in Layers); `data-layer` → the layer's name (a text too when it is its layer's only text);
-  `<img>` / `url()` → an image fill with the file's own bytes (cover → FILL, contain → FIT, fill →
-  CROP; SVG files drawn to PNG at 2×); inline `<svg>` → vector layers. A picture Wecra can't take
-  is left out (the import goes on, a toast says so). Not carried over: `text-wrap: balance`,
-  `object-position` (pictures are centred), filters on pictures, blend modes.
+  `<img>` / `url()` → an image paint with the file's own bytes, placed as Chromium drew it
+  (object-fit / object-position, background-size / -position: Fill, Fit, or Crop with its window);
+  an SVG `<img>` → its vectors (a logo's marked `vector`: still the brand's logo for the checks);
+  inline `<svg>` → vector layers. A picture Wecra can't take is left out (the import goes on, a toast
+  says so).
+
+**Import fidelity (E11)** — `wecra/capture.ts` reads next to Wecra's walker what it leaves out
+(CSS transforms are taken off first so every box is read untransformed), `wecra/fidelity.ts` puts
+it on the layers between Wecra's converter and `create_nodes`: linear gradients at any angle (and
+"to right bottom", stops in px or beyond 0–100 %), radial (circle / ellipse, extents, centre) and
+conic (→ angular) gradients, each background layer in order with its blend mode; transforms
+(rotation on the layer, scale into its size and its layers', translation and transform-origin into
+its place); siblings in z-index paint order; text-shadow → drop shadows; filter blur() /
+drop-shadow() → layer blur / drop shadow; backdrop-filter blur() → background blur; mix-blend-mode;
+clip-path polygon() on a plain shape → a vector, circle(50 %) → an ellipse; text-wrap: balance /
+pretty → the browser's lines kept as line breaks; Turkish capitals (i → İ) under text-transform;
+transparent text and background-clip: text; an empty slot's ::after label as a text. What Wecra's
+document can't hold is the **import report** (`CapturedSlide.report`, layer by layer), shown when
+the post is first opened on the canvas — "Tuvale aktarırken değişenler: N katman" over the canvas,
+"Göster" lists them (`ui/import-report.tsx`), "Tamam" closes it for that version: repeating
+gradients, filters other than blur / drop-shadow (brightness, grayscale …), masks, other clip
+paths, skew, mirrored transforms, non-uniform scale of a group, an off-centre contain, tiled
+backgrounds, z-index inside auto layout, inline runs of mixed style that wrap (Wecra's converter
+makes them separate texts), and the balanced lines it fixed.
+
+**Brand kit as styles** (`wecra/brand-styles.ts`): when a post opens (after the import, or before a
+saved document counts its changes — no edit, no undo step), every colour token of the approved kit
+is a colour style and every type token a text style, "Marka/<token>" — Wecra's Fill / Stroke and
+Typography style pickers and the Styles list (nothing selected) show them. One copy per post
+document: they are found again by their description (`studio:brand:<kind>:<token>`), updated when
+the token's value changed, added when missing — reopening never adds a second set; styles of
+tokens the brand dropped are left alone. Layers whose solid fill / stroke is exactly a brand
+colour, and texts set exactly as a type token, are linked to those styles (colours stay the
+brand's, not loose hex). The neutral kit seeds nothing.
 
 ### Drafts and versions (S5)
 
@@ -221,15 +283,42 @@ After re-vendoring, a bundle that no longer decodes falls back to importing the 
 came from (`studio:source-version`), saying the canvas's hand edits are not in it; without one the
 version's renders are shown read only with the reason.
 
-### The AI
+### The AI (S1: the Wecra document is the design)
 
-AI revisions still produce HTML versions; such a version has no editor document, so the canvas
-**imports it anew** when it is shown (the simple path). A canvas-saved version's HTML is the render
-with its layers described above it (see below): the Sohbet's first message tells the agent (`chat.ts postReference`) that the version
-was edited on the canvas and which HTML version the canvas started from (`studio:source-version`),
-to make text and layer changes from there. **Gap**: the agent's new version does not carry the
-canvas's hand edits made after that import (a Wecra-aware agent tool — editing the Wecra document
-through Wecra's own MCP tools — is the next step).
+For a version saved from the canvas the agent edits **its Wecra document with Wecra's own design
+operations**, never the HTML the canvas started from — the hand edits stay.
+
+- **Every message** about the post (`chat.ts postChatText`, E17) starts with the post's line and
+  its **current version**, read from the API after the canvas's own save (`currentVersion`); a
+  canvas version adds the note (`canvasNote`): use `canvas_outline` / `canvas_edit`, don't
+  regenerate from HTML. The iPhone sends the same text (`CanvasOrigin.postReference`, pinned word
+  for word on both sides).
+- **The agent's tools** (`apps/worker/src/chat/canvas-tools.ts`, for Claude, Gemini, Codex alike):
+  `canvas_outline` — the slides' layers by Wecra id, name, kind, box, texts, fonts, colours, slots
+  (`@studio/design-kit/canvas canvasOutline`, from the facts the slide HTML carries; a
+  `canvas.read` job for older saves or full layer details); `canvas_edit` — a list of Wecra's own
+  MCP write tools with their arguments (`update_nodes`, `create_nodes`, `set_properties`,
+  `delete_nodes`, `duplicate_nodes`, `reparent_nodes`, `set_auto_layout`, `place_image` with an
+  `assetId` / chat `@alias`), against a base version, queued as a `canvas.apply` job and waited
+  for with its checks; `canvas_screenshot` — the renders. `revise_post` / `fill_post_slot` refuse a
+  canvas version (a new design only with `newDesign: true`, from its HTML source). Names and texts
+  of a document come back marked as data.
+- **The canvas runner** runs those jobs, also with no window open on the post (or none at all):
+  the main process connects to the hub as a worker of its own announcing only `canvas.read` /
+  `canvas.apply` (`src/main/canvas/executor.ts`; the hub does not count it as "the Mac worker":
+  presence `online`, Claude / Gemini commands) and hands each job to a hidden page
+  (`src/main/canvas/runner-window.ts` → `canvas-runner.html`, `features/canvas-runner`), opened on
+  the first job and closed after 10 idle minutes. The page loads the version's bundle into
+  Wecra's engine drawing into an off-screen canvas (GPU renders, the brand's fonts), checks the
+  post is still on that version, runs the operations through Wecra's tool runner
+  (`editor/agents/mcpTools.ts runTool`, each write an engine actor step), checks the frames still
+  fit the post, and stores the document as a new **`ai_edit`** version exactly as the canvas saves
+  one (`wecra/save.ts`, shared with `session.ts`: renders, facts, pictures as assets, the bundle, a
+  `content.check` job). Nothing changes when the post moved on, nothing applied, the document
+  did not change, a picture is missing or the frames no longer fit.
+- **The open canvas** stays read only while a reply or any `canvas.apply` job of the post runs
+  (`edit-lock.ts`) and adopts the new version when it lands (a finished job re-reads the post);
+  unsaved edits are never replaced — the incoming-version question (E4) still asks.
 
 ### What a canvas version says (canvas facts: E1, E5, E11)
 
@@ -283,21 +372,91 @@ canvas version **describes** that PNG so checks, the AI, alt text and the iPhone
 Wecra's text engine shapes with the font files themselves (`wecra/fonts.ts`, Wecra's
 `FontSource`): Wecra's bundled Inter; the fonts installed on this Mac (Studio's font list; a face's
 bytes from the main process, `fonts:read` — `main/fonts.ts FontFiles`: the file located through
-AppKit, a face of a `.ttc` / `.otc` cut out as a font of its own); the brand's uploaded TTF / OTF
-files under their role's family. WOFF / WOFF2 files are not read by the engine: such a family is
-"missing" in Wecra's Design panel (the text draws in Inter) unless it is installed.
+AppKit, a face of a `.ttc` / `.otc` cut out as a font of its own); the brand's uploaded font files
+under their role's family. The engine reads sfnt fonts only, so web fonts are decoded when read
+(`wecra/font-files.ts`, E9): WOFF 1.0 table by table (zlib, the platform's
+`DecompressionStream`), WOFF2 by Google's woff2 decoder (`woff2-encoder` 2.0.0, MIT, its
+decompress-only WebAssembly build, ~295 KB, loaded with the first WOFF2 file).
+
+**Installed or the brand's file** — as brand.css decides for the worker's render: a role marked
+`system` ("the installed font") uses the family installed on this Mac, its files only stand in on
+a Mac without it; any other role's files _are_ the family (brand.css declares them under the
+family's own name and an `@font-face` beats a local font of that name), so installed faces of that
+family are left out (`fonts.ts precedence`). (Before E9 an installed family always won, so the
+canvas could draw a different cut of the font than the worker.)
+
+**Missing fonts** (`wecra/missing-fonts.ts`): a text whose font Wecra doesn't have draws in Inter
+and would be published that way. The draft keeps such a canvas, but no version is made from it
+(the save reads the facts' `fonts[].missing` and says "Eksik font: X. Mac'e yükleyin ya da marka
+kitine ekleyin.") and the post is not approved — while editing, Wecra's own missing names among the
+fonts the slides use warn in the title bar and disable Onayla; a canvas version whose renders were
+drawn without a font (its facts) isn't approved either.
+
+## Kontroller on the canvas (E6)
+
+The edit panel's third tab, **Kontroller** (`ui/checks-tab.tsx`), lists the latest check run of
+the version on the canvas as the post detail does, with a red count of its failures on the tab
+(the brand's switched-off checks left out). "Göster" selects the finding's layer (else its slide)
+and zooms to it (`wecra/locate.ts`: the slide is the page's frame in reading order; the layer is
+found through the version's slide HTML — a canvas version's `data-wecra-id`, an imported version's
+plugin mark or layer name). Slides are never auto-fixed on the canvas: such a finding offers
+"Tuvalde düzelt" (shows the layer, opens Tasarım); caption findings "Açıklamada düzelt"; "Düzelt"
+stays where the worker can fix. "Yeniden kontrol et" runs them again; while a check runs (each
+save starts one) it says "Kontroller çalışıyor…".
+
+## Approving through the checks (E7)
+
+Onayla / ⌘↩ / Zamanla (when it approves first) save unsaved edits as a version, then read **that
+version's** checks fresh from the API (`features/checks/approval-gate.ts`; never a cached run that
+may still be loading): while a `content.check` of it runs the button says "Kontroller çalışıyor…"
+(a second ⌘↩ is the same approval); when no run comes it starts one (no model pass); when the
+Mac's worker is away or 45 s pass it asks ("v3 kontrolleri bitmedi … Yine de onayla"). Failures
+by the brand's current settings show the list and "Yine de onayla". Only that confirmation sends
+`acknowledgeChecks: true`; the API refuses the same cases otherwise (409, see the API's README).
+
+## Safe areas, image slots, the brand's logo
+
+**Safe areas** (`wecra/safe-areas.ts`): the bands where the platform's UI covers a story or a Reels
+cover, or the profile grid crops a feed post — the checks' insets (`@studio/design-kit/presets`,
+picked as the worker picks them: the content type's preset, else one of the slide's size) — drawn
+by Wecra's engine inside every slide frame (`Engine.setSafeAreas`, canvas chrome: never a layer,
+never exported or saved). On by default for stories and Reels, off for feed posts; "Güvenli
+alanlar" in the view (zoom) menu toggles them for the open post.
+
+**Image slots** (`wecra/slots.ts`, `ui/canvas-assets.tsx`): a slot is the contract's
+`data-type="slot"` layer the import marked. Above Wecra's Design panel (Tasarım) a selected slot
+(or a layer in it) shows "Görsel yuvası · <label> · <ratio>", Boş / Dolu, **Görsel seç** (the
+brand's pictures — the Medya pane's tiles — or "Bilgisayardan yükle…", uploaded as the brand's
+asset first) and **Kaldır**; with nothing selected, the post's empty slots (a click selects one). A
+picture dragged from Medya, or a file dropped, onto a slot fills it; a Medya picture dropped
+elsewhere on a slide becomes a picture layer there (a file elsewhere is Wecra's). Filling puts the
+picture on the slot as an image paint in its fit (cover → Fill, contain → Fit), hides the empty
+placeholder the import drew (the ::before frame and ::after label) and keeps the slot's mark with
+the file (`/media/<asset>.<ext>`) and Wecra's image key — the checks and the slide HTML see a
+filled slot of that asset; Kaldır puts the brand's slot colour back and shows the placeholder. One
+undo step each. A picture of another brand is copied to the post's brand; every picture is
+remembered as its asset (the save uploads nothing again).
+
+**Logo ekle**: the brand kit's logo (one with an uploaded file) on the selected slide, bottom left
+inside the margin (`space.margin`, `components.signOff.logoHeight` or 56 px tall), as a picture
+marked `type: logo` with its `/brand/logos/…` file — the checks know it as the brand's logo
+(clear space, safe area, overlaps). Of the kit's logos it takes the one made for the background
+under that place (`on: light / dark`, by the luminance of the topmost solid fill there).
 
 ## Gaps
 
 - The canvas's selection and page colours are the engine's (blue selection): the engine has no
   colour option; making it Studio's orange needs a change in Wecra.
-- Safe-area bands and collision chips (the old editor's) are not on Wecra's canvas yet (Wecra's
-  Social mode has its own safe areas: a candidate to switch on).
+- Collision chips (the old editor's) are not on Wecra's canvas (the safe-area bands are).
+- Import fidelity: what the import report lists (above) stays lost; a vector logo's edits
+  (recolouring) are not detected by the checks; the pixel test covers what the engine draws
+  headless (no text, no pictures: those are checked on the document).
 - First comment and per-slide alt text fields: as before, not in the content model (a canvas
   slide's short alt is in its HTML, on the render's `<img>`).
 - Canvas facts: a picture added on the canvas has no file of its own in the HTML (its layer points
-  at the render; the facts keep its Wecra image key); logos added on the canvas are not recognised
-  as the brand's logo (only imported ones); colours are taken as sRGB (a Display P3 document's
+  at the render; the facts keep its Wecra image key) unless it came from Medya (dropped or picked:
+  its `/media/` file); a logo pasted or drawn on the canvas is not the brand's logo ("Logo ekle"'s
+  and imported ones are); colours are taken as sRGB (a Display P3 document's
   colours are not converted); rotated texts are checked by their axis-aligned boxes.
 - The frame size is checked when a version is made (and shown as a warning while editing), not
   held by the engine: a frame can still be resized on the canvas.
@@ -323,15 +482,28 @@ features/post-editor/
   wecra/host.tsx                    EditorApp, Design panel, Layers, toolbar, zoom menu in Studio
   wecra/wecra.css                   Wecra's base rules in its places, Studio's colours and radii
   wecra/session.ts                  open (bundle, import, draft), unsaved, draft, version, read only
+  wecra/save.ts                     a document as a version (renders, facts, assets, bundle, checks)
   wecra/frames.ts                   slide frames and whether they fit the post (E15)
   wecra/assets.ts                   pictures as the brand's assets, uploaded once (E13)
   wecra/hash.ts                     the document's hash (unsaved = differs from the version)
   edit-lock.ts                      when the canvas is read only, Düzenle's warning (E3)
   wecra/import.ts                   HTML slides → Wecra layers (Wecra's walker + converter)
+  wecra/capture.ts                  what the import reads next to the walker (transforms off, extras)
+  wecra/fidelity.ts                 CSS → Wecra paints / effects / transforms, the import report (E11)
+  wecra/commands.ts                 the allowlist of Wecra's commands, menu filters (E16)
+  wecra/brand-styles.ts             the kit's colours and type as the document's styles, linked
+  wecra/safe-areas.ts               the safe-area bands (the checks' presets), the view menu toggle
+  wecra/slots.ts                    image slots (fill / empty), the brand's logo, pictures on slides
+  ui/canvas-assets.tsx              the slot panel, the media picker, Logo ekle, drops on the canvas
+  ui/import-report.tsx              "Tuvale aktarırken değişenler: …" over the canvas
   wecra/bundle.ts                   the Wecra document bundle
   wecra/slide-html.ts               a canvas-saved slide's HTML (render, hash, facts, alt)
   wecra/facts.ts                    a slide frame's canvas facts, read from Wecra's engine
-  wecra/fonts.ts                    Wecra's font source in Studio
+  wecra/fonts.ts                    Wecra's font source in Studio (installed vs the brand's files)
+  wecra/font-files.ts               WOFF / WOFF2 → sfnt for the engine (E9)
+  wecra/missing-fonts.ts            fonts a slide uses that Wecra lacks: no version, no approval (E9)
+  wecra/locate.ts                   a check's place on the canvas ("Göster", E6)
+  ui/checks-tab.tsx                 the edit panel's Kontroller (E6)
   wecra/scope.ts                    the Sohbet's layers (selection, @)
   wecra/vendored.ts                 is Wecra vendored here, what to do when not
   html/slide-document.ts            slide srcdoc (brand.css inlined, URLs mapped)
@@ -341,8 +513,20 @@ features/post-editor/
   ui/sidebar-layers.tsx             the sidebar's "Katmanlar" (Wecra's Layers)
   ui/caption-panel.tsx, ui/chat-panel.tsx
   demo/                             `?demo=post-editor[&format=story]` (in-memory API and chat)
+features/canvas-runner/             the hidden canvas runner page: jobs (run.ts), Wecra's operations
+                                    (operations.ts), its engine (engine.ts), the page (page.ts)
+canvas-runner.html                  that page
+src/main/canvas/                    the runner's hub connection (executor.ts) and window
+test/engine/wecra-canvas-runner.test.ts  the real engine: operations, facts, a new ai_edit version
+test/main/canvas-executor.test.ts   the runner's worker protocol
 test/engine/wecra-post.test.ts      the real engine: import, bundle round trip, export, save, fonts
 test/engine/wecra-facts.test.ts     the real engine (Inter loaded): marks, facts, overflow, HTML + checks
+test/engine/wecra-fonts.test.ts     WOFF / WOFF2 → sfnt, installed vs brand files, missing font blocks a version
+test/engine/wecra-commands.test.ts    the allowlist: left-out commands, their keys, menus (E16)
+test/engine/wecra-fidelity.test.ts    golden: Chromium vs the canvas import (boxes, paints, crops,
+                                    pixels of Wecra's SVG export), the report (E11)
+test/engine/wecra-canvas-assets.test.ts  brand styles, slots, logo, safe areas (real engine)
+test/renderer/post-editor-fidelity.test.tsx  CSS → Wecra maths, the report, the media picker
 test/engine/wecra-save-model.test.ts  drafts vs versions, undo to clean, read only, incoming, close,
                                     picture dedupe, old bundles, frames, fallbacks
 test/main/drafts.test.ts            the draft store (0600, atomic) and the close / quit flush

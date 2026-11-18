@@ -167,6 +167,8 @@ final class IOSPostsModel {
             if let image = UIImage(data: file.data) { self?.app?.images.seed(IOSImageImport.thumbnail(image, side: 600), for: asset.id) }
         }
         session.workerOnline = { [weak self] in self?.app?.isOnline ?? false || self?.app?.isSample == true }
+        // A canvas post's AI request goes to the post's conversation, as on the Mac (S1).
+        session.chat = app?.conversationService
         // Checks (or the generation that stores them) may already be running.
         for job in jobs where job.contentId == card.id && job.status.isActive { session.noteJob(job) }
         sessions[card.id] = WeakSession(session: session)
@@ -200,8 +202,9 @@ final class IOSPostsModel {
         return gates
     }
 
-    /// Approve every ready post of the month (`only`: just these ids).
-    func approveReady(only: Set<EntityID>? = nil) async {
+    /// Approve every ready post of the month (`only`: just these ids). `acknowledged`: posts the
+    /// user chose to approve although their checks hold them back (E7; told to the API).
+    func approveReady(only: Set<EntityID>? = nil, acknowledged: Set<EntityID> = []) async {
         guard let app, !isApproving else { return }
         isApproving = true
         defer { isApproving = false }
@@ -210,7 +213,8 @@ final class IOSPostsModel {
         for card in approvable where only?.contains(card.id) ?? true {
             guard let hash = card.approvableHash else { continue }
             do {
-                let updated = try await app.dataService.approve(contentId: card.content.id, hash: hash)
+                let updated = try await app.dataService.approve(
+                    contentId: card.content.id, hash: hash, acknowledgeChecks: acknowledged.contains(card.id))
                 if let index = contents.firstIndex(where: { $0.id == updated.id }) { contents[index] = updated }
             } catch {
                 failures.append("\(card.title): \(ContentChecks.approvalRefusal(error) ?? IOSAppModel.describe(error))")
@@ -220,10 +224,11 @@ final class IOSPostsModel {
         error = failures.isEmpty ? nil : failures.joined(separator: "\n")
     }
 
-    func approve(_ card: PostCard) async -> Bool {
+    /// `acknowledgingChecks`: the user confirmed approving although its checks hold it back (E7).
+    func approve(_ card: PostCard, acknowledgingChecks: Bool = false) async -> Bool {
         guard let app, let hash = card.approvableHash else { return false }
         do {
-            let updated = try await app.dataService.approve(contentId: card.id, hash: hash)
+            let updated = try await app.dataService.approve(contentId: card.id, hash: hash, acknowledgeChecks: acknowledgingChecks)
             var contents = board.cards.map(\.content)
             if let index = contents.firstIndex(where: { $0.id == updated.id }) { contents[index] = updated }
             rebuild(contents: contents)

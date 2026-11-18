@@ -32,7 +32,11 @@ import { Layers } from "@/editor/panels/Layers";
 import panelStyles from "@/editor/panels/Panels.module.css";
 import { ZoomMenu } from "@/editor/panels/RightPanel";
 import { applyLocale } from "@/i18n";
+import { restrictWecraCommands } from "./commands.ts";
 import { WECRA_OVERLAYS, WECRA_REGION } from "./embed.ts";
+
+// Only the commands a post editor has (E16): the others leave Wecra's registry, keys and menus.
+restrictWecraCommands();
 
 // Studio is Turkish: Wecra's own Turkish dictionary (loaded once, before the editor's first render).
 const locale = applyLocale("tr").catch(() => {});

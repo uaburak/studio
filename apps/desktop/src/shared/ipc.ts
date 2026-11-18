@@ -1,6 +1,7 @@
 // Typed contract between the main process and the renderer (through the preload bridge).
 // Only plain JSON values cross it.
 import type { AccountsBridge, SystemBridge } from "./accounts-ipc.ts";
+import type { CanvasRunnerBridge } from "./canvas-runner.ts";
 import type { DraftsBridge, LifecycleBridge } from "./drafts.ts";
 import type { FontsBridge } from "./fonts.ts";
 
@@ -164,4 +165,6 @@ export interface StudioBridge {
   drafts?: DraftsBridge;
   /** Close / quit: the main process asks the page to write its drafts first. */
   lifecycle?: LifecycleBridge;
+  /** Only in the hidden canvas runner's page (shared/canvas-runner.ts). */
+  canvasRunner?: CanvasRunnerBridge;
 }

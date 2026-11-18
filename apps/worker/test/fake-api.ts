@@ -28,6 +28,7 @@ import {
   type Conversation,
   type ConversationAlias,
   defaultCheckSettings,
+  type ErrorIssue,
   emptyBrandKit,
   type Job,
   type JobCreate,
@@ -70,7 +71,9 @@ export interface FakeApiState {
   profiles: Map<string, BrandProfile>;
   profileHistory: BrandProfile[];
   contents: Map<string, Content>;
-  contentApprovals: { id: string; hash: string }[];
+  contentApprovals: { id: string; hash: string; acknowledgeChecks?: true }[];
+  /** The API's approval gate (E7): set, an approval without `acknowledgeChecks` gets this 409. */
+  approvalGate: { message: string; issues: ErrorIssue[] } | null;
   contentTransitions: { id: string; to: ContentStatus }[];
   versions: ContentVersion[];
   versionCreates: ContentVersionCreate[];
@@ -193,6 +196,7 @@ export function createFakeApi(init: Partial<FakeApiState> = {}): {
     profileHistory: [],
     contents: new Map(),
     contentApprovals: [],
+    approvalGate: null,
     contentTransitions: [],
     versions: [],
     versionCreates: [],
@@ -824,13 +828,29 @@ export function createFakeApi(init: Partial<FakeApiState> = {}): {
         state.contents.set(id, updated);
         return updated;
       },
-      approve: async (id: string, hash: string) => {
+      approve: async (
+        id: string,
+        input: string | { hash: string; acknowledgeChecks?: boolean },
+      ) => {
+        const { hash, acknowledgeChecks } = typeof input === "string" ? { hash: input } : input;
         const c = state.contents.get(id);
         if (!c) throw new ApiError("content not found", 404, "not_found");
         if (!c.currentVersion || c.currentVersion.contentHash !== hash) {
           throw new ApiError("hash mismatch", 409, "hash_mismatch");
         }
-        state.contentApprovals.push({ id, hash });
+        if (state.approvalGate && !acknowledgeChecks) {
+          throw new ApiError(
+            `/api/contents/${id}/approve: ${state.approvalGate.message}`,
+            409,
+            "conflict",
+            state.approvalGate.issues,
+          );
+        }
+        state.contentApprovals.push({
+          id,
+          hash,
+          ...(acknowledgeChecks ? { acknowledgeChecks: true as const } : {}),
+        });
         const updated: Content = {
           ...c,
           status: "approved",

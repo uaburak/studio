@@ -17,7 +17,7 @@ import {
   type WorkerToHubMessage,
 } from "@studio/contract";
 import { beforeEach, describe, expect, it } from "vitest";
-import { api, BASE, createBrand, expectError, localFetch } from "./helpers.ts";
+import { api, BASE, createBrand, createContent, expectError, localFetch } from "./helpers.ts";
 
 const hub = () => env.HUB.getByName("main");
 
@@ -242,6 +242,54 @@ describe("dispatch", () => {
     const worker = await connectWorker({ capabilities: ["demo.echo"] });
     expect(dispatches(worker.initial)).toEqual([]);
     expect((await getJob(job.id)).status).toBe("queued");
+    worker.ws.close(1000);
+  });
+
+  it("gives canvas jobs to the Mac app's canvas runner, which is not the Mac worker", async () => {
+    const brand = await createBrand();
+    const content = await createContent(brand.id);
+    const canvas = await createJob({
+      type: "canvas.apply",
+      contentId: content.id,
+      payload: {
+        version: 1,
+        operations: [
+          { tool: "update_nodes", args: { updates: [{ nodeId: "1:2", characters: "A" }] } },
+        ],
+      },
+    });
+    // An operation outside Wecra's write tools is refused when the job is created.
+    expectError(
+      await api("POST", "/api/jobs", {
+        type: "canvas.apply",
+        contentId: content.id,
+        payload: { version: 1, operations: [{ tool: "run_command", args: {} }] },
+      }),
+      400,
+      "validation_error",
+    );
+    const echo = await createJob();
+    const runner = await connectWorker({
+      workerId: "studio-canvas",
+      capabilities: ["canvas.read", "canvas.apply"],
+    });
+    expect(dispatches(runner.initial).map((d) => d.job.id)).toEqual([canvas.id]);
+    // The runner alone: the Mac is not online (no chat, no generation), its time is not "last seen".
+    const alone = await presence();
+    expect(alone.online).toBe(false);
+    expect(alone.lastSeenAt).toBeNull();
+    expect(alone.workers.map((w) => w.workerId)).toEqual(["studio-canvas"]);
+    expect((await getJob(echo.id)).status).toBe("queued");
+    // Claude commands go to the Mac worker only.
+    expectError(await api("POST", "/api/workers/claude/status"), 409, "conflict");
+
+    const worker = await connectWorker();
+    expect(dispatches(worker.initial).map((d) => d.job.id)).toEqual([echo.id]);
+    const both = await presence();
+    expect(both.online).toBe(true);
+    expect(both.workers.map((w) => w.workerId)).toEqual(["mac-test", "studio-canvas"]);
+    expect((await runner.sync()).filter((m) => m.type === "worker.command")).toEqual([]);
+    runner.ws.close(1000);
     worker.ws.close(1000);
   });
 });

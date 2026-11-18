@@ -52,6 +52,7 @@ export function ScheduleSheet({
   accounts,
   schedules = NO_SCHEDULES,
   initialDate,
+  acknowledgeChecks = false,
   onClose,
   onDone,
 }: {
@@ -65,6 +66,8 @@ export function ScheduleSheet({
   /** The post's schedules (rescheduling preselects the accounts it waits on). */
   schedules?: readonly Schedule[];
   initialDate: Date;
+  /** The approve guard asked about the checks and the user approves anyway (E7). */
+  acknowledgeChecks?: boolean;
   onClose(): void;
   onDone(content: Content): void;
 }) {
@@ -176,6 +179,7 @@ export function ScheduleSheet({
         accountIds: selected,
         date: at,
         offeredAccountIds: candidates.map((a) => a.id),
+        acknowledgeChecks,
       });
       const dropped = result.cancelled.length;
       await finish(
@@ -196,7 +200,12 @@ export function ScheduleSheet({
     setSubmitting(true);
     setError(null);
     try {
-      const result = await submitPublishNow(api, { content, hash, accountIds: selected });
+      const result = await submitPublishNow(api, {
+        content,
+        hash,
+        accountIds: selected,
+        acknowledgeChecks,
+      });
       await finish(result, "Yayın başladı.");
     } catch (e) {
       setError(describeError(e));

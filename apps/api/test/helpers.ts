@@ -139,8 +139,10 @@ export async function getContent(id: string): Promise<Content> {
 export async function approvedContent(brandId: string, overrides: Partial<ContentCreate> = {}) {
   const content = await createContent(brandId, overrides);
   const version = await addVersion(content.id);
+  // No check run: the user approves without waiting for the checks (E7).
   const res = await api<Content>("POST", `/api/contents/${content.id}/approve`, {
     hash: version.contentHash,
+    acknowledgeChecks: true,
   });
   expect(res.status, JSON.stringify(res.body)).toBe(200);
   return { content: res.body, version };

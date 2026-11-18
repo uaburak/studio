@@ -530,7 +530,11 @@ final class IOSPostDetailViewController: UIViewController {
                 proceed()
                 return
             }
-            confirm(question.title, message: question.message, action: "Yine de onayla", destructive: false, onConfirm: proceed)
+            // "Yine de onayla": the approval that follows tells the API so (E7).
+            confirm(question.title, message: question.message, action: "Yine de onayla", destructive: false) { [weak self] in
+                self?.session.acknowledgeChecks()
+                proceed()
+            }
         }
     }
 

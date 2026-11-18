@@ -485,16 +485,17 @@ extension IOSPostsViewController {
     fileprivate func approveGuarded(_ card: PostCard) {
         Task {
             let gate = await model.approvalGates([card])[card.id] ?? .clear
-            let approve: () -> Void = {
+            let approve: (Bool) -> Void = { acknowledging in
                 Task {
-                    if await self.model.approve(card) { Haptics.success() } else if let error = self.model.error { self.presentError(error) }
+                    if await self.model.approve(card, acknowledgingChecks: acknowledging) { Haptics.success() } else if let error = self.model.error { self.presentError(error) }
                 }
             }
             guard let question = gate.question else {
-                approve()
+                approve(false)
                 return
             }
-            confirm(question.title, message: "\(card.title)\n\(question.message ?? "")", action: "Yine de onayla", destructive: false, onConfirm: approve)
+            // "Yine de onayla": the approval tells the API the user saw the checks (E7).
+            confirm(question.title, message: "\(card.title)\n\(question.message ?? "")", action: "Yine de onayla", destructive: false) { approve(true) }
         }
     }
 
@@ -505,10 +506,10 @@ extension IOSPostsViewController {
         Task {
             let gates = await model.approvalGates(cards)
             let flagged = cards.filter { gates[$0.id]?.question != nil }
-            let run = { (only: Set<EntityID>?) in
+            let run = { (only: Set<EntityID>?, acknowledged: Set<EntityID>) in
                 let approving = only?.count ?? count
                 Task {
-                    await self.model.approveReady(only: only)
+                    await self.model.approveReady(only: only, acknowledged: acknowledged)
                     if let error = self.model.error { self.presentError(error) } else {
                         Haptics.success()
                         Toast.show("\(approving) post onaylandı", in: self.view)
@@ -516,7 +517,7 @@ extension IOSPostsViewController {
                 }
             }
             guard !flagged.isEmpty else {
-                confirm("\(count) post onaylansın mı?", message: "Her post gördüğün sürümün özetiyle (hash) onaylanır.", action: "Onayla", destructive: false) { run(nil) }
+                confirm("\(count) post onaylansın mı?", message: "Her post gördüğün sürümün özetiyle (hash) onaylanır.", action: "Onayla", destructive: false) { run(nil, []) }
                 return
             }
             let names = flagged.prefix(5).map { card -> String in
@@ -533,9 +534,10 @@ extension IOSPostsViewController {
                 message: names.joined(separator: "\n") + more, preferredStyle: .alert)
             let clean = Set(cards.map(\.id)).subtracting(flagged.map(\.id))
             if !clean.isEmpty {
-                alert.addAction(UIAlertAction(title: "Yalnızca sorunsuz \(clean.count) postu onayla", style: .default) { _ in run(clean) })
+                alert.addAction(UIAlertAction(title: "Yalnızca sorunsuz \(clean.count) postu onayla", style: .default) { _ in run(clean, []) })
             }
-            alert.addAction(UIAlertAction(title: "Yine de \(count) postu onayla", style: .destructive) { _ in run(nil) })
+            // "Yine de": the flagged posts' approvals tell the API the user saw their checks (E7).
+            alert.addAction(UIAlertAction(title: "Yine de \(count) postu onayla", style: .destructive) { _ in run(nil, Set(flagged.map(\.id))) })
             alert.addAction(UIAlertAction(title: "Vazgeç", style: .cancel))
             present(alert, animated: true)
         }

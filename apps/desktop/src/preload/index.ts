@@ -2,6 +2,11 @@
 // (`window.studio`). No Node APIs reach the page.
 import { contextBridge, type IpcRendererEvent, ipcRenderer } from "electron";
 import { ACCOUNTS_IPC as A } from "../shared/accounts-ipc.ts";
+import {
+  CANVAS_RUNNER_ARG,
+  CANVAS_RUNNER_IPC,
+  type CanvasRunnerBridge,
+} from "../shared/canvas-runner.ts";
 import { DRAFTS_IPC } from "../shared/drafts.ts";
 import { FONTS_IPC } from "../shared/fonts.ts";
 import { IPC, type StudioBridge } from "../shared/ipc.ts";
@@ -73,4 +78,15 @@ const bridge: StudioBridge = {
   },
 };
 
-contextBridge.exposeInMainWorld("studio", bridge);
+// The hidden canvas runner's page (its window's extra argument) also gets the runner's channels.
+const canvasRunner: CanvasRunnerBridge | undefined = process.argv.includes(CANVAS_RUNNER_ARG)
+  ? {
+      onJob: (listener) => subscribe(CANVAS_RUNNER_IPC.job, listener),
+      onCancel: (listener) => subscribe(CANVAS_RUNNER_IPC.cancel, listener),
+      ready: () => ipcRenderer.send(CANVAS_RUNNER_IPC.ready),
+      progress: (update) => ipcRenderer.send(CANVAS_RUNNER_IPC.progress, update),
+      done: (result) => ipcRenderer.send(CANVAS_RUNNER_IPC.done, result),
+    }
+  : undefined;
+
+contextBridge.exposeInMainWorld("studio", canvasRunner ? { ...bridge, canvasRunner } : bridge);

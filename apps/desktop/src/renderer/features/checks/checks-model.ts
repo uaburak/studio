@@ -2,6 +2,7 @@
 // them: labels, the order of the list, the summary line, what "Düzelt" can fix, the approval
 // warning, and the settings draft. No React, no API (tested in test/renderer/checks.test.ts).
 import {
+  approvalBlockers,
   type BrandCheckSettings,
   type BrandCheckSettingsPut,
   CHECK_CATALOG,
@@ -184,21 +185,42 @@ export interface ApprovalWarning {
   lines: string[];
 }
 
-/** The warning the approve button shows first, or null when the version may be approved. */
+/**
+ * The warning the approve button shows first, or null when the version may be approved. With the
+ * brand's settings the run is judged as the API judges it now (switched-off checks left out, the
+ * current strictness: `approvalBlockers`); without them by the run's own count.
+ */
 export function approvalWarning(
   run: Pick<ContentCheckRun, "blocking" | "results" | "strictness" | "version"> | null | undefined,
+  settings?: Pick<BrandCheckSettings, "disabledChecks" | "strictness"> | null,
 ): ApprovalWarning | null {
-  if (!run || run.blocking <= 0) return null;
-  const blocking = run.results.filter(
-    (r) => r.status === "fail" || (run.strictness === "strict" && r.status === "warn"),
-  );
+  if (!run) return null;
+  const blocking = settings
+    ? approvalBlockers(run.results, settings)
+    : run.blocking > 0
+      ? run.results.filter(
+          (r) => r.status === "fail" || (run.strictness === "strict" && r.status === "warn"),
+        )
+      : [];
+  const count = settings ? blocking.length : run.blocking;
+  if (count <= 0) return null;
   return {
-    blocking: run.blocking,
-    title: `${inVersion(run.version)} ${run.blocking} kontrol geçmedi`,
+    blocking: count,
+    title: `${inVersion(run.version)} ${count} kontrol geçmedi`,
     lines: sortCheckResults(blocking)
       .slice(0, 5)
       .map((r) => `${checkLabel(r.checkId)}: ${r.message}`),
   };
+}
+
+/** Failures of a run as the tab's badge counts them (the brand's switched-off checks left out). */
+export function failureCount(
+  run: Pick<ContentCheckRun, "results"> | null | undefined,
+  settings?: Pick<BrandCheckSettings, "disabledChecks"> | null,
+): number {
+  if (!run) return 0;
+  const off = new Set(settings?.disabledChecks ?? []);
+  return run.results.filter((r) => r.status === "fail" && !off.has(r.checkId)).length;
 }
 
 // --- brand settings ----------------------------------------------------------------------------

@@ -450,6 +450,29 @@ export function isCheckEnabled(
   return !settings.disabledChecks.includes(id);
 }
 
+/** At least one check runs for the brand (otherwise approving never waits for checks). */
+export function anyCheckEnabled(settings: Pick<BrandCheckSettings, "disabledChecks">): boolean {
+  const off = new Set(settings.disabledChecks);
+  return CHECK_IDS.some((id) => !off.has(id));
+}
+
+/**
+ * The results of a run that hold approval back under the brand's current settings (the approve
+ * gate of the API and the apps): switched-off checks are left out; `fail`, plus `warn` when
+ * strict.
+ */
+export function approvalBlockers<T extends { checkId: string; status: string }>(
+  results: readonly T[],
+  settings: Pick<BrandCheckSettings, "disabledChecks" | "strictness">,
+): T[] {
+  const off = new Set(settings.disabledChecks);
+  return results.filter(
+    (r) =>
+      !off.has(r.checkId) &&
+      (r.status === "fail" || (settings.strictness === "strict" && r.status === "warn")),
+  );
+}
+
 // --- platform text limits -----------------------------------------------------------------------
 
 /**

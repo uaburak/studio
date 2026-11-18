@@ -104,7 +104,12 @@ describe("approved renders are frozen (Y3)", () => {
       renderedAssetIds: [approvedRender.id],
     });
     expect(
-      (await api("POST", `/api/contents/${content.id}/approve`, { hash: v.contentHash })).status,
+      (
+        await api("POST", `/api/contents/${content.id}/approve`, {
+          hash: v.contentHash,
+          acknowledgeChecks: true,
+        })
+      ).status,
     ).toBe(200);
     const s = await schedule(content.id, account.id);
 

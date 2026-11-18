@@ -28,6 +28,9 @@ public struct JobType: RawRepresentable, Codable, Hashable, Sendable, Expressibl
     public static let chatTurn: JobType = "chat.turn"
     public static let contentCheck: JobType = "content.check"
     public static let brandSkillDraft: JobType = "brand.skill_draft"
+    /// The Mac app's canvas runner (S1): reading / editing a canvas version's Wecra document.
+    public static let canvasRead: JobType = "canvas.read"
+    public static let canvasApply: JobType = "canvas.apply"
 
     /// Short Turkish label for job lists.
     public var label: String {
@@ -40,6 +43,8 @@ public struct JobType: RawRepresentable, Codable, Hashable, Sendable, Expressibl
         case .chatTurn: "Sohbet yanıtı"
         case .contentCheck: "Kontroller"
         case .brandSkillDraft: "Skill taslağı"
+        case .canvasRead: "Tuval okuma"
+        case .canvasApply: "Tuval düzenlemesi"
         case .demoEcho: "Deneme işi"
         default: rawValue
         }

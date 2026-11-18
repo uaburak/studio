@@ -37,3 +37,9 @@ export {
   topImage,
 } from "./layers.ts";
 export { type CanvasLintInput, canvasTextContrast, lintCanvasSlide } from "./lint.ts";
+export {
+  type CanvasOutlineLayer,
+  type CanvasOutlineSlide,
+  type CanvasOutlineText,
+  canvasOutline,
+} from "./outline.ts";

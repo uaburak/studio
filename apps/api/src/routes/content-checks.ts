@@ -28,8 +28,9 @@ import { loadContent } from "./contents.ts";
  * (switched-off checks, banned words, strictness, automatic fixes).
  *
  * The server stores what the worker measured; it computes the summary and the number of
- * results that hold approval back (`fail`, plus `warn` when strict). Approval itself is not
- * refused here: the apps ask before approving a version with blocking results.
+ * results that hold approval back (`fail`, plus `warn` when strict). `POST …/approve` refuses
+ * a version whose latest run holds approval back under the brand's current settings, or that
+ * has no finished run yet, unless the user acknowledged the checks (lib/approval-checks.ts).
  */
 
 const tags = ["Contents"];

@@ -254,7 +254,7 @@ export class FakeContentApi {
   versions = new Map<string, ContentVersion[]>();
   jobs = new Map<string, Job>();
   createdJobs: { type: string; payload: Record<string, unknown> }[] = [];
-  approveCalls: { id: string; hash: string }[] = [];
+  approveCalls: { id: string; hash: string; acknowledgeChecks?: true }[] = [];
   updateCalls: { id: string; input: unknown }[] = [];
   failNextJob: string | null = null;
   private nextJob = 1;
@@ -298,8 +298,16 @@ export class FakeContentApi {
         this.contents.set(id, next);
         return next;
       },
-      approve: async (id: string, hash: string) => {
-        this.approveCalls.push({ id, hash });
+      approve: async (
+        id: string,
+        input: string | { hash: string; acknowledgeChecks?: boolean },
+      ) => {
+        const hash = typeof input === "string" ? input : input.hash;
+        this.approveCalls.push(
+          typeof input === "object" && input.acknowledgeChecks
+            ? { id, hash, acknowledgeChecks: true }
+            : { id, hash },
+        );
         const c = this.contents.get(id) as Content;
         if (c.currentVersion?.contentHash !== hash) throw new Error("/api/contents: hash mismatch");
         const next: Content = {

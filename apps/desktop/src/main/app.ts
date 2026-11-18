@@ -15,6 +15,7 @@ import {
   shell,
 } from "electron";
 import { ACCOUNTS_IPC } from "../shared/accounts-ipc.ts";
+import { CANVAS_RUNNER_PAGE } from "../shared/canvas-runner.ts";
 import { DRAFTS_IPC } from "../shared/drafts.ts";
 import { FONTS_IPC } from "../shared/fonts.ts";
 import {
@@ -26,6 +27,8 @@ import {
 } from "../shared/ipc.ts";
 import { createSecretStore, safeStorageCipher, setupAccounts } from "./accounts/setup.ts";
 import { BackupService } from "./backup-service.ts";
+import { CanvasExecutor, nodeHubSocket } from "./canvas/executor.ts";
+import { CanvasRunnerWindow } from "./canvas/runner-window.ts";
 import { DraftStore } from "./drafts.ts";
 import { RendererFlush } from "./flush.ts";
 import { FontFiles, FontLister } from "./fonts.ts";
@@ -352,11 +355,54 @@ export function startApp(): void {
     });
   }
 
+  // The canvas runner (S1): the chat agent's canvas jobs run in a hidden page with Wecra's engine,
+  // also while no window has the post open (canvas/executor.ts, canvas/runner-window.ts).
+  let canvasRunner: CanvasRunnerWindow | null = null;
+  let canvasExecutor: CanvasExecutor | null = null;
+
+  function startCanvasRunner(): void {
+    const log = (message: string) => console.warn(message);
+    canvasRunner = new CanvasRunnerWindow({
+      url: () =>
+        isDev && process.env.ELECTRON_RENDERER_URL
+          ? `${process.env.ELECTRON_RENDERER_URL.replace(/\/$/, "")}/${CANVAS_RUNNER_PAGE}`
+          : `${APP_ORIGIN}/${CANVAS_RUNNER_PAGE}`,
+      preload: join(import.meta.dirname, "../preload/index.cjs"),
+      log,
+    });
+    canvasExecutor = new CanvasExecutor({
+      workerId: "studio-canvas",
+      version: app.getVersion(),
+      target: () => {
+        const snapshot = host.snapshot();
+        const up = snapshot.status.kind === "running" || snapshot.status.kind === "attached";
+        if (!up || snapshot.apiPort === null) return null;
+        return {
+          url: `ws://127.0.0.1:${snapshot.apiPort}/api/hub`,
+          token: loadOrCreateHostSecrets(stateDir, safeStorageCipher).workerToken,
+        };
+      },
+      socket: nodeHubSocket,
+      runner: canvasRunner,
+      log,
+    });
+    canvasExecutor.start();
+    host.onChange(() => canvasExecutor?.refresh());
+  }
+
+  function stopCanvasRunner(): void {
+    canvasExecutor?.stop();
+    canvasRunner?.close();
+    canvasExecutor = null;
+    canvasRunner = null;
+  }
+
   let quitting = false;
 
   async function shutdown(): Promise<void> {
     if (quitting) return;
     quitting = true;
+    stopCanvasRunner();
     try {
       if (host.ownsChildren) await host.stop();
       else host.releaseHostFile();
@@ -387,6 +433,7 @@ export function startApp(): void {
       event.preventDefault();
       void shutdown();
     } else {
+      stopCanvasRunner();
       host.releaseHostFile();
     }
   });
@@ -420,5 +467,6 @@ export function startApp(): void {
     );
     createWindow();
     void host.start();
+    startCanvasRunner();
   });
 }

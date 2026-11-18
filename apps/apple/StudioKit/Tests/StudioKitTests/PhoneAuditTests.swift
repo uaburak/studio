@@ -44,15 +44,13 @@ struct PhoneAuditTests {
         #expect(CanvasOrigin(html: #"<html><head></head><body><p>studio:editor wecra</p></body></html>"#) == nil)
     }
 
-    @Test func revisionRequestMirrorsTheDesktopReference() {
-        let origin = CanvasOrigin(sourceVersion: 4)
-        let request = origin.revisionRequest(version: 7, instruction: "Başlığı küçült")
-        #expect(request.baseVersion == 4)
-        // chat.ts `postReference`, word for word.
-        #expect(request.instructions == "(v7 tuvalde, Wecra ile düzenlendi: kareleri Wecra'nın render'ı; HTML'de render en altta, metinler, görsel yuvaları ve logolar üstünde görünmez katmanlar, tüm katmanlar studio:canvas bilgisinde. Metin ve katman değişikliklerini v4 HTML'si üzerinden yap; yeni sürüm tuvale yeniden aktarılır.)\nBaşlığı küçült")
-        let noSource = CanvasOrigin(sourceVersion: nil).revisionRequest(version: 2, instruction: "Daha sade")
-        #expect(noSource.baseVersion == nil)
-        #expect(noSource.instructions == "(v2 tuvalde, Wecra ile düzenlendi: kareleri Wecra'nın render'ı; HTML'de render en altta, metinler, görsel yuvaları ve logolar üstünde görünmez katmanlar, tüm katmanlar studio:canvas bilgisinde. Değişikliği yeni bir HTML sürümüyle yap; yeni sürüm tuvale yeniden aktarılır.)\nDaha sade")
+    @Test func requestTextMirrorsTheDesktopReference() {
+        // chat.ts `canvasNote` / `postReference` / `postChatText`, word for word (the same strings
+        // are pinned in apps/desktop/test/renderer/post-editor-model.test.ts and
+        // post-workspace.test.tsx).
+        #expect(CanvasOrigin.referenceNote(version: 5) == "(v5 Mac'teki tasarım tuvalinde kaydedildi: tasarım bu sürümün Wecra belgesidir, tuvalde elle yapılan değişiklikler onda. Değişikliği canvas_outline ile okuyup canvas_edit ile yap; HTML'den yeniden üretme.)")
+        #expect(CanvasOrigin.postReference(title: "Post", contentId: "p1", version: 5, canvas: true) == "“Post” postu (id: p1, güncel sürüm v5) için:\n(v5 Mac'teki tasarım tuvalinde kaydedildi: tasarım bu sürümün Wecra belgesidir, tuvalde elle yapılan değişiklikler onda. Değişikliği canvas_outline ile okuyup canvas_edit ile yap; HTML'den yeniden üretme.)")
+        #expect(CanvasOrigin.postReference(title: "Post", contentId: "p1", version: 2, canvas: false) == "“Post” postu (id: p1, güncel sürüm v2) için:")
     }
 
     private func canvasSession(extra: String = "") async throws -> (PostEditSession, SampleBackend) {
@@ -99,22 +97,85 @@ struct PhoneAuditTests {
         #expect(await session.saveCaption())
     }
 
-    @Test func canvasAIRequestGoesToTheSourceVersionWithTheMacsNote() async throws {
+    /// The Mac's agent on the other end of the post's conversation: it edits the canvas document
+    /// (a new canvas version, `ai_edit`) and its turn ends.
+    actor CanvasAgent: PostChatSender {
+        let backend: SampleBackend
+        var created: [(brandId: EntityID?, title: String?)] = []
+        var sent: [(conversationId: EntityID, text: String)] = []
+        var edits = true
+
+        init(backend: SampleBackend) { self.backend = backend }
+
+        func setEdits(_ value: Bool) { edits = value }
+
+        func createConversation(brandId: EntityID?, title: String?) async throws -> Conversation {
+            created.append((brandId, title))
+            return try await backend.createConversation(brandId: brandId, title: title)
+        }
+
+        func send(_ message: OutgoingMessage, to conversationId: EntityID) async throws -> UserMessageResult {
+            sent.append((conversationId, message.text))
+            let result = try await backend.send(message, to: conversationId)
+            if edits {
+                let number = try #require(try await backend.content("post-02a").currentVersion?.version)
+                let current = try await backend.version(contentId: "post-02a", version: number)
+                try await backend.storeVersion(contentId: "post-02a", slides: current.slides, origin: .aiEdit, note: "AI tuvalde düzenledi.")
+            }
+            await backend.finishRun(result.run.id)
+            return result
+        }
+
+        func cancelRun(_ runId: EntityID) async throws -> AgentRun { try await backend.cancelRun(runId) }
+    }
+
+    @Test func canvasAIRequestGoesToThePostConversationLikeTheMac() async throws {
         let (session, backend) = try await canvasSession()
+        let agent = CanvasAgent(backend: backend)
+        session.chat = agent
+        session.postConversations = PostConversations()
         let canvasVersion = try #require(session.activeVersion?.version)
+        let jobsBefore = try await backend.jobs(brandId: nil).filter { $0.type == .contentGenerate }.count
         session.instruction = "Başlığı büyüt"
         await session.sendInstruction()
         #expect(session.error == nil)
-        let job = try #require(try await backend.jobs(brandId: nil).first { $0.type == .contentGenerate && $0.payload["instructions"]?.stringValue?.hasSuffix("Başlığı büyüt") == true })
-        #expect(job.payload["baseVersion"] == .number(1))
-        let instructions = try #require(job.payload["instructions"]?.stringValue)
-        #expect(instructions.hasPrefix("(v\(canvasVersion) tuvalde, Wecra ile düzenlendi:"))
-        #expect(instructions.contains("v1 HTML'si üzerinden yap"))
-        #expect(instructions.hasSuffix("\nBaşlığı büyüt"))
-        // The revision (an HTML version) is adopted and editable again.
+        // No HTML revision: the Mac's message to the post's conversation (created once, in the
+        // post's brand, named after it), word for word what the Mac's post chat sends.
+        #expect(try await backend.jobs(brandId: nil).filter { $0.type == .contentGenerate }.count == jobsBefore)
+        let created = await agent.created
+        #expect(created.count == 1)
+        #expect(created.first?.brandId == session.content.brandId)
+        #expect(created.first?.title == session.content.title)
+        let sent = await agent.sent
+        #expect(sent.count == 1)
+        #expect(sent.first?.text == "“\(session.content.title)” postu (id: post-02a, güncel sürüm v\(canvasVersion)) için:\n\(CanvasOrigin.referenceNote(version: canvasVersion))\nBaşlığı büyüt")
+        // The agent's canvas version is adopted (still a canvas version), undoable.
         #expect(session.content.currentVersion?.version == canvasVersion + 1)
-        #expect(!session.isCanvasVersion)
+        #expect(session.isCanvasVersion)
         #expect(session.undoStack.last == PostEditSession.EditStep(before: canvasVersion, after: canvasVersion + 1, name: "AI düzenlemesi"))
+        #expect(session.instruction.isEmpty)
+        #expect(session.activity == .idle)
+
+        // The next request continues the same conversation, with the new current version.
+        await agent.setEdits(false)
+        session.instruction = "Biraz daha"
+        await session.sendInstruction()
+        let again = await agent.sent
+        #expect(again.count == 2)
+        #expect(again.last?.conversationId == sent.first?.conversationId)
+        #expect(again.last?.text.hasPrefix("“\(session.content.title)” postu (id: post-02a, güncel sürüm v\(canvasVersion + 1)) için:") == true)
+        #expect(await agent.created.count == 1)
+        #expect(session.notice == "AI bu istekle bir sürüm oluşturmadı; yanıtı post sohbetinde.")
+    }
+
+    @Test func canvasAIRequestWithoutAChatSaysSo() async throws {
+        let (session, backend) = try await canvasSession()
+        let jobsBefore = try await backend.jobs(brandId: nil).count
+        session.instruction = "Başlığı büyüt"
+        await session.sendInstruction()
+        #expect(session.error == CanvasOrigin.chatMissingNote)
+        #expect(try await backend.jobs(brandId: nil).count == jobsBefore)
+        #expect(session.instruction == "Başlığı büyüt")
     }
 
     @Test func plainVersionsStillReviseThemselves() async throws {
@@ -259,6 +320,31 @@ struct PhoneAuditTests {
         #expect(ContentChecks.approvalRefusal(StudioAPIError.offline) == nil)
     }
 
+    @Test func approvingPastTheChecksTellsTheAPIOnlyAfterTheUserSaidYes() async throws {
+        let backend = SampleBackend(data: SampleData(now: .now), uploadDelay: .zero)
+        let content = try await backend.content("post-02a")
+        let version = try await backend.version(contentId: "post-02a", version: 1)
+        let session = PostEditSession(service: backend, card: PostCard(content: content, version: version))
+        session.pollInterval = .milliseconds(5)
+        await session.load()
+        await session.waitUntilIdle()
+        await backend.storeCheckRun(Self.run(version: 1, [ContentCheckResult(checkId: "layout.overflow", category: .layout, status: .fail, message: "Taşıyor.")]))
+        #expect(await session.approvalGate().question?.title == "Kontrollerde 1 sorun var. Yine de onaylansın mı?")
+
+        // Without the user's answer the approval goes without the acknowledgement: the API refuses.
+        #expect(await session.approve() == false)
+        #expect(session.error?.hasPrefix("Mac onaylamadı: kontrollerde sorun var.") == true)
+        #expect(session.content.status != .approved)
+        #expect(await backend.approvalsDespiteChecks.isEmpty)
+
+        // "Yine de onayla": the next approval of this version says the user saw the checks.
+        session.acknowledgeChecks()
+        #expect(session.checksAcknowledgedVersion == 1)
+        #expect(await session.approve())
+        #expect(session.content.status == .approved)
+        #expect(await backend.approvalsDespiteChecks == ["post-02a"])
+    }
+
     @Test func sessionReadsRunsAndRerunsChecks() async throws {
         let backend = SampleBackend(data: SampleData(now: .now), uploadDelay: .zero)
         let content = try await backend.content("post-02a")
@@ -300,6 +386,9 @@ struct PhoneAuditTests {
         #expect(JobType.contentCheck.label == "Kontroller")
         #expect(JobType.brandSkillDraft.label == "Skill taslağı")
         #expect(JobType(rawValue: "content.check") == .contentCheck)
+        #expect(JobType(rawValue: "canvas.apply") == .canvasApply)
+        #expect(JobType.canvasApply.label == "Tuval düzenlemesi")
+        #expect(JobType.canvasRead.label == "Tuval okuma")
     }
 
     // MARK: M4 — unreadable conversation frames

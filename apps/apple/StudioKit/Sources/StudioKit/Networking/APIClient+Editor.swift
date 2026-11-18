@@ -134,8 +134,8 @@ extension APIClient {
     }
 
     /// "Neyi değiştireyim?": a `content.generate` job that revises `baseVersion` with `instructions`.
-    /// Without `baseVersion` the worker makes a new design with the instructions (a canvas
-    /// version without an HTML source: see `CanvasOrigin.revisionRequest`).
+    /// Without `baseVersion` the worker makes a new design with the instructions. (A version saved
+    /// from the Mac's canvas goes to the post's conversation instead: `PostEditSession`.)
     public func requestRevision(of content: Content, baseVersion: Int?, instructions: String) async throws(StudioAPIError) -> Job {
         var payload: JSONObject = [
             "brief": .string(content.brief.isEmpty ? content.title : content.brief),

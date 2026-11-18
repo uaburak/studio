@@ -19,6 +19,8 @@ public actor SampleBackend: ConversationService, StudioDataService {
     private var kits: [EntityID: BrandKit] = [:]
     /// Check runs per content id, newest first.
     private var checkRuns: [EntityID: [ContentCheckRun]] = [:]
+    /// Posts approved although their checks held the approval back (the user confirmed: E7).
+    public private(set) var approvalsDespiteChecks: [EntityID] = []
     private var counter = 0
     /// Simulated upload duration per image (0 in tests).
     private let uploadDelay: Duration
@@ -839,7 +841,7 @@ public actor SampleBackend: ConversationService, StudioDataService {
         return updated
     }
 
-    public func approve(contentId: EntityID, hash: String) async throws -> Content {
+    public func approve(contentId: EntityID, hash: String, acknowledgeChecks: Bool) async throws -> Content {
         let content = try await self.content(contentId)
         guard content.status.isApprovable else {
             throw StudioAPIError.server(status: 409, code: .invalidTransition, message: "content is \(content.status.rawValue)", issues: [])
@@ -847,6 +849,15 @@ public actor SampleBackend: ConversationService, StudioDataService {
         guard let ref = content.currentVersion, ref.contentHash == hash else {
             throw StudioAPIError.server(status: 409, code: .hashMismatch, message: "hash does not match the current version", issues: [])
         }
+        // The API's gate (E7): a stored run of this version with blocking results refuses an
+        // approval the user did not confirm. (The sample has no worker: an unchecked version passes.)
+        if !acknowledgeChecks, let run = checkRuns[contentId]?.first(where: { $0.version == ref.version }), run.blocking > 0 {
+            throw StudioAPIError.server(
+                status: 409, code: .conflict,
+                message: "v\(ref.version) için \(run.blocking) kontrol geçmedi. Sonuçlara bakıp yine de onaylamak istediğinizi belirtin.",
+                issues: [])
+        }
+        if acknowledgeChecks { approvalsDespiteChecks.append(contentId) }
         return try updateContent(contentId) { content in
             content.status = .approved
             content.approval = ContentApproval(versionId: ref.id, contentHash: hash, approvedAt: now)
@@ -1133,6 +1144,22 @@ public actor SampleBackend: ConversationService, StudioDataService {
         data.jobs.insert(job, at: 0)
         broadcastJobs()
         return job
+    }
+
+    /// Ends a chat run as if the Mac's agent had answered (tests, previews): the run and its
+    /// `chat.turn` job finish.
+    public func finishRun(_ runId: EntityID) {
+        guard let index = data.runs.firstIndex(where: { $0.id == runId }) else { return }
+        data.runs[index].status = .completed
+        data.runs[index].finishedAt = now
+        if let jobId = data.runs[index].jobId, let jobIndex = data.jobs.firstIndex(where: { $0.id == jobId }) {
+            data.jobs[jobIndex].status = .succeeded
+            data.jobs[jobIndex].finishedAt = now
+        }
+        let conversationId = data.runs[index].conversationId
+        if let c = data.conversations.firstIndex(where: { $0.id == conversationId }) { data.conversations[c].activeRunId = nil }
+        broadcast(conversationId)
+        broadcastJobs()
     }
 
     /// Adds a version as if the Mac had saved one (a canvas save in tests and previews).

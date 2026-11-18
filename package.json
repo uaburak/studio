@@ -9,12 +9,12 @@
   "scripts": {
     "dev": "pnpm --filter @studio/desktop run dev",
     "dev:worker": "pnpm --filter @studio/worker run dev",
-    "typecheck": "pnpm -r run typecheck",
+    "typecheck": "STUDIO_WECRA_OPTIONAL=1 pnpm -r run typecheck",
     "lint": "biome check .",
     "lint:fix": "biome check --write .",
     "format": "biome format --write .",
-    "test": "pnpm -r run test",
-    "build": "pnpm -r run build"
+    "test": "STUDIO_WECRA_OPTIONAL=1 pnpm -r run test",
+    "build": "STUDIO_WECRA_OPTIONAL=1 pnpm -r run build"
   },
   "devDependencies": {
     "@biomejs/biome": "catalog:",

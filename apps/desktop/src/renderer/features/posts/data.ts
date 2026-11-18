@@ -274,6 +274,8 @@ const CONTENT_JOBS = new Set<Job["type"]>([
   "schedule.publish",
   // "Düzelt" stores a fixed version / a shorter caption (roadmap 13).
   "content.check",
+  // The agent's edit of a canvas document (any conversation, the iPhone): a new version.
+  "canvas.apply",
 ]);
 
 /**

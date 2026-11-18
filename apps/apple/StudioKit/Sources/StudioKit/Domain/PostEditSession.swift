@@ -106,6 +106,12 @@ public final class PostEditSession {
     @ObservationIgnored public var onAssetUploaded: (@MainActor (Asset, UploadFile) -> Void)?
     /// Whether a Mac worker is connected (layer measuring needs one).
     @ObservationIgnored public var workerOnline: @MainActor () -> Bool = { true }
+    /// The chat (S1): an AI request about a canvas version is a message to the post's
+    /// conversation, as on the Mac (nil: such a request is refused with a note).
+    @ObservationIgnored public var chat: (any PostChatSender)?
+    /// Which conversation each post's requests go to on this phone.
+    @ObservationIgnored public var postConversations: PostConversations = .shared
+    @ObservationIgnored private var revisionRunId: EntityID?
 
     @ObservationIgnored public var jobTimeout: Duration = .seconds(180)
     @ObservationIgnored public var revisionTimeout: Duration = .seconds(1200)
@@ -651,14 +657,17 @@ public final class PostEditSession {
             error = "Önceki değişiklik bitince yeniden dene."
             return
         }
-        // A canvas version is the Mac's render, not a design the AI can revise: ask the way the
-        // Mac does (its note, and the HTML version the canvas came from as the base).
-        let request = canvasOrigin?.revisionRequest(version: base, instruction: text) ?? (baseVersion: base, instructions: text)
+        // A canvas version's design is its Wecra document (S1): the request goes the Mac's way,
+        // to the post's conversation, where the agent edits that document.
+        if isCanvasVersion {
+            await sendCanvasRequest(text, base: base)
+            return
+        }
         activity = .revising("İstek Mac'e gönderiliyor")
         error = nil
         let online = workerOnline
         do {
-            let job = try await service.requestRevision(of: content, baseVersion: request.baseVersion, instructions: request.instructions)
+            let job = try await service.requestRevision(of: content, baseVersion: base, instructions: text)
             revisionJobId = job.id
             instruction = ""
             let done = try await service.waitForJob(job.id, timeout: revisionTimeout, interval: .seconds(1.5)) { [weak self] job in
@@ -686,7 +695,73 @@ public final class PostEditSession {
         activity = .idle
     }
 
+    /// "Neyi değiştireyim?" on a canvas version: the same message the Mac's post chat sends (the
+    /// post's line with its current version and the canvas note, then the request) to the post's
+    /// conversation; the agent's turn ends, and the version it made (if any) is adopted.
+    private func sendCanvasRequest(_ text: String, base: Int) async {
+        guard let chat else {
+            error = CanvasOrigin.chatMissingNote
+            return
+        }
+        activity = .revising("İstek sohbete gönderiliyor")
+        error = nil
+        let online = workerOnline
+        let message = OutgoingMessage(text: CanvasOrigin.chatRequest(content: content, version: base, instruction: text))
+        do {
+            let result: UserMessageResult
+            if let known = postConversations.conversationId(for: content.id) {
+                do {
+                    result = try await chat.send(message, to: known)
+                } catch StudioAPIError.server(status: 404, code: _, message: _, issues: _) {
+                    // The conversation was deleted: a new one.
+                    result = try await chat.send(message, to: try await newPostConversation(chat))
+                }
+            } else {
+                result = try await chat.send(message, to: try await newPostConversation(chat))
+            }
+            instruction = ""
+            revisionRunId = result.run.id
+            if let jobId = result.run.jobId {
+                revisionJobId = jobId
+                _ = try await service.waitForJob(jobId, timeout: revisionTimeout, interval: .seconds(1.5)) { [weak self] job in
+                    Task { @MainActor [weak self] in
+                        guard let self, case .revising = self.activity else { return }
+                        let message = job.status == .queued
+                            ? (online() ? "Sırada" : "Mac'teki işçiyi bekliyor")
+                            : "AI tuvalde düzenliyor"
+                        self.activity = .revising(message)
+                    }
+                }
+            }
+            let fresh = try await service.content(content.id)
+            if let number = fresh.currentVersion?.version, number != base {
+                await adopt(versionNumber: number)
+                undoStack.append(EditStep(before: base, after: number, name: "AI düzenlemesi"))
+                redoStack = []
+                notice = "AI düzenlemesi v\(number) olarak kaydedildi."
+            } else {
+                notice = "AI bu istekle bir sürüm oluşturmadı; yanıtı post sohbetinde."
+            }
+        } catch {
+            self.error = "AI düzenlemesi: \(Self.describe(error))"
+            if instruction.isEmpty { instruction = text }
+        }
+        revisionJobId = nil
+        revisionRunId = nil
+        activity = .idle
+    }
+
+    private func newPostConversation(_ chat: any PostChatSender) async throws -> EntityID {
+        let conversation = try await chat.createConversation(brandId: content.brandId, title: String(content.title.prefix(200)))
+        postConversations.remember(conversation.id, for: content.id)
+        return conversation.id
+    }
+
     public func cancelRevision() async {
+        if let runId = revisionRunId, let chat {
+            _ = try? await chat.cancelRun(runId)
+            return
+        }
         guard let id = revisionJobId else { return }
         _ = try? await service.cancelJob(id)
     }
@@ -719,16 +794,33 @@ public final class PostEditSession {
         }
     }
 
+    /// The version whose checks the user chose to approve past ("Yine de onaylansın mı?" → yes,
+    /// E7): an approval of that version — here, or the one scheduling makes — says so to the API.
+    public private(set) var checksAcknowledgedVersion: Int?
+
+    /// The user confirmed approving the current version although its checks hold it back.
+    public func acknowledgeChecks() {
+        checksAcknowledgedVersion = content.currentVersion?.version
+    }
+
+    /// Whether an approval now carries the user's acknowledgement of the checks.
+    private var checksAcknowledged: Bool {
+        checksAcknowledgedVersion != nil && checksAcknowledgedVersion == content.currentVersion?.version
+    }
+
+    /// Approve the current version. The API refuses while its checks hold the approval back
+    /// unless the user confirmed first (`acknowledgeChecks()`, or `acknowledgingChecks`).
     @discardableResult
-    public func approve() async -> Bool {
+    public func approve(acknowledgingChecks: Bool = false) async -> Bool {
         guard canApprove, let hash = card.approvableHash else {
             error = approveBlocker
             return false
         }
+        if acknowledgingChecks { acknowledgeChecks() }
         isApproving = true
         defer { isApproving = false }
         do {
-            card.content = try await service.approve(contentId: content.id, hash: hash)
+            card.content = try await service.approve(contentId: content.id, hash: hash, acknowledgeChecks: checksAcknowledged)
             onCardChange?(card)
             error = nil
             notice = "Onaylandı."
@@ -771,7 +863,7 @@ public final class PostEditSession {
                     error = "Zamanlamak için önce bu sürümün onaylanması gerekiyor."
                     return []
                 }
-                card.content = try await service.approve(contentId: content.id, hash: hash)
+                card.content = try await service.approve(contentId: content.id, hash: hash, acknowledgeChecks: checksAcknowledged)
                 onCardChange?(card)
             }
             var created: [Schedule] = []

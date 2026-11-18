@@ -117,6 +117,8 @@ export interface SegmentOption<T extends string> {
   label: string;
   /** Shown after the label in the tertiary colour (filter counts). */
   count?: number;
+  /** "danger": the count is a problem count (failed checks), shown in red. */
+  countTone?: "neutral" | "danger";
 }
 
 export function SegmentedControl<T extends string>({
@@ -186,7 +188,14 @@ export function SegmentedControl<T extends string>({
           >
             {option.label}
             {option.count !== undefined && (
-              <span className="ml-1 text-fg-3 tabular-nums">{option.count}</span>
+              <span
+                className={cn(
+                  "ml-1 tabular-nums",
+                  option.countTone === "danger" ? "font-medium text-danger" : "text-fg-3",
+                )}
+              >
+                {option.count}
+              </span>
             )}
           </button>
         );

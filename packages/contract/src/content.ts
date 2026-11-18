@@ -385,10 +385,23 @@ export const ContentUpdate = z
   .meta({ id: "ContentUpdate" });
 export type ContentUpdate = z.input<typeof ContentUpdate>;
 
-export const ContentApprove = z.object({ hash: ContentHash }).meta({
-  id: "ContentApprove",
-  description: "Approve the current version, identified by its hash.",
-});
+export const ContentApprove = z
+  .object({
+    hash: ContentHash,
+    /**
+     * The user saw the version's check results (failures, or no finished run yet) and approves
+     * anyway. Without it the API refuses (409 `conflict`, a Turkish message about "kontroller")
+     * while the latest run of that version holds approval back or no run has finished yet and
+     * the brand has checks switched on.
+     */
+    acknowledgeChecks: z.boolean().optional(),
+  })
+  .meta({
+    id: "ContentApprove",
+    description:
+      "Approve the current version, identified by its hash. `acknowledgeChecks`: approve " +
+      "although its checks did not pass (or have not finished).",
+  });
 export type ContentApprove = z.input<typeof ContentApprove>;
 
 export const ContentTransition = z

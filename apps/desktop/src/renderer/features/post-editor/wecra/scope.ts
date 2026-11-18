@@ -1,5 +1,6 @@
 // What the post's Sohbet knows of the canvas: the layers it may name (`@` chips, the canvas
-// selection) — Wecra's nodes, with the slide (top-level frame) they are on.
+// selection) — Wecra's nodes, with the slide (top-level frame) they are on. The scope line names
+// each by its Wecra id (what the agent's `canvas_edit` takes), its name and its kind.
 
 import { useMemo } from "react";
 import type { EditorController } from "@/editor/controller";
@@ -21,26 +22,51 @@ export interface ChatLayers {
   deselect(key: string): void;
 }
 
-/** A node's slide (index of its top-level frame) and name, for the AI's scope line. */
+const KINDS: Record<string, string> = {
+  TEXT: "metin",
+  FRAME: "çerçeve",
+  GROUP: "grup",
+  SECTION: "bölüm",
+  INSTANCE: "bileşen",
+  SYMBOL: "bileşen",
+  VECTOR: "vektör",
+  BOOLEAN_OPERATION: "vektör",
+  LINE: "çizgi",
+};
+
+/** A layer's kind in plain words ("metin", "görsel", "şekil" …). */
+function kindOf(node: { type?: string; fillPaints?: { type?: string; visible?: boolean }[] }) {
+  if (node.fillPaints?.some((p) => p.type === "IMAGE" && p.visible !== false)) return "görsel";
+  return KINDS[node.type ?? ""] ?? "şekil";
+}
+
+/** A node's slide (index of its top-level frame), name and kind, for the AI's scope line. */
 export function describeNode(
   ed: EditorController,
   key: string,
-): { slide: number; id: string; label: string } | null {
+): { slide: number; id: string; label: string; kind: string } | null {
   const frames = pageFrames(ed).map((f) => f.ref);
   let id: string | null = key;
   let name: string | null = null;
+  let kind = "şekil";
   for (let depth = 0; id && depth < 64; depth++) {
-    const node = ed.engine.readNode(id, {
-      fields: ["name", "parentIndex", "type", "textData"],
-    }) as {
+    const raw = ed.engine.readNode(id, {
+      fields: ["name", "parentIndex", "type", "textData", "fillPaints"],
+    });
+    if (!raw) return null;
+    const node = ed.withRealType(raw) as {
       name?: string;
+      type?: string;
+      fillPaints?: { type?: string; visible?: boolean }[];
       textData?: { characters?: string };
       parentIndex?: { guid: string };
-    } | null;
-    if (!node) return null;
-    if (name === null) name = node.name || node.textData?.characters?.slice(0, 40) || key;
+    };
+    if (name === null) {
+      name = node.name || node.textData?.characters?.slice(0, 40) || key;
+      kind = depth === 0 && frames.includes(key) ? "kare" : kindOf(node);
+    }
     const slide = frames.indexOf(id);
-    if (slide >= 0) return { slide, id: key, label: name };
+    if (slide >= 0) return { slide, id: key, label: name, kind };
     id = node.parentIndex?.guid ?? null;
   }
   return null;

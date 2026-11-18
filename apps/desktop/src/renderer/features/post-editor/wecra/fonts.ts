@@ -1,8 +1,15 @@
 // Where Wecra's text engine gets its fonts in Studio (Wecra's FontSource): Wecra's own Inter
 // (bundled), the fonts installed on this Mac (Studio's font list; a face's bytes from the main
-// process, `fonts:read`), and the brand's uploaded font files (TTF / OTF: the engine reads sfnt
-// fonts, not WOFF). A text whose family is none of these draws in Inter and Wecra's Design panel
-// says "Missing fonts", as in Wecra.
+// process, `fonts:read`), and the brand's uploaded font files — TTF / OTF as they are, WOFF / WOFF2
+// decoded to the sfnt they wrap (font-files.ts: the engine reads sfnt fonts only; E9). A text whose
+// family is none of these draws in Inter and Wecra's Design panel says "Missing fonts", as in
+// Wecra (the post can't become a version then: missing-fonts.ts).
+//
+// Which wins when the Mac has the brand's family installed too — as brand.css decides for the
+// worker's render (design-kit `fontFaces` / `fontStack`): a role marked `system` (the brand says
+// "the installed font") uses the installed family, its files only stand in on a Mac without it;
+// any other role's files are the family (brand.css declares them under the family's own name, and
+// an @font-face beats a local font of the same name), so the installed faces of it are left out.
 
 import { resolveFontFile } from "@studio/design-kit/brand";
 import {
@@ -14,6 +21,7 @@ import {
 } from "@/engine/fonts";
 import type { RenderKit } from "../model/brand-kit.ts";
 import { assetContentUrl } from "../model/brand-kit.ts";
+import { toSfnt } from "./font-files.ts";
 
 const SYSTEM = "studio-system:";
 const FILE = "studio-file:";
@@ -38,14 +46,17 @@ function styleName(weight: number, italic: boolean): string {
   return base === "Regular" ? "Italic" : `${base} Italic`;
 }
 
-/** The brand's uploaded TTF / OTF files as faces of their role's family. */
+/** The font files the engine can take (WOFF / WOFF2 are decoded when read). */
+const FONT_FILE = /\.(ttf|otf|woff2?)$/i;
+
+/** The brand's uploaded font files as faces of their role's family. */
 export function brandFileFaces(kit: Pick<RenderKit, "tokens" | "files">): FontFaceInfo[] {
   const out: FontFaceInfo[] = [];
   for (const role of Object.values(kit.tokens.font)) {
     for (const file of role.files ?? []) {
       const resolved = resolveFontFile(file, role);
       const assetId = kit.files[resolved.path];
-      if (!assetId || !/\.(ttf|otf)$/i.test(resolved.path)) continue;
+      if (!assetId || !FONT_FILE.test(resolved.path)) continue;
       // "700", or a variable file's range "100 900" (its lightest weight names it).
       const range = (resolved.weight ?? "")
         .split(/\s+/)
@@ -67,6 +78,31 @@ export function brandFileFaces(kit: Pick<RenderKit, "tokens" | "files">): FontFa
     }
   }
   return out;
+}
+
+/**
+ * The installed faces and the brand's files, by brand.css's rule (see the top): a `system` role's
+ * family is the installed one when it is there (its files stand in otherwise); any other role's
+ * files are the family, the installed faces of it are left out.
+ */
+export function precedence(
+  installed: readonly FontFaceInfo[],
+  kit: Pick<RenderKit, "tokens" | "files"> | null,
+): FontFaceInfo[] {
+  const files = kit ? brandFileFaces(kit) : [];
+  if (!kit || files.length === 0) return [...installed];
+  const lower = (f: { family: string }) => f.family.toLowerCase();
+  const system = new Set(
+    Object.values(kit.tokens.font)
+      .filter((r) => r.system)
+      .map(lower),
+  );
+  const have = new Set(installed.map(lower));
+  const brandOwned = new Set(files.map(lower).filter((f) => !system.has(f)));
+  return [
+    ...installed.filter((f) => !brandOwned.has(lower(f))),
+    ...files.filter((f) => brandOwned.has(lower(f)) || !have.has(lower(f))),
+  ];
 }
 
 /** Studio's font source for Wecra's engine. */
@@ -94,10 +130,7 @@ export function studioFontSource(kit: Pick<RenderKit, "tokens" | "files"> | null
           // the bundled Inter and the brand's files still work
         }
       }
-      const files = kit ? brandFileFaces(kit) : [];
-      const have = new Set(local.map((f) => f.family.toLowerCase()));
-      // An installed family wins over the brand's file of the same family (as brand.css does).
-      return mergeFaces([...local, ...files.filter((f) => !have.has(f.family.toLowerCase()))]);
+      return mergeFaces(precedence(local, kit));
     },
     async read(face) {
       if (face.id.startsWith(SYSTEM)) {
@@ -108,7 +141,8 @@ export function studioFontSource(kit: Pick<RenderKit, "tokens" | "files"> | null
       if (face.id.startsWith(FILE)) {
         const res = await fetch(assetContentUrl(face.id.slice(FILE.length)));
         if (!res.ok) throw new Error(`no font ${face.family} ${face.style}`);
-        return new Uint8Array(await res.arrayBuffer());
+        // WOFF / WOFF2 as the sfnt they wrap (the engine reads no other).
+        return toSfnt(new Uint8Array(await res.arrayBuffer()));
       }
       if (BUNDLED_FACES.some((f) => f.id === face.id)) {
         const { defaultFontSource } = await import("@/engine/fonts");

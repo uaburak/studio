@@ -222,14 +222,19 @@ export class SubmitError extends Error {
   }
 }
 
+/**
+ * `acknowledgeChecks`: the approve guard asked about the version's checks and the user approved
+ * anyway (E7) — without it the API refuses a version whose checks did not pass.
+ */
 async function approveIfNeeded(
   api: ScheduleApi,
   content: Content,
   hash: string | null,
+  acknowledgeChecks = false,
 ): Promise<Content> {
   if (!needsApproval(content)) return content;
   if (!hash) throw new SubmitError("Zamanlamak için önce bu sürümün onaylanması gerekiyor.", []);
-  return api.contents.approve(content.id, hash);
+  return api.contents.approve(content.id, acknowledgeChecks ? { hash, acknowledgeChecks } : hash);
 }
 
 /**
@@ -247,9 +252,10 @@ export async function submitSchedule(
     accountIds: readonly string[];
     date: Date;
     offeredAccountIds?: readonly string[];
+    acknowledgeChecks?: boolean;
   },
 ): Promise<{ schedules: Schedule[]; cancelled: Schedule[]; content: Content }> {
-  await approveIfNeeded(api, input.content, input.hash);
+  await approveIfNeeded(api, input.content, input.hash, input.acknowledgeChecks);
   const created: Schedule[] = [];
   const cancelled: Schedule[] = [];
   try {
@@ -337,9 +343,14 @@ export async function cancelSchedules(
 /** "Şimdi yayınla" (after the owner confirmed). */
 export async function submitPublishNow(
   api: ScheduleApi,
-  input: { content: Content; hash: string | null; accountIds: readonly string[] },
+  input: {
+    content: Content;
+    hash: string | null;
+    accountIds: readonly string[];
+    acknowledgeChecks?: boolean;
+  },
 ): Promise<{ schedules: Schedule[]; content: Content }> {
-  await approveIfNeeded(api, input.content, input.hash);
+  await approveIfNeeded(api, input.content, input.hash, input.acknowledgeChecks);
   const result = await api.schedules.publishNow({
     contentId: input.content.id,
     socialAccountIds: [...input.accountIds].sort(),

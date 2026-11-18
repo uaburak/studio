@@ -4,7 +4,14 @@
 // message box, back is only the app's (the title area has no back of its own), the Sohbet /
 // Düzenle mode is remembered per post, and the Sohbet is a conversation bound to the post.
 // Wecra's editor itself (WebGL, the engine) is stood in for here: test/engine drives the real one.
-import type { ApiClient, Content, ContentVersion } from "@studio/contract";
+import type {
+  ApiClient,
+  Content,
+  ContentCheckResult,
+  ContentCheckRun,
+  ContentVersion,
+  Slide,
+} from "@studio/contract";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -23,7 +30,10 @@ vi.mock("../../src/renderer/features/post-editor/wecra/host.tsx", async () => {
       useEffect(() => {
         onReady?.({
           source,
-          store: { page: "0:1" },
+          store: { page: "0:1", subscribe: () => () => {} },
+          // Wecra's UI state (the safe areas' toggle lives there).
+          ui: { get: () => ({}), set: () => {}, subscribe: () => () => {} },
+          selection: [],
           engine: {
             destroyed: false,
             command: () => 0,
@@ -32,6 +42,10 @@ vi.mock("../../src/renderer/features/post-editor/wecra/host.tsx", async () => {
             setSelection: () => 0,
             encodeDocumentKiwi: () => kiwi,
             setViewerMode: (on: boolean) => viewerMode.push(on),
+            setSafeAreas: () => {},
+            styles: () => [],
+            onDocumentChanged: () => () => {},
+            hitTest: () => [],
           },
           withRealType: (n: unknown) => n,
           focusCanvas: () => {},
@@ -48,9 +62,20 @@ vi.mock("../../src/renderer/features/post-editor/wecra/host.tsx", async () => {
     WecraZoomMenu: () => <button type="button">100%</button>,
   };
 });
+// What the import was given (the kit: E10) and where "Göster" pointed the canvas (E6).
+const seen = vi.hoisted(() => ({ kits: [] as unknown[], shown: [] as unknown[][] }));
 vi.mock("../../src/renderer/features/post-editor/wecra/import.ts", () => ({
-  captureSlides: async () => [],
+  captureSlides: async (_slides: unknown, kit: unknown) => {
+    seen.kits.push(kit);
+    return [];
+  },
   importSlides: async () => [],
+}));
+vi.mock("../../src/renderer/features/post-editor/wecra/locate.ts", () => ({
+  showCheck: (...args: unknown[]) => {
+    seen.shown.push(args);
+    return true;
+  },
 }));
 vi.mock("../../src/renderer/features/post-editor/wecra/fonts.ts", () => ({
   installStudioFonts: () => {},
@@ -60,8 +85,10 @@ vi.mock("@/engine/hooks", () => ({
   useSelection: () => ({ pageId: "0:1", refs: [] }),
 }));
 
+import { CANVAS_FACTS_VERSION, type CanvasFacts, canvasSlideHtml } from "@studio/design-kit/canvas";
 import { RightPanel } from "../../src/renderer/components/panels/right-panel.tsx";
 import { runMenuCommand } from "../../src/renderer/components/shell/app-shell.tsx";
+import { checkKeys } from "../../src/renderer/features/checks/checks-data.ts";
 import { PostEditor } from "../../src/renderer/features/post-detail/editor.ts";
 import { PostDetailLayer } from "../../src/renderer/features/post-detail/post-detail.tsx";
 import { postChatText, scopedInstruction } from "../../src/renderer/features/post-editor/chat.ts";
@@ -170,30 +197,31 @@ describe("workspace state", () => {
     expect(useAppStore.getState().panelPresented).toBe(true);
   });
 
-  it("writes the post's reference on the first message and the scope on every one", () => {
+  it("writes the post's reference with its current version and the scope on every message (E17)", () => {
     const describe = (key: string) =>
-      key === "0:headline" ? { slide: 0, id: "headline", label: "Başlık" } : null;
+      key === "7:2" ? { slide: 0, id: "7:2", label: "Başlık", kind: "metin" } : null;
     const first = postChatText({
-      first: true,
       content: { id: "p1", title: TITLE },
       version: { version: 3 },
       text: "Kısalt",
-      scope: ["0:headline"],
+      scope: ["7:2"],
       describe,
     });
     expect(first).toBe(
-      `“${TITLE}” postu (id: p1, v3) için:\n${scopedInstruction("Kısalt", ["0:headline"], describe)}`,
+      `“${TITLE}” postu (id: p1, güncel sürüm v3) için:\n${scopedInstruction("Kısalt", ["7:2"], describe)}`,
     );
-    expect(first).toContain("Kapsam: Kare 1 › headline (Başlık)");
+    expect(first).toContain("Kapsam: Kare 1 › “Başlık” (metin, id 7:2)");
+    // A later message, after the canvas made v4 (from the canvas: its Wecra document is the design).
     const later = postChatText({
-      first: false,
       content: { id: "p1", title: TITLE },
-      version: { version: 3 },
+      version: { version: 4, editorDocument: { kind: "wecra", assetId: "doc", format: 2 } },
       text: "Biraz daha",
       scope: [],
       describe,
     });
-    expect(later).toBe("Biraz daha");
+    expect(later).toBe(
+      `“${TITLE}” postu (id: p1, güncel sürüm v4) için:\n(v4 Mac'teki tasarım tuvalinde kaydedildi: tasarım bu sürümün Wecra belgesidir, tuvalde elle yapılan değişiklikler onda. Değişikliği canvas_outline ile okuyup canvas_edit ile yap; HTML'den yeniden üretme.)\nBiraz daha`,
+    );
   });
 });
 
@@ -251,9 +279,22 @@ describe("mode dock", () => {
 
 // --- the open post ---------------------------------------------------------------------------
 
-async function setup(options: { type?: Content["type"]; status?: Content["status"] } = {}) {
+async function setup(
+  options: {
+    type?: Content["type"];
+    status?: Content["status"];
+    slides?: Slide[];
+    /** The brand's current profile (default: none, 404). */
+    profile?: () => Promise<unknown>;
+    /** The checks the API answers for the post (runs of v1, check jobs, the brand's settings). */
+    checks?: {
+      runs?: () => ContentCheckRun[];
+      jobs?: () => { type: string; status: string; payload: Record<string, unknown> }[];
+    };
+  } = {},
+) {
   const fake = new FakeContentApi();
-  const v1 = await hashedVersion("p1", 1);
+  const v1 = await hashedVersion("p1", 1, options.slides);
   const c = contentFor(v1, {
     targetPlatforms: ["instagram"],
     type: options.type ?? "post",
@@ -273,15 +314,39 @@ async function setup(options: { type?: Content["type"]; status?: Content["status
     conversations: chat.conversations,
     agentRuns: chat.agentRuns,
     brandProfiles: {
-      current: async () => {
-        throw Object.assign(new Error("no profile"), { status: 404 });
+      current:
+        options.profile ??
+        (async () => {
+          throw Object.assign(new Error("no profile"), { status: 404 });
+        }),
+    },
+    contents: {
+      ...fake.api.contents,
+      checks: {
+        list: async () => ({ items: options.checks?.runs?.() ?? [], nextCursor: null }),
       },
+    },
+    jobs: {
+      ...fake.api.jobs,
+      list: async () => ({ items: options.checks?.jobs?.() ?? [], nextCursor: null }),
+    },
+    brandCheckSettings: {
+      get: async () => ({
+        brandId: "b1",
+        disabledChecks: [],
+        bannedWords: [],
+        strictness: "standard",
+        autoFix: true,
+        updatedAt: null,
+      }),
     },
   };
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   // The board's copy and the version (the app has them cached when a card is opened).
   queryClient.setQueryData(postKeys.content("p1"), c);
   queryClient.setQueryData(postKeys.version("p1", 1), v1 as ContentVersion);
+  const run = options.checks?.runs?.()[0];
+  if (run) queryClient.setQueryData(checkKeys.run("p1", 1), run);
   const view = render(
     <QueryClientProvider client={queryClient}>
       <ApiContext.Provider value={api as unknown as ApiClient}>
@@ -289,7 +354,7 @@ async function setup(options: { type?: Content["type"]; status?: Content["status
       </ApiContext.Provider>
     </QueryClientProvider>,
   );
-  return { fake, chat, view };
+  return { fake, chat, view, v1 };
 }
 
 /** The shell's parts the post renders into, the board under it, and the right panel. */
@@ -456,7 +521,7 @@ describe("the post's Sohbet", () => {
     const conversationId = useWorkspaceStore.getState().chats.p1;
     expect(conversationId).toBeTruthy();
     expect(chat.sent[0]?.conversationId).toBe(conversationId);
-    expect(chat.sent[0]?.text).toBe(`“${TITLE}” postu (id: p1, v1) için:\nKısalt`);
+    expect(chat.sent[0]?.text).toBe(`“${TITLE}” postu (id: p1, güncel sürüm v1) için:\nKısalt`);
     // The transcript is in the panel; the reply's end re-reads the post (new versions land).
     expect(await within(slot("panel")).findByText("Başlığı kısalttım.")).toBeInTheDocument();
     await waitFor(() => expect(refresh).toHaveBeenCalled());
@@ -469,11 +534,248 @@ describe("the post's Sohbet", () => {
     });
     expect(fake.approveCalls).toHaveLength(0);
 
-    // The next message continues the same conversation, without the post's reference.
+    // The next message continues the same conversation, again with the post's current version (E17).
     await userEvent.type(input, "Biraz daha{Enter}");
     await waitFor(() => expect(chat.sent).toHaveLength(2));
     expect(chat.created).toHaveLength(1);
-    expect(chat.sent[1]).toEqual({ conversationId, text: "Biraz daha" });
+    expect(chat.sent[1]).toEqual({
+      conversationId,
+      text: `“${TITLE}” postu (id: p1, güncel sürüm v1) için:\nBiraz daha`,
+    });
+  });
+});
+
+// --- Kontroller, approving, the brand kit, fonts (E6, E7, E9, E10) ------------------------------
+
+const checkResult = (
+  checkId: string,
+  status: ContentCheckResult["status"],
+  over: Partial<ContentCheckResult> = {},
+): ContentCheckResult => ({
+  checkId,
+  category: checkId.split(".")[0] as ContentCheckResult["category"],
+  status,
+  message: `${checkId} bulgusu`,
+  refs: [],
+  evidence: null,
+  source: "deterministic",
+  fixable: false,
+  ...over,
+});
+
+function checkRun(results: ContentCheckResult[]): ContentCheckRun {
+  const count = (st: string) => results.filter((r) => r.status === st).length;
+  return {
+    id: "run1",
+    contentId: "p1",
+    brandId: "b1",
+    version: 1,
+    versionId: "p1-v1",
+    trigger: "render",
+    jobId: null,
+    strictness: "standard",
+    summary: {
+      pass: count("pass"),
+      warn: count("warn"),
+      fail: count("fail"),
+      fixed: count("fixed"),
+      skipped: count("skipped"),
+    },
+    blocking: count("fail"),
+    results,
+    model: null,
+    fromVersion: null,
+    fixedVersion: null,
+    note: "",
+    createdAt: T,
+  };
+}
+
+const failing = () =>
+  checkRun([
+    checkResult("layout.contrast", "fail", {
+      message: "Başlık zeminle yeterince ayrışmıyor.",
+      refs: [{ slide: 0, layer: "headline" }],
+    }),
+    checkResult("text.hashtags", "warn", { message: "Çok fazla etiket." }),
+    checkResult("brand.fonts", "pass"),
+  ]);
+
+describe("Kontroller on the canvas (E6)", () => {
+  beforeEach(() => {
+    seen.shown.length = 0;
+  });
+
+  it("sits next to Tasarım and Açıklama with the failures, finds the layer, sends to the fix", async () => {
+    await setup({ checks: { runs: () => [failing()] } });
+    await openPost();
+    await screen.findByTestId("wecra-canvas");
+    const header = slot("panel-header");
+    const tab = within(header).getByRole("radio", { name: /Kontroller/ });
+    // The red count: one failure (the warning is not counted).
+    expect(tab).toHaveTextContent(/^Kontroller1$/);
+    await userEvent.click(tab);
+    const list = within(slot("panel")).getByRole("region", { name: "Kontroller" });
+    expect(within(list).getByText("Başlık zeminle yeterince ayrışmıyor.")).toBeInTheDocument();
+    expect(within(list).getByRole("button", { name: "Yeniden kontrol et" })).toBeInTheDocument();
+    // Slides are fixed on the canvas, the caption in Açıklama: no "Düzelt" for either here.
+    expect(within(list).queryByRole("button", { name: "Düzelt" })).toBeNull();
+
+    await userEvent.click(within(list).getByRole("button", { name: "Göster" }));
+    expect(seen.shown).toHaveLength(1);
+    expect(seen.shown[0]?.[1]).toEqual({ slide: 0, layer: "headline" });
+    // The version's slide HTML goes along (its layers' Wecra ids).
+    expect(String(seen.shown[0]?.[2])).toContain('data-layer="headline"');
+    expect(within(header).getByRole("radio", { name: /Kontroller/ })).toBeChecked();
+
+    await userEvent.click(within(list).getByRole("button", { name: "Tuvalde düzelt" }));
+    expect(seen.shown).toHaveLength(2);
+    expect(within(header).getByRole("radio", { name: "Tasarım" })).toBeChecked();
+
+    await userEvent.click(within(header).getByRole("radio", { name: /Kontroller/ }));
+    await userEvent.click(within(slot("panel")).getByRole("button", { name: "Açıklamada düzelt" }));
+    expect(within(header).getByRole("radio", { name: "Açıklama" })).toBeChecked();
+  });
+});
+
+describe("approving through the checks (E7)", () => {
+  it("waits for the version's checks, asks when they failed and acknowledges them only then", async () => {
+    let ready = false;
+    const { fake } = await setup({
+      checks: {
+        runs: () => (ready ? [failing()] : []),
+        jobs: () =>
+          ready ? [] : [{ type: "content.check", status: "running", payload: { version: 1 } }],
+      },
+    });
+    // Nothing in the cache: approving reads the API, not a run still loading.
+    await openPost();
+    await screen.findByTestId("wecra-canvas");
+    const title = slot("title");
+    await waitFor(() =>
+      expect(within(title).getByRole("button", { name: "Onayla" })).not.toBeDisabled(),
+    );
+    fireEvent.keyDown(screen.getByTestId("wecra-canvas"), {
+      key: "Enter",
+      code: "Enter",
+      metaKey: true,
+    });
+    expect(
+      await within(title).findByRole("button", { name: "Kontroller çalışıyor…" }),
+    ).toBeDisabled();
+    // ⌘↩ again while it waits: still one approval, nothing sent yet.
+    fireEvent.keyDown(screen.getByTestId("wecra-canvas"), {
+      key: "Enter",
+      code: "Enter",
+      metaKey: true,
+    });
+    expect(fake.approveCalls).toEqual([]);
+    ready = true;
+    const dialog = await screen.findByRole(
+      "dialog",
+      { name: "v1'de 1 kontrol geçmedi" },
+      {
+        timeout: 5_000,
+      },
+    );
+    expect(dialog).toHaveTextContent("Başlık zeminle yeterince ayrışmıyor.");
+    expect(fake.approveCalls).toEqual([]);
+    await userEvent.click(within(dialog).getByRole("button", { name: "Yine de onayla" }));
+    await waitFor(() => expect(fake.approveCalls).toHaveLength(1));
+    expect(fake.approveCalls[0]).toMatchObject({ id: "p1", acknowledgeChecks: true });
+  });
+
+  it("approves at once, without acknowledging, when the checks passed", async () => {
+    const { fake } = await setup({
+      checks: { runs: () => [checkRun([checkResult("layout.contrast", "pass")])] },
+    });
+    await openPost();
+    await screen.findByTestId("wecra-canvas");
+    const approve = within(slot("title")).getByRole("button", { name: "Onayla" });
+    await waitFor(() => expect(approve).not.toBeDisabled());
+    await userEvent.click(approve);
+    await waitFor(() => expect(fake.approveCalls).toHaveLength(1));
+    expect(fake.approveCalls[0]).not.toHaveProperty("acknowledgeChecks");
+  });
+});
+
+describe("the brand kit before the import (E10)", () => {
+  const profile = {
+    id: "bp1",
+    brandId: "b1",
+    version: 1,
+    status: "approved",
+    tokens: {},
+  };
+
+  it("waits for the brand's profile: nothing is imported with the neutral kit meanwhile", async () => {
+    seen.kits.length = 0;
+    let answer: (p: unknown) => void = () => {};
+    await setup({ profile: () => new Promise((r) => (answer = r)) });
+    await openPost();
+    expect(await screen.findByText("Marka kiti yükleniyor…")).toBeInTheDocument();
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 50));
+    });
+    expect(screen.queryByTestId("wecra-canvas")).toBeNull();
+    expect(seen.kits).toEqual([]);
+    await act(async () => answer(profile));
+    expect(await screen.findByTestId("wecra-canvas")).toBeInTheDocument();
+    await waitFor(() => expect(seen.kits).toHaveLength(1));
+    expect(screen.queryByText("Marka kiti yükleniyor…")).toBeNull();
+  });
+
+  it("says so when the profile can't be read, and retries", async () => {
+    seen.kits.length = 0;
+    let fail = true;
+    await setup({
+      profile: async () => {
+        if (fail) throw Object.assign(new Error("sunucu yok"), { status: 503 });
+        return null;
+      },
+    });
+    await openPost();
+    const alert = await screen.findByRole("alert", undefined, { timeout: 5_000 });
+    expect(alert).toHaveTextContent(/Marka kiti okunamadı/);
+    expect(screen.queryByTestId("wecra-canvas")).toBeNull();
+    expect(seen.kits).toEqual([]);
+    fail = false;
+    await userEvent.click(within(alert).getByRole("button", { name: "Yeniden dene" }));
+    expect(await screen.findByTestId("wecra-canvas")).toBeInTheDocument();
+  });
+});
+
+describe("missing fonts (E9)", () => {
+  it("doesn't approve a version drawn without a font it uses", async () => {
+    const facts = {
+      v: CANVAS_FACTS_VERSION,
+      editor: "wecra",
+      frame: { id: "1:2", name: "Kare 1", width: 1080, height: 1350, background: null, fills: [] },
+      nodes: [],
+      fonts: [{ family: "Yok Sans", style: "Regular", uses: 1, missing: true }],
+    } as unknown as CanvasFacts;
+    const html = canvasSlideHtml({ facts, src: "/media/r1.png", sha256: "a".repeat(64) });
+    const { fake } = await setup({
+      slides: [{ html, width: 1080, height: 1350, renderedAssetId: "r1", layers: null } as Slide],
+      checks: { runs: () => [checkRun([checkResult("brand.fonts", "warn")])] },
+    });
+    await openPost();
+    await screen.findByTestId("wecra-canvas");
+    const approve = await within(slot("title")).findByRole("button", { name: "Onayla" });
+    expect(approve).toBeDisabled();
+    expect(approve.parentElement).toHaveAttribute(
+      "title",
+      "Eksik font: Yok Sans. Mac'e yükleyin ya da marka kitine ekleyin.",
+    );
+    fireEvent.keyDown(screen.getByTestId("wecra-canvas"), {
+      key: "Enter",
+      code: "Enter",
+      metaKey: true,
+    });
+    expect(
+      await screen.findByText("Eksik font: Yok Sans. Mac'e yükleyin ya da marka kitine ekleyin."),
+    ).toBeInTheDocument();
+    expect(fake.approveCalls).toEqual([]);
   });
 });
 

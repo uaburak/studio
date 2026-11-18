@@ -17,6 +17,7 @@
 import {
   type AgentEffort,
   ApiError,
+  type Content,
   type ContentGeneratePayload,
   ContentStatus,
   ContentType,
@@ -27,12 +28,20 @@ import {
   Platform,
   slugify,
 } from "@studio/contract";
+import { readCanvas } from "@studio/design-kit/canvas";
 import { z } from "zod";
 import type { StudioApi } from "../api.ts";
 import { abortableSleep } from "../claude/gate.ts";
 import type { Logger } from "../log.ts";
 import { silentLogger } from "../log.ts";
 import { prepareModelImage } from "../media.ts";
+import {
+  CANVAS_TOOLS,
+  type CanvasToolEnv,
+  canvasEditTool,
+  canvasOutlineTool,
+  canvasScreenshotTool,
+} from "./canvas-tools.ts";
 import { profileFacts } from "./prompt.ts";
 import {
   CHAT_CONTENT_TYPES,
@@ -364,13 +373,18 @@ export const STUDIO_TOOLS: readonly StudioToolDefinition[] = [
   {
     name: "revise_post",
     description:
-      "Var olan bir postu verilen talimatla yeniden üretir (güncel sürümden başlayan `content.generate` işi kuyruğa alınır). Bitmesini `wait_jobs` ile bekle.",
+      "Var olan bir postu verilen talimatla HTML'den yeniden üretir (güncel sürümden başlayan `content.generate` işi kuyruğa alınır). Bitmesini `wait_jobs` ile bekle. Tuvalde (Wecra) kaydedilmiş postlarda kullanma: onlar `canvas_edit` ile düzenlenir; yalnızca kullanıcı açıkça yeni bir tasarım isterse `newDesign: true` ile.",
     inputSchema: {
       type: "object",
       required: ["contentId", "instruction"],
       properties: {
         contentId: { type: "string", description: "İçerik id'si." },
         instruction: { type: "string", description: "Neyin değişeceği, Türkçe." },
+        newDesign: {
+          type: "boolean",
+          description:
+            "Tuval postunda: kullanıcı açıkça yeni bir tasarım / baştan üretim istedi (tuvaldeki elle düzenlemeler yeni sürümde olmaz).",
+        },
       },
     },
   },
@@ -558,7 +572,7 @@ export const STUDIO_TOOLS: readonly StudioToolDefinition[] = [
   {
     name: "fill_post_slot",
     description:
-      "Bir postun görsel yuvasını (`data-layer`) sohbetteki @takma ad veya `assetId` ile doldurur ve yeni sürüm oluşturup JPEG olarak render eder (`content.render`).",
+      "Bir postun görsel yuvasını (`data-layer`) sohbetteki @takma ad veya `assetId` ile doldurur ve yeni sürüm oluşturup JPEG olarak render eder (`content.render`). Tuvalde (Wecra) kaydedilmiş postlarda kullanma: `canvas_edit` ile `place_image`.",
     inputSchema: {
       type: "object",
       required: ["contentId"],
@@ -615,6 +629,8 @@ export const STUDIO_TOOLS: readonly StudioToolDefinition[] = [
       },
     },
   },
+  // Posts saved from the Mac's design canvas: their Wecra document (canvas-tools.ts).
+  ...CANVAS_TOOLS,
 ];
 
 // --- input schemas -------------------------------------------------------------------------
@@ -718,6 +734,7 @@ const WaitJobsInput = z.object({
 const RevisePostInput = z.object({
   contentId: z.string().trim().min(1),
   instruction: trimmed(4_000).refine((s) => s.length > 0, "Talimat boş olamaz"),
+  newDesign: z.boolean().optional(),
 });
 
 const GetSkillInput = z.object({ name: z.string().trim().min(1) });
@@ -803,6 +820,23 @@ const PublishNowInput = z.object({
 });
 
 // --- executor ------------------------------------------------------------------------------
+
+/** What the API's approval gate (E7) said: its message and the blocking checks. */
+interface ChecksGate {
+  message: string;
+  issues: string[];
+}
+
+/** The approval was refused by the checks (409 about "kontrol"), not by anything else. */
+function checksGateOf(error: unknown): ChecksGate | null {
+  if (!(error instanceof ApiError) || error.status !== 409) return null;
+  if (error.code !== undefined && error.code !== "conflict") return null;
+  if (!/kontrol/i.test(error.message)) return null;
+  return {
+    message: error.message.replace(/^\/api\/[^:]*: /, ""),
+    issues: (error.issues ?? []).map((i) => i.message).slice(0, 10),
+  };
+}
 
 /** A picture in a tool result (base64), sent to MCP clients as an image content block. */
 export interface StudioToolImage {
@@ -1047,12 +1081,63 @@ export class StudioToolExecutor {
         return this.scheduleContent(stepId, args);
       case "publish_now":
         return this.publishNow(stepId, args);
+      case "canvas_outline":
+        return this.runSafe(stepId, name, "Tuval belgesi okunuyor…", "Tuval belgesi okundu", () =>
+          canvasOutlineTool(this.canvasEnv(), args),
+        );
+      case "canvas_edit":
+        return this.runSafe(stepId, name, "Tuvalde düzenleniyor…", "Tuval düzenlendi", async () => {
+          const out = await canvasEditTool(this.canvasEnv(), args);
+          if (out.version !== undefined) {
+            await this.options.writer
+              .setPart({
+                type: "content_ref",
+                contentId: String(out.data.contentId),
+                version: out.version,
+                note: "Tuvalde düzenlendi",
+              })
+              .catch((error: unknown) => {
+                if (error instanceof RunClosedError) throw error;
+              });
+          }
+          return out;
+        });
+      case "canvas_screenshot":
+        return this.runSafe(stepId, name, "Karelere bakılıyor…", "Karelere bakıldı", () =>
+          canvasScreenshotTool(this.canvasEnv(), args),
+        );
       default:
         return {
           data: { ok: false, error: `Bilinmeyen araç: ${name}` },
           isError: true,
         };
     }
+  }
+
+  /** A version of a post (null: not there). */
+  private async versionOrNull(contentId: string, version: number) {
+    try {
+      return await this.options.api.client.contents.versions.get(contentId, version, {
+        signal: this.options.signal,
+      });
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 404) return null;
+      throw error;
+    }
+  }
+
+  /** What the canvas tools use of this turn (canvas-tools.ts). */
+  private canvasEnv(): CanvasToolEnv {
+    return {
+      api: this.options.api,
+      signal: this.options.signal,
+      conversationId: this.options.conversationId,
+      sleep: this.sleep,
+      pollMs: Math.min(this.options.jobPollIntervalMs ?? DEFAULT_JOB_POLL_MS, 1_500),
+      resolveAlias: (alias) => this.resolveAliasToAssetId(alias),
+      picture: (assetId, maxEdge) => this.pictureOf(assetId, maxEdge),
+      ...(this.options.imageMaxEdge ? { imageMaxEdge: this.options.imageMaxEdge } : {}),
+    };
   }
 
   // --- safe tools --------------------------------------------------------------------------
@@ -1746,11 +1831,26 @@ export class StudioToolExecutor {
     const content = await this.options.api.client.contents.get(parsed.contentId, {
       signal: this.options.signal,
     });
-    const baseVersion = content.currentVersion?.version;
-    if (!baseVersion) {
+    const current = content.currentVersion?.version;
+    if (!current) {
       throw new Error(
         `"${content.title}" postunun düzeltilecek bir tasarımı yok; generate_post kullan.`,
       );
+    }
+    // A version saved from the canvas: its Wecra document is the design (S1). Regenerating it from
+    // HTML drops the hand edits, so only when a new design was asked for — and then from the HTML
+    // version the canvas started from (the canvas slide HTML only describes a render).
+    let baseVersion: number | undefined = current;
+    const shown = await this.versionOrNull(content.id, current);
+    if (shown?.editorDocument?.kind === "wecra") {
+      if (!parsed.newDesign) {
+        throw new Error(
+          `"${content.title}" tuvalde düzenlenmiş (v${current}, Wecra belgesi): değişikliği canvas_outline + canvas_edit ile yap. Kullanıcı açıkça yeni bir tasarım istediyse newDesign: true ile çağır (tuvaldeki elle düzenlemeler yeni sürümde olmaz).`,
+        );
+      }
+      const origin = readCanvas(shown.slides[0]?.html);
+      const source = origin.kind === "none" ? null : origin.sourceVersion;
+      baseVersion = source && source !== current ? source : undefined;
     }
     const payload: ContentGeneratePayload = {
       brandId: content.brandId,
@@ -1759,7 +1859,7 @@ export class StudioToolExecutor {
       brief: content.brief || content.title,
       type: content.type,
       targetPlatforms: content.targetPlatforms,
-      baseVersion,
+      ...(baseVersion !== undefined ? { baseVersion } : {}),
       conversationId: this.options.conversationId,
       instructions: parsed.instruction,
       ...this.generationPayloadExtras(),
@@ -1769,8 +1869,10 @@ export class StudioToolExecutor {
       { signal: this.options.signal },
     );
     return {
-      data: { ok: true, contentId: content.id, baseVersion, jobIds: [job.id] },
-      summary: `${content.title} · s${baseVersion} üzerinden`,
+      data: { ok: true, contentId: content.id, baseVersion: baseVersion ?? null, jobIds: [job.id] },
+      summary: baseVersion
+        ? `${content.title} · s${baseVersion} üzerinden`
+        : `${content.title} · yeni tasarım`,
     };
   }
 
@@ -1958,9 +2060,14 @@ export class StudioToolExecutor {
         );
         hash = await computeContentHash(ver.slides);
       }
-      const approved = await this.options.api.client.contents.approve(parsed.contentId, hash, {
-        signal: this.options.signal,
+      const outcome = await this.approveThroughChecks(parsed.contentId, hash, {
+        tool,
+        stepId,
+        stepIndex,
+        doneLabel,
       });
+      if ("blocked" in outcome) return { data: outcome.blocked, isError: false };
+      const approved = outcome.approved;
       await this.options.writer.setPart(
         {
           type: "tool_step",
@@ -1968,7 +2075,7 @@ export class StudioToolExecutor {
           name: tool,
           label: doneLabel,
           state: "done",
-          summary: `${approved.title} onaylandı`,
+          summary: `${approved.title} onaylandı${outcome.acknowledged ? " (kontrollere rağmen)" : ""}`,
         },
         stepIndex,
       );
@@ -1979,6 +2086,7 @@ export class StudioToolExecutor {
           contentId: approved.id,
           status: approved.status,
           approval: approved.approval,
+          ...(outcome.acknowledged ? { approvedDespiteChecks: outcome.acknowledged } : {}),
         },
         isError: false,
       };
@@ -2196,6 +2304,14 @@ export class StudioToolExecutor {
     const content = await this.options.api.client.contents.get(parsed.contentId, {
       signal: this.options.signal,
     });
+    const current = content.currentVersion?.version;
+    if (current) {
+      const shown = await this.versionOrNull(content.id, current);
+      if (shown?.editorDocument?.kind === "wecra")
+        throw new Error(
+          `"${content.title}" tuvalde düzenlenmiş (v${current}, Wecra belgesi): görseli canvas_edit ile yerleştir (place_image {nodeId, assetId ya da alias}).`,
+        );
+    }
 
     const slotAssignments: Record<string, string> = {};
     if (parsed.slotAssignments) {
@@ -2332,9 +2448,14 @@ export class StudioToolExecutor {
           );
           hash = await computeContentHash(ver.slides);
         }
-        fresh = await this.options.api.client.contents.approve(parsed.contentId, hash, {
-          signal: this.options.signal,
+        const outcome = await this.approveThroughChecks(parsed.contentId, hash, {
+          tool,
+          stepId,
+          stepIndex,
+          doneLabel,
         });
+        if ("blocked" in outcome) return { data: outcome.blocked, isError: false };
+        fresh = outcome.approved;
       }
 
       const schedule = parsed.scheduleId
@@ -2384,6 +2505,60 @@ export class StudioToolExecutor {
       };
     } catch (error) {
       return this.failStep(stepId, tool, runningLabel, stepIndex, error);
+    }
+  }
+
+  /**
+   * Approves a post's version (E7). The API refuses (409) while the version's checks hold its
+   * approval back (blocking results, or no finished run yet): then the blocking checks go on a
+   * consent card of their own ("Kontroller geçmedi"), and only when the owner allows it is the
+   * approval sent again with `acknowledgeChecks: true` — the agent never approves past the checks
+   * on its own. Otherwise the checks come back to the model (`blocked`) in Turkish.
+   */
+  private async approveThroughChecks(
+    contentId: string,
+    hash: string,
+    step: { tool: string; stepId: string; stepIndex: number; doneLabel: string },
+  ): Promise<
+    { approved: Content; acknowledged: ChecksGate | null } | { blocked: Record<string, unknown> }
+  > {
+    try {
+      const approved = await this.options.api.client.contents.approve(contentId, hash, {
+        signal: this.options.signal,
+      });
+      return { approved, acknowledged: null };
+    } catch (error) {
+      const gate = checksGateOf(error);
+      if (!gate) throw error;
+      const decision = await this.awaitConsent({
+        tool: step.tool,
+        title: "Kontroller geçmedi: yine de onaylansın mı?",
+        detail: [gate.message, ...gate.issues.map((i) => `• ${i}`)].join("\n").slice(0, 2_000),
+        stepId: step.stepId,
+        stepIndex: step.stepIndex,
+        doneLabel: step.doneLabel,
+      });
+      if (!decision.allowed) {
+        return {
+          blocked: {
+            allowed: false,
+            ok: false,
+            approved: false,
+            reason: decision.reason,
+            checks: { message: gate.message, issues: gate.issues },
+            note:
+              decision.reason === "denied_by_owner"
+                ? "Post onaylanmadı: kontroller geçmedi ve kullanıcı yine de onaylamadı. Sorunları kullanıcıya söyle; düzeltmeyi öner."
+                : "Post onaylanmadı: kontroller geçmedi ve kullanıcı onay kartını yanıtlamadı. Sorunları kullanıcıya söyle.",
+          },
+        };
+      }
+      const approved = await this.options.api.client.contents.approve(
+        contentId,
+        { hash, acknowledgeChecks: true },
+        { signal: this.options.signal },
+      );
+      return { approved, acknowledged: gate };
     }
   }
 

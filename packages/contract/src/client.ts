@@ -84,6 +84,7 @@ import {
 import { ApiErrorBody, type ErrorCode, type ErrorIssue } from "./common.ts";
 import {
   Content,
+  type ContentApprove,
   type ContentCreate,
   type ContentDuplicate,
   ContentList,
@@ -648,11 +649,15 @@ export function createApiClient(options: ApiClientOptions = {}) {
       delete: async (id: string, init?: RequestInit): Promise<void> => {
         await send(`/api/contents/${enc(id)}`, { method: "DELETE", init });
       },
-      /** Approve the current version; `hash` must equal its `contentHash`. */
-      approve: (id: string, hash: string, init?: RequestInit) =>
+      /**
+       * Approve the current version; `hash` must equal its `contentHash`. Pass
+       * `{ hash, acknowledgeChecks: true }` to approve although its checks did not pass
+       * (otherwise 409, see `ContentApprove`).
+       */
+      approve: (id: string, input: string | ContentApprove, init?: RequestInit) =>
         call(Content, `/api/contents/${enc(id)}/approve`, {
           method: "POST",
-          json: { hash },
+          json: typeof input === "string" ? { hash: input } : input,
           init,
         }),
       transition: (id: string, to: ContentTransition["to"], init?: RequestInit) =>

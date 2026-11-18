@@ -249,7 +249,12 @@ describe("approval by hash", () => {
     expect((await getContent(content.id)).status).toBe("in_review");
 
     const approved = Content.parse(
-      (await api("POST", `/api/contents/${content.id}/approve`, { hash: v1.contentHash })).body,
+      (
+        await api("POST", `/api/contents/${content.id}/approve`, {
+          hash: v1.contentHash,
+          acknowledgeChecks: true,
+        })
+      ).body,
     );
     expect(approved.status).toBe("approved");
     expect(approved.approval).toMatchObject({ versionId: v1.id, contentHash: v1.contentHash });
@@ -278,6 +283,7 @@ describe("approval by hash", () => {
     );
     const reapproved = await api("POST", `/api/contents/${content.id}/approve`, {
       hash: v2.contentHash,
+      acknowledgeChecks: true,
     });
     expect(Content.parse(reapproved.body).approval?.versionId).toBe(v2.id);
   });
@@ -286,7 +292,10 @@ describe("approval by hash", () => {
     const brand = await createBrand();
     const content = await createContent(brand.id, { caption: "ilk" });
     const v1 = await addVersion(content.id);
-    await api("POST", `/api/contents/${content.id}/approve`, { hash: v1.contentHash });
+    await api("POST", `/api/contents/${content.id}/approve`, {
+      hash: v1.contentHash,
+      acknowledgeChecks: true,
+    });
 
     const titled = Content.parse(
       (await api("PATCH", `/api/contents/${content.id}`, { title: "Sadece başlık" })).body,
@@ -322,7 +331,10 @@ describe("approval by hash", () => {
     );
 
     const v1 = await addVersion(content.id);
-    await api("POST", `/api/contents/${content.id}/approve`, { hash: v1.contentHash });
+    await api("POST", `/api/contents/${content.id}/approve`, {
+      hash: v1.contentHash,
+      acknowledgeChecks: true,
+    });
     // Revoke.
     const revoked = Content.parse(
       (await api("POST", `/api/contents/${content.id}/transition`, { to: "draft" })).body,
@@ -334,7 +346,10 @@ describe("approval by hash", () => {
     const brand = await createBrand();
     const content = await createContent(brand.id);
     const v1 = await addVersion(content.id);
-    await api("POST", `/api/contents/${content.id}/approve`, { hash: v1.contentHash });
+    await api("POST", `/api/contents/${content.id}/approve`, {
+      hash: v1.contentHash,
+      acknowledgeChecks: true,
+    });
     // Simulate the (future) publishing engine.
     await env.DB.prepare("update contents set status = 'published' where id = ?")
       .bind(content.id)

@@ -452,7 +452,10 @@ describe("preflight (platform rules, Turkish)", () => {
     const ig = await createAccount(brand.id);
     const content = await createContent(brand.id, { caption: "#a ".repeat(31) });
     const v = await addVersion(content.id);
-    await api("POST", `/api/contents/${content.id}/approve`, { hash: v.contentHash });
+    await api("POST", `/api/contents/${content.id}/approve`, {
+      hash: v.contentHash,
+      acknowledgeChecks: true,
+    });
     const err = expectError(
       await api("POST", "/api/schedules", {
         contentId: content.id,

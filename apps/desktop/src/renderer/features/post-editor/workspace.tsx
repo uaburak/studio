@@ -39,7 +39,7 @@ import {
 import { ConfirmDialog } from "../../components/ui/dialog.tsx";
 import { IconClose, IconWarning } from "../../components/ui/icons.tsx";
 import type { MenuEntry } from "../../components/ui/menu.tsx";
-import { useApi } from "../../lib/api.ts";
+import { describeError, useApi } from "../../lib/api.ts";
 import { registerAppFlush } from "../../lib/app-flush.ts";
 import { bridge } from "../../lib/bridge.ts";
 import { noteCanvasNavKey } from "../../lib/nav-gestures.ts";
@@ -51,17 +51,23 @@ import {
   canApprove,
   changesVersion,
   type EditorSnapshot,
+  isViewingCurrent,
   type PostEditor,
 } from "../post-detail/editor.ts";
 import { usePostChat } from "./chat.ts";
-import { useRenderKit } from "./data.ts";
+import { type RenderKitState, useRenderKitState } from "./data.ts";
 import { type EditLock, editLock, unlockWarning, versionJobRunning } from "./edit-lock.ts";
 import { InSlot } from "./slots.tsx";
+import { AssetsPanel, type CanvasAssetsContext, useCanvasDrop } from "./ui/canvas-assets.tsx";
 import { CaptionPanel } from "./ui/caption-panel.tsx";
 import { ChatHeader, ChatPanel } from "./ui/chat-panel.tsx";
+import { CanvasChecks, useCheckFailures } from "./ui/checks-tab.tsx";
+import { ImportReport } from "./ui/import-report.tsx";
 import { ChatInput, type ChatInputHandle, ModeDock } from "./ui/mode-dock.tsx";
 import { SidebarLayers } from "./ui/sidebar-layers.tsx";
 import { type SaveControl, TitleBar } from "./ui/title-bar.tsx";
+import { rememberAsset } from "./wecra/assets.ts";
+import { prepareBrandStyles } from "./wecra/brand-styles.ts";
 import { installStudioFonts } from "./wecra/fonts.ts";
 import {
   WecraDesignPanel,
@@ -70,6 +76,17 @@ import {
   WecraToolbar,
   WecraZoomMenu,
 } from "./wecra/host.tsx";
+import {
+  missingFontMessage,
+  useCanvasMissingFonts,
+  versionMissingFonts,
+} from "./wecra/missing-fonts.ts";
+import {
+  attachSafeAreas,
+  initSafeAreas,
+  postPreset,
+  safeAreasByDefault,
+} from "./wecra/safe-areas.ts";
 import { type ChatLayers, describeNode, NO_LAYERS, useChatLayers } from "./wecra/scope.ts";
 import { type DraftNotice, WecraPostSession, type WecraSessionState } from "./wecra/session.ts";
 import { type EditTab, modeOf, useWorkspaceStore, type WorkspaceMode } from "./workspace-store.ts";
@@ -86,8 +103,16 @@ export interface WorkspaceProps {
   /** Back to where the post was opened from (the app's back does it; kept for the shell). */
   onClose(): void;
   onPreview(): void;
-  /** Runs the approval (the content checks may ask first); default: approve at once. */
-  guardApproval?: (approve: () => void) => void;
+  /**
+   * Runs the approval through the checks of `version` (they may be waited for, and ask first:
+   * `approve(true)` then sends `acknowledgeChecks`); default: approve at once.
+   */
+  guardApproval?: (
+    approve: (acknowledgeChecks: boolean) => void,
+    version?: { version: number; id?: string | null } | null,
+  ) => void | Promise<void>;
+  /** The approve guard waits for the checks ("Kontroller çalışıyor…"). */
+  checksWaiting?: boolean;
   /** The approve guard's question and the schedule sheet. */
   dialogs?: ReactNode;
   /** The post's pending schedules ("Instagram @hesap · 18 Kas 10:00"), for Düzenle's warning. */
@@ -137,7 +162,11 @@ export function PostWorkspace(props: WorkspaceProps) {
   const { editor, snapshot } = props;
   const content: Content = snapshot.content;
   const api = useApi();
-  const kit = useRenderKit(content.brandId);
+  // The brand's kit (fonts, colours, logos) before anything is imported: never the neutral
+  // stand-in while the profile loads (E10).
+  const kitState = useRenderKitState(content.brandId);
+  const kit = kitState.kit;
+  const kitReady = kitState.status === "ready";
   const version = activeVersion(snapshot);
   const mode = useWorkspaceStore((s) => modeOf(s, content.id));
   const editTab = useWorkspaceStore((s) => s.editTab);
@@ -165,11 +194,49 @@ export function PostWorkspace(props: WorkspaceProps) {
         refresh: () => latest.current.editor.refresh(),
         drafts: bridge().drafts ?? null,
         report: (message) => useAppStore.getState().showToast({ message, tone: "danger" }),
+        // The brand's colours and type as the document's styles, its layers linked to them.
+        prepare: (ed) => prepareBrandStyles(ed, latest.current.kit),
         ...(props.draftMs !== undefined ? { draftMs: props.draftMs } : {}),
       }),
   );
   const ws = useSyncExternalStore(session.subscribe, session.getState);
   const ed = ws.editor;
+  // Safe areas over the slides (the checks' insets): on by default for stories and Reels.
+  const firstSlide = version?.slides[0];
+  const safeArea = postPreset(
+    content.type,
+    content.targetPlatforms,
+    firstSlide ? { width: firstSlide.width, height: firstSlide.height } : null,
+  ).safeArea;
+  const safeKey = JSON.stringify(safeArea);
+  useEffect(() => {
+    if (!ed) return;
+    initSafeAreas(ed, safeAreasByDefault(content.type));
+    return attachSafeAreas(ed, JSON.parse(safeKey));
+  }, [ed, content.type, safeKey]);
+  // Image slots, Medya drops and the brand's logo (ui/canvas-assets.tsx).
+  const assets: CanvasAssetsContext | null = useMemo(
+    () =>
+      ed
+        ? {
+            ed,
+            brandId: content.brandId,
+            kit,
+            readOnly: ws.readOnly,
+            notify,
+            rememberAsset: (assetId, bytes) =>
+              void rememberAsset(session.images, assetId, bytes).catch(() => {}),
+          }
+        : null,
+    [ed, content.brandId, kit, ws.readOnly, notify, session],
+  );
+  const drop = useCanvasDrop(assets);
+  // The import report belongs to the version imported (not to the versions saved from it).
+  const [reportOf, setReportOf] = useState<number | null>(null);
+  useEffect(() => {
+    if (ws.importReport.length) setReportOf(ws.version);
+    // Only when a new report arrives (an import), not when the version moves on.
+  }, [ws.importReport]);
   useEffect(() => {
     session.activate();
     return () => {
@@ -190,7 +257,7 @@ export function PostWorkspace(props: WorkspaceProps) {
   );
   // The brand's fonts for Wecra's text engine, before a document opens.
   const fontsFor = useRef<object | null>(null);
-  if (fontsFor.current !== kit) {
+  if (kitReady && fontsFor.current !== kit) {
     fontsFor.current = kit;
     installStudioFonts(kit);
   }
@@ -267,10 +334,11 @@ export function PostWorkspace(props: WorkspaceProps) {
   useEffect(() => {
     session.setReadOnly(readOnly);
   }, [session, readOnly]);
-  // The version shown is the document on the canvas (an older one read only: E19).
+  // The version shown is the document on the canvas (an older one read only: E19) — once the
+  // brand's kit is here (an import with the neutral kit would bake its fonts and colours in: E10).
   useEffect(() => {
-    if (version) void session.open(version);
-  }, [session, version]);
+    if (version && kitReady) void session.open(version);
+  }, [session, version, kitReady]);
   const unlock = useCallback(
     (openDraft: boolean) => {
       setUnlockedFor(approvalKey);
@@ -281,6 +349,12 @@ export function PostWorkspace(props: WorkspaceProps) {
     [approvalKey, session],
   );
 
+  // A used font Wecra doesn't have (E9): unsaved edits can't become a version, a version drawn
+  // without it isn't approved.
+  const canvasMissing = useCanvasMissingFonts(ed);
+  const versionMissing = useMemo(() => versionMissingFonts(snapshot.current), [snapshot.current]);
+  const fontBlocker = missingFontMessage(ws.dirty ? canvasMissing : versionMissing);
+
   const save: SaveControl = {
     dirty: ws.dirty,
     saving: ws.saving,
@@ -288,26 +362,44 @@ export function PostWorkspace(props: WorkspaceProps) {
     lastSavedAt: ws.lastSavedAt,
     draftSavedAt: ws.draftSavedAt,
     ready: ws.phase === "ready" && !!ws.editor && !ws.readOnly,
-    blocker: ws.blocker,
+    blocker: ws.blocker ?? (ws.dirty ? fontBlocker : null),
     save: (note) => session.save(note),
     flush: () => session.flush(),
     notify,
   };
 
+  // Onayla / ⌘↩: unsaved edits become a version first, then the approval goes through that exact
+  // version's checks (E7). One at a time: ⌘↩ again while it saves or waits does nothing.
+  const approving = useRef(false);
   const approve = useCallback(async () => {
-    if (!(await session.flush())) return;
-    await editor.whenIdle();
-    await editor.verify();
-    if (!canApprove(editor.getSnapshot())) return;
-    const run = () => void editor.approve();
-    if (props.guardApproval) props.guardApproval(run);
-    else run();
-  }, [session, editor, props.guardApproval]);
+    if (approving.current) return;
+    approving.current = true;
+    try {
+      if (!(await session.flush())) return;
+      await editor.whenIdle();
+      await editor.verify();
+      const s = editor.getSnapshot();
+      if (!canApprove(s)) return;
+      // Its renders were drawn without a font it uses (E9).
+      const fonts = missingFontMessage(versionMissingFonts(s.current));
+      if (fonts) return notify(fonts, "error");
+      const run = (acknowledgeChecks: boolean) => void editor.approve({ acknowledgeChecks });
+      if (props.guardApproval) await props.guardApproval(run, s.current);
+      else run(false);
+    } finally {
+      approving.current = false;
+    }
+  }, [session, editor, props.guardApproval, notify]);
 
   const openSchedule = useCallback(async () => {
     if (!(await session.flush())) return;
+    // Zamanla approves first: not a version drawn without a font it uses (E9).
+    const fonts = props.approvalFirst
+      ? missingFontMessage(versionMissingFonts(editor.getSnapshot().current))
+      : null;
+    if (fonts) return notify(fonts, "error");
     props.schedule.open();
-  }, [session, props.schedule]);
+  }, [session, editor, props.schedule, props.approvalFirst, notify]);
 
   // The workspace's own keys (the canvas's are Wecra's): save, approve, schedule.
   useEffect(() => {
@@ -359,11 +451,14 @@ export function PostWorkspace(props: WorkspaceProps) {
   }, []);
 
   // Unsaved edits are saved first: approving waits for that save, then checks the hash.
-  const approveDisabled = ws.incoming
-    ? "Önce yeni gelen sürüm için seç."
-    : ws.dirty && !ws.saving && !ws.readOnly
-      ? ws.blocker
-      : approveBlocker(snapshot);
+  const approveDisabled = props.checksWaiting
+    ? "Kontroller çalışıyor…"
+    : ws.incoming
+      ? "Önce yeni gelen sürüm için seç."
+      : ws.dirty && !ws.saving && !ws.readOnly
+        ? (ws.blocker ?? fontBlocker)
+        : (approveBlocker(snapshot) ?? fontBlocker);
+  const failures = useCheckFailures(content, version?.version ?? null);
   const chatDisabled =
     changesVersion(snapshot.activity) && snapshot.activity.kind !== "rendering" ? "Bekle…" : null;
 
@@ -408,6 +503,7 @@ export function PostWorkspace(props: WorkspaceProps) {
         // A two-finger sideways pan here moves the canvas, never the app's history (E8).
         data-no-swipe=""
         data-read-only={ws.readOnly ? "" : undefined}
+        {...drop}
       >
         {session.source && (
           <WecraEditor source={session.source} onReady={session.attach} insets={CANVAS_INSETS} />
@@ -439,7 +535,10 @@ export function PostWorkspace(props: WorkspaceProps) {
         ) : (
           dock(NO_LAYERS)
         )}
-        <Status state={ws} onRetry={() => version && void session.reopen(version)} />
+        <Status state={ws} kit={kitState} onRetry={() => version && void session.reopen(version)} />
+        {ws.phase === "ready" && reportOf !== null && ws.version === reportOf && version && (
+          <ImportReport report={ws.importReport} versionKey={version.id} />
+        )}
         <ConfirmDialog
           open={unlockAsk !== null && lock?.kind === "approval"}
           title="Düzenlemeye açılsın mı?"
@@ -475,7 +574,8 @@ export function PostWorkspace(props: WorkspaceProps) {
           approve={{
             visible: props.approvalFirst,
             disabled: approveDisabled,
-            busy: snapshot.approving,
+            busy: snapshot.approving || !!props.checksWaiting,
+            ...(props.checksWaiting ? { busyLabel: "Kontroller çalışıyor…" } : {}),
           }}
           schedule={{ label: props.schedule.label, disabled: props.schedule.disabled }}
           versionsOpen={versionsOpen}
@@ -485,7 +585,11 @@ export function PostWorkspace(props: WorkspaceProps) {
       <InSlot name="panel-header">
         {mode === "edit" ? (
           <>
-            <EditTabs tab={editTab} onTab={(t) => useWorkspaceStore.getState().setEditTab(t)} />
+            <EditTabs
+              tab={editTab}
+              failures={failures}
+              onTab={(t) => useWorkspaceStore.getState().setEditTab(t)}
+            />
             <span className="flex-1" />
             {ed && editTab === "design" && (
               <WecraScope ed={ed}>
@@ -505,12 +609,24 @@ export function PostWorkspace(props: WorkspaceProps) {
         >
           {mode === "chat" ? (
             <ChatPanel chat={chat} onStarter={(text) => chatInput.current?.focus(text)} />
+          ) : editTab === "checks" ? (
+            <div className="scroll-area min-h-0 flex-1">
+              <CanvasChecks
+                content={content}
+                version={version}
+                isCurrent={isViewingCurrent(snapshot)}
+                ed={ed}
+                waiting={!!props.checksWaiting}
+                onTab={(t) => useWorkspaceStore.getState().setEditTab(t)}
+              />
+            </div>
           ) : editTab === "caption" ? (
             <div className="scroll-area min-h-0 flex-1">
               <CaptionPanel snapshot={snapshot} editor={editor} />
             </div>
           ) : ed ? (
             <WecraScope ed={ed}>
+              {assets && <AssetsPanel {...assets} />}
               <WecraDesignPanel className="min-h-0 flex-1" />
             </WecraScope>
           ) : (
@@ -525,8 +641,17 @@ export function PostWorkspace(props: WorkspaceProps) {
   );
 }
 
-/** Tasarım · Açıklama */
-export function EditTabs({ tab, onTab }: { tab: EditTab; onTab(tab: EditTab): void }) {
+/** Tasarım · Açıklama · Kontroller (with the shown version's failures, E6) */
+export function EditTabs({
+  tab,
+  onTab,
+  failures = 0,
+}: {
+  tab: EditTab;
+  onTab(tab: EditTab): void;
+  /** Failed checks of the version shown (a red count on Kontroller). */
+  failures?: number;
+}) {
   return (
     <SegmentedControl<EditTab>
       label="Düzenle paneli"
@@ -535,6 +660,11 @@ export function EditTabs({ tab, onTab }: { tab: EditTab; onTab(tab: EditTab): vo
       options={[
         { value: "design", label: "Tasarım" },
         { value: "caption", label: "Açıklama" },
+        {
+          value: "checks",
+          label: "Kontroller",
+          ...(failures > 0 ? { count: failures, countTone: "danger" as const } : {}),
+        },
       ]}
     />
   );
@@ -561,29 +691,46 @@ function WithChatLayers({
   return <>{children(useChatLayers(ed))}</>;
 }
 
-/** Opening, importing, or why the document could not be opened. */
-function Status({ state, onRetry }: { state: WecraSessionState; onRetry(): void }) {
-  if ((state.phase === "ready" && state.editor) || state.phase === "fallback") return null;
+/** The brand's kit loading, opening, importing, or why the document could not be opened. */
+function Status({
+  state,
+  kit,
+  onRetry,
+}: {
+  state: WecraSessionState;
+  kit: Pick<RenderKitState, "status" | "error" | "retry">;
+  onRetry(): void;
+}) {
+  if (
+    kit.status === "ready" &&
+    ((state.phase === "ready" && state.editor) || state.phase === "fallback")
+  )
+    return null;
+  const error = kit.status === "error" || (kit.status === "ready" && state.phase === "error");
   const text =
-    state.phase === "error"
-      ? state.error
-      : state.phase === "importing"
-        ? "Kareler Wecra katmanlarına aktarılıyor…"
-        : "Tasarım açılıyor…";
+    kit.status === "error"
+      ? `Marka kiti okunamadı; tasarım marka fontları ve renkleri olmadan açılmaz. (${describeError(kit.error)})`
+      : kit.status === "loading"
+        ? "Marka kiti yükleniyor…"
+        : state.phase === "error"
+          ? state.error
+          : state.phase === "importing"
+            ? "Kareler Wecra katmanlarına aktarılıyor…"
+            : "Tasarım açılıyor…";
   return (
     <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center">
       <div
-        role={state.phase === "error" ? "alert" : "status"}
+        role={error ? "alert" : "status"}
         className="glass pointer-events-auto flex max-w-[420px] items-center gap-2 rounded-full px-4 py-2 text-body text-fg-2"
       >
-        {state.phase === "error" ? (
-          <IconWarning size={14} className="shrink-0 text-danger" />
-        ) : (
-          <Spinner size={12} />
-        )}
+        {error ? <IconWarning size={14} className="shrink-0 text-danger" /> : <Spinner size={12} />}
         <span className="min-w-0 [overflow-wrap:anywhere]">{text}</span>
-        {state.phase === "error" && (
-          <button type="button" className="shrink-0 underline" onClick={onRetry}>
+        {error && (
+          <button
+            type="button"
+            className="shrink-0 underline"
+            onClick={kit.status === "error" ? kit.retry : onRetry}
+          >
             Yeniden dene
           </button>
         )}

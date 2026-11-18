@@ -6,7 +6,11 @@ import { computeContentHash } from "@studio/contract";
 import type { CanvasFacts } from "@studio/design-kit/canvas";
 import { parseSlide } from "@studio/design-kit/document";
 import { describe, expect, it } from "vitest";
-import { postReference, scopedInstruction } from "../../src/renderer/features/post-editor/chat.ts";
+import {
+  canvasNote,
+  postReference,
+  scopedInstruction,
+} from "../../src/renderer/features/post-editor/chat.ts";
 import { DEMO_PROFILE } from "../../src/renderer/features/post-editor/demo/fixtures.ts";
 import { slideDocument } from "../../src/renderer/features/post-editor/html/slide-document.ts";
 import {
@@ -209,10 +213,15 @@ describe("the AI on a version saved from the canvas", () => {
       { id: "p1", title: "Post" },
       { version: 5, slides: [{ html, width: 1080, height: 1350, renderedAssetId: null }] },
     );
-    expect(ref).toContain("“Post” postu (id: p1, v5) için:");
-    expect(ref).toContain("v3 HTML'si üzerinden yap");
+    // The design is the version's Wecra document, edited with the canvas tools (S1): never the
+    // HTML the canvas started from. The iPhone sends the same note (CanvasOrigin.referenceNote).
+    expect(ref).toBe(
+      "“Post” postu (id: p1, güncel sürüm v5) için:\n(v5 Mac'teki tasarım tuvalinde kaydedildi: tasarım bu sürümün Wecra belgesidir, tuvalde elle yapılan değişiklikler onda. Değişikliği canvas_outline ile okuyup canvas_edit ile yap; HTML'den yeniden üretme.)",
+    );
+    expect(ref).toContain(canvasNote(5));
+    expect(ref).not.toContain("HTML'si üzerinden");
     expect(postReference({ id: "p1", title: "Post" }, { version: 2 })).toBe(
-      "“Post” postu (id: p1, v2) için:",
+      "“Post” postu (id: p1, güncel sürüm v2) için:",
     );
   });
 });
@@ -259,9 +268,10 @@ describe("Wecra's keys and clipboard (its places only)", () => {
 
 describe("the AI's scope and the brand kit", () => {
   it("scopes an AI request to the picked layers", () => {
-    const describe = (key: string) => ({ slide: 0, id: key, label: "Başlık" });
+    const describe = (key: string) => ({ slide: 0, id: key, label: "Başlık", kind: "metin" });
+    // Wecra's layer ids (what canvas_edit takes), with the layers' names and kinds.
     expect(scopedInstruction("Kısalt", ["1:7"], describe)).toBe(
-      "Kapsam: Kare 1 › 1:7 (Başlık). Yalnızca bu katmanları değiştir; diğerlerini olduğu gibi bırak.\nKısalt",
+      "Kapsam: Kare 1 › “Başlık” (metin, id 1:7). Yalnızca bu katmanları değiştir; diğerlerini olduğu gibi bırak.\nKısalt",
     );
     expect(scopedInstruction("Kısalt", [], describe)).toBe("Kısalt");
   });

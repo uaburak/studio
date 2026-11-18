@@ -3,6 +3,8 @@
 // from flex, texts, names from data-layer); the document bundle round trip; the engine's export
 // of each slide frame; and a canvas save (renders + bundle → a new version) on a fake API.
 
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import type { WNode } from "@shared/agents/web/convert";
 import { decodeMessage } from "@shared/schema/codec";
 import { WECRA_DOCUMENT_MIME } from "@studio/contract";
@@ -13,6 +15,7 @@ import { pageFrames } from "@/editor/exporting";
 import { EMPTY_DOCUMENT } from "@/editor/fixtures";
 import { Engine } from "@/engine/Engine";
 import { EngineStore } from "@/engine/EngineStore";
+import { BUNDLED_FACES, fonts } from "@/engine/fonts";
 import {
   BUNDLE_FORMAT,
   BundleImages,
@@ -28,6 +31,11 @@ import {
 import { WecraPostSession } from "../../src/renderer/features/post-editor/wecra/session.ts";
 
 // PNG encoding needs an OffscreenCanvas (the browser's): the engine's pixels, as raw bytes here.
+const INTER_TTF = resolve(
+  import.meta.dirname,
+  "../../src/renderer/vendor/wecra-editor/src/renderer/src/engine/fonts/InterVariable.ttf",
+);
+
 vi.mock("@/editor/exporting", async (importOriginal) => {
   const original = await importOriginal<typeof import("@/editor/exporting")>();
   return {
@@ -296,6 +304,16 @@ describe("a post in Wecra's editor (real engine, headless)", () => {
       },
     };
     const refresh = vi.fn(async () => {});
+    // The document's text font answered (as on a Mac that has it): a text whose font is missing
+    // makes no version (E9).
+    const inter = new Uint8Array(readFileSync(INTER_TTF));
+    fonts.setSource({
+      list: async () => [
+        ...BUNDLED_FACES,
+        ...BUNDLED_FACES.map((f) => ({ ...f, family: "Avenir Next" })),
+      ],
+      read: async () => inter,
+    });
     const session = new WecraPostSession({
       api: api as never,
       content: () => ({ id: "post-1", brandId: "brand-1", type: "post", title: "Post" }),
@@ -315,6 +333,8 @@ describe("a post in Wecra's editor (real engine, headless)", () => {
     if (!source) throw new Error("no document");
     const { ed, engine } = await editorOn(source, 8);
     await session.attach(ed);
+    await fonts.settled();
+    engine.pump();
     // An edit on the canvas: the document is dirty.
     const frame = first(pageFrames(ed)).ref;
     engine.setProps([frame], { name: "Kapak" } as never);
@@ -348,8 +368,8 @@ describe("a post in Wecra's editor (real engine, headless)", () => {
       h: 1350,
       visible: true,
     });
-    // (No fonts are loaded here: the hugging texts in the row are 0 px wide, not painted.)
-    expect(layouts[0]?.map((b) => b.id)).toEqual(["canvas", "headline"]);
+    // The texts laid out with their font (the hugging ones in the row have a width now).
+    expect(layouts[0]?.map((b) => b.id)).toEqual(["canvas", "headline", "eyebrow", "body"]);
     expect(first(version.slides).html).toContain('<meta name="studio:canvas"');
     expect(version.editorDocument).toEqual({
       kind: "wecra",
@@ -394,7 +414,7 @@ describe("a post in Wecra's editor (real engine, headless)", () => {
 });
 
 describe("fonts for Wecra's text engine", () => {
-  it("offers the brand's TTF / OTF files under their role's family (not WOFF), with Wecra's Inter", async () => {
+  it("offers the brand's font files under their role's family (WOFF2 too: E9), with Wecra's Inter", async () => {
     const { brandFileFaces, studioFontSource } = await import(
       "../../src/renderer/features/post-editor/wecra/fonts.ts"
     );
@@ -420,10 +440,11 @@ describe("fonts for Wecra's text engine", () => {
     const faces = brandFileFaces(kit);
     expect(faces.map((f) => [f.id, f.family, f.style, f.weight])).toEqual([
       ["studio-file:a1", "Brand Sans", "Bold", 700],
+      ["studio-file:a2", "Brand Sans", "Regular", 400],
       ["studio-file:a3", "Brand Sans", "Italic", 400],
     ]);
     const all = await studioFontSource(kit).list();
     expect(all.some((f) => f.family === "Inter")).toBe(true);
-    expect(all.filter((f) => f.family === "Brand Sans")).toHaveLength(2);
+    expect(all.filter((f) => f.family === "Brand Sans")).toHaveLength(3);
   });
 });

@@ -243,9 +243,15 @@ function PostCanvas({ editor, snapshot }: { editor: PostEditor; snapshot: Editor
   const facts = usePostFacts(snapshot);
   const approveGuard = useApproveGuard(snapshot);
   const [scheduleOpen, setScheduleOpen] = useState(false);
+  // The approve guard's answer when the sheet approves first (E7: "Yine de onayla").
+  const [scheduleAck, setScheduleAck] = useState(false);
   const { content } = snapshot;
   const version = activeVersion(snapshot);
   const close = useCallback(() => usePostsStore.getState().close(), []);
+  const openSchedule = (acknowledgeChecks: boolean) => {
+    setScheduleAck(acknowledgeChecks);
+    setScheduleOpen(true);
+  };
   const postSchedules = facts.schedules.data ?? NO_SCHEDULES;
   const cancelFlow = useCancelSchedule({
     content,
@@ -302,10 +308,11 @@ function PostCanvas({ editor, snapshot }: { editor: PostEditor; snapshot: Editor
           disabled: facts.scheduleDisabled,
           open: () =>
             facts.approvalFirst
-              ? approveGuard.guard(() => setScheduleOpen(true))
-              : setScheduleOpen(true),
+              ? void approveGuard.guard(openSchedule, editor.getSnapshot().current)
+              : openSchedule(false),
         }}
         guardApproval={approveGuard.guard}
+        checksWaiting={approveGuard.waiting}
         scheduledTargets={cancelFlow.targets.map((t) => t.label)}
         onDuplicate={async () => {
           const copy = await actions.duplicate(content);
@@ -333,6 +340,7 @@ function PostCanvas({ editor, snapshot }: { editor: PostEditor; snapshot: Editor
               accounts={facts.allAccounts}
               schedules={postSchedules}
               initialDate={scheduleDate}
+              acknowledgeChecks={scheduleAck}
               onClose={() => setScheduleOpen(false)}
               onDone={(fresh) => {
                 editor.replaceContent(fresh);
@@ -369,6 +377,17 @@ export function EditorView({ editor, snapshot }: { editor: PostEditor; snapshot:
   const busy = changesVersion(snapshot.activity);
   const blocker = approveBlocker(snapshot);
   const approveGuard = useApproveGuard(snapshot);
+  const [scheduleAck, setScheduleAck] = useState(false);
+  const openSchedule = (acknowledgeChecks: boolean) => {
+    setScheduleAck(acknowledgeChecks);
+    setScheduleOpen(true);
+  };
+  // Through the checks of the version being approved (E7).
+  const approve = () =>
+    void approveGuard.guard(
+      (acknowledgeChecks) => void editor.approve({ acknowledgeChecks }),
+      editor.getSnapshot().current,
+    );
   const postSchedules = schedules.data ?? NO_SCHEDULES;
   const cancelFlow = useCancelSchedule({
     content,
@@ -455,7 +474,9 @@ export function EditorView({ editor, snapshot }: { editor: PostEditor; snapshot:
     }
     if (meta && event.key === "Enter") {
       event.preventDefault();
-      approveGuard.guard(() => void editor.approve());
+      // Blocked: the approve call says why (no checks to wait for).
+      if (canApprove(s)) approve();
+      else void editor.approve();
       return;
     }
     if (event.metaKey || event.ctrlKey || event.altKey) return;
@@ -671,8 +692,8 @@ export function EditorView({ editor, snapshot }: { editor: PostEditor; snapshot:
                 disabled={!!scheduleDisabledReason}
                 onClick={() =>
                   approvalFirst
-                    ? approveGuard.guard(() => setScheduleOpen(true))
-                    : setScheduleOpen(true)
+                    ? void approveGuard.guard(openSchedule, editor.getSnapshot().current)
+                    : openSchedule(false)
                 }
               >
                 {scheduleLabel}
@@ -682,10 +703,14 @@ export function EditorView({ editor, snapshot }: { editor: PostEditor; snapshot:
               <span title={blocker ?? "Bu sürümü onayla (⌘↩)"}>
                 <Button
                   variant="secondary"
-                  disabled={!canApprove(snapshot)}
-                  onClick={() => approveGuard.guard(() => void editor.approve())}
+                  disabled={!canApprove(snapshot) || approveGuard.waiting}
+                  onClick={approve}
                 >
-                  {snapshot.approving ? "Onaylanıyor…" : "Onayla"}
+                  {approveGuard.waiting
+                    ? "Kontroller çalışıyor…"
+                    : snapshot.approving
+                      ? "Onaylanıyor…"
+                      : "Onayla"}
                 </Button>
               </span>
             )}
@@ -710,6 +735,7 @@ export function EditorView({ editor, snapshot }: { editor: PostEditor; snapshot:
         accounts={allAccounts}
         schedules={postSchedules}
         initialDate={scheduleDate}
+        acknowledgeChecks={scheduleAck}
         onClose={() => {
           setScheduleOpen(false);
           root.current?.focus({ preventScroll: true });

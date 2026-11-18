@@ -8,11 +8,11 @@
   "scripts": {
     "dev": "electron-vite dev",
     "dev:renderer": "vite --config renderer.vite.config.ts",
-    "build": "electron-vite build",
+    "build": "node scripts/wecra-guard.mjs -- electron-vite build",
     "start": "electron-vite preview",
     "tokens": "node scripts/gen-tokens.ts",
-    "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.node.json",
-    "test": "vitest run"
+    "typecheck": "node scripts/wecra-guard.mjs -- tsc -p tsconfig.json && tsc -p tsconfig.node.json",
+    "test": "node scripts/wecra-guard.mjs --without 'vitest run --project main' -- vitest run"
   },
   "dependencies": {
     "@floating-ui/react": "0.27.20",
@@ -32,6 +32,7 @@
     "react": "catalog:",
     "react-dom": "catalog:",
     "webm-muxer": "5.1.4",
+    "woff2-encoder": "2.0.0",
     "zustand": "5.1.0"
   },
   "devDependencies": {

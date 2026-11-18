@@ -182,6 +182,66 @@ const REWRITES = [
     "  const onPaste = (e: ClipboardEvent) => {\n",
     `  const onPaste = (e: ClipboardEvent) => {\n    if (${OUTSIDE("e")}) return;\n`,
   ],
+  // What a post editor has (E16, patches command-stub … design-panel). Studio keeps an
+  // allowlist of Wecra's commands (features/post-editor/wecra/commands.ts) and takes the others
+  // out of the registry itself —
+  // no key, menu or panel button reaches them. These patches only let Wecra's own UI live with
+  // a smaller registry: a panel asking for a command Studio left out gets a disabled stand-in
+  // instead of an exception; the canvas menu, the zoom (view) menu, the Design panel header's
+  // actions and the toolbar's tool menus go through Studio's filter; the Design panel leaves
+  // out plugin relaunch buttons, canvas buttons, the page's Export and the MCP section.
+  [
+    // command-stub: a command Studio left out (embedded) reads as disabled, never throws.
+    "src/renderer/src/editor/commands.ts",
+    "  const c = COMMAND_BY_ID.get(id);\n  if (!c) throw",
+    `  const c = COMMAND_BY_ID.get(id);\n  if (!c && ${EMBED}?.studio) return { id, label: id, run: () => {}, enabled: () => false };\n  if (!c) throw`,
+  ],
+  [
+    // canvas-menu: the canvas / layer row menu through Studio's allowlist.
+    "src/renderer/src/editor/menus.ts",
+    "export function canvasMenu(ed: EditorController, layers: { id: Guid; name: string; locked?: boolean; icon?: IconName }[], options: { row?: boolean } = {}): MenuEntry[] {",
+    `export function canvasMenu(ed: EditorController, layers: { id: Guid; name: string; locked?: boolean; icon?: IconName }[], options: { row?: boolean } = {}): MenuEntry[] {\n  const all = wecraCanvasMenu(ed, layers, options);\n  return ${EMBED}?.canvasMenu ? ${EMBED}.canvasMenu(all, ed) : all;\n}\nfunction wecraCanvasMenu(ed: EditorController, layers: { id: Guid; name: string; locked?: boolean; icon?: IconName }[], options: { row?: boolean } = {}): MenuEntry[] {`,
+  ],
+  [
+    // view-menu: the zoom menu (Studio's view menu) through Studio's filter (its own items too).
+    "src/renderer/src/editor/panels/RightPanel.tsx",
+    "      entries={entries}\n      head={(close) => <ZoomField",
+    `      entries={${EMBED}?.viewMenu ? ${EMBED}.viewMenu(entries, ed) : entries}\n      head={(close) => <ZoomField`,
+  ],
+  [
+    // header-actions: the Design panel header's buttons Studio keeps (no component, slot, dev status, link, variable).
+    "src/renderer/src/editor/panels/design/Header.tsx",
+    "  return <>{row.map(render)}</>;",
+    `  return <>{row.filter((a) => ${EMBED}?.headerAction?.(a) !== false).map(render)}</>;`,
+  ],
+  [
+    // tool-menus: the toolbar's tool menus without the tools Studio leaves out (Section, Slice …).
+    "src/renderer/src/ds/components/EditorToolbar.tsx",
+    "            menu={g.tools.map((id) => ({",
+    `            menu={g.tools.filter((id) => ${EMBED}?.tool?.(id) !== false).map((id) => ({`,
+  ],
+  [
+    // design-panel: no plugin relaunch buttons, page Export or MCP section with nothing selected …
+    "src/renderer/src/editor/panels/design/DesignPanel.tsx",
+    '          <RelaunchButtons refs={[page, "0:0"]} />\n',
+    `          {!${EMBED}?.studio && <RelaunchButtons refs={[page, "0:0"]} />}\n`,
+  ],
+  [
+    "src/renderer/src/editor/panels/design/DesignPanel.tsx",
+    "          {pageNode && <ExportSection targets={[pageNode as ExportTarget]} page />}\n          <McpSection />\n",
+    `          {!${EMBED}?.studio && pageNode && <ExportSection targets={[pageNode as ExportTarget]} page />}\n          {!${EMBED}?.studio && <McpSection />}\n`,
+  ],
+  [
+    // … and no relaunch buttons or canvas buttons over a selection (its Export stays: Studio has none).
+    "src/renderer/src/editor/panels/design/DesignPanel.tsx",
+    "      <RelaunchButtons refs={nodes.map((n) => n.guid)} />\n",
+    `      {!${EMBED}?.studio && <RelaunchButtons refs={nodes.map((n) => n.guid)} />}\n`,
+  ],
+  [
+    "src/renderer/src/editor/panels/design/DesignPanel.tsx",
+    "      <ButtonSection nodes={nodes} />\n",
+    `      {!${EMBED}?.studio && <ButtonSection nodes={nodes} />}\n`,
+  ],
 ];
 
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");

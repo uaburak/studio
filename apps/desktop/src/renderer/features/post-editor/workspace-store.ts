@@ -6,7 +6,7 @@ import type { Content } from "@studio/contract";
 import { create } from "zustand";
 
 export type WorkspaceMode = "chat" | "edit";
-export type EditTab = "design" | "caption";
+export type EditTab = "design" | "caption" | "checks";
 
 /** A post opens on Düzenle until it was left on Sohbet. */
 export const DEFAULT_MODE: WorkspaceMode = "edit";

@@ -288,9 +288,17 @@ public final class APIClient: Sendable {
     }
 
     /// Approve the current version; `hash` must equal its `contentHash` (else 409 `hash_mismatch`).
-    public func approveContent(_ id: EntityID, hash: String) async throws(StudioAPIError) -> Content {
-        struct Body: Encodable { var hash: String }
-        return try await send(Content.self, .post, "/api/contents/\(Self.enc(id))/approve", body: Body(hash: hash))
+    /// The API also refuses (409, a message about "kontrol") while the version's checks hold the
+    /// approval back (E7); `acknowledgeChecks` — sent only after the user confirmed "Yine de
+    /// onaylansın mı?" — approves anyway.
+    public func approveContent(_ id: EntityID, hash: String, acknowledgeChecks: Bool = false) async throws(StudioAPIError) -> Content {
+        struct Body: Encodable {
+            var hash: String
+            var acknowledgeChecks: Bool?
+        }
+        return try await send(
+            Content.self, .post, "/api/contents/\(Self.enc(id))/approve",
+            body: Body(hash: hash, acknowledgeChecks: acknowledgeChecks ? true : nil))
     }
 
     public func transitionContent(_ id: EntityID, to: ContentManualTransition) async throws(StudioAPIError) -> Content {

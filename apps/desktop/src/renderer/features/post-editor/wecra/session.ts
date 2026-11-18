@@ -35,31 +35,16 @@
 //
 // Read only (E3): the workspace locks the canvas (approved, scheduled, published, an older
 // version, an AI run); Wecra's own viewer mode refuses edits then (`Engine.setViewerMode`).
-import {
-  type ApiClient,
-  type ContentType,
-  type ContentVersion,
-  WECRA_DOCUMENT_MIME,
-} from "@studio/contract";
-import type { CanvasFacts } from "@studio/design-kit/canvas";
+import type { ApiClient, ContentType, ContentVersion } from "@studio/contract";
 import type { EditorController } from "@/editor/controller";
 import { type MemoryDocumentSource, memoryDocumentSource } from "@/editor/documentSource";
-import { convertPixels } from "@/editor/exportCore";
-import { encodePixels, pageFrames, renderExport } from "@/editor/exporting";
 import { EMPTY_DOCUMENT } from "@/editor/fixtures";
-import type { ExportOutput, Message } from "@/engine/codec";
+import type { Message } from "@/engine/codec";
 import type { Draft, DraftsBridge } from "../../../../shared/drafts.ts";
 import type { RenderKit } from "../model/brand-kit.ts";
-import { assetIdOfUrl, linkKnownImages, rememberAsset, shareImages } from "./assets.ts";
-import {
-  BUNDLE_FORMAT,
-  BundleImages,
-  type BundleSlide,
-  encodeBundle,
-  loadBundle,
-  usedImages,
-} from "./bundle.ts";
-import { slideFacts } from "./facts.ts";
+import { assetIdOfUrl, linkKnownImages, rememberAsset } from "./assets.ts";
+import { BundleImages, type BundleSlide, encodeBundle, loadBundle } from "./bundle.ts";
+import type { ImportChange } from "./fidelity.ts";
 import {
   type CanvasFrame,
   canvasFrames,
@@ -69,7 +54,20 @@ import {
 } from "./frames.ts";
 import { documentHash } from "./hash.ts";
 import { type CapturedSlide, captureSlides, importSlides, type SlideSource } from "./import.ts";
-import { canvasOrigin, canvasSlideHtml, canvasSlideLayout, sha256Hex } from "./slide-html.ts";
+import { missingFamilies, missingFontMessage } from "./missing-fonts.ts";
+import {
+  type CanvasCapture,
+  type CapturedFrame,
+  captureDocument,
+  createCanvasVersion,
+  encodeFrames,
+  exportFrames,
+  type SavedSlide,
+  slideFrames,
+} from "./save.ts";
+import { canvasOrigin } from "./slide-html.ts";
+
+export type { SavedSlide } from "./save.ts";
 
 export type WecraPhase = "loading" | "importing" | "ready" | "error" | "fallback";
 
@@ -98,6 +96,8 @@ export interface WecraSessionState {
   draftSavedAt: number | null;
   /** What the import could not carry over (pictures that did not load), fallbacks. */
   warnings: string[];
+  /** What the import changed or could not carry over, layer by layer (fidelity.ts). */
+  importReport: ImportChange[];
   /** Wecra's editor on the open document, once it is up. */
   editor: EditorController | null;
   /** The canvas refuses edits (the workspace's lock, a draft waiting for an answer). */
@@ -127,6 +127,11 @@ export interface WecraSessionDeps {
   fetchAsset?: (assetId: string) => Promise<Uint8Array>;
   /** Tells the user something after the post was left (closing could not create a version). */
   report?: (message: string) => void;
+  /**
+   * Readies an opened document before it counts (the brand's styles: brand-styles.ts) — run
+   * before the editor is attached (a document) or right after the import, so it is no edit.
+   */
+  prepare?: (ed: EditorController) => Promise<void> | void;
 }
 
 /** A fresh session for new layers (Wecra makes ids `session:local`; each open gets its own). */
@@ -134,25 +139,8 @@ const freshSession = () => 2 + (Math.floor(Date.now() / 1000) % 2_000_000_000);
 
 const DIRTY_KINDS = new Set(["USER", "UNDO", "REDO"]);
 
-/** A slide's render: the frame at 1x, in sRGB. */
-const EXPORT = {
-  imageType: "PNG",
-  constraint: { type: "CONTENT_SCALE", value: 1 },
-  useAbsoluteBounds: true,
-  colorProfile: "SRGB",
-} as const;
-
-export interface SavedSlide extends BundleSlide {
-  png: Uint8Array;
-}
-
-/** Everything a version is made of, read from the editor at once. */
-interface Capture {
-  document: Uint8Array;
-  slides: BundleSlide[];
-  /** Each slide's canvas facts (`null`: unreadable — the slide is then the render alone). */
-  facts: (CanvasFacts | null)[];
-  captured: { slide: BundleSlide; out: ExportOutput }[];
+/** Everything a version is made of, read from the editor at once (save.ts), and the edit count. */
+interface Capture extends CanvasCapture {
   changes: number;
 }
 
@@ -177,6 +165,7 @@ export class WecraPostSession {
     lastSavedAt: null,
     draftSavedAt: null,
     warnings: [],
+    importReport: [],
     editor: null,
     readOnly: false,
     blocker: null,
@@ -350,6 +339,7 @@ export class WecraPostSession {
       dirty: false,
       saveError: null,
       warnings: [],
+      importReport: [],
       blocker: null,
       draft: null,
       incoming: null,
@@ -491,8 +481,13 @@ export class WecraPostSession {
   attach = async (ed: EditorController): Promise<void> => {
     if (ed.source !== this.source) return;
     const ticket = this.opening;
-    this.set({ editor: ed });
     const slides = this.pendingImport;
+    // An opened document is readied before the editor counts its changes (no edit).
+    if (!slides) {
+      await this.prepare(ed);
+      if (ticket !== this.opening || ed.engine.destroyed) return;
+    }
+    this.set({ editor: ed });
     if (slides) {
       this.pendingImport = null;
       try {
@@ -506,12 +501,14 @@ export class WecraPostSession {
         });
         if (ticket !== this.opening || ed.engine.destroyed) return;
         await importSlides(ed, captured);
+        await this.prepare(ed);
         await Promise.all(remembered);
         await linkKnownImages(this.images);
         ed.engine.command("ZOOM_TO_FIT");
         const missing = captured.flatMap((c) => c.missing);
         this.set({
           phase: "ready",
+          importReport: captured.flatMap((c) => c.report ?? []),
           warnings: [
             ...this.state.warnings,
             ...(missing.length
@@ -559,6 +556,15 @@ export class WecraPostSession {
     this.set({ blocker: this.frameBlocker(ed) });
     this.applyReadOnly();
   };
+
+  private async prepare(ed: EditorController): Promise<void> {
+    if (ed.engine.destroyed) return;
+    try {
+      await this.deps.prepare?.(ed);
+    } catch {
+      // The document opens without it.
+    }
+  }
 
   // --- read only --------------------------------------------------------------------------------
 
@@ -780,21 +786,7 @@ export class WecraPostSession {
   /** The slide frames (the page's top-level frames in reading order) with their sizes. */
   slides(): BundleSlide[] {
     const ed = this.ed;
-    if (!ed) return [];
-    const frames = pageFrames(ed);
-    const nodes = ed.engine.readNodes(
-      frames.map((f) => f.ref),
-      { fields: ["size", "name"] },
-    );
-    return frames.map((f, i) => {
-      const size = (nodes[i] as { size?: { x: number; y: number } } | undefined)?.size;
-      return {
-        guid: f.ref,
-        name: f.name,
-        width: Math.round(size?.x ?? 0),
-        height: Math.round(size?.y ?? 0),
-      };
-    });
+    return ed ? slideFrames(ed) : [];
   }
 
   /** Why these frames can't be saved as this post's slides (count, sizes, hidden), or null. */
@@ -813,50 +805,13 @@ export class WecraPostSession {
    * which waits for them — unless the editor is closing, then it is drawn as it is.
    */
   async exportSlides(slides = this.slides(), closing = false): Promise<SavedSlide[]> {
-    return this.encode(this.capture(slides, closing));
+    return encodeFrames(this.ed, this.capture(slides, closing));
   }
 
-  private capture(
-    slides: BundleSlide[],
-    closing: boolean,
-  ): { slide: BundleSlide; out: ExportOutput }[] {
+  private capture(slides: BundleSlide[], closing: boolean): CapturedFrame[] {
     const ed = this.ed;
     if (!ed || ed.engine.destroyed) throw new Error("Tuval hazır değil.");
-    return slides.map((slide) => ({
-      slide,
-      out: ed.engine.exportNodes(
-        [slide.guid],
-        EXPORT,
-        closing ? { allowPending: true } : undefined,
-      ),
-    }));
-  }
-
-  private async encode(
-    captured: { slide: BundleSlide; out: ExportOutput }[],
-  ): Promise<SavedSlide[]> {
-    const ed = this.ed;
-    const out: SavedSlide[] = [];
-    for (const { slide, out: o } of captured) {
-      let png: Uint8Array;
-      if (o.status === "ok" && "pixels" in o) {
-        const from = ed?.engine.destroyed === false ? ed.engine.colorProfile : "SRGB";
-        png = await encodePixels(
-          { ...o.pixels, pixels: convertPixels(o.pixels.pixels, from, "SRGB") },
-          "image/png",
-          undefined,
-          "SRGB",
-        );
-      } else if (ed && !ed.engine.destroyed) {
-        const r = await renderExport(ed, [slide.guid], EXPORT);
-        if ("error" in r) throw new Error(`${slide.name} dışa aktarılamadı: ${r.error}`);
-        png = r.bytes;
-      } else {
-        throw new Error(`${slide.name} dışa aktarılamadı.`);
-      }
-      out.push({ ...slide, png });
-    }
-    return out;
+    return exportFrames(ed, slides, closing);
   }
 
   /** Why a version can't be made from the canvas now (a question waits, read only), or null. */
@@ -873,21 +828,21 @@ export class WecraPostSession {
     const ed = this.ed;
     if (!this.live(ed)) return "Tuval hazır değil.";
     const frames = canvasFrames(ed);
-    const slides = this.slides();
-    const document = ed.engine.encodeDocumentKiwi();
     const blocker = frameBlocker(this.deps.content().type, frames, this.format);
     if (blocker) {
       this.set({ blocker });
-      void this.storeDraft(document, slides, blocker);
+      void this.storeDraft(ed.engine.encodeDocumentKiwi(), this.slides(), blocker);
       return blocker;
     }
-    return {
-      document,
-      slides,
-      facts: slides.map((s) => slideFacts(ed, s.guid)),
-      captured: this.capture(slides, closing),
-      changes: this.changes,
-    };
+    const capture = captureDocument(ed, closing);
+    // A text drawn without its font would be published in the fallback (E9): the draft keeps it.
+    const missing = missingFontMessage(missingFamilies(capture.facts));
+    if (missing) {
+      this.set({ blocker: missing });
+      void this.storeDraft(capture.document, capture.slides, missing);
+      return missing;
+    }
+    return { ...capture, changes: this.changes };
   }
 
   /**
@@ -919,7 +874,7 @@ export class WecraPostSession {
   }
 
   private async commit(capture: Capture, note: string | undefined): Promise<boolean> {
-    const { document, slides, facts, captured } = capture;
+    const { document, slides } = capture;
     const hash = await documentHash(document);
     if (hash === this.baseHash && !note?.trim()) {
       // Nothing differs from the version (undone back to it): no version.
@@ -932,60 +887,16 @@ export class WecraPostSession {
     const ticket = this.opening;
     this.set({ saving: true, saveError: null });
     try {
-      const content = this.deps.content();
-      const api = this.deps.api;
-      const exported = await this.encode(captured);
-      // The pictures as the brand's assets, each once (E13); the bundle refers to them.
-      await shareImages(images, usedImages(document, images), (input) =>
-        api.assets.upload({
-          brandId: content.brandId,
-          kind: "image",
-          source: "upload",
-          file: input.file,
-          filename: input.filename,
-        }),
-      );
-      const bundle = encodeBundle(document, images, slides, sourceVersion);
-      const renders = await Promise.all(
-        exported.map(async (s, i) => {
-          const asset = await api.assets.upload({
-            brandId: content.brandId,
-            kind: "image",
-            source: "generated",
-            width: s.width,
-            height: s.height,
-            file: new Blob([s.png as BlobPart], { type: "image/png" }),
-            filename: `kare-${i + 1}.png`,
-          });
-          return { asset, sha256: await sha256Hex(s.png) };
-        }),
-      );
-      const documentAsset = await api.assets.upload({
-        brandId: content.brandId,
-        kind: "document",
-        source: "generated",
-        file: new Blob([bundle as BlobPart], { type: WECRA_DOCUMENT_MIME }),
-        filename: "post.wecra",
-      });
-      const version = await api.contents.versions.create(content.id, {
+      // Renders, pictures and the bundle uploaded, the version created, its checks queued (save.ts).
+      const { version } = await createCanvasVersion({
+        api: this.deps.api,
+        content: this.deps.content(),
+        ed: this.ed,
+        capture,
+        images,
+        sourceVersion,
         origin: "manual_edit",
         note: note?.trim() || "Tuvalde düzenlendi.",
-        slides: exported.map((s, i) => ({
-          html: canvasSlideHtml({
-            src: `/media/${encodeURIComponent((renders[i] as { asset: { id: string } }).asset.id)}.png`,
-            sha256: (renders[i] as { sha256: string }).sha256,
-            width: s.width,
-            height: s.height,
-            facts: facts[i] ?? null,
-            sourceVersion,
-          }),
-          width: s.width,
-          height: s.height,
-        })),
-        renderedAssetIds: renders.map((r) => r.asset.id),
-        // The render and the described layers, measured (the facts): no measuring render follows.
-        layouts: exported.map((s, i) => canvasSlideLayout(facts[i] ?? null, s.width, s.height)),
-        editorDocument: { kind: "wecra", assetId: documentAsset.id, format: BUNDLE_FORMAT },
       });
       this.created.add(version.id);
       if (ticket === this.opening) {
@@ -1009,15 +920,6 @@ export class WecraPostSession {
       } else {
         this.set({ saving: false });
       }
-      // The deterministic checks on the new renders (the model pass stays a manual run).
-      void api.jobs
-        .create({
-          type: "content.check",
-          brandId: content.brandId,
-          contentId: content.id,
-          payload: { version: version.version, model: false },
-        })
-        .catch(() => {});
       await this.deps.refresh();
       return true;
     } catch (e) {

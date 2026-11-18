@@ -1,6 +1,8 @@
 import {
   BrandCheckSettings,
+  CHECK_IDS,
   CheckStrictness,
+  Content,
   type ContentCheckResultInput,
   ContentCheckRun,
   type ContentCheckRunCreate,
@@ -164,5 +166,116 @@ describe("content check runs", () => {
 
     // Runs go with their content.
     expect((await api("DELETE", `/api/contents/${content.id}`)).status).toBe(204);
+  });
+});
+
+describe("approval gate (E7)", () => {
+  const approve = (id: string, hash: string, acknowledgeChecks?: boolean) =>
+    api("POST", `/api/contents/${id}/approve`, {
+      hash,
+      ...(acknowledgeChecks === undefined ? {} : { acknowledgeChecks }),
+    });
+  const storeRun = async (
+    contentId: string,
+    version: number,
+    results: ContentCheckResultInput[],
+    strictness?: "relaxed" | "standard" | "strict",
+  ) => {
+    const res = await api("POST", `/api/contents/${contentId}/checks`, {
+      version,
+      trigger: "render",
+      ...(strictness ? { strictness } : {}),
+      results,
+    });
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+  };
+
+  it("refuses a version with no finished run, unless the checks are acknowledged", async () => {
+    const brand = await createBrand();
+    const content = await createContent(brand.id);
+    const v1 = await addVersion(content.id);
+
+    const refused = expectError(await approve(content.id, v1.contentHash), 409, "conflict");
+    expect(refused.message).toContain("kontrol");
+    expect(refused.message).toContain("v1");
+    // Still a draft.
+    expect(Content.parse((await api("GET", `/api/contents/${content.id}`)).body).status).toBe(
+      "draft",
+    );
+
+    const ok = await approve(content.id, v1.contentHash, true);
+    expect(ok.status, JSON.stringify(ok.body)).toBe(200);
+    expect(Content.parse(ok.body).status).toBe("approved");
+  });
+
+  it("refuses failures of the latest run of that exact version, with the results as issues", async () => {
+    const brand = await createBrand();
+    const content = await createContent(brand.id);
+    await addVersion(content.id);
+    const v2 = await addVersion(content.id, { slides: [slide("<html><body>v2</body></html>")] });
+
+    // Only v1 was checked: v2 has no run of its own.
+    await storeRun(content.id, 1, [result("layout.overflow", "pass")]);
+    expectError(await approve(content.id, v2.contentHash), 409, "conflict");
+
+    await storeRun(content.id, 2, [
+      result("layout.overflow", "fail", { message: "Başlık taşıyor." }),
+      result("text.hashtags", "warn"),
+      result("layout.contrast", "pass"),
+    ]);
+    const refused = expectError(await approve(content.id, v2.contentHash), 409, "conflict");
+    expect(refused.message).toMatch(/v2 için 1 kontrol geçmedi/);
+    expect(refused.message).toContain("Metin taşması");
+    expect(refused.issues).toEqual([
+      { path: "checks.layout.overflow", message: "Metin taşması: Başlık taşıyor." },
+    ]);
+    // An explicit `false` is no acknowledgement.
+    expectError(await approve(content.id, v2.contentHash, false), 409, "conflict");
+
+    // A newer run of the same version decides (the fix went in, re-checked).
+    await storeRun(content.id, 2, [
+      result("layout.overflow", "pass"),
+      result("text.hashtags", "warn"),
+    ]);
+    const ok = await approve(content.id, v2.contentHash);
+    expect(ok.status, JSON.stringify(ok.body)).toBe(200);
+  });
+
+  it("follows the brand's current settings: switched-off checks and strictness", async () => {
+    const brand = await createBrand();
+    const settings = `/api/brands/${brand.id}/check-settings`;
+    const content = await createContent(brand.id);
+    const v1 = await addVersion(content.id);
+    await storeRun(content.id, 1, [
+      result("layout.contrast", "fail"),
+      result("text.hashtags", "warn"),
+    ]);
+    expectError(await approve(content.id, v1.contentHash), 409, "conflict");
+
+    // Contrast switched off: its failure no longer holds approval back …
+    await api("PUT", settings, { disabledChecks: ["layout.contrast"] });
+    // … but strict makes the warning block.
+    await api("PUT", settings, { disabledChecks: ["layout.contrast"], strictness: "strict" });
+    const strict = expectError(await approve(content.id, v1.contentHash), 409, "conflict");
+    expect(strict.issues?.map((i) => i.path)).toEqual(["checks.text.hashtags"]);
+
+    await api("PUT", settings, { disabledChecks: ["layout.contrast"], strictness: "standard" });
+    expect((await approve(content.id, v1.contentHash)).status).toBe(200);
+  });
+
+  it("does not wait for runs when the brand switched every check off", async () => {
+    const brand = await createBrand();
+    await api("PUT", `/api/brands/${brand.id}/check-settings`, { disabledChecks: [...CHECK_IDS] });
+    const content = await createContent(brand.id);
+    const v1 = await addVersion(content.id);
+    expect((await approve(content.id, v1.contentHash)).status).toBe(200);
+  });
+
+  it("keeps the earlier refusals first (no version, wrong hash, wrong status)", async () => {
+    const brand = await createBrand();
+    const content = await createContent(brand.id);
+    expectError(await approve(content.id, "0".repeat(64)), 409, "conflict");
+    await addVersion(content.id);
+    expectError(await approve(content.id, "f".repeat(64)), 409, "hash_mismatch");
   });
 });

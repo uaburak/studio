@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
   APPROVABLE_STATUSES,
+  anyCheckEnabled,
+  approvalBlockers,
+  CHECK_IDS,
   CONTENT_TRANSITIONS,
+  ContentApprove,
   ContentCreate,
   ContentStatus,
   ContentTransition,
@@ -165,5 +169,39 @@ describe("content schemas", () => {
       ContentVersionCreate.safeParse({ ...ok, slides: [{ html: heavy, width: 10, height: 10 }] })
         .success,
     ).toBe(false);
+  });
+});
+
+describe("ContentApprove (E7)", () => {
+  const hash = "b".repeat(64);
+  it("takes the hash alone (old clients) or with acknowledgeChecks", () => {
+    expect(ContentApprove.parse({ hash })).toEqual({ hash });
+    expect(ContentApprove.parse({ hash, acknowledgeChecks: true })).toEqual({
+      hash,
+      acknowledgeChecks: true,
+    });
+    expect(ContentApprove.safeParse({ hash, acknowledgeChecks: "yes" }).success).toBe(false);
+  });
+});
+
+describe("approval blockers (E7)", () => {
+  const r = (checkId: string, status: string) => ({ checkId, status });
+  const results = [
+    r("layout.overflow", "fail"),
+    r("text.hashtags", "warn"),
+    r("brand.fonts", "pass"),
+  ];
+  it("counts failures, warnings only when strict, never switched-off checks", () => {
+    const base = { disabledChecks: [] as string[], strictness: "standard" as const };
+    expect(approvalBlockers(results, base).map((x) => x.checkId)).toEqual(["layout.overflow"]);
+    expect(
+      approvalBlockers(results, { ...base, strictness: "strict" }).map((x) => x.checkId),
+    ).toEqual(["layout.overflow", "text.hashtags"]);
+    expect(approvalBlockers(results, { ...base, disabledChecks: ["layout.overflow"] })).toEqual([]);
+  });
+  it("knows when every check is switched off", () => {
+    expect(anyCheckEnabled({ disabledChecks: [] })).toBe(true);
+    expect(anyCheckEnabled({ disabledChecks: CHECK_IDS.slice(1) })).toBe(true);
+    expect(anyCheckEnabled({ disabledChecks: [...CHECK_IDS] })).toBe(false);
   });
 });

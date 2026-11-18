@@ -143,6 +143,7 @@ describe("contents editor endpoints", () => {
     });
     const approved = await api<Content>("POST", `/api/contents/${content.id}/approve`, {
       hash: v2.contentHash,
+      acknowledgeChecks: true,
     });
     expect(approved.body.status).toBe("approved");
 
@@ -195,7 +196,10 @@ describe("contents editor endpoints", () => {
       renderedAssetIds: [render.id, null],
       layouts: [layout("headline"), null],
     });
-    await api("POST", `/api/contents/${content.id}/approve`, { hash: v2.contentHash });
+    await api("POST", `/api/contents/${content.id}/approve`, {
+      hash: v2.contentHash,
+      acknowledgeChecks: true,
+    });
 
     const copy = await api<Content>("POST", `/api/contents/${content.id}/duplicate`, {});
     expect(copy.status, JSON.stringify(copy.body)).toBe(201);

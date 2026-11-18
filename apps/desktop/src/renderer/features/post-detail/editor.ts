@@ -984,7 +984,11 @@ export class PostEditor {
     }
   }
 
-  async approve(): Promise<boolean> {
+  /**
+   * Approves the current version. `acknowledgeChecks`: the user saw that its checks did not pass
+   * (or have not finished) and approves anyway — without it the API refuses then (E7).
+   */
+  async approve(options: { acknowledgeChecks?: boolean } = {}): Promise<boolean> {
     const hash = this.s.approvableHash;
     const blocker = approveBlocker(this.s);
     if (blocker || !hash || this.s.approving) {
@@ -993,7 +997,10 @@ export class PostEditor {
     }
     this.set({ approving: true });
     try {
-      const content = await this.api.contents.approve(this.s.content.id, hash);
+      const content = await this.api.contents.approve(
+        this.s.content.id,
+        options.acknowledgeChecks ? { hash, acknowledgeChecks: true } : hash,
+      );
       this.set({ content, error: null, notice: "Onaylandı." });
       this.options.onChange?.(content, this.s.current);
       this.options.onApproved?.(content);
