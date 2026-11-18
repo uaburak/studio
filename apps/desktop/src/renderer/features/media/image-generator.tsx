@@ -88,7 +88,7 @@ export function ImageGeneratorSheet({
             onKeyDown={(event) => {
               if (event.key === "Enter" && event.metaKey) void submit();
             }}
-            className="selectable resize-none rounded-[12px] bg-field px-3 py-2 text-body text-fg shadow-[inset_0_0_0_1px_var(--border-hairline)] outline-none placeholder:text-fg-3 focus:shadow-[inset_0_0_0_1px_var(--focus-ring),var(--shadow-focus)]"
+            className="selectable resize-none rounded-[12px] bg-field px-3 py-2 text-body text-fg shadow-[inset_0_0_0_1px_var(--border-hairline)] outline-none placeholder:text-fg-3"
           />
         </label>
         <div className="flex flex-wrap items-center gap-x-6 gap-y-3">

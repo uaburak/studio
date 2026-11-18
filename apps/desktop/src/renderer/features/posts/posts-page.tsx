@@ -169,8 +169,8 @@ export function Board({
           : null,
       });
     },
-    quickLook: (card: PostCard, origin: DOMRect | null) =>
-      actions.quickLook(card.content, card.version, origin),
+    quickLook: (card: PostCard, source: Element | null) =>
+      actions.quickLook(card.content, card.version, { source }),
     copyCaption: (card: PostCard) => void actions.copyCaption(card.content),
     duplicate: (card: PostCard) => void actions.duplicate(card.content),
     remove: (card: PostCard) => actions.askDelete(card.content),
@@ -180,8 +180,8 @@ export function Board({
     },
   };
 
-  const mediaRect = (id: string) =>
-    itemRefs.current.get(id)?.querySelector("[data-media]")?.getBoundingClientRect() ?? null;
+  const media = (id: string) => itemRefs.current.get(id)?.querySelector("[data-media]") ?? null;
+  const mediaRect = (id: string) => media(id)?.getBoundingClientRect() ?? null;
 
   const menuFor = (card: PostCard): MenuEntry[] => {
     const blocker = deletionBlocker(card.content);
@@ -192,7 +192,7 @@ export function Board({
         label: "Hızlı bakış",
         shortcut: "␣",
         disabled: !card.version?.slides.some((s) => s.renderedAssetId),
-        onSelect: () => cardActions.quickLook(card, mediaRect(card.id)),
+        onSelect: () => cardActions.quickLook(card, media(card.id)),
       },
       { type: "separator" },
       {
@@ -248,7 +248,7 @@ export function Board({
           return;
         case " ":
           event.preventDefault();
-          if (selected) cardActions.quickLook(selected, mediaRect(selected.id));
+          if (selected) cardActions.quickLook(selected, media(selected.id));
           return;
         case "Backspace":
         case "Delete":

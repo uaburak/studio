@@ -150,7 +150,6 @@ export function ChatView({ id }: { id: string }) {
           },
         ],
         index: 0,
-        origin: null,
       });
   };
 

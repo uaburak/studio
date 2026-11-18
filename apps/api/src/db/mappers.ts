@@ -3,6 +3,7 @@ import {
   type Asset,
   assetContentPath,
   type Brand,
+  type BrandProduct,
   type BrandProfile,
   type Content,
   type ContentVersion,
@@ -29,6 +30,7 @@ export type BrandRow = typeof schema.brands.$inferSelect;
 export type SocialAccountRow = typeof schema.socialAccounts.$inferSelect;
 export type SocialAccountTokenRow = typeof schema.socialAccountTokens.$inferSelect;
 export type BrandProfileRow = typeof schema.brandProfiles.$inferSelect;
+export type BrandProductRow = typeof schema.brandProducts.$inferSelect;
 export type AssetRow = typeof schema.assets.$inferSelect;
 export type ContentRow = typeof schema.contents.$inferSelect;
 export type ContentVersionRow = typeof schema.contentVersions.$inferSelect;
@@ -107,6 +109,21 @@ export function toBrandProfile(r: BrandProfileRow): BrandProfile {
     createdAt: iso(r.createdAt),
     updatedAt: iso(r.updatedAt),
     approvedAt: isoOrNull(r.approvedAt),
+  };
+}
+
+export function toBrandProduct(r: BrandProductRow): BrandProduct {
+  return {
+    id: r.id,
+    brandId: r.brandId,
+    name: r.name,
+    description: r.description,
+    category: r.category,
+    tags: r.tags,
+    notes: r.notes,
+    imageAssetIds: r.imageAssetIds,
+    createdAt: iso(r.createdAt),
+    updatedAt: iso(r.updatedAt),
   };
 }
 

@@ -38,6 +38,7 @@ import type { OutgoingMessage } from "../../lib/transcript.ts";
 import { newClientMessageId } from "../../state/conversation.ts";
 import { cn, IconButton, Spinner } from "../ui/controls.tsx";
 import { IconArrowUp, IconClose, IconMic, IconPlus, IconWarning } from "../ui/icons.tsx";
+import { ZoomableImage } from "../ui/zoomable-image.tsx";
 
 export interface ComposerHandle {
   focus(): void;
@@ -334,7 +335,6 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
         }}
         className={cn(
           "glass-composer flex flex-col rounded-[22px] transition-shadow duration-200",
-          "data-[focused]:shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--focus-ring)_70%,transparent),var(--glass-composer-shadow)]",
           dragOver &&
             "shadow-[inset_0_0_0_1.5px_var(--accent-default),var(--glass-composer-shadow)]",
         )}
@@ -538,14 +538,17 @@ function AttachmentChip({ draft, onRemove }: { draft: Draft; onRemove(): void })
         failed && "shadow-[inset_0_0_0_1px_var(--status-danger)]",
       )}
     >
-      <span className="relative size-6 shrink-0 overflow-hidden rounded-full">
-        <img src={draft.previewUrl} alt="" className="size-full object-cover" />
+      <ZoomableImage
+        image={{ assetId: draft.id, url: draft.previewUrl, caption: `@${draft.alias}` }}
+        alt=""
+        className="relative size-6 shrink-0 overflow-hidden rounded-full"
+      >
         {draft.state.kind === "uploading" && (
           <span className="absolute inset-0 flex items-center justify-center bg-black/40 text-white">
             <Spinner size={12} />
           </span>
         )}
-      </span>
+      </ZoomableImage>
       <span className={failed ? "text-danger" : "text-fg"}>@{draft.alias}</span>
       <button
         type="button"

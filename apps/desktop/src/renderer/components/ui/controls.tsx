@@ -1,7 +1,8 @@
 // Basic controls of the Wecra "Claude Code" components: every button, input, pill and
 // segmented control is a capsule (radius = height / 2). Hover / pressed / selected / disabled /
 // focus states follow the component variants (fill/control → control-hover → control-pressed,
-// accent → accent-hover → accent-pressed, disabled 40 %, focus = 1 px ring + 6 px glow).
+// accent → accent-hover → accent-pressed, disabled 40 %). Text fields show nothing on focus;
+// buttons get a quiet neutral ring for keyboard focus only (app.css).
 import {
   type ButtonHTMLAttributes,
   forwardRef,
@@ -212,7 +213,6 @@ export const TextField = forwardRef<HTMLInputElement, TextFieldProps>(function T
         "no-drag group inline-flex h-7 items-center gap-1.5 rounded-full bg-field px-3",
         "shadow-[inset_0_0_0_1px_var(--border-hairline)] transition-[background-color,box-shadow] duration-150",
         "hover:bg-control focus-within:bg-field",
-        "focus-within:shadow-[inset_0_0_0_1px_var(--focus-ring),var(--shadow-focus)]",
         invalid && "shadow-[inset_0_0_0_1px_var(--status-danger)]",
         "data-[disabled]:pointer-events-none data-[disabled]:opacity-40",
         className,

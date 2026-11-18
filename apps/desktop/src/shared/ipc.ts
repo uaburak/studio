@@ -44,10 +44,14 @@ export interface AgentChoiceValue {
 
 export interface SessionState {
   sidebarPresented: boolean;
+  /** Left sidebar width in px (dragged by its edge). */
+  sidebarWidth: number;
   panelPresented: boolean;
   panelPane: string;
   panelExpanded: boolean;
-  /** Last route: "new" or "c:<conversationId>". */
+  /** Right panel width in px (dragged by its edge). */
+  panelWidth: number;
+  /** Last route: "new", "c:<conversationId>", "brands", "brand:<id>/<tab>" … */
   route: string;
   currentBrandId: string | null;
   collapsedGroups: string[];
@@ -97,7 +101,10 @@ export type MenuCommand =
   | "back"
   | "forward"
   | "rename"
-  | "gallery";
+  | "gallery"
+  /** Trackpad swipe (BrowserWindow "swipe") or mouse back / forward ("app-command"). */
+  | "swipe-back"
+  | "swipe-forward";
 
 export interface NoticeInput {
   /** Stable id: the same id is never shown twice. */

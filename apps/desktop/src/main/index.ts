@@ -125,6 +125,18 @@ function createWindow(): void {
     window.on(event as "focus", pushState);
   }
   window.webContents.on("did-finish-load", pushState);
+  // Back / forward from the trackpad ("swipe": macOS, when "Swipe between pages" uses three
+  // fingers) and from mouse buttons on other platforms ("app-command"). The renderer also
+  // reads two-finger swipes from wheel events and keeps one step per gesture.
+  window.on("swipe", (_event, direction) => {
+    if (direction === "left") send(IPC.menuCommand, "swipe-back" satisfies MenuCommand);
+    else if (direction === "right") send(IPC.menuCommand, "swipe-forward" satisfies MenuCommand);
+  });
+  window.on("app-command", (_event, command) => {
+    if (command === "browser-backward") send(IPC.menuCommand, "swipe-back" satisfies MenuCommand);
+    else if (command === "browser-forward")
+      send(IPC.menuCommand, "swipe-forward" satisfies MenuCommand);
+  });
   // Links open in the browser, never inside the app.
   window.webContents.setWindowOpenHandler(({ url }) => {
     if (/^https?:/i.test(url)) void shell.openExternal(url);

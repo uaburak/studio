@@ -1,8 +1,7 @@
 // Media building blocks shared by the Medya pane and the library page: square thumbnails
-// (hover dim, AI badge), click → lightbox, drag into the composer, right-click menu
+// (hover dim, AI badge), click → the image viewer, drag into the composer, right-click menu
 // (Önizle, Sohbete ekle, Farklı kaydet…).
 import type { Asset } from "@studio/contract";
-import { useRef } from "react";
 import { cn } from "../../components/ui/controls.tsx";
 import {
   IconAddToChat,
@@ -15,17 +14,11 @@ import {
   IconVideo,
 } from "../../components/ui/icons.tsx";
 import type { MenuEntry } from "../../components/ui/menu.tsx";
+import { useImageZoom } from "../../components/ui/zoomable-image.tsx";
 import { assetUrl } from "../../lib/api.ts";
 import { assetDragPayload, requestComposerAttach, writeAssetDrag } from "../../lib/asset-drag.ts";
 import { useAppStore } from "../../state/app-store.ts";
 import { downloadName, isImageAsset, lightboxImages } from "./media-model.ts";
-
-function rectOf(el: Element | null | undefined) {
-  if (!el) return null;
-  const r = el.getBoundingClientRect();
-  if (r.width === 0 || r.height === 0) return null;
-  return { x: r.left, y: r.top, width: r.width, height: r.height };
-}
 
 /** Save an asset's bytes through the browser download (Electron asks where). */
 export function saveAsset(asset: Asset): void {
@@ -44,24 +37,18 @@ export function addToChat(asset: Asset): void {
   }
 }
 
-/** Opens the lightbox on `asset` among `assets` (images only), zooming from its tile. */
+/** Opens the viewer on `asset` among `assets` (images only), zooming out of its tile. */
 export function useMediaLightbox(assets: readonly Asset[]) {
-  const openLightbox = useAppStore((s) => s.openLightbox);
-  const tiles = useRef(new Map<string, HTMLElement>());
   const images = lightboxImages(assets);
+  const zoom = useImageZoom(images);
+  const indexOf = new Map(images.map((image, index) => [image.assetId, index]));
   const open = (asset: Asset) => {
-    const index = images.findIndex((i) => i.assetId === asset.id);
-    if (index < 0) return;
-    openLightbox({
-      images,
-      index,
-      origin: rectOf(tiles.current.get(asset.id)),
-      originOf: (i) => rectOf(tiles.current.get(images[i]?.assetId ?? "")),
-    });
+    const index = indexOf.get(asset.id);
+    if (index !== undefined) zoom.open(index);
   };
-  const register = (id: string) => (el: HTMLElement | null) => {
-    if (el) tiles.current.set(id, el);
-    else tiles.current.delete(id);
+  const register = (id: string) => {
+    const index = indexOf.get(id);
+    return index === undefined ? undefined : zoom.ref(index);
   };
   return { open, register };
 }

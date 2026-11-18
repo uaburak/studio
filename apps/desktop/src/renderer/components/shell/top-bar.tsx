@@ -1,17 +1,19 @@
-// The unified top bar (Wecra "Top bar"): window controls when the sidebar is hidden, the
-// Sohbet | Postlar pill, the title with its menu (double-click renames inline), the right
-// panel's tool icons (they only switch the right panel) and the panel header above the panel.
+// The unified top bar (Wecra "Top bar"): window controls (sidebar, back, forward) when the
+// sidebar is hidden, the title with its menu (double-click renames inline), the right panel's
+// tool icons (they only switch the right panel) and the panel header above the panel. Chats
+// and posts are switched from the sidebar.
 import { useEffect, useRef, useState } from "react";
 import { isPageRoute, PageTitle } from "../../features/page-title.tsx";
+import { PostsTitleButton } from "../../features/posts/posts-title.tsx";
 import {
-  type Mode,
-  modeOf,
-  PostsTitleButton,
-  switchMode,
-} from "../../features/posts/posts-title.tsx";
-import { type PanelPane, panelTitle, useAppStore } from "../../state/app-store.ts";
+  PANEL_WIDTH_EXPANDED,
+  type PanelPane,
+  panelTitle,
+  panelWidthOf,
+  useAppStore,
+} from "../../state/app-store.ts";
 import { useBrands, useConversations } from "../../state/studio.tsx";
-import { cn, IconButton, SegmentedControl } from "../ui/controls.tsx";
+import { cn, IconButton } from "../ui/controls.tsx";
 import {
   IconCalendar,
   IconChevronDown,
@@ -83,7 +85,7 @@ export function PanelTools() {
 
 export function PanelHeader() {
   const pane = useAppStore((s) => s.panelPane);
-  const expanded = useAppStore((s) => s.panelExpanded);
+  const expanded = useAppStore((s) => panelWidthOf(s) >= PANEL_WIDTH_EXPANDED);
   const toggleExpanded = useAppStore((s) => s.togglePanelExpanded);
   const close = useAppStore((s) => s.closePanel);
   return (
@@ -107,21 +109,6 @@ export function PanelHeader() {
         onClick={close}
       />
     </div>
-  );
-}
-
-function ModePill() {
-  const route = useAppStore((s) => s.route);
-  return (
-    <SegmentedControl<Mode>
-      label="Mod"
-      value={modeOf(route)}
-      options={[
-        { value: "chat", label: "Sohbet" },
-        { value: "posts", label: "Postlar" },
-      ]}
-      onChange={switchMode}
-    />
   );
 }
 
@@ -180,7 +167,7 @@ function TitleButton() {
           if (e.key === "Enter") void commit();
           if (e.key === "Escape") setEditing(false);
         }}
-        className="no-drag selectable h-7 w-[320px] rounded-full bg-field px-2.5 text-body-lg text-fg shadow-[inset_0_0_0_1px_var(--focus-ring),var(--shadow-focus)] outline-none"
+        className="no-drag selectable h-7 w-[320px] rounded-full bg-field px-2.5 text-body-lg text-fg shadow-[inset_0_0_0_1px_var(--border-default)] outline-none"
       />
     );
   }
@@ -249,7 +236,6 @@ export function TopBar({ panelWidth }: { panelWidth: number | null }) {
     >
       <div className="flex min-w-0 flex-1 items-center gap-2.5 pr-2">
         {!sidebarPresented ? <WindowControls inset={!fullScreen} /> : <span className="w-1" />}
-        <ModePill />
         <TitleButton />
         <div className="flex-1" />
         <PanelTools />

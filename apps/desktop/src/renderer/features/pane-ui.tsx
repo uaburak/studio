@@ -48,20 +48,24 @@ export function TextLink({
   );
 }
 
-/** Top of a full page: title (+ subtitle) on the left, actions on the right. */
+/** Top of a full page: title (+ subtitle) on the left, actions on the right; `eyebrow` above
+ *  the title (a link back to the list). */
 export function PageHeader({
   title,
   subtitle,
   actions,
+  eyebrow,
   children,
 }: {
   title: ReactNode;
   subtitle?: ReactNode;
   actions?: ReactNode;
+  eyebrow?: ReactNode;
   children?: ReactNode;
 }) {
   return (
     <header className="shrink-0 px-8 pt-6 pb-4">
+      {eyebrow}
       <div className="flex min-h-8 items-center gap-3">
         <div className="min-w-0 flex-1">
           <h1 className="truncate text-title font-semibold text-fg">{title}</h1>

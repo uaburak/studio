@@ -115,15 +115,31 @@
   ::selection {
     background: color-mix(in srgb, var(--accent-default) 30%, transparent);
   }
-  /* Keyboard focus only (Claude: focus rings off for the mouse). */
+  /* Keyboard focus only (Claude: focus rings off for the mouse), and only a quiet neutral ring:
+     no orange. Text fields, selects and the composer show nothing at all on focus (the caret
+     is enough). */
   :focus {
     outline: none;
   }
   :focus-visible {
     outline: none;
-    box-shadow:
-      0 0 0 1px var(--focus-ring),
-      var(--shadow-focus);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--text-primary) 22%, transparent);
+  }
+  input:focus-visible,
+  textarea:focus-visible,
+  select:focus-visible,
+  [contenteditable]:focus-visible,
+  [role="dialog"]:focus-visible,
+  [tabindex="-1"]:focus-visible {
+    box-shadow: none;
+  }
+  /* While a side panel's edge is dragged: the resize cursor everywhere, no text selection. */
+  :root[data-resizing],
+  :root[data-resizing] * {
+    /* biome-ignore lint/complexity/noImportantStyles: must beat every element's own cursor */
+    cursor: col-resize !important;
+    /* biome-ignore lint/complexity/noImportantStyles: must beat `.selectable` while dragging */
+    user-select: none !important;
   }
   a {
     color: inherit;

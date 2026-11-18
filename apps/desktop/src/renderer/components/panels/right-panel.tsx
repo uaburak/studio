@@ -21,7 +21,13 @@ import {
   macLine,
   usageMeters,
 } from "../../lib/usage.ts";
-import { type PanelPane, panelTitle, useAppStore } from "../../state/app-store.ts";
+import {
+  PANEL_WIDTH,
+  PANEL_WIDTH_EXPANDED,
+  type PanelPane,
+  panelTitle,
+  useAppStore,
+} from "../../state/app-store.ts";
 import {
   isHostUp,
   useAccounts,
@@ -44,8 +50,7 @@ import {
   PlatformIcon,
 } from "../ui/icons.tsx";
 
-export const PANEL_WIDTH = 357;
-export const PANEL_WIDTH_EXPANDED = 520;
+export { PANEL_WIDTH, PANEL_WIDTH_EXPANDED };
 
 export function RightPanel({ width }: { width: number }) {
   const pane = useAppStore((s) => s.panelPane);

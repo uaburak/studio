@@ -744,7 +744,7 @@ export default function Gallery() {
             <Markdown source={MARKDOWN} />
             <ImageGrid images={SAMPLE_IMAGES} className="my-3.5" />
             <ImageGrid images={SAMPLE_IMAGES.slice(1, 2)} className="my-3.5" />
-            <Button onClick={() => openLightbox({ images: SAMPLE_IMAGES, index: 1, origin: null })}>
+            <Button onClick={() => openLightbox({ images: SAMPLE_IMAGES, index: 1 })}>
               Lightbox (2 / 3)
             </Button>
           </div>

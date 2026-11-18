@@ -1,8 +1,9 @@
 // Left sidebar (Wecra "Sidebar"): window controls row, navigation rows, conversations grouped
-// by brand (collapsible), footer with avatar, name, brand menu and settings.
+// by brand (collapsible), footer with avatar, name, brand menu and settings. Its width is the
+// user's (dragged by the inner edge, see app-shell).
 import type { Brand, Conversation } from "@studio/contract";
 import { type ReactNode, useMemo } from "react";
-import { useAppStore } from "../../state/app-store.ts";
+import { SIDEBAR_WIDTH, useAppStore } from "../../state/app-store.ts";
 import { useBrands, useConversations, useHost, useJobs, useSettings } from "../../state/studio.tsx";
 import { cn, IconButton, WorkingDots } from "../ui/controls.tsx";
 import {
@@ -22,7 +23,7 @@ import {
 import { MenuButton, type MenuEntry, useContextMenu } from "../ui/menu.tsx";
 import { useConversationActions } from "./conversation-actions.ts";
 
-export const SIDEBAR_WIDTH = 265;
+export { SIDEBAR_WIDTH };
 
 /** Traffic lights (18 + 52) and the 24 pt gap Claude leaves before its buttons. */
 export function WindowControls({ inset }: { inset: boolean }) {
@@ -230,14 +231,13 @@ export function groupConversations(
   return groups;
 }
 
-export function Sidebar() {
+export function Sidebar({ width = SIDEBAR_WIDTH }: { width?: number }) {
   const route = useAppStore((s) => s.route);
   const navigate = useAppStore((s) => s.navigate);
   const collapsed = useAppStore((s) => s.collapsedGroups);
   const toggleGroup = useAppStore((s) => s.toggleGroup);
   const currentBrandId = useAppStore((s) => s.currentBrandId);
   const setSearchOpen = useAppStore((s) => s.setSearchOpen);
-  const togglePanel = useAppStore((s) => s.togglePanel);
   const fullScreen = useAppStore((s) => s.window.fullScreen);
   const brands = useBrands();
   const conversations = useConversations();
@@ -256,7 +256,7 @@ export function Sidebar() {
     <aside
       aria-label="Kenar çubuğu"
       className="sidebar-surface flex h-full shrink-0 flex-col border-r border-hairline"
-      style={{ width: SIDEBAR_WIDTH }}
+      style={{ width }}
     >
       <div className="drag">
         <WindowControls inset={!fullScreen} />
@@ -296,10 +296,8 @@ export function Sidebar() {
         <SidebarRow
           icon={<IconTag size={16} strokeWidth={1.5} />}
           label="Markalar"
-          selected={route.kind === "brand"}
-          onClick={() =>
-            currentBrandId ? navigate({ kind: "brand", id: currentBrandId }) : togglePanel("brand")
-          }
+          selected={route.kind === "brands" || route.kind === "brand"}
+          onClick={() => navigate({ kind: "brands" })}
         />
       </nav>
       <div className="scroll-area min-h-0 flex-1 pb-3">

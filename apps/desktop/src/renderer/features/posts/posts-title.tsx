@@ -1,36 +1,13 @@
-// Top bar pieces of the posts screen: the Sohbet | Postlar switch's behaviour and the title
-// ("Kasım postları ⌄", or the opened post's title) with the brand scope menu.
+// The top bar's title on the posts screen ("Kasım postları ⌄", or the opened post's title)
+// with the brand scope menu.
 import { cn } from "../../components/ui/controls.tsx";
 import { IconChevronDown } from "../../components/ui/icons.tsx";
 import { MenuButton, type MenuEntry } from "../../components/ui/menu.tsx";
-import { type Route, useAppStore } from "../../state/app-store.ts";
+import { useAppStore } from "../../state/app-store.ts";
 import { useBrands } from "../../state/studio.tsx";
 import { useContent } from "./data.ts";
 import { monthKeyOf, monthName } from "./dates.ts";
 import { usePostsStore } from "./store.ts";
-
-export type Mode = "chat" | "posts";
-
-export function modeOf(route: Route): Mode | null {
-  if (route.kind === "posts") return "posts";
-  // Only chats light up "Sohbet"; Takvim, Medya, Marka and the gallery select neither.
-  return route.kind === "new" || route.kind === "conversation" ? "chat" : null;
-}
-
-/** Postlar opens the board; Sohbet goes back to the last chat (else a new one). */
-export function switchMode(mode: Mode): void {
-  const app = useAppStore.getState();
-  if (mode === "posts") {
-    app.navigate({ kind: "posts" });
-    return;
-  }
-  if (app.route.kind !== "posts") return;
-  const lastChat = [...app.back]
-    .reverse()
-    .find((r) => r.kind === "conversation" || r.kind === "new");
-  usePostsStore.getState().close();
-  app.navigate(lastChat ?? { kind: "new" });
-}
 
 export function PostsTitleButton() {
   const opened = usePostsStore((s) => s.opened);

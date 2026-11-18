@@ -1,19 +1,61 @@
-// Window state of the renderer (zustand): route with back/forward history, sidebar and right
-// panel, current brand, overlays. The session part is saved through the preload bridge.
+// Window state of the renderer (zustand): the location (route + opened post) with a back /
+// forward history, sidebar and right panel (open state and widths), current brand, overlays.
+// The session part is saved through the preload bridge.
 import { create } from "zustand";
 import type { SessionState, WindowState } from "../../shared/ipc.ts";
 import type { ChatImage } from "../lib/transcript.ts";
+
+/** Sections of a brand's profile page (each one is a step of the history). */
+export type BrandTab = "general" | "kit" | "profile" | "accounts" | "products";
+
+export const BRAND_TABS: readonly BrandTab[] = [
+  "general",
+  "kit",
+  "profile",
+  "accounts",
+  "products",
+];
+
+/** The section a brand page opens on when the route names none. */
+export const DEFAULT_BRAND_TAB: BrandTab = "kit";
 
 export type Route =
   | { kind: "new" }
   | { kind: "conversation"; id: string }
   | { kind: "gallery" }
-  /** Full pages of the right panel's Takvim / Medya / Marka (wave 2B). */
+  /** Full pages of the right panel's Takvim / Medya (wave 2B). */
   | { kind: "calendar" }
   | { kind: "media" }
-  | { kind: "brand"; id: string }
+  /** Markalar: the list of brands. */
+  | { kind: "brands" }
+  /** A brand's profile page, on one of its sections. */
+  | { kind: "brand"; id: string; tab?: BrandTab }
   /** The posts board (wave 2A). */
   | { kind: "posts" };
+
+/** A place in the history: a route and the post opened over it (if any). */
+export interface Location {
+  route: Route;
+  /** Content id of the post detail open over the route. */
+  post: string | null;
+}
+
+const HISTORY_LIMIT = 50;
+
+// --- side panels' widths ------------------------------------------------------------------
+
+export const SIDEBAR_WIDTH = 265;
+export const SIDEBAR_MIN_WIDTH = 200;
+export const SIDEBAR_MAX_WIDTH = 420;
+export const PANEL_WIDTH = 357;
+export const PANEL_WIDTH_EXPANDED = 520;
+export const PANEL_MIN_WIDTH = 300;
+export const PANEL_MAX_WIDTH = 720;
+
+export function clampWidth(width: number, min: number, max: number): number {
+  if (!Number.isFinite(width)) return min;
+  return Math.round(Math.min(max, Math.max(min, width)));
+}
 
 export type PanelPane = "details" | "jobs" | "calendar" | "media" | "brand" | "phone";
 
@@ -42,8 +84,10 @@ export function routeKey(route: Route): string {
       return "calendar";
     case "media":
       return "media";
+    case "brands":
+      return "brands";
     case "brand":
-      return `brand:${route.id}`;
+      return `brand:${route.id}/${route.tab ?? DEFAULT_BRAND_TAB}`;
     case "posts":
       return "posts";
   }
@@ -54,18 +98,37 @@ export function parseRoute(key: string | null | undefined): Route {
   if (key === "gallery") return { kind: "gallery" };
   if (key === "calendar") return { kind: "calendar" };
   if (key === "media") return { kind: "media" };
-  if (key?.startsWith("brand:") && key.length > 6) return { kind: "brand", id: key.slice(6) };
+  if (key === "brands") return { kind: "brands" };
+  if (key?.startsWith("brand:") && key.length > 6) {
+    // `brand:<id>/<tab>`; older sessions saved `brand:<id>`.
+    const rest = key.slice(6);
+    const slash = rest.lastIndexOf("/");
+    const tab = slash > 0 ? rest.slice(slash + 1) : "";
+    if (BRAND_TABS.includes(tab as BrandTab)) {
+      return { kind: "brand", id: rest.slice(0, slash), tab: tab as BrandTab };
+    }
+    return { kind: "brand", id: rest };
+  }
   if (key === "posts") return { kind: "posts" };
   return { kind: "new" };
 }
 
+/** A width from the saved session (missing in older files → the default). */
+function savedWidth(value: unknown, fallback: number, min: number, max: number): number {
+  return typeof value === "number" && Number.isFinite(value)
+    ? clampWidth(value, min, max)
+    : fallback;
+}
+
+const sameLocation = (a: Location, b: Location) =>
+  routeKey(a.route) === routeKey(b.route) && a.post === b.post;
+
 export interface LightboxRequest {
   images: ChatImage[];
   index: number;
-  /** Thumbnail frame the image zooms from (and back to). */
-  origin: { x: number; y: number; width: number; height: number } | null;
-  /** Finds the current thumbnail frame of an image (for closing on another page). */
-  originOf?: (index: number) => { x: number; y: number; width: number; height: number } | null;
+  /** The thumbnail (its `<img>` or tile) of an image: the picture zooms out of it and back into
+   *  it. None, gone or scrolled away: the viewer fades. */
+  sourceOf?: ((index: number) => Element | null) | undefined;
 }
 
 export interface Toast {
@@ -77,12 +140,17 @@ export interface Toast {
 
 interface AppState {
   route: Route;
-  back: Route[];
-  forward: Route[];
+  /** The post detail open over the route (part of the history). */
+  post: string | null;
+  back: Location[];
+  forward: Location[];
   sidebarPresented: boolean;
+  sidebarWidth: number;
   panelPresented: boolean;
   panelPane: PanelPane;
   panelExpanded: boolean;
+  /** The panel's own width (the expanded panel is at least PANEL_WIDTH_EXPANDED). */
+  panelWidth: number;
   currentBrandId: string | null;
   collapsedGroups: string[];
   searchOpen: boolean;
@@ -95,10 +163,19 @@ interface AppState {
   /** Bumped to focus the composer. */
   focusComposer: number;
 
-  navigate(route: Route): void;
+  /** Go to `route` (a new history step; `replace` swaps the current one). Closes the post. */
+  navigate(route: Route, options?: { replace?: boolean }): void;
+  /** Open a post over the current route (a history step). */
+  openPost(contentId: string): void;
+  /** Close the open post: steps back when opening it was the last step, else a new step. */
+  closePost(): void;
+  /** Drop a deleted post from the history. */
+  forgetPost(contentId: string): void;
   goBack(): void;
   goForward(): void;
   toggleSidebar(): void;
+  setSidebarWidth(width: number): void;
+  setPanelWidth(width: number): void;
   togglePanel(pane?: PanelPane): void;
   closePanel(): void;
   togglePanelExpanded(): void;
@@ -120,12 +197,15 @@ let toastId = 0;
 
 export const useAppStore = create<AppState>((set, get) => ({
   route: { kind: "new" },
+  post: null,
   back: [],
   forward: [],
   sidebarPresented: true,
+  sidebarWidth: SIDEBAR_WIDTH,
   panelPresented: false,
   panelPane: "details",
   panelExpanded: false,
+  panelWidth: PANEL_WIDTH,
   currentBrandId: null,
   collapsedGroups: [],
   searchOpen: false,
@@ -136,25 +216,88 @@ export const useAppStore = create<AppState>((set, get) => ({
   window: { fullScreen: false, focused: true },
   focusComposer: 0,
 
-  navigate(route) {
-    const current = get().route;
-    if (routeKey(current) === routeKey(route)) return;
-    set({ route, back: [...get().back, current].slice(-50), forward: [] });
+  navigate(route, options) {
+    const { route: current, post, back } = get();
+    const next: Location = { route, post: null };
+    if (sameLocation({ route: current, post }, next)) return;
+    if (options?.replace) {
+      set({ route, post: null });
+      return;
+    }
+    set({
+      route,
+      post: null,
+      back: [...back, { route: current, post }].slice(-HISTORY_LIMIT),
+      forward: [],
+    });
+  },
+  openPost(contentId) {
+    const { route, post, back } = get();
+    if (post === contentId) return;
+    set({
+      post: contentId,
+      back: [...back, { route, post }].slice(-HISTORY_LIMIT),
+      forward: [],
+    });
+  },
+  closePost() {
+    const { route, post, back } = get();
+    if (post === null) return;
+    const previous = back.at(-1);
+    if (previous && sameLocation(previous, { route, post: null })) {
+      get().goBack();
+      return;
+    }
+    set({ post: null, back: [...back, { route, post }].slice(-HISTORY_LIMIT), forward: [] });
+  },
+  forgetPost(contentId) {
+    const keep = (list: Location[]) => {
+      const out: Location[] = [];
+      for (const location of list) {
+        if (location.post === contentId) continue;
+        const last = out.at(-1);
+        if (!last || !sameLocation(last, location)) out.push(location);
+      }
+      return out;
+    };
+    const { back, forward, post } = get();
+    set({
+      back: keep(back),
+      forward: keep(forward),
+      ...(post === contentId ? { post: null } : {}),
+    });
   },
   goBack() {
-    const { back, route, forward } = get();
+    const { back, route, post, forward } = get();
     const previous = back.at(-1);
     if (!previous) return;
-    set({ route: previous, back: back.slice(0, -1), forward: [route, ...forward] });
+    set({
+      route: previous.route,
+      post: previous.post,
+      back: back.slice(0, -1),
+      forward: [{ route, post }, ...forward].slice(0, HISTORY_LIMIT),
+    });
   },
   goForward() {
-    const { back, route, forward } = get();
+    const { back, route, post, forward } = get();
     const next = forward[0];
     if (!next) return;
-    set({ route: next, back: [...back, route], forward: forward.slice(1) });
+    set({
+      route: next.route,
+      post: next.post,
+      back: [...back, { route, post }].slice(-HISTORY_LIMIT),
+      forward: forward.slice(1),
+    });
   },
   toggleSidebar() {
     set({ sidebarPresented: !get().sidebarPresented });
+  },
+  setSidebarWidth(width) {
+    set({ sidebarWidth: clampWidth(width, SIDEBAR_MIN_WIDTH, SIDEBAR_MAX_WIDTH) });
+  },
+  setPanelWidth(width) {
+    // A width picked by hand replaces the expanded size.
+    set({ panelWidth: clampWidth(width, PANEL_MIN_WIDTH, PANEL_MAX_WIDTH), panelExpanded: false });
   },
   togglePanel(pane) {
     const { panelPresented, panelPane } = get();
@@ -170,7 +313,16 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ panelPresented: false, panelExpanded: false });
   },
   togglePanelExpanded() {
-    set({ panelExpanded: !get().panelExpanded });
+    const state = get();
+    if (panelWidthOf(state) < PANEL_WIDTH_EXPANDED) {
+      set({ panelExpanded: true });
+      return;
+    }
+    // Back to the default width when the panel was dragged this wide by hand.
+    set({
+      panelExpanded: false,
+      ...(state.panelWidth >= PANEL_WIDTH_EXPANDED ? { panelWidth: PANEL_WIDTH } : {}),
+    });
   },
   setCurrentBrand(id) {
     set({ currentBrandId: id });
@@ -217,9 +369,16 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({
       route: get().route.kind === "gallery" ? get().route : parseRoute(session.route),
       sidebarPresented: session.sidebarPresented,
+      sidebarWidth: savedWidth(
+        session.sidebarWidth,
+        SIDEBAR_WIDTH,
+        SIDEBAR_MIN_WIDTH,
+        SIDEBAR_MAX_WIDTH,
+      ),
       panelPresented: session.panelPresented,
       panelPane: pane,
       panelExpanded: session.panelExpanded,
+      panelWidth: savedWidth(session.panelWidth, PANEL_WIDTH, PANEL_MIN_WIDTH, PANEL_MAX_WIDTH),
       currentBrandId: session.currentBrandId,
       collapsedGroups: session.collapsedGroups,
     });
@@ -229,11 +388,18 @@ export const useAppStore = create<AppState>((set, get) => ({
 export function sessionOf(state: AppState): SessionState {
   return {
     sidebarPresented: state.sidebarPresented,
+    sidebarWidth: state.sidebarWidth,
     panelPresented: state.panelPresented,
     panelPane: state.panelPane,
     panelExpanded: state.panelExpanded,
+    panelWidth: state.panelWidth,
     route: state.route.kind === "gallery" ? "new" : routeKey(state.route),
     currentBrandId: state.currentBrandId,
     collapsedGroups: state.collapsedGroups,
   };
+}
+
+/** The right panel's width on screen (expanded: at least PANEL_WIDTH_EXPANDED). */
+export function panelWidthOf(state: Pick<AppState, "panelWidth" | "panelExpanded">): number {
+  return state.panelExpanded ? Math.max(PANEL_WIDTH_EXPANDED, state.panelWidth) : state.panelWidth;
 }

@@ -56,7 +56,7 @@ import {
 import { scheduleDisplay } from "./schedule.ts";
 
 const FIELD =
-  "selectable w-full resize-none rounded-[12px] bg-field px-3 py-2 text-body-lg text-fg outline-none shadow-[inset_0_0_0_1px_var(--border-hairline)] placeholder:text-fg-3 focus:shadow-[inset_0_0_0_1px_var(--focus-ring),var(--shadow-focus)]";
+  "selectable w-full resize-none rounded-[12px] bg-field px-3 py-2 text-body-lg text-fg outline-none shadow-[inset_0_0_0_1px_var(--border-hairline)] placeholder:text-fg-3";
 
 // --- caption ----------------------------------------------------------------------------------
 

@@ -10,6 +10,13 @@ import {
 } from "./brand.ts";
 import { BrandKit, type BrandKitPut } from "./brand-kit.ts";
 import {
+  BrandProduct,
+  type BrandProductCreate,
+  BrandProductList,
+  type BrandProductListQuery,
+  type BrandProductUpdate,
+} from "./brand-product.ts";
+import {
   BrandProfile,
   type BrandProfileCreate,
   BrandProfileList,
@@ -404,6 +411,32 @@ export function createApiClient(options: ApiClientOptions = {}) {
         call(BrandKit, `/api/brands/${enc(brandId)}/kit`, { init }),
       put: (brandId: string, input: BrandKitPut, init?: RequestInit) =>
         call(BrandKit, `/api/brands/${enc(brandId)}/kit`, { method: "PUT", json: input, init }),
+    },
+
+    brandProducts: {
+      /** Oldest first. */
+      list: (brandId: string, query?: BrandProductListQuery, init?: RequestInit) =>
+        call(BrandProductList, `/api/brands/${enc(brandId)}/products`, { query: q(query), init }),
+      get: (brandId: string, productId: string, init?: RequestInit) =>
+        call(BrandProduct, `/api/brands/${enc(brandId)}/products/${enc(productId)}`, { init }),
+      create: (brandId: string, input: BrandProductCreate, init?: RequestInit) =>
+        call(BrandProduct, `/api/brands/${enc(brandId)}/products`, {
+          method: "POST",
+          json: input,
+          init,
+        }),
+      update: (brandId: string, productId: string, input: BrandProductUpdate, init?: RequestInit) =>
+        call(BrandProduct, `/api/brands/${enc(brandId)}/products/${enc(productId)}`, {
+          method: "PATCH",
+          json: input,
+          init,
+        }),
+      delete: async (brandId: string, productId: string, init?: RequestInit): Promise<void> => {
+        await send(`/api/brands/${enc(brandId)}/products/${enc(productId)}`, {
+          method: "DELETE",
+          init,
+        });
+      },
     },
 
     brandProfiles: {

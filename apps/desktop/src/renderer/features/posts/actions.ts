@@ -9,22 +9,21 @@ import { deletionBlocker } from "./board.ts";
 import { invalidatePosts } from "./data.ts";
 import { usePostsStore } from "./store.ts";
 
-type Rect = { x: number; y: number; width: number; height: number };
-
-function rectOf(r: DOMRect | null | undefined): Rect | null {
-  if (!r || r.width === 0 || r.height === 0) return null;
-  return { x: r.left, y: r.top, width: r.width, height: r.height };
-}
-
 export function usePostActions() {
   const api = useApi();
   const queryClient = useQueryClient();
   return useMemo(() => {
     const toast = useAppStore.getState().showToast;
     return {
-      /** The rendered slides in the lightbox (Space on the board). */
-      quickLook(content: Content, version: ContentVersion | null, origin?: DOMRect | null) {
-        const images = (version?.slides ?? []).flatMap((s) =>
+      /** The rendered slides in the image viewer (Space on the board and in the post), from
+       *  slide `slideIndex`, zooming out of `source` (the card's or the stage's picture). */
+      quickLook(
+        content: Content,
+        version: ContentVersion | null,
+        from: { source?: Element | null; slideIndex?: number } = {},
+      ) {
+        const slides = version?.slides ?? [];
+        const images = slides.flatMap((s) =>
           s.renderedAssetId
             ? [
                 {
@@ -40,7 +39,17 @@ export function usePostActions() {
           toast({ message: "Bu postun henüz render edilmiş bir görseli yok." });
           return;
         }
-        useAppStore.getState().openLightbox({ images, index: 0, origin: rectOf(origin) });
+        const shown = slides[from.slideIndex ?? 0]?.renderedAssetId;
+        const index = Math.max(
+          0,
+          images.findIndex((i) => i.assetId === shown),
+        );
+        // The source shows that one slide; the others fade out when closed on them.
+        useAppStore.getState().openLightbox({
+          images,
+          index,
+          sourceOf: (i) => (i === index ? (from.source ?? null) : null),
+        });
       },
 
       async copyCaption(content: Content) {
@@ -92,6 +101,8 @@ export function usePostActions() {
           await api.contents.delete(content.id);
           const store = usePostsStore.getState();
           if (store.opened?.contentId === content.id) store.close();
+          // Back / forward must not reopen the deleted post.
+          useAppStore.getState().forgetPost(content.id);
           if (store.selectedId === content.id) store.select(null);
           queryClient.removeQueries({ queryKey: ["posts", "content", content.id] });
           await invalidatePosts(queryClient);

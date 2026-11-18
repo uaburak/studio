@@ -449,7 +449,6 @@ describe("lightbox", () => {
         { assetId: "c", url: "data:,c", caption: "@üç" },
       ],
       index: 1,
-      origin: null,
     });
     render(<Lightbox />);
     expect(screen.getByText("2 / 3")).toBeInTheDocument();

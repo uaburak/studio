@@ -1,7 +1,9 @@
-// "Marka profili" (port of StudioMac's brand settings sheet as a page): Genel (name, short name,
-// language, archive), Marka kiti (logos, colours, fonts, sample posts, notes; saved as you go),
-// Profil (versions, tokens, voice and design rules; save, approve, new draft, AI analysis) and
-// Hesaplar (connection state; connecting lives in Settings).
+// "Marka profili" (port of StudioMac's brand settings sheet as a page, opened from Markalar):
+// Genel (name, short name, language, archive), Marka Kiti (logos, colours, fonts, sample posts,
+// notes; saved as you go), Profil (versions, tokens, voice and design rules; save, approve, new
+// draft, AI analysis), Hesaplar (connection state; connecting lives in Settings) and Ürünler
+// (the brand's products). The section is part of the route, so back / forward step through
+// sections too. The content uses the page's full width; only long text keeps a reading width.
 import type {
   Brand,
   BrandKitFontRole,
@@ -25,12 +27,13 @@ import {
   IconUpload,
   PlatformIcon,
 } from "../../components/ui/icons.tsx";
-import { assetUrl, describeError } from "../../lib/api.ts";
+import { ZoomableImage } from "../../components/ui/zoomable-image.tsx";
+import { describeError } from "../../lib/api.ts";
 import { percentText } from "../../lib/format.ts";
-import { useAppStore } from "../../state/app-store.ts";
+import { type BrandTab, useAppStore } from "../../state/app-store.ts";
 import { useAccounts, useBrands } from "../../state/studio.tsx";
 import { useBrandAssets } from "../media/media-data.ts";
-import { FieldLabel, PageHeader } from "../pane-ui.tsx";
+import { FieldLabel, PageHeader, TextLink } from "../pane-ui.tsx";
 import {
   cardProfile,
   useAnalysisJob,
@@ -57,34 +60,50 @@ import {
   tokenRows,
 } from "./brand-model.ts";
 import { BrandMark, LanguageSelect } from "./brand-views.tsx";
+import { ProductsTab } from "./products-tab.tsx";
 
-type Tab = "general" | "kit" | "profile" | "accounts";
-
-const TABS: { value: Tab; label: string }[] = [
+export const BRAND_TAB_OPTIONS: { value: BrandTab; label: string }[] = [
   { value: "general", label: "Genel" },
-  { value: "kit", label: "Marka kiti" },
+  { value: "kit", label: "Marka Kiti" },
   { value: "profile", label: "Profil" },
   { value: "accounts", label: "Hesaplar" },
+  { value: "products", label: "Ürünler" },
 ];
 
-export default function BrandPage({ brandId }: { brandId: string }) {
+/** Text areas and long text keep a reading width; everything else uses the full width. */
+const READING_WIDTH = "max-w-[960px]";
+
+function BackToBrands() {
+  const navigate = useAppStore((s) => s.navigate);
+  return (
+    <TextLink
+      className="mb-1 text-footnote text-fg-2 hover:text-fg"
+      onClick={() => navigate({ kind: "brands" })}
+    >
+      ‹ Markalar
+    </TextLink>
+  );
+}
+
+export default function BrandPage({ brandId, tab }: { brandId: string; tab: BrandTab }) {
   const brands = useBrands();
   const brand = (brands.data ?? []).find((b) => b.id === brandId);
   if (!brand) {
     return (
       <div className="flex min-h-0 flex-1 flex-col">
-        <PageHeader title="Marka profili" />
+        <PageHeader eyebrow={<BackToBrands />} title="Marka profili" />
         <p className="px-8 text-body text-fg-3">
           {brands.isLoading ? "Yükleniyor…" : "Marka bulunamadı."}
         </p>
       </div>
     );
   }
-  return <BrandPageBody key={brand.id} brand={brand} />;
+  return <BrandPageBody key={brand.id} brand={brand} tab={tab} />;
 }
 
-function BrandPageBody({ brand }: { brand: Brand }) {
-  const [tab, setTab] = useState<Tab>("kit");
+function BrandPageBody({ brand, tab }: { brand: Brand; tab: BrandTab }) {
+  const navigate = useAppStore((s) => s.navigate);
+  const setTab = (next: BrandTab) => navigate({ kind: "brand", id: brand.id, tab: next });
   const kit = useBrandKit(brand.id);
   const profiles = useBrandProfiles(brand.id);
   const accounts = useAccounts();
@@ -97,6 +116,7 @@ function BrandPageBody({ brand }: { brand: Brand }) {
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <PageHeader
+        eyebrow={<BackToBrands />}
         title={
           <span className="flex items-center gap-3">
             <BrandMark
@@ -118,15 +138,21 @@ function BrandPageBody({ brand }: { brand: Brand }) {
         actions={<AnalyzeButton brand={brand} />}
       >
         <div className="mt-4">
-          <SegmentedControl<Tab> label="Bölüm" value={tab} onChange={setTab} options={TABS} />
+          <SegmentedControl<BrandTab>
+            label="Bölüm"
+            value={tab}
+            onChange={setTab}
+            options={BRAND_TAB_OPTIONS}
+          />
         </div>
       </PageHeader>
       <div className="scroll-area min-h-0 flex-1 px-8 pb-12">
-        <div className="max-w-[760px]">
+        <div className="w-full min-w-0">
           {tab === "general" && <GeneralTab brand={brand} />}
           {tab === "kit" && <KitTab brand={brand} />}
           {tab === "profile" && <ProfileTab brand={brand} profiles={profiles.data ?? []} />}
           {tab === "accounts" && <AccountsTab lines={card.platforms} />}
+          {tab === "products" && <ProductsTab brand={brand} />}
         </div>
       </div>
     </div>
@@ -308,11 +334,14 @@ function KitTab({ brand }: { brand: Brand }) {
   const brandId = brand.id;
 
   // Saved as you go: a short pause after the last change (`dirty` counts the edits).
+  const pending = useRef(false);
   useEffect(() => {
     if (dirty === 0 || problem) return;
+    pending.current = true;
     const timer = setTimeout(async () => {
       const current = draftRef.current;
       if (!current) return;
+      pending.current = false;
       setSave("saving");
       try {
         await putKit.current(brandId, current);
@@ -323,6 +352,17 @@ function KitTab({ brand }: { brand: Brand }) {
     }, 800);
     return () => clearTimeout(timer);
   }, [dirty, problem, brandId]);
+  // Leaving the tab (or the page) right after an edit still saves it.
+  useEffect(
+    () => () => {
+      const current = draftRef.current;
+      if (pending.current && current && !kitProblem(current)) {
+        pending.current = false;
+        void putKit.current(brandId, current).catch(() => undefined);
+      }
+    },
+    [brandId],
+  );
 
   if (!draft) {
     return (
@@ -417,10 +457,15 @@ function KitTab({ brand }: { brand: Brand }) {
                     logo.background === "dark" ? "bg-[#151515]" : "bg-white",
                   )}
                 >
-                  <img
-                    src={assetUrl(logo.assetId)}
+                  <ZoomableImage
+                    image={{
+                      assetId: logo.assetId,
+                      background: logo.background === "dark" ? "#151515" : "#fff",
+                    }}
+                    label="Logoyu aç"
                     alt=""
-                    className="max-h-[70%] max-w-[80%] object-contain"
+                    className="absolute inset-0 flex items-center justify-center"
+                    imgClassName="max-h-[70%] max-w-[80%] object-contain"
                   />
                   <RemoveButton
                     label="Logoyu kaldır"
@@ -478,7 +523,7 @@ function KitTab({ brand }: { brand: Brand }) {
         {draft.palette.length === 0 ? (
           <Empty>Renk yok.</Empty>
         ) : (
-          <div className="flex flex-col gap-2">
+          <div className="grid grid-cols-[repeat(auto-fill,minmax(440px,1fr))] gap-x-6 gap-y-2">
             {draft.palette.map((color, index) => (
               <ColorRow
                 key={index}
@@ -514,7 +559,7 @@ function KitTab({ brand }: { brand: Brand }) {
         {draft.fonts.length === 0 ? (
           <Empty>Yazı tipi yok; sistem fontu kullanılır.</Empty>
         ) : (
-          <div className="flex flex-col gap-2">
+          <div className="grid grid-cols-[repeat(auto-fill,minmax(620px,1fr))] gap-x-6 gap-y-2">
             {draft.fonts.map((font) => (
               <div key={font.assetId} className="flex items-center gap-2">
                 <span
@@ -605,11 +650,12 @@ function KitTab({ brand }: { brand: Brand }) {
             {draft.samples.map((sample) => (
               <div key={sample.assetId} className="flex flex-col gap-1.5">
                 <div className="relative aspect-[4/5] overflow-hidden rounded-[10px] bg-control">
-                  <img
-                    src={assetUrl(sample.assetId)}
+                  <ZoomableImage
+                    image={{ assetId: sample.assetId }}
+                    label="Örneği aç"
                     alt=""
                     loading="lazy"
-                    className="size-full object-cover"
+                    className="block size-full"
                   />
                   <RemoveButton
                     label="Örneği kaldır"
@@ -651,7 +697,10 @@ function KitTab({ brand }: { brand: Brand }) {
           rows={5}
           value={draft.notes}
           onChange={(e) => change((d) => ({ ...d, notes: e.target.value }))}
-          className="selectable w-full resize-y rounded-[12px] bg-field px-3 py-2 text-body text-fg shadow-[inset_0_0_0_1px_var(--border-hairline)] outline-none"
+          className={cn(
+            "selectable w-full resize-y rounded-[12px] bg-field px-3 py-2 text-body text-fg shadow-[inset_0_0_0_1px_var(--border-hairline)] outline-none",
+            READING_WIDTH,
+          )}
         />
       </KitSection>
     </div>
@@ -982,7 +1031,10 @@ function ProfileTab({ brand, profiles }: { brand: Brand; profiles: BrandProfile[
           readOnly={!isDraft}
           value={voice}
           onChange={(e) => setVoice(e.target.value)}
-          className="selectable w-full resize-y rounded-[12px] bg-field px-3 py-2 text-body text-fg shadow-[inset_0_0_0_1px_var(--border-hairline)] outline-none read-only:text-fg-2"
+          className={cn(
+            "selectable w-full resize-y rounded-[12px] bg-field px-3 py-2 text-body text-fg shadow-[inset_0_0_0_1px_var(--border-hairline)] outline-none read-only:text-fg-2",
+            READING_WIDTH,
+          )}
         />
       </section>
       <section className="flex flex-col gap-2">
@@ -993,7 +1045,10 @@ function ProfileTab({ brand, profiles }: { brand: Brand; profiles: BrandProfile[
           readOnly={!isDraft}
           value={rules}
           onChange={(e) => setRules(e.target.value)}
-          className="selectable w-full resize-y rounded-[12px] bg-field px-3 py-2 font-mono text-mono text-fg shadow-[inset_0_0_0_1px_var(--border-hairline)] outline-none read-only:text-fg-2"
+          className={cn(
+            "selectable w-full resize-y rounded-[12px] bg-field px-3 py-2 font-mono text-mono text-fg shadow-[inset_0_0_0_1px_var(--border-hairline)] outline-none read-only:text-fg-2",
+            READING_WIDTH,
+          )}
         />
       </section>
     </div>

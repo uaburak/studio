@@ -85,6 +85,13 @@
       "when": 1794924645452,
       "tag": "0011_qr_pairing",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "6",
+      "when": 1794959789149,
+      "tag": "0012_brand_products",
+      "breakpoints": true
     }
   ]
 }

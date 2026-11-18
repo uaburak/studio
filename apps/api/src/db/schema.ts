@@ -172,6 +172,32 @@ export const brandProfiles = sqliteTable(
   ],
 );
 
+// --- brand_products ---------------------------------------------------------------
+// The brand's products ("Ürünler"): name, short description, category, tags,
+// notes and photos (image assets of the same brand, first = cover). Hard-deleted.
+
+export const brandProducts = sqliteTable(
+  "brand_products",
+  {
+    id: text("id").primaryKey(),
+    brandId: text("brand_id")
+      .notNull()
+      .references(() => brands.id),
+    name: text("name").notNull(),
+    description: text("description").notNull().default(""),
+    category: text("category").notNull().default(""),
+    tags: text("tags", { mode: "json" }).$type<string[]>().notNull().default([]),
+    notes: text("notes").notNull().default(""),
+    imageAssetIds: text("image_asset_ids", { mode: "json" })
+      .$type<string[]>()
+      .notNull()
+      .default([]),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [index("brand_products_brand_idx").on(t.brandId, t.id)],
+);
+
 // --- assets ---------------------------------------------------------------------
 
 export const assets = sqliteTable(

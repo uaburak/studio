@@ -1,7 +1,9 @@
 // UI state of the posts screen and the opened post: month, filter, search, keyboard
-// selection, brand scope, and which post the detail overlay shows.
+// selection, brand scope, and which post the detail overlay shows. Opening and closing a post
+// are steps of the window's history (app store `post`): back closes it, forward reopens it.
 import type { Content } from "@studio/contract";
 import { create } from "zustand";
+import { useAppStore } from "../../state/app-store.ts";
 import type { PostFilter } from "./board.ts";
 import type { MonthKey } from "./dates.ts";
 
@@ -69,15 +71,28 @@ export const usePostsStore = create<PostsState>((set, get) => ({
       opened: { contentId, tab: options.tab ?? "post", origin: options.origin ?? null },
       selectedId: get().selectedId ?? contentId,
     });
+    useAppStore.getState().openPost(contentId);
   },
   setTab(tab) {
     const opened = get().opened;
     if (opened) set({ opened: { ...opened, tab } });
   },
   close() {
-    set({ opened: null });
+    if (get().opened) set({ opened: null });
+    useAppStore.getState().closePost();
   },
 }));
+
+// Back / forward (and navigating elsewhere) change the window's post: follow it.
+useAppStore.subscribe((state, previous) => {
+  if (state.post === previous.post) return;
+  const opened = usePostsStore.getState().opened;
+  if (state.post === null) {
+    if (opened) usePostsStore.setState({ opened: null });
+  } else if (opened?.contentId !== state.post) {
+    usePostsStore.setState({ opened: { contentId: state.post, tab: "post", origin: null } });
+  }
+});
 
 /** Open the post detail over the centre (chat cards, the board, other screens). */
 export function openPostDetail(

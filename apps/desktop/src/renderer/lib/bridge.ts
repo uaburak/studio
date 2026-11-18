@@ -17,9 +17,11 @@ declare global {
 
 export const defaultSession: DesktopSettings["session"] = {
   sidebarPresented: true,
+  sidebarWidth: 265,
   panelPresented: false,
   panelPane: "details",
   panelExpanded: false,
+  panelWidth: 357,
   route: "new",
   currentBrandId: null,
   collapsedGroups: [],

@@ -25,9 +25,11 @@ export function defaultSettings(repoPath: string): DesktopSettings {
     agent: { last: null, conversations: {} },
     session: {
       sidebarPresented: true,
+      sidebarWidth: 265,
       panelPresented: false,
       panelPane: "details",
       panelExpanded: false,
+      panelWidth: 357,
       route: "new",
       currentBrandId: null,
       collapsedGroups: [],
@@ -39,6 +41,11 @@ export function defaultSettings(repoPath: string): DesktopSettings {
 
 const bool = (value: unknown, fallback: boolean) => (typeof value === "boolean" ? value : fallback);
 const str = (value: unknown, fallback: string) => (typeof value === "string" ? value : fallback);
+/** A whole number within [min, max], else the fallback (side panel widths). */
+const width = (value: unknown, fallback: number, min: number, max: number) =>
+  typeof value === "number" && Number.isFinite(value)
+    ? Math.round(Math.min(max, Math.max(min, value)))
+    : fallback;
 
 function choice(value: unknown): AgentChoiceValue | null {
   if (!value || typeof value !== "object") return null;
@@ -72,9 +79,11 @@ export function normalizeSettings(raw: unknown, defaults: DesktopSettings): Desk
   const d = defaults.session;
   const session: SessionState = {
     sidebarPresented: bool(s.sidebarPresented, d.sidebarPresented),
+    sidebarWidth: width(s.sidebarWidth, d.sidebarWidth, 200, 420),
     panelPresented: bool(s.panelPresented, d.panelPresented),
     panelPane: str(s.panelPane, d.panelPane),
     panelExpanded: bool(s.panelExpanded, d.panelExpanded),
+    panelWidth: width(s.panelWidth, d.panelWidth, 300, 720),
     route: str(s.route, d.route),
     currentBrandId: typeof s.currentBrandId === "string" ? s.currentBrandId : null,
     collapsedGroups: Array.isArray(s.collapsedGroups)

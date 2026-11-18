@@ -28,6 +28,8 @@ export interface ChatImage {
   aliasId?: string | null;
   /** Explicit source (previews, the gallery); default: the asset's content URL. */
   url?: string;
+  /** Backdrop behind a transparent picture in the viewer (a logo's light or dark tile). */
+  background?: string;
 }
 
 export interface StepGroup {

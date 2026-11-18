@@ -27,7 +27,7 @@ import {
 } from "../../components/ui/icons.tsx";
 import { MenuButton, type MenuEntry } from "../../components/ui/menu.tsx";
 import { describeError, useApi } from "../../lib/api.ts";
-import { routeKey, useAppStore } from "../../state/app-store.ts";
+import { useAppStore } from "../../state/app-store.ts";
 import { startChat } from "../../state/chat-draft.ts";
 import { usePostOpener } from "../../state/post-opener.ts";
 import { useAccounts, useBrands, useJobs } from "../../state/studio.tsx";
@@ -89,14 +89,8 @@ export function PostDetailLayer() {
   usePostOpener(opener);
   // Finished generation / render / publish jobs refresh the posts they touched.
   useFinishedContentJobs();
-  // Going somewhere else (sidebar, ⌘N, back) closes the opened post.
-  const route = useAppStore((s) => routeKey(s.route));
-  const lastRoute = useRef(route);
-  useEffect(() => {
-    if (lastRoute.current === route) return;
-    lastRoute.current = route;
-    usePostsStore.getState().close();
-  }, [route]);
+  // Going somewhere else (sidebar, ⌘N) closes the opened post and back / forward reopen it:
+  // the post is part of the window's history (posts/store.ts follows `useAppStore.post`).
   return (
     <>
       {opened && <PostDetail key={opened.contentId} contentId={opened.contentId} />}
@@ -293,7 +287,11 @@ export function EditorView({ editor, snapshot }: { editor: PostEditor; snapshot:
     return () => clearTimeout(t);
   }, [snapshot.notice, editor]);
 
-  const quickLook = () => actions.quickLook(content, version);
+  const quickLook = () =>
+    actions.quickLook(content, version, {
+      source: root.current?.querySelector('[data-testid="slide-stage"] img') ?? null,
+      slideIndex: snapshot.slideIndex,
+    });
   const openInChat = () => {
     close();
     startChat(

@@ -18,7 +18,8 @@ import { PostMedia } from "./post-media.tsx";
 
 export interface PostCardActions {
   open(card: PostCard, origin: DOMRect | null): void;
-  quickLook(card: PostCard, origin: DOMRect | null): void;
+  /** `source`: the card's picture (the viewer zooms out of it). */
+  quickLook(card: PostCard, source: Element | null): void;
   copyCaption(card: PostCard): void;
   duplicate(card: PostCard): void;
   remove(card: PostCard): void;
@@ -39,8 +40,8 @@ export const PostCardView = forwardRef<
   const slides = card.version?.slides.length ?? 0;
   const blocker = deletionBlocker(card.content);
   const hasRenders = renderedAssetIds(card).length > 0;
-  const mediaRect = (el: Element | null) =>
-    el?.closest("li")?.querySelector("[data-media]")?.getBoundingClientRect() ?? null;
+  const media = (el: Element | null) => el?.closest("li")?.querySelector("[data-media]") ?? null;
+  const mediaRect = (el: Element | null) => media(el)?.getBoundingClientRect() ?? null;
   return (
     <li
       ref={ref}
@@ -107,7 +108,7 @@ export const PostCardView = forwardRef<
           shortcut="Boşluk"
           size={24}
           disabled={!hasRenders}
-          onClick={(event) => actions.quickLook(card, mediaRect(event.currentTarget))}
+          onClick={(event) => actions.quickLook(card, media(event.currentTarget))}
         />
         <IconButton
           icon={<IconCopy size={13} strokeWidth={1.75} />}
