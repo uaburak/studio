@@ -144,9 +144,10 @@ function kit(system = false) {
 }
 
 let woff2Inter: Uint8Array;
+// WOFF2 compression is CPU-bound: under the whole repo's parallel test run it can take > 10 s.
 beforeAll(async () => {
   woff2Inter = await compress(INTER);
-});
+}, 60_000);
 
 afterEach(() => {
   vi.unstubAllGlobals();
