@@ -418,7 +418,16 @@ function compositionFor(ctx: EngineContext, spec: ReelSpec, overClip: boolean): 
   if (spec.recipe === "footage_edit") {
     return buildFootageEditHtml({ brand: ctx.brand, spec, overClip, stillImagePath: hero });
   }
-  return buildMotionGraphicsHtml({ brand: ctx.brand, spec, heroImagePath: hero });
+  // A converted post's scenes carry their own pictures (N10).
+  const sceneImagePaths = spec.scenes.map((s) =>
+    s.imageAssetId ? `/media/${encodeURIComponent(s.imageAssetId)}.jpg` : null,
+  );
+  return buildMotionGraphicsHtml({
+    brand: ctx.brand,
+    spec,
+    heroImagePath: hero,
+    ...(sceneImagePaths.some(Boolean) ? { sceneImagePaths } : {}),
+  });
 }
 
 function defaultCoverMs(spec: ReelSpec): number {
@@ -1125,7 +1134,16 @@ export function applyReelPatch(spec: ReelSpec, patch: ReelSpecPatch): ReelSpec {
     ...spec,
     ...(patch.hook !== undefined ? { hook: patch.hook } : {}),
     ...(patch.cta !== undefined ? { cta: patch.cta } : {}),
-    ...(patch.scenes !== undefined ? { scenes: patch.scenes } : {}),
+    ...(patch.scenes !== undefined
+      ? {
+          // An editor that does not know scene pictures (older apps) keeps them by position.
+          scenes: patch.scenes.map((s, i) =>
+            s.imageAssetId === undefined && spec.scenes[i]?.imageAssetId
+              ? { ...s, imageAssetId: spec.scenes[i]?.imageAssetId ?? null }
+              : s,
+          ),
+        }
+      : {}),
     ...(patch.overlays !== undefined ? { overlays: patch.overlays } : {}),
     ...(patch.captions !== undefined ? { captions: patch.captions } : {}),
     ...(patch.durationMs !== undefined ? { durationMs: patch.durationMs } : {}),

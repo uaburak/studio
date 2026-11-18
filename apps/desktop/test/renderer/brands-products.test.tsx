@@ -164,13 +164,14 @@ describe("Markalar list", () => {
 });
 
 describe("brand profile sections", () => {
-  it("has exactly Genel, Marka Kiti, Profil, Hesaplar, Ürünler; a section is a history step", async () => {
+  it("has exactly Genel, Marka Kiti, Profil, Hesaplar, Ürünler, Şablonlar; a section is a history step", async () => {
     expect(BRAND_TAB_OPTIONS.map((o) => o.label)).toEqual([
       "Genel",
       "Marka Kiti",
       "Profil",
       "Hesaplar",
       "Ürünler",
+      "Şablonlar",
     ]);
     useAppStore.getState().navigate({ kind: "brand", id: "b1" });
     providers(<BrandPage brandId="b1" tab="kit" />, {}, (q) => {
@@ -182,7 +183,7 @@ describe("brand profile sections", () => {
       within(tabs)
         .getAllByRole("radio")
         .map((r) => r.textContent),
-    ).toEqual(["Genel", "Marka Kiti", "Profil", "Hesaplar", "Ürünler"]);
+    ).toEqual(["Genel", "Marka Kiti", "Profil", "Hesaplar", "Ürünler", "Şablonlar"]);
     expect(within(tabs).getByRole("radio", { name: "Marka Kiti" })).toHaveAttribute(
       "aria-checked",
       "true",

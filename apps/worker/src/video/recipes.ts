@@ -375,6 +375,8 @@ export function buildMotionGraphicsHtml(input: {
   brand: BrandContext;
   spec: ReelSpec;
   heroImagePath?: string | null;
+  /** A picture per scene (a converted post's slide images); replaces the one hero image. */
+  sceneImagePaths?: ReadonlyArray<string | null>;
 }): BuiltComposition {
   const { brand, spec } = input;
   const p = palette(brand);
@@ -389,9 +391,17 @@ export function buildMotionGraphicsHtml(input: {
   const durationMs = spec.durationMs;
   const last = timeline.at(-1);
   if (last && !spec.cta) last.end = Math.max(last.end, durationMs);
-  const heroIdx = input.heroImagePath ? Math.min(1, timeline.length - 1) : -1;
+  const perScene = (input.sceneImagePaths ?? []).some(Boolean);
+  const heroIdx = !perScene && input.heroImagePath ? Math.min(1, timeline.length - 1) : -1;
+  const imageOf = (idx: number): string | null =>
+    perScene
+      ? (input.sceneImagePaths?.[idx] ?? null)
+      : idx === heroIdx
+        ? (input.heroImagePath ?? null)
+        : null;
   const sections = timeline
     .map((s, idx) => {
+      const image = imageOf(idx);
       const words = s.headline
         .trim()
         .split(/\s+/)
@@ -404,8 +414,8 @@ export function buildMotionGraphicsHtml(input: {
   <div class="safe">
     ${s.eyebrow ? `<p class="eyebrow">${esc(s.eyebrow)}</p>` : ""}
     <div class="rule"></div>
-    ${idx === heroIdx ? `<div class="hero"><img src="${esc(input.heroImagePath ?? "")}" alt=""></div>` : ""}
-    <h1 class="headline fit" data-maxh="${idx === heroIdx ? 420 : 760}">${words}</h1>
+    ${image ? `<div class="hero"><img src="${esc(image)}" alt=""></div>` : ""}
+    <h1 class="headline fit" data-maxh="${image ? 420 : 760}">${words}</h1>
     ${s.subhead ? `<p class="subhead">${esc(s.subhead)}</p>` : ""}
   </div>
 </section>`;

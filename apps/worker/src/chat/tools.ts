@@ -56,6 +56,13 @@ import {
   toQuestionPart,
 } from "./schema.ts";
 import type { Skill } from "./skills.ts";
+import {
+  generateFromTemplateTool,
+  listTemplatesTool,
+  repurposeContentTool,
+  TEMPLATE_TOOLS,
+  type TemplateToolEnv,
+} from "./template-tools.ts";
 import { type LedgerEntry, ToolCallLedger, toolCallKey } from "./tool-ledger.ts";
 import { conversationWorkDir } from "./workdir.ts";
 import { RunClosedError, type TurnWriter } from "./writer.ts";
@@ -191,6 +198,11 @@ export const STUDIO_TOOLS: readonly StudioToolDefinition[] = [
                 type: "array",
                 items: { type: "string" },
                 description: "Kullanıcının istediği @takma adlar (@ olmadan).",
+              },
+              templateId: {
+                type: "string",
+                description:
+                  "Bu post markanın bir şablonuyla yapılacaksa şablon id'si (list_templates; aynı tür). Yerleşim aynen kalır, AI alanları brief'ten doldurur.",
               },
             },
           },
@@ -649,6 +661,8 @@ export const STUDIO_TOOLS: readonly StudioToolDefinition[] = [
   },
   // Posts saved from the Mac's design canvas: their Wecra document (canvas-tools.ts).
   ...CANVAS_TOOLS,
+  // Brand templates and repurposing (N9, N10; template-tools.ts).
+  ...TEMPLATE_TOOLS,
 ];
 
 // --- input schemas -------------------------------------------------------------------------
@@ -673,6 +687,7 @@ const ProposePlanInput = z.object({
         imageSlot: z.enum(["none", "user_upload", "ai_generate"]).default("none"),
         imageBrief: trimmed(3_800).optional(),
         imageAliases: z.array(z.string()).default([]),
+        templateId: z.string().trim().min(1).max(128).optional(),
       }),
     )
     .min(1),
@@ -1160,6 +1175,26 @@ export class StudioToolExecutor {
         return this.runSafe(stepId, name, "Karelere bakılıyor…", "Karelere bakıldı", () =>
           canvasScreenshotTool(this.canvasEnv(), args),
         );
+      case "list_templates":
+        return this.runSafe(stepId, name, "Şablonlar okunuyor…", "Şablonlar okundu", () =>
+          listTemplatesTool(this.templateEnv(), args),
+        );
+      case "generate_from_template":
+        return this.runSafe(
+          stepId,
+          name,
+          "Şablonla post başlatılıyor…",
+          "Şablonla post kuyruğa alındı",
+          () => this.onceThenRef(name, args, rawCallId, generateFromTemplateTool),
+        );
+      case "repurpose_content":
+        return this.runSafe(
+          stepId,
+          name,
+          "Dönüştürme başlatılıyor…",
+          "Dönüştürme kuyruğa alındı",
+          () => this.onceThenRef(name, args, rawCallId, repurposeContentTool),
+        );
       default:
         return {
           data: { ok: false, error: `Bilinmeyen araç: ${name}` },
@@ -1178,6 +1213,54 @@ export class StudioToolExecutor {
       if (error instanceof ApiError && error.status === 404) return null;
       throw error;
     }
+  }
+
+  /** What the template tools use of this turn (template-tools.ts). */
+  private templateEnv(): TemplateToolEnv {
+    return {
+      api: this.options.api,
+      signal: this.options.signal,
+      conversationId: this.options.conversationId,
+      brandId: this.brandId,
+      resolveAlias: (alias) => this.resolveAliasToAssetId(alias),
+      ...this.generationPayloadExtras(),
+    };
+  }
+
+  /**
+   * A tool that queues work, run once per conversation for the same arguments (U7); the post it
+   * made goes into the message as a card.
+   */
+  private async onceThenRef(
+    tool: string,
+    args: Record<string, unknown>,
+    callId: string | undefined,
+    run: (
+      env: TemplateToolEnv,
+      args: Record<string, unknown>,
+    ) => Promise<{ data: Record<string, unknown>; summary: string; contentId: string }>,
+  ) {
+    const { repeat, ...rest } = args;
+    const key = toolCallKey(tool, { ...rest, brandId: this.brandId });
+    const earlier = await this.earlierCall(tool, key, repeat === true);
+    if (earlier) {
+      return {
+        data: {
+          ...earlier.data,
+          duplicate: true,
+          note: "Bu istek bu sohbette zaten kuyruğa alınmıştı; ikinci kez açılmadı. Bitmesini wait_jobs ile bekle. Kullanıcı bilerek bir tane daha isterse repeat: true ile çağır.",
+        },
+        summary: "zaten kuyrukta",
+      };
+    }
+    const out = await run(this.templateEnv(), rest);
+    await this.ledger.put({ key, tool, callId: callId ?? null, data: out.data });
+    await this.options.writer
+      .setPart({ type: "content_ref", contentId: out.contentId, version: null, note: "Üretiliyor" })
+      .catch((error: unknown) => {
+        if (error instanceof RunClosedError) throw error;
+      });
+    return { data: out.data, summary: out.summary };
   }
 
   /** What the canvas tools use of this turn (canvas-tools.ts). */

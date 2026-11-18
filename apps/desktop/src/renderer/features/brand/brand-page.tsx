@@ -1,8 +1,8 @@
 // "Marka profili" (port of StudioMac's brand settings sheet as a page, opened from Markalar):
 // Genel (name, short name, language, archive), Marka Kiti (logos, colours, fonts, sample posts,
 // notes; saved as you go), Profil (versions, tokens, voice and design rules; save, approve, new
-// draft, AI analysis), Hesaplar (connection state; connecting lives in Settings) and Ürünler
-// (the brand's products). The section is part of the route, so back / forward step through
+// draft, AI analysis), Hesaplar (connection state; connecting lives in Settings), Ürünler
+// (the brand's products) and Şablonlar (approved posts saved as layouts, N9). The section is part of the route, so back / forward step through
 // sections too. The content uses the page's full width; only long text keeps a reading width.
 import type { Brand, BrandKitLogoBackground, BrandProfile } from "@studio/contract";
 import { MAX_KIT_SAMPLES, MIN_KIT_SAMPLES } from "@studio/contract";
@@ -58,6 +58,7 @@ import { BrandMark, LanguageSelect } from "./brand-views.tsx";
 import { AddSystemFontButton, KitFontList } from "./kit-fonts.tsx";
 import { ProductsTab } from "./products-tab.tsx";
 import { SkillsSection } from "./skills-section.tsx";
+import { TemplatesTab } from "./templates-tab.tsx";
 
 export const BRAND_TAB_OPTIONS: { value: BrandTab; label: string }[] = [
   { value: "general", label: "Genel" },
@@ -65,6 +66,7 @@ export const BRAND_TAB_OPTIONS: { value: BrandTab; label: string }[] = [
   { value: "profile", label: "Profil" },
   { value: "accounts", label: "Hesaplar" },
   { value: "products", label: "Ürünler" },
+  { value: "templates", label: "Şablonlar" },
 ];
 
 /** Text areas and long text keep a reading width; everything else uses the full width. */
@@ -150,6 +152,7 @@ function BrandPageBody({ brand, tab }: { brand: Brand; tab: BrandTab }) {
           {tab === "profile" && <ProfileTab brand={brand} profiles={profiles.data ?? []} />}
           {tab === "accounts" && <AccountsTab lines={card.platforms} />}
           {tab === "products" && <ProductsTab brand={brand} />}
+          {tab === "templates" && <TemplatesTab brand={brand} />}
         </div>
       </div>
     </div>

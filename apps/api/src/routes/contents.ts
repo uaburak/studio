@@ -307,9 +307,12 @@ export const contentRoutes = createRouter()
       responses: { 200: json(ContentList, "A page of content items."), 400: errors[400] },
     }),
     async (c) => {
-      const { limit, cursor, brandId, status, type, deleted } = c.req.valid("query");
+      const { limit, cursor, brandId, status, type, deleted, sourceContentId, templateId } =
+        c.req.valid("query");
       const where: SQL[] = [];
       if (brandId) where.push(eq(contents.brandId, brandId));
+      if (sourceContentId) where.push(eq(contents.sourceContentId, sourceContentId));
+      if (templateId) where.push(eq(contents.templateId, templateId));
       if (status) where.push(eq(contents.status, status));
       if (type) where.push(eq(contents.type, type));
       if (deleted === "only") where.push(isNotNull(contents.deletedAt));

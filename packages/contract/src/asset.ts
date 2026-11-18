@@ -170,10 +170,11 @@ export type AssetList = z.infer<typeof AssetList>;
  * - `slide`: pictured in a version's slide design (`/media/<id>` in its HTML);
  * - `product`: a product photo; `brand_kit`: a logo, font or sample post of the brand kit;
  * - `conversation`: attached in a chat (does not block deleting; the chat keeps a broken picture
- *   once the file is purged).
+ *   once the file is purged);
+ * - `template`: a brand template's preview, document or picture (N9).
  */
 export const AssetUsageKind = z
-  .enum(["version", "editor_document", "slide", "product", "brand_kit", "conversation"])
+  .enum(["version", "editor_document", "slide", "product", "brand_kit", "conversation", "template"])
   .meta({ id: "AssetUsageKind" });
 export type AssetUsageKind = z.infer<typeof AssetUsageKind>;
 
@@ -184,6 +185,7 @@ export const BLOCKING_ASSET_USAGES = [
   "slide",
   "product",
   "brand_kit",
+  "template",
 ] as const satisfies readonly AssetUsageKind[];
 
 export const AssetUsage = z

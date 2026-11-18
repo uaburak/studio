@@ -120,6 +120,8 @@ export function draftPatch(d: ReelDraft): ReelSpecPatch | null {
       headline: s.headline.trim(),
       subhead: s.subhead,
       durationMs: s.durationMs,
+      // A converted post's scene picture stays with its scene (N10).
+      ...(s.imageAssetId ? { imageAssetId: s.imageAssetId } : {}),
     }));
   }
   if (!sameOverlays(d.overlays, base.overlays)) {

@@ -204,6 +204,20 @@ import {
   type SocialAccountTokenPut,
   type SocialAccountUpdate,
 } from "./social-account.ts";
+import {
+  type ContentRepurpose,
+  type ContentRepurposeMany,
+  ContentRepurposeManyResult,
+  ContentRepurposeResult,
+  ContentTemplate,
+  type ContentTemplateCreate,
+  ContentTemplateDetail,
+  ContentTemplateList,
+  type ContentTemplateListQuery,
+  type ContentTemplateUpdate,
+  type TemplateUse,
+  TemplateUseResult,
+} from "./template.ts";
 
 export class ApiError extends Error {
   constructor(
@@ -725,6 +739,20 @@ export function createApiClient(options: ApiClientOptions = {}) {
           json: input,
           init,
         }),
+      /** Convert a post into a story or a Reels (N10): a new linked post and its job. */
+      repurpose: (id: string, input: ContentRepurpose, init?: RequestInit) =>
+        call(ContentRepurposeResult, `/api/contents/${enc(id)}/repurpose`, {
+          method: "POST",
+          json: input,
+          init,
+        }),
+      /** The same conversion for many posts (Postlar's "Dönüştür"). */
+      repurposeMany: (input: ContentRepurposeMany, init?: RequestInit) =>
+        call(ContentRepurposeManyResult, "/api/contents/repurpose", {
+          method: "POST",
+          json: input,
+          init,
+        }),
       versions: {
         list: (contentId: string, query?: ContentVersionListQuery, init?: RequestInit) =>
           call(ContentVersionList, `/api/contents/${enc(contentId)}/versions`, {
@@ -778,6 +806,33 @@ export function createApiClient(options: ApiClientOptions = {}) {
             init,
           }),
       },
+    },
+
+    templates: {
+      /** The brand's templates (N9), newest first. */
+      list: (brandId: string, query?: ContentTemplateListQuery, init?: RequestInit) =>
+        call(ContentTemplateList, `/api/brands/${enc(brandId)}/templates`, {
+          query: q(query),
+          init,
+        }),
+      /** A template with its slides. */
+      get: (id: string, init?: RequestInit) =>
+        call(ContentTemplateDetail, `/api/templates/${enc(id)}`, { init }),
+      /** Save an approved / published post as a template of its brand. */
+      create: (input: ContentTemplateCreate, init?: RequestInit) =>
+        call(ContentTemplate, "/api/templates", { method: "POST", json: input, init }),
+      update: (id: string, input: ContentTemplateUpdate, init?: RequestInit) =>
+        call(ContentTemplate, `/api/templates/${enc(id)}`, { method: "PATCH", json: input, init }),
+      delete: async (id: string, init?: RequestInit): Promise<void> => {
+        await send(`/api/templates/${enc(id)}`, { method: "DELETE", init });
+      },
+      /** A new draft post from the template; a `content.generate` job fills it. */
+      use: (id: string, input: TemplateUse = {}, init?: RequestInit) =>
+        call(TemplateUseResult, `/api/templates/${enc(id)}/use`, {
+          method: "POST",
+          json: input,
+          init,
+        }),
     },
 
     jobs: {

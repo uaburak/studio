@@ -11,6 +11,7 @@ import {
 import { ContentType } from "./content.ts";
 import { Job, JobStatus } from "./job.ts";
 import { ReelGenerateOptions } from "./reel.ts";
+import { RepurposeSpec, TemplateFill } from "./template.ts";
 
 /*
  * Content plans (task A2). The chat agent proposes a plan for a period
@@ -107,6 +108,8 @@ export const PlanItemInput = z
     imageSlot: ImageSlotExpectation.default("none"),
     /** What the image should show (for the user's upload or the image model). */
     imageBrief: ImageBrief.nullable().default(null),
+    /** A brand template (N9) the post is made from: its layout stays, the AI fills its fields. */
+    templateId: EntityId.nullable().optional(),
   })
   .meta({ id: "PlanItemInput" });
 export type PlanItemInput = z.input<typeof PlanItemInput>;
@@ -135,6 +138,8 @@ export const PlanItem = z
     pillar: z.string().nullable(),
     imageSlot: ImageSlotExpectation,
     imageBrief: z.string().nullable(),
+    /** The brand template the post is made from (null: designed anew; absent from older servers). */
+    templateId: EntityId.nullable().optional(),
     status: PlanItemStatus,
     /** Draft content item created when the plan was accepted (null if it was deleted since). */
     contentId: EntityId.nullable(),
@@ -324,6 +329,7 @@ export const PlanItemPatch = z
     pillar: Pillar.nullable().optional(),
     imageSlot: ImageSlotExpectation.optional(),
     imageBrief: ImageBrief.nullable().optional(),
+    templateId: EntityId.nullable().optional(),
   })
   .refine((v) => Object.values(v).some((x) => x !== undefined), "at least one field is required")
   .meta({ id: "PlanItemPatch" });
@@ -406,6 +412,13 @@ export const ContentGeneratePayload = z
     effort: AgentEffort.optional(),
     /** Reel options (recipe, footage, audio, length, a ready spec); reels only. */
     reel: ReelGenerateOptions.optional(),
+    /**
+     * Fill a brand template (N9): the template's layout exactly, only its fields' texts and
+     * pictures change (HTML: layer patches; canvas: a `canvas.apply` job on a copy of its document).
+     */
+    template: TemplateFill.optional(),
+    /** Convert a post (N10): its texts and pictures become a story or a Reels. */
+    repurpose: RepurposeSpec.optional(),
   })
   .meta({ id: "ContentGeneratePayload" });
 export type ContentGeneratePayload = z.infer<typeof ContentGeneratePayload>;

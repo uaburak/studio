@@ -6,7 +6,7 @@ import type { SessionState, WindowState } from "../../shared/ipc.ts";
 import type { ChatImage } from "../lib/transcript.ts";
 
 /** Sections of a brand's profile page (each one is a step of the history). */
-export type BrandTab = "general" | "kit" | "profile" | "accounts" | "products";
+export type BrandTab = "general" | "kit" | "profile" | "accounts" | "products" | "templates";
 
 export const BRAND_TABS: readonly BrandTab[] = [
   "general",
@@ -14,6 +14,7 @@ export const BRAND_TABS: readonly BrandTab[] = [
   "profile",
   "accounts",
   "products",
+  "templates",
 ];
 
 /** The section a brand page opens on when the route names none. */

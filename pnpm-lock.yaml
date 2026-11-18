@@ -256,6 +256,9 @@ importers:
       '@studio/contract':
         specifier: workspace:*
         version: link:../../packages/contract
+      '@studio/design-kit':
+        specifier: workspace:*
+        version: link:../../packages/design-kit
       '@studio/publishers':
         specifier: workspace:*
         version: link:../../packages/publishers

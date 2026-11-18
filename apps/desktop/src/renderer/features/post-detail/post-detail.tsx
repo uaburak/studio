@@ -56,6 +56,7 @@ import {
 } from "../posts/data.ts";
 import { localDate } from "../posts/dates.ts";
 import { exportMenuEntries, usePostExport } from "../posts/export.ts";
+import { PostLinks, usePostConversions } from "../posts/post-links.tsx";
 import { type DetailTab, usePostsStore } from "../posts/store.ts";
 import { useCancelSchedule } from "./cancel-schedule.tsx";
 import {
@@ -260,6 +261,7 @@ function PostCanvas({ editor, snapshot }: { editor: PostEditor; snapshot: Editor
     setScheduleOpen(true);
   };
   const postSchedules = facts.schedules.data ?? NO_SCHEDULES;
+  const conversions = usePostConversions(content);
   const cancelFlow = useCancelSchedule({
     content,
     schedules: postSchedules,
@@ -333,6 +335,7 @@ function PostCanvas({ editor, snapshot }: { editor: PostEditor; snapshot: Editor
           openInChat,
           cancelSchedule: cancelFlow.targets.length > 0 ? () => cancelFlow.open() : null,
           exportEntries: exportMenuEntries(exporter, content, version, snapshot.slideIndex),
+          conversionEntries: conversions.entries,
         })}
         onClose={close}
         onPreview={quickLook}
@@ -340,6 +343,7 @@ function PostCanvas({ editor, snapshot }: { editor: PostEditor; snapshot: Editor
           <>
             {approveGuard.dialog}
             {cancelFlow.dialog}
+            {conversions.dialog}
             <ScheduleSheet
               open={scheduleOpen}
               content={content}
@@ -398,6 +402,7 @@ export function EditorView({ editor, snapshot }: { editor: PostEditor; snapshot:
       editor.getSnapshot().current,
     );
   const postSchedules = schedules.data ?? NO_SCHEDULES;
+  const conversions = usePostConversions(content);
   const cancelFlow = useCancelSchedule({
     content,
     schedules: postSchedules,
@@ -538,6 +543,7 @@ export function EditorView({ editor, snapshot }: { editor: PostEditor; snapshot:
     openInChat,
     cancelSchedule: cancelFlow.targets.length > 0 ? () => cancelFlow.open() : null,
     exportEntries: exportMenuEntries(exporter, content, version, snapshot.slideIndex),
+    conversionEntries: conversions.entries,
   });
 
   const statusText = facts.statusText;
@@ -629,6 +635,7 @@ export function EditorView({ editor, snapshot }: { editor: PostEditor; snapshot:
                   schedule={schedule}
                   planDate={planItem?.date ? localDate(planItem.date) : null}
                 />
+                <PostLinks content={content} />
                 <PublishHistory
                   schedules={postSchedules}
                   accounts={allAccounts}
@@ -742,6 +749,7 @@ export function EditorView({ editor, snapshot }: { editor: PostEditor; snapshot:
       </div>
       {approveGuard.dialog}
       {cancelFlow.dialog}
+      {conversions.dialog}
       <ScheduleSheet
         open={scheduleOpen}
         content={content}

@@ -15,6 +15,7 @@
   "dependencies": {
     "@hono/zod-openapi": "catalog:",
     "@studio/contract": "workspace:*",
+    "@studio/design-kit": "workspace:*",
     "@studio/publishers": "workspace:*",
     "drizzle-orm": "catalog:",
     "hono": "catalog:",

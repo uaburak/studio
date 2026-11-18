@@ -182,6 +182,11 @@ export function toContent(r: ContentRow, current: CurrentVersionRef | null): Con
     createdAt: iso(r.createdAt),
     updatedAt: iso(r.updatedAt),
     deletedAt: isoOrNull(r.deletedAt),
+    templateId: r.templateId ?? null,
+    source:
+      r.sourceContentId && r.sourceVersion !== null && r.sourceKind
+        ? { contentId: r.sourceContentId, version: r.sourceVersion, kind: r.sourceKind }
+        : null,
   };
 }
 
@@ -363,6 +368,7 @@ export function toPlanItem(r: PlanItemRow, job: GenerationJobRef | null): PlanIt
     pillar: r.pillar,
     imageSlot: r.imageSlot,
     imageBrief: r.imageBrief,
+    templateId: r.templateId ?? null,
     status: r.status,
     contentId: r.contentId,
     generation: job ? { jobId: job.id, status: job.status, error: job.error } : null,
