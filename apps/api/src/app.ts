@@ -22,6 +22,7 @@ import { conversationRoutes } from "./routes/conversations.ts";
 import { deviceRoutes, readRoutes } from "./routes/devices.ts";
 import { hubRoutes } from "./routes/hub.ts";
 import { createJob, hubStub, jobRoutes } from "./routes/jobs.ts";
+import { planningRoutes } from "./routes/planning.ts";
 import { agentRunRoutes, planRoutes } from "./routes/plans.ts";
 import { publishingRoutes } from "./routes/publishing.ts";
 import { scheduleRoutes } from "./routes/schedules.ts";
@@ -112,6 +113,7 @@ app.route("/", hubRoutes); // /api/hub (worker WebSocket), /api/workers/presence
 app.route("/", conversationRoutes);
 app.route("/", agentRunRoutes);
 app.route("/", planRoutes);
+app.route("/", planningRoutes); // /api/special-days*, /api/brands/{id}/planning-* (N5, N6)
 app.route("/", workerRunRoutes); // /api/worker/* (worker token)
 app.route("/", workerScheduleRoutes); // /api/worker/schedules/* (worker token)
 

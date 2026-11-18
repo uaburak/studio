@@ -4,8 +4,14 @@ import {
   CONVERSATION_SNAPSHOT_MESSAGES,
   type Conversation,
   type ConversationEvent,
+  isPlanEditable,
+  istanbulToday,
+  looksLikePlanning,
   type Message,
+  namedPeriod,
+  nextMonthPeriod,
   type Plan,
+  type PlanningContext,
   TURN_CONTEXT_MESSAGES,
   type TurnContext,
   type TurnMessageResult,
@@ -43,6 +49,7 @@ import {
   planItems,
 } from "../db/schema.ts";
 import { notFound } from "../lib/errors.ts";
+import { planningContext } from "../lib/planning.ts";
 import { enabledBrandSkills } from "../routes/brand-skills.ts";
 
 /*
@@ -215,7 +222,47 @@ export async function turnContext(db: Db, runId: string): Promise<TurnContext> {
     aliases: (await loadAliases(db, conv.id)).map(toTurnAlias),
     messageCount: total,
     brandSkills: conv.brandId ? await enabledBrandSkills(db, conv.brandId) : [],
+    planning: await planningForTurn(db, conv.id, conv.brandId, list, openPlan),
   };
+}
+
+/**
+ * Planning context for a planning turn (N5, N6): the latest user message asks for a plan, or the
+ * conversation's open plan is being revised. The period is the one the message names, else the
+ * open plan's, else next month. Null for other turns, without a brand, or when it fails (the
+ * agent can still ask for it with `get_planning_context`).
+ */
+async function planningForTurn(
+  db: Db,
+  conversationId: string,
+  brandId: string | null,
+  list: readonly Message[],
+  openPlan: Plan | null,
+): Promise<PlanningContext | null> {
+  if (!brandId) return null;
+  const latest = [...list].reverse().find((m) => m.role === "user");
+  const text =
+    latest?.parts
+      .filter((p) => p.type === "text")
+      .map((p) => p.text)
+      .join("\n") ?? "";
+  const revising = openPlan !== null && isPlanEditable(openPlan.status);
+  if (!revising && !looksLikePlanning(text)) return null;
+  const today = istanbulToday(new Date());
+  const period =
+    namedPeriod(text, today) ??
+    (revising && openPlan
+      ? { periodStart: openPlan.periodStart, periodEnd: openPlan.periodEnd }
+      : nextMonthPeriod(today));
+  try {
+    return await planningContext(db, brandId, period, {
+      planId: revising ? openPlan?.id : null,
+      conversationId,
+    });
+  } catch (error) {
+    console.warn(`turn context: planning context for ${brandId} failed`, error);
+    return null;
+  }
 }
 
 /** Messages in a conversation (all of them). */

@@ -5,6 +5,7 @@ import {
   type AttachmentPart,
   aliasBaseFor,
   autoAlias,
+  briefWithHook,
   type ConsentDecisionCreate,
   type ConsentDecisionResult,
   type ConsentPart,
@@ -94,6 +95,7 @@ import {
 } from "../db/schema.ts";
 import { ApiProblem, badRequest, conflict, invalidTransition, notFound } from "../lib/errors.ts";
 import { newId } from "../lib/ids.ts";
+import { marksChanged, similarityMarks, storedMarks } from "../lib/planning.ts";
 import {
   activeRunOf,
   assistantMessageOf,
@@ -805,12 +807,14 @@ function newItemRow(planId: string, position: number, input: ItemInput, now: Dat
     title: input.title,
     brief: input.brief,
     pillar: input.pillar,
+    hook: input.hook,
     imageSlot: input.imageSlot,
     imageBrief: input.imageBrief,
     status: "planned",
     contentId: null,
     generationJobId: null,
     generationStatus: null,
+    similar: null,
     createdAt: now,
     updatedAt: now,
   };
@@ -820,7 +824,15 @@ function newItemRow(planId: string, position: number, input: ItemInput, now: Dat
 function itemFields(
   i: Pick<
     PlanItemRow,
-    "date" | "platforms" | "contentType" | "title" | "brief" | "pillar" | "imageSlot" | "imageBrief"
+    | "date"
+    | "platforms"
+    | "contentType"
+    | "title"
+    | "brief"
+    | "pillar"
+    | "hook"
+    | "imageSlot"
+    | "imageBrief"
   >,
 ) {
   return {
@@ -830,9 +842,44 @@ function itemFields(
     title: i.title,
     brief: i.brief,
     pillar: i.pillar,
+    hook: i.hook,
     imageSlot: i.imageSlot,
     imageBrief: i.imageBrief,
   };
+}
+
+/**
+ * The rows with their near-duplicate marks (N6): compared with the brand's posts, plans and
+ * rejections of the last months and with each other. Marks are advice; when they cannot be
+ * computed the rows keep the marks they had.
+ */
+async function withMarks(
+  db: Db,
+  plan: Pick<PlanRow, "id" | "brandId" | "conversationId" | "periodStart" | "periodEnd">,
+  rows: PlanItemRow[],
+): Promise<PlanItemRow[]> {
+  try {
+    const marks = await similarityMarks(db, plan, rows);
+    return rows.map((row, i) => ({ ...row, similar: storedMarks(marks[i] ?? []) }));
+  } catch (error) {
+    console.warn(`plan ${plan.id}: similarity marks failed`, error);
+    return rows;
+  }
+}
+
+/** Saves marks that changed on rows an edit did not rewrite anyway. */
+function saveChangedMarks(
+  change: Change,
+  before: readonly PlanItemRow[],
+  after: readonly PlanItemRow[],
+): void {
+  for (const row of after) {
+    const old = before.find((b) => b.id === row.id);
+    if (!old || !marksChanged(old.similar, row.similar)) continue;
+    change.add(
+      change.db.update(planItems).set({ similar: row.similar }).where(eq(planItems.id, row.id)),
+    );
+  }
 }
 
 async function requirePlanRows(db: Db, id: string) {
@@ -1433,7 +1480,11 @@ async function putPlan(
         revision: own.revision + 1,
         updatedAt: now,
       };
-      itemRows = input.items.map((item, i) => newItemRow(own.id, i, item, now));
+      itemRows = await withMarks(
+        db,
+        planRow,
+        input.items.map((item, i) => newItemRow(own.id, i, item, now)),
+      );
       change.add(
         db
           .update(contentPlans)
@@ -1489,7 +1540,11 @@ async function putPlan(
       createdAt: now,
       updatedAt: now,
     };
-    itemRows = input.items.map((item, i) => newItemRow(planRow.id, i, item, now));
+    itemRows = await withMarks(
+      db,
+      planRow,
+      input.items.map((item, i) => newItemRow(planRow.id, i, item, now)),
+    );
     change.add(db.insert(contentPlans).values(planRow));
     for (const row of itemRows) change.add(db.insert(planItems).values(row));
   }
@@ -1594,6 +1649,7 @@ async function updatePlan(
     nextItems.map((i) => i.date),
   );
   if (periodProblem) throw badRequest(periodProblem, [{ path: "items", message: periodProblem }]);
+  if (input.items) nextItems = await withMarks(db, next, nextItems);
 
   change.add(
     db
@@ -1881,7 +1937,8 @@ async function generatePlan(
       brandId: plan.brandId,
       contentId: content.id,
       title: content.title,
-      brief: content.brief,
+      // The planned opening line (N6) travels with the brief, not into the post's own brief.
+      brief: briefWithHook(content.brief, item.hook).slice(0, 20_000),
       type: content.type,
       targetPlatforms: content.targetPlatforms,
       ...(baseVersion ? { baseVersion } : {}),
@@ -2026,9 +2083,11 @@ async function addPlanItem(
     await requireActiveBrand(db, plan.brandId);
     row = { ...row, status: "accepted", contentId: draftPostFor(change, plan, row) };
   }
+  const nextItems = await withMarks(db, plan, [...items, row]);
+  row = nextItems[nextItems.length - 1] ?? row;
   change.add(db.insert(planItems).values(row));
+  saveChangedMarks(change, items, nextItems.slice(0, -1));
   const next = touchPlan(change, plan);
-  const nextItems = [...items, row];
   change.emit(plan.conversationId, {
     type: "plan.updated",
     plan: planView(next, nextItems, await generationJobs(db, nextItems)),
@@ -2058,6 +2117,7 @@ async function updatePlanItem(
     ...(input.title !== undefined ? { title: input.title } : {}),
     ...(input.brief !== undefined ? { brief: input.brief } : {}),
     ...(input.pillar !== undefined ? { pillar: input.pillar } : {}),
+    ...(input.hook !== undefined ? { hook: input.hook } : {}),
     ...(input.imageSlot !== undefined ? { imageSlot: input.imageSlot } : {}),
     ...(input.imageBrief !== undefined ? { imageBrief: input.imageBrief } : {}),
   };
@@ -2101,14 +2161,28 @@ async function updatePlanItem(
     }
   }
 
+  // A new topic, opening line or day can make (or clear) near-duplicates, of this item and of
+  // the items after it.
+  const textChanged =
+    fields.title !== undefined ||
+    fields.brief !== undefined ||
+    fields.hook !== undefined ||
+    fields.date !== undefined;
+  const edited = items.map((i) => (i.id === itemId ? nextItem : i));
+  const nextItems = textChanged ? await withMarks(db, plan, edited) : edited;
+  const marked = nextItems.find((i) => i.id === itemId) ?? nextItem;
   change.add(
     db
       .update(planItems)
-      .set({ ...fields, updatedAt: now })
+      .set({ ...fields, similar: marked.similar, updatedAt: now })
       .where(eq(planItems.id, itemId)),
   );
+  saveChangedMarks(
+    change,
+    items.filter((i) => i.id !== itemId),
+    nextItems.filter((i) => i.id !== itemId),
+  );
   const next = touchPlan(change, plan);
-  const nextItems = items.map((i) => (i.id === itemId ? nextItem : i));
   change.emit(plan.conversationId, {
     type: "plan.updated",
     plan: planView(next, nextItems, await generationJobs(db, nextItems)),
@@ -2156,14 +2230,20 @@ async function removePlanItem(
     }
   }
   change.add(db.delete(planItems).where(eq(planItems.id, itemId)));
-  // Keep positions 0..n-1.
-  const rest = items.filter((i) => i.id !== itemId).map((i, position) => ({ ...i, position }));
+  // Keep positions 0..n-1; marks pointing at the removed item go with it.
+  const rest = items
+    .filter((i) => i.id !== itemId)
+    .map((i, position) => {
+      const similar = (i.similar ?? []).filter((s) => s.planItemId !== itemId);
+      return { ...i, position, similar: similar.length > 0 ? similar : null };
+    });
   for (const i of rest) {
     const before = items.find((x) => x.id === i.id);
     if (before && before.position !== i.position) {
       change.add(db.update(planItems).set({ position: i.position }).where(eq(planItems.id, i.id)));
     }
   }
+  saveChangedMarks(change, items, rest);
   const next = touchPlan(change, plan);
   change.emit(plan.conversationId, {
     type: "plan.updated",

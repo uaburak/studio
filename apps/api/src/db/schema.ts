@@ -841,6 +841,34 @@ export const conversationAliasNames = sqliteTable(
 
 // --- content plans ---------------------------------------------------------------------
 
+/** Stored shape of `plan_items.similar` (mirrors `PlanItemSimilar` in @studio/contract). */
+export type PlanItemSimilarJson = {
+  kind: "post" | "planned" | "rejected" | "skipped" | "deleted" | "same_plan";
+  contentId: string | null;
+  planItemId: string | null;
+  title: string;
+  date: string | null;
+  field: "title" | "hook" | "topic";
+  score: number;
+};
+
+/**
+ * Per-brand planning settings (0021, N5): the sector tags whose special days the plan agent and
+ * the calendar show, and the special-day categories switched off. A brand without a row uses
+ * tags guessed from its profile and products.
+ */
+export const brandPlanningSettings = sqliteTable("brand_planning_settings", {
+  brandId: text("brand_id")
+    .primaryKey()
+    .references(() => brands.id),
+  sectorTags: text("sector_tags", { mode: "json" }).$type<string[]>().notNull().default([]),
+  disabledCategories: text("disabled_categories", { mode: "json" })
+    .$type<string[]>()
+    .notNull()
+    .default([]),
+  updatedAt: updatedAt(),
+});
+
 export const contentPlans = sqliteTable(
   "content_plans",
   {
@@ -890,6 +918,8 @@ export const planItems = sqliteTable(
     title: text("title").notNull(),
     brief: text("brief").notNull().default(""),
     pillar: text("pillar"),
+    /** Planned opening line of the post (0021, N6). */
+    hook: text("hook"),
     imageSlot: text("image_slot", { enum: ENUMS.imageSlot }).notNull().default("none"),
     imageBrief: text("image_brief"),
     status: text("status", { enum: ENUMS.planItemStatus }).notNull().default("planned"),
@@ -900,6 +930,11 @@ export const planItems = sqliteTable(
     }),
     /** Last job status pushed to the stream (change detection only). */
     generationStatus: text("generation_status"),
+    /**
+     * Near-duplicates found when the item was written (`PlanItemSimilar[]` JSON; 0021, N6);
+     * null = none / not checked.
+     */
+    similar: text("similar", { mode: "json" }).$type<PlanItemSimilarJson[]>(),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },

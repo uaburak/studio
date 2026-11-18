@@ -384,6 +384,15 @@ export function looksLikePlanning(text: string): boolean {
 
 const NUMBER_WORDS: Record<string, number> = { bir: 1, iki: 2, uc: 3, dort: 4 };
 
+const monthKey = (y: number, m: number) => `${y}-${String(m).padStart(2, "0")}`;
+
+/** The month after today's. */
+export function nextMonthPeriod(today: string): { periodStart: string; periodEnd: string } {
+  const year = Number(today.slice(0, 4));
+  const month = Number(today.slice(5, 7));
+  return monthPeriod(month === 12 ? monthKey(year + 1, 1) : monthKey(year, month + 1));
+}
+
 /**
  * The period a planning message most likely means: the months it names (the next occurrence of
  * each; "2027" moves them), "bu ay", "N hafta", otherwise the next month.
@@ -392,11 +401,17 @@ export function planningPeriodFromText(
   text: string,
   today: string,
 ): { periodStart: string; periodEnd: string } {
+  return namedPeriod(text, today) ?? nextMonthPeriod(today);
+}
+
+/** The period a message names (months, "bu ay", "N hafta"), or null when it names none. */
+export function namedPeriod(
+  text: string,
+  today: string,
+): { periodStart: string; periodEnd: string } | null {
   const n = normalizeTurkish(text);
   const year = Number(today.slice(0, 4));
   const month = Number(today.slice(5, 7));
-  const monthKey = (y: number, m: number) => `${y}-${String(m).padStart(2, "0")}`;
-  const nextMonth = month === 12 ? monthKey(year + 1, 1) : monthKey(year, month + 1);
 
   const weeks = /\b(\d|bir|iki|uc|dort) hafta/.exec(n);
   if (weeks && !monthsIn(n).length) {
@@ -408,7 +423,7 @@ export function planningPeriodFromText(
     return monthPeriod(monthKey(year, month));
 
   const named = monthsIn(n);
-  if (named.length === 0) return monthPeriod(nextMonth);
+  if (named.length === 0) return null;
   const explicitYear = /\b(20\d\d)\b/.exec(n);
   const keys = named
     .map((m) => {
