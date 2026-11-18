@@ -75,6 +75,7 @@ import {
   PostEditor,
 } from "./editor.ts";
 import { postMenu, usePostFacts } from "./post-facts.ts";
+import { ReelEditor } from "./reel-editor.tsx";
 import { defaultScheduleDate } from "./schedule.ts";
 import { ScheduleSheet } from "./schedule-sheet.tsx";
 import { SlideStage } from "./slide-stage.tsx";
@@ -631,7 +632,12 @@ export function EditorView({ editor, snapshot }: { editor: PostEditor; snapshot:
                 />
               </div>
             )}
-            {tab === "edit" && <LayerEditor snapshot={snapshot} editor={editor} />}
+            {tab === "edit" &&
+              (content.type === "reel" ? (
+                <ReelEditor snapshot={snapshot} editor={editor} />
+              ) : (
+                <LayerEditor snapshot={snapshot} editor={editor} />
+              ))}
             {tab === "versions" && <VersionsList snapshot={snapshot} editor={editor} />}
           </div>
 
@@ -718,7 +724,7 @@ export function EditorView({ editor, snapshot }: { editor: PostEditor; snapshot:
                 </Button>
               </span>
             )}
-            {tab !== "edit" && content.type !== "reel" && !locked && (
+            {tab !== "edit" && !locked && (
               <Button variant="secondary" onClick={() => setTab("edit")}>
                 Düzenle
               </Button>

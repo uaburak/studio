@@ -125,10 +125,13 @@ export function SlideStage({
             <div className="glass absolute top-3 left-1/2 flex h-8 -translate-x-1/2 items-center gap-2 rounded-full pr-1.5 pl-3 text-body text-fg">
               <Spinner size={13} />
               <span className="whitespace-nowrap">{activityMessage(activity)}</span>
-              {activity.kind === "revising" && snapshot.revisionJobId ? (
+              {(activity.kind === "revising" || activity.kind === "rendering") &&
+              snapshot.revisionJobId ? (
                 <IconButton
                   icon={<IconClose size={12} />}
-                  label="AI düzenlemesini durdur"
+                  label={
+                    activity.kind === "revising" ? "AI düzenlemesini durdur" : "Videoyu durdur"
+                  }
                   size={24}
                   onClick={() => void editor.cancelRevision()}
                 />
