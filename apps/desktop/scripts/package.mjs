@@ -9,11 +9,11 @@
 import { spawnSync } from "node:child_process";
 import {
   cpSync,
+  lstatSync,
   mkdirSync,
   readdirSync,
   readFileSync,
   rmSync,
-  statSync,
   writeFileSync,
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -38,7 +38,8 @@ function run(command, args, env = {}) {
 }
 
 function size(path) {
-  const s = statSync(path);
+  const s = lstatSync(path);
+  if (s.isSymbolicLink()) return 0;
   if (!s.isDirectory()) return s.size;
   let total = 0;
   for (const name of readdirSync(path)) total += size(join(path, name));
