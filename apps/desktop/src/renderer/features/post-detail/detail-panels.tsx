@@ -310,6 +310,13 @@ function ScheduleRow({
           {display.detail && (
             <span className="block truncate text-footnote text-fg-2">{display.detail}</span>
           )}
+          {schedule.warnings?.length ? (
+            <span className="block truncate text-footnote text-warning">
+              {schedule.warnings.length === 1
+                ? schedule.warnings[0]?.message
+                : `${schedule.warnings.length} uyarı`}
+            </span>
+          ) : null}
         </span>
         <TagPill tone={display.tone}>{display.label}</TagPill>
       </button>
@@ -322,6 +329,11 @@ function ScheduleRow({
               </Button>
             </span>
           )}
+          {(schedule.warnings ?? []).map((w) => (
+            <span key={w.code} className="selectable text-footnote text-warning">
+              {w.message}
+            </span>
+          ))}
           {schedule.permalink && (
             <a
               href={schedule.permalink}

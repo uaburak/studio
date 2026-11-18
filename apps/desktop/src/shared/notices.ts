@@ -17,6 +17,9 @@ export const JOB_LABELS: Record<string, string> = {
   "chat.turn": "Sohbet yanıtı",
   "demo.echo": "Deneme işi",
   "media.analyze": "Görsel etiketleme",
+  "insights.sync": "İstatistik eşitleme",
+  "comments.sync": "Yorum eşitleme",
+  "comments.suggest": "Yanıt önerisi",
 };
 
 export interface JobLike {
@@ -82,9 +85,43 @@ export function noticeRoute(job: JobLike): string | undefined {
       return job.brandId ? `brand:${job.brandId}/profile` : undefined;
     case "brand.skill_draft":
       return job.brandId ? `brand:${job.brandId}/kit` : undefined;
+    case "comments.sync":
+    case "comments.suggest":
+      return "comments";
+    case "insights.sync":
+      return "performance";
     default:
       return undefined;
   }
+}
+
+/**
+ * New comments read by a finished `comments.sync` (N16): one comment is quoted, several are
+ * counted; a click opens Yorumlar. Null when nothing new came (or the job did not succeed).
+ * Same text as the contract's `newCommentsNotice` (the main process reads jobs loosely).
+ */
+export function commentsNotice(job: JobLike): NoticeInput | null {
+  if (job.type !== "comments.sync" || job.status !== "succeeded") return null;
+  const out = (job.output ?? {}) as { newComments?: unknown; sample?: unknown };
+  const count = typeof out.newComments === "number" ? out.newComments : 0;
+  if (count <= 0) return null;
+  const sample = out.sample as { author?: unknown; text?: unknown } | null | undefined;
+  if (count === 1 && sample && typeof sample.text === "string") {
+    const who = typeof sample.author === "string" && sample.author ? `${sample.author}: ` : "";
+    const text = sample.text.length > 120 ? `${sample.text.slice(0, 117)}…` : sample.text;
+    return {
+      id: `comments-${job.id}`,
+      title: "Yeni yorum",
+      body: `${who}${text}`,
+      route: "comments",
+    };
+  }
+  return {
+    id: `comments-${job.id}`,
+    title: `${count} yeni yorum`,
+    body: "Yorumlar sayfasında yanıtlayabilirsiniz.",
+    route: "comments",
+  };
 }
 
 /**
@@ -92,6 +129,7 @@ export function noticeRoute(job: JobLike): string | undefined {
  * conversation's title for chat replies, else `jobTitle(job)`.
  */
 export function finishedNotice(job: JobLike, title: string): NoticeInput | null {
+  if (job.type === "comments.sync") return commentsNotice(job);
   const route = noticeRoute(job);
   if (job.type === "chat.turn") {
     if (job.status !== "succeeded") return null;
