@@ -21,6 +21,8 @@ export const PROMPT_BLOCK_TAGS = [
   "yeni_mesaj",
   "beceriler",
   "veri",
+  "ozel_gunler",
+  "gecmis_ozeti",
   // design engine
   "design_contract",
   "brand_css",
