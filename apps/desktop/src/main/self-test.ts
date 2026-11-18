@@ -148,7 +148,11 @@ export async function runSelfTest(ctx: SelfTestContext): Promise<number> {
   const { host } = created;
   const layout = created.layout();
   const report: Record<string, unknown> = {
-    app: { version: app.getVersion(), packaged: app.isPackaged, electron: process.versions.electron },
+    app: {
+      version: app.getVersion(),
+      packaged: app.isPackaged,
+      electron: process.versions.electron,
+    },
     mode: created.mode,
     layout: layout ? { mode: layout.mode, root: layout.root } : null,
     stateDir: ctx.stateDir,
@@ -193,13 +197,10 @@ export async function runSelfTest(ctx: SelfTestContext): Promise<number> {
     executor: null,
   };
   const pids: number[] = [];
-  const watchdog = setTimeout(
-    () => {
-      console.log("✗ self-test: 8 dakikada bitmedi");
-      app.exit(1);
-    },
-    8 * 60_000,
-  );
+  const watchdog = setTimeout(() => {
+    console.log("✗ self-test: 8 dakikada bitmedi");
+    app.exit(1);
+  }, 8 * 60_000);
 
   try {
     const hostUp = await steps.run("sunucu başlar (göçler + API)", async () => {
@@ -290,9 +291,7 @@ export async function runSelfTest(ctx: SelfTestContext): Promise<number> {
           workerId: "studio-canvas",
           version: app.getVersion(),
           target: () =>
-            host.apiPort === null
-              ? null
-              : { url: `ws://127.0.0.1:${host.apiPort}/api/hub`, token },
+            host.apiPort === null ? null : { url: `ws://127.0.0.1:${host.apiPort}/api/hub`, token },
           socket: nodeHubSocket,
           runner,
           log: (message) => mainLog.write("warn", message),

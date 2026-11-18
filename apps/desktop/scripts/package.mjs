@@ -7,7 +7,15 @@
 //   pnpm --filter @studio/desktop package            (root: pnpm package)
 //   node scripts/package.mjs [--skip-build]          (reuse out/main, out/preload, out/renderer)
 import { spawnSync } from "node:child_process";
-import { cpSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+  cpSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -85,6 +93,8 @@ const mb = (bytes) => `${(bytes / 1024 / 1024).toFixed(0)} MB`;
 console.log(`[package] ${app} (${mb(size(app))})`);
 for (const name of readdirSync(join(desktop, "release"))) {
   if (/\.(zip|dmg)$/.test(name)) {
-    console.log(`[package] ${join(desktop, "release", name)} (${mb(size(join(desktop, "release", name)))})`);
+    console.log(
+      `[package] ${join(desktop, "release", name)} (${mb(size(join(desktop, "release", name)))})`,
+    );
   }
 }

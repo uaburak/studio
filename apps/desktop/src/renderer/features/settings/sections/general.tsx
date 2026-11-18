@@ -4,6 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import type { Appearance } from "../../../../shared/ipc.ts";
 import { Button, SegmentedControl, Switch, TextField } from "../../../components/ui/controls.tsx";
+import { bridge } from "../../../lib/bridge.ts";
 import { useJobs, useSettings } from "../../../state/studio.tsx";
 import { systemBridge } from "../../accounts/use-accounts.ts";
 import { openOnboarding } from "../../onboarding/store.ts";
@@ -108,15 +109,25 @@ export function AboutSection() {
     queryFn: () => system?.info() ?? Promise.resolve(null),
     staleTime: Number.POSITIVE_INFINITY,
   });
+  const packaging = bridge().packaging ?? null;
+  const runtime = useQuery({
+    queryKey: ["runtime-info", "about"],
+    queryFn: () => packaging?.runtime() ?? Promise.resolve(null),
+    enabled: packaging !== null,
+    staleTime: Number.POSITIVE_INFINITY,
+  });
   const [shortcuts, setShortcuts] = useState(false);
   const version = info.data
     ? `${info.data.version} · Electron ${info.data.electron.split(".")[0]}`
     : system
       ? "—"
       : "Tarayıcı önizlemesi";
+  const build = runtime.data
+    ? `${runtime.data.mode === "packaged" ? "Studio.app" : "Geliştirme kopyası (depodan)"} · ${runtime.data.updates.note}`
+    : undefined;
   return (
     <Pane title="Hakkında">
-      <Row item={ITEMS.version}>
+      <Row item={ITEMS.version} detail={build}>
         <span className="selectable text-body text-fg-2 tabular-nums">{version}</span>
       </Row>
       <Row

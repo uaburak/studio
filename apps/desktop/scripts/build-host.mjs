@@ -90,22 +90,18 @@ function buildApi() {
   const tmp = join(out, ".api-build");
   rmSync(tmp, { recursive: true, force: true });
   const wrangler = join(apiDir, "node_modules", "wrangler", "bin", "wrangler.js");
-  const result = spawnSync(
-    process.execPath,
-    [wrangler, "deploy", "--dry-run", "--outdir", tmp],
-    {
-      cwd: apiDir,
-      stdio: ["ignore", "pipe", "pipe"],
-      encoding: "utf8",
-      env: {
-        ...process.env,
-        CI: "1",
-        NO_COLOR: "1",
-        WRANGLER_SEND_METRICS: "false",
-        WRANGLER_HIDE_BANNER: "true",
-      },
+  const result = spawnSync(process.execPath, [wrangler, "deploy", "--dry-run", "--outdir", tmp], {
+    cwd: apiDir,
+    stdio: ["ignore", "pipe", "pipe"],
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      CI: "1",
+      NO_COLOR: "1",
+      WRANGLER_SEND_METRICS: "false",
+      WRANGLER_HIDE_BANNER: "true",
     },
-  );
+  });
   if (result.status !== 0) {
     process.stderr.write(result.stdout ?? "");
     process.stderr.write(result.stderr ?? "");
@@ -124,7 +120,9 @@ function buildApi() {
   for (const f of sql) cpSync(join(apiDir, "migrations", f), join(migrations, f));
 
   // The repo's wrangler.jsonc, pointed at the bundle (no_bundle: wrangler runs it as built).
-  const config = JSON.parse(stripJsonComments(readFileSync(join(apiDir, "wrangler.jsonc"), "utf8")));
+  const config = JSON.parse(
+    stripJsonComments(readFileSync(join(apiDir, "wrangler.jsonc"), "utf8")),
+  );
   delete config.$schema;
   config.main = "index.js";
   config.no_bundle = true;
@@ -221,7 +219,8 @@ function collectModules(roots) {
       dest = join(fromDest, "node_modules", name);
     }
     if (placed.has(dest)) {
-      if (placed.get(dest) !== real) throw new Error(`conflicting placement for ${name} at ${dest}`);
+      if (placed.get(dest) !== real)
+        throw new Error(`conflicting placement for ${name} at ${dest}`);
       return;
     }
     placed.set(dest, real);
@@ -327,7 +326,9 @@ async function main() {
   };
   writeFileSync(join(out, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`);
   const mb = (folderSize(out) / 1024 / 1024).toFixed(1);
-  log(`done in ${((Date.now() - started) / 1000).toFixed(1)} s: ${out} (${mb} MB, ${modules.length} packages)`);
+  log(
+    `done in ${((Date.now() - started) / 1000).toFixed(1)} s: ${out} (${mb} MB, ${modules.length} packages)`,
+  );
 }
 
 main().catch((error) => {

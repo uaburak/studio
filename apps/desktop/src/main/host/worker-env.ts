@@ -39,10 +39,18 @@ const PROVIDER_KEYS = new Set([
 /** Names Settings offers (the rest only come from a dev `.env`). */
 export const EDITABLE_WORKER_ENV = [
   { name: "GEMINI_API_KEY", label: "Gemini API anahtarı (kasa yoksa)", secret: true },
-  { name: "ELEVENLABS_API_KEY", label: "ElevenLabs API anahtarı (Reels seslendirme)", secret: true },
+  {
+    name: "ELEVENLABS_API_KEY",
+    label: "ElevenLabs API anahtarı (Reels seslendirme)",
+    secret: true,
+  },
   { name: "STUDIO_ELEVENLABS_VOICE_ID", label: "ElevenLabs ses kimliği", secret: false },
   { name: "STUDIO_CLOUD_PUBLISHER_URL", label: "Bulut yayıncı adresi (eski yol)", secret: false },
-  { name: "STUDIO_CLOUD_PUBLISHER_TOKEN", label: "Bulut yayıncı anahtarı (eski yol)", secret: true },
+  {
+    name: "STUDIO_CLOUD_PUBLISHER_TOKEN",
+    label: "Bulut yayıncı anahtarı (eski yol)",
+    secret: true,
+  },
 ] as const;
 
 /** Whether a variable may be handed to the worker from `.env` or Settings. */
@@ -110,7 +118,11 @@ export class WorkerEnvStore {
           typeof v.value === "string" &&
           typeof v.sealed === "boolean"
         ) {
-          values[name] = { value: v.value, sealed: v.sealed, source: v.source === "settings" ? "settings" : "env-file" };
+          values[name] = {
+            value: v.value,
+            sealed: v.sealed,
+            source: v.source === "settings" ? "settings" : "env-file",
+          };
         }
       }
       return { version: 1, values, ...(raw.imported ? { imported: raw.imported } : {}) };

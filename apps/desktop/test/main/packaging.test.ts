@@ -215,10 +215,19 @@ describe("host.lock", () => {
     const dir = tmp("studio-lock-");
     writeFileSync(join(dir, "host.lock"), JSON.stringify({ pid: 10, startedAt: 1000 }));
     // pid 10 now belongs to a process started much later.
-    const lock = new HostLock(dir, { pid: 11, mode: "dev", version: "1" }, deps({ 10: 99_000, 11: 1 }));
+    const lock = new HostLock(
+      dir,
+      { pid: 11, mode: "dev", version: "1" },
+      deps({ 10: 99_000, 11: 1 }),
+    );
     expect(lock.acquire()).toEqual({ kind: "acquired" });
     expect(JSON.parse(readFileSync(join(dir, "host.lock"), "utf8")).pid).toBe(11);
-    expect(holderAlive({ pid: 10, startedAt: 1000, mode: "", version: "", host: "", acquiredAt: "" }, deps({}))).toBe(false);
+    expect(
+      holderAlive(
+        { pid: 10, startedAt: 1000, mode: "", version: "", host: "", acquiredAt: "" },
+        deps({}),
+      ),
+    ).toBe(false);
   });
 
   it("a half-written lock is waited for, then taken over when old", () => {
@@ -254,7 +263,14 @@ describe("worker keys from the app's secure settings", () => {
     for (const name of ["GEMINI_API_KEY", "ELEVENLABS_API_KEY", "STUDIO_GEMINI_MODEL_PRO"]) {
       expect(allowedWorkerEnvName(name)).toBe(true);
     }
-    for (const name of ["STUDIO_HUB_URL", "STUDIO_WORKER_TOKEN", "STUDIO_API_URL", "PATH", "ANTHROPIC_API_KEY", "HOME"]) {
+    for (const name of [
+      "STUDIO_HUB_URL",
+      "STUDIO_WORKER_TOKEN",
+      "STUDIO_API_URL",
+      "PATH",
+      "ANTHROPIC_API_KEY",
+      "HOME",
+    ]) {
       expect(allowedWorkerEnvName(name)).toBe(false);
     }
   });
@@ -293,7 +309,10 @@ describe("worker keys from the app's secure settings", () => {
     writeFileSync(env, "GEMINI_API_KEY=gemini-2\n");
     utimesSync(env, new Date(), new Date(Date.now() + 5_000));
     expect(store.syncFromDotEnv(env)).toEqual(["GEMINI_API_KEY"]);
-    expect(store.env()).toEqual({ GEMINI_API_KEY: "gemini-2", ELEVENLABS_API_KEY: "set-in-settings" });
+    expect(store.env()).toEqual({
+      GEMINI_API_KEY: "gemini-2",
+      ELEVENLABS_API_KEY: "set-in-settings",
+    });
     expect(store.summary().imported).toMatchObject({ from: env, count: 1 });
     expect(store.syncFromDotEnv(join(dir, "missing.env"))).toBeNull();
   });
@@ -324,14 +343,20 @@ describe("tools Studio does not carry", () => {
     const layout = devLayout(repo);
     const state = tmp("studio-state-");
     const home = tmp("studio-home-");
-    expect(chromiumRevision(join(repo, "apps", "worker", "node_modules", "playwright-core"))).toBe("1255");
+    expect(chromiumRevision(join(repo, "apps", "worker", "node_modules", "playwright-core"))).toBe(
+      "1255",
+    );
     const missing = findChromium(layout, state, home);
     expect(missing).toMatchObject({ state: "missing", browsersPath: join(state, "browsers") });
     expect(missing.message).toContain("Chromium'u indir");
     const cache = join(home, "Library", "Caches", "ms-playwright", "chromium_headless_shell-1255");
     mkdirSync(cache, { recursive: true });
     writeFileSync(join(cache, "INSTALLATION_COMPLETE"), "");
-    expect(findChromium(layout, state, home)).toMatchObject({ state: "ready", location: "cache", browsersPath: null });
+    expect(findChromium(layout, state, home)).toMatchObject({
+      state: "ready",
+      location: "cache",
+      browsersPath: null,
+    });
     const own = join(state, "browsers", "chromium_headless_shell-1255");
     mkdirSync(own, { recursive: true });
     writeFileSync(join(own, "INSTALLATION_COMPLETE"), "");
@@ -344,10 +369,18 @@ describe("tools Studio does not carry", () => {
   });
 
   it("says what is missing and the one-line install", () => {
-    const tools = detectTools("/usr/bin", (tool) => (tool === "claude" ? "/x/claude" : null), "/nohome");
+    const tools = detectTools(
+      "/usr/bin",
+      (tool) => (tool === "claude" ? "/x/claude" : null),
+      "/nohome",
+    );
     const ffmpeg = tools.find((t) => t.id === "ffmpeg");
     expect(ffmpeg).toMatchObject({ state: "missing", install: "brew install ffmpeg" });
-    expect(tools.find((t) => t.id === "claude")).toMatchObject({ state: "ok", path: "/x/claude", install: null });
+    expect(tools.find((t) => t.id === "claude")).toMatchObject({
+      state: "ok",
+      path: "/x/claude",
+      install: null,
+    });
   });
 });
 
@@ -355,7 +388,13 @@ describe("keeping the Mac awake (P2)", () => {
   function keeper(busy: { jobs: number; nextScheduleAt: number | null } | null, enabled = true) {
     const start = vi.fn(() => 7);
     const stop = vi.fn();
-    const k = new KeepAwake({ busy: async () => busy, enabled: () => enabled, now: () => 0, start, stop });
+    const k = new KeepAwake({
+      busy: async () => busy,
+      enabled: () => enabled,
+      now: () => 0,
+      start,
+      stop,
+    });
     return { k, start, stop };
   }
 
@@ -363,7 +402,13 @@ describe("keeping the Mac awake (P2)", () => {
     const busy = { jobs: 2, nextScheduleAt: null as number | null };
     const start = vi.fn(() => 7);
     const stop = vi.fn();
-    const k = new KeepAwake({ busy: async () => busy, enabled: () => true, now: () => 0, start, stop });
+    const k = new KeepAwake({
+      busy: async () => busy,
+      enabled: () => true,
+      now: () => 0,
+      start,
+      stop,
+    });
     await k.check();
     expect(k.active).toBe(true);
     expect(k.reason).toContain("2 iş");

@@ -82,7 +82,12 @@ export async function hostComponents(
   out.push(
     input.dbOk
       ? component("db", "ok", "Veritabanı", "D1 veritabanı yanıt veriyor.")
-      : component("db", "fail", "Veritabanı", "D1 veritabanı yanıt vermiyor. Sunucuyu yeniden başlat."),
+      : component(
+          "db",
+          "fail",
+          "Veritabanı",
+          "D1 veritabanı yanıt vermiyor. Sunucuyu yeniden başlat.",
+        ),
   );
 
   try {

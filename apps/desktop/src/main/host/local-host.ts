@@ -497,9 +497,7 @@ export class LocalHost {
     const instance = secrets.loadOrCreateInstanceId(stateDir);
     this.instance = instance;
     this.macName = await deps.computerName();
-    const layout = deps.layout
-      ? deps.layout(config)
-      : devLayout(env.expandTilde(config.repoPath));
+    const layout = deps.layout ? deps.layout(config) : devLayout(env.expandTilde(config.repoPath));
     const repo = layout?.root ?? "";
     const ownerSecret = deps.ownerSecret();
     this.redactor.add(ownerSecret);

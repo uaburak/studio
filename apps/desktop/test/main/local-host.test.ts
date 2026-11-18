@@ -4,7 +4,6 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AdvertiseInput, Advertiser } from "../../src/main/host/bonjour.ts";
 import { electronNodeRuntime, packagedLayout } from "../../src/main/host/layout.ts";
-import { HostLock, type LockDeps } from "../../src/main/host/lock.ts";
 import {
   buildSpecs,
   FOREIGN_HOST_MESSAGE,
@@ -13,6 +12,7 @@ import {
   LocalHost,
   type MacRoutesInput,
 } from "../../src/main/host/local-host.ts";
+import { HostLock, type LockDeps } from "../../src/main/host/lock.ts";
 import type { ProcessLauncher, ProcessSpec, RunningProcess } from "../../src/main/host/process.ts";
 import type { Cipher } from "../../src/main/host/secrets.ts";
 
@@ -702,7 +702,11 @@ describe("LocalHost start and quit (A11)", () => {
     expect(written.d1_databases[0].migrations_dir).toBe(join(hostDir, "api", "migrations"));
     // The worker: the bundle, no repo `.env`, skills from the app, keys from the app's store;
     // the host's own variables win over the store's.
-    expect(byName.worker?.args).toEqual([shim, "--enable-source-maps", join(hostDir, "worker", "main.js")]);
+    expect(byName.worker?.args).toEqual([
+      shim,
+      "--enable-source-maps",
+      join(hostDir, "worker", "main.js"),
+    ]);
     expect(byName.worker?.args.join(" ")).not.toContain(".env");
     expect(byName.worker?.env.STUDIO_SKILLS_DIR).toBe(join(hostDir, "agent", "skills"));
     expect(byName.worker?.env.GEMINI_API_KEY).toBe("gemini-key-0123456789");

@@ -5,6 +5,7 @@
 import { join } from "node:path";
 import type { Advertiser } from "./bonjour.ts";
 import { DnsSdAdvertiser } from "./bonjour.ts";
+import * as env from "./environment.ts";
 import * as guards from "./guards.ts";
 import {
   type ChildLayout,
@@ -19,7 +20,6 @@ import { type ProcessLauncher, SpawnLauncher } from "./process.ts";
 import type { Cipher } from "./secrets.ts";
 import { chromiumEnv } from "./tools.ts";
 import { WorkerEnvStore } from "./worker-env.ts";
-import * as env from "./environment.ts";
 
 export interface CreateHostInput {
   stateDir: string;
@@ -97,7 +97,8 @@ export function createHost(input: CreateHostInput): CreatedHost {
           // The repo `.env` → the app's sealed store, when it changed (never logged).
           try {
             const names = workerEnv.syncFromDotEnv(join(l.repo, ".env"));
-            if (names) input.log?.(`.env içe aktarıldı: ${names.length} değişken (${names.join(", ")})`);
+            if (names)
+              input.log?.(`.env içe aktarıldı: ${names.length} değişken (${names.join(", ")})`);
           } catch (error) {
             input.log?.(`.env içe aktarılamadı: ${(error as Error).message}`);
           }

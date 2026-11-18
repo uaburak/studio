@@ -120,7 +120,11 @@ export function runtimeApiConfig(
 ): Record<string, unknown> {
   const apiDir = join(hostDir, "api");
   const abs = (value: unknown, fallback: string) =>
-    typeof value === "string" && value ? (isAbsolute(value) ? value : resolve(apiDir, value)) : fallback;
+    typeof value === "string" && value
+      ? isAbsolute(value)
+        ? value
+        : resolve(apiDir, value)
+      : fallback;
   const config: Record<string, unknown> = { ...template };
   config.main = abs(template.main, join(apiDir, "index.js"));
   config.no_bundle = true;

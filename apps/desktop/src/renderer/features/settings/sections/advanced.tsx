@@ -11,6 +11,7 @@ import { systemBridge } from "../../accounts/use-accounts.ts";
 import { ITEMS } from "../catalog.ts";
 import { FormFooter, Pane, Row, Subheader, useConfirm } from "../parts.tsx";
 import { hostStatusText } from "../status-text.ts";
+import { SystemRows } from "./advanced-system.tsx";
 
 export const DEFAULT_REMOTE_HOSTNAME = "social.burakkoc.net";
 
@@ -146,6 +147,7 @@ export function AdvancedSection() {
               Yeniden başlat
             </Button>
           </Row>
+          <SystemRows />
           <Row
             item={ITEMS.lan}
             detail={

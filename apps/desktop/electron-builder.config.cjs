@@ -49,6 +49,7 @@ module.exports = {
   // must be real files. Copied from `out` with a filter: electron-builder always skips a
   // `node_modules` at the root of a copied folder, but not one below it (host/node_modules).
   extraResources: [{ from: "out", to: ".", filter: ["host/**/*"] }],
+  // biome-ignore lint/suspicious/noTemplateCurlyInString: electron-builder's own macros.
   artifactName: "Studio-${version}-${arch}.${ext}",
   mac: {
     target: targets,

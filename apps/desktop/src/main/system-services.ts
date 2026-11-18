@@ -125,7 +125,8 @@ export class KeepAwake {
     let reason: string | null = null;
     if (busy && busy.jobs > 0) reason = `${busy.jobs} iş sürüyor ya da bekliyor`;
     else if (busy?.nextScheduleAt !== null && busy?.nextScheduleAt !== undefined) {
-      if (busy.nextScheduleAt - now <= 60 * 60_000) reason = "bir saat içinde zamanlanmış yayın var";
+      if (busy.nextScheduleAt - now <= 60 * 60_000)
+        reason = "bir saat içinde zamanlanmış yayın var";
     }
     if (reason) this.hold(reason);
     else this.release();
@@ -301,6 +302,9 @@ function startUpdates(log: SystemServicesInput["log"]): void {
       return autoUpdater.checkForUpdatesAndNotify();
     })
     .catch((error: unknown) =>
-      log("warn", `güncelleme denetlenemedi: ${error instanceof Error ? error.message : String(error)}`),
+      log(
+        "warn",
+        `güncelleme denetlenemedi: ${error instanceof Error ? error.message : String(error)}`,
+      ),
     );
 }
