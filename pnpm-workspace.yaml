@@ -1,7 +1,6 @@
 # Workspace packages. spikes/ is intentionally NOT included: those are
 # independent throwaway projects with their own installs.
 packages:
-  - apps/web
   - apps/desktop
   - apps/api
   - apps/worker

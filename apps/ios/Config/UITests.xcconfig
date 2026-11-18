@@ -1,7 +1,0 @@
-// StudioUITests: launches Studio.app against in-app stub data.
-
-PRODUCT_NAME = $(TARGET_NAME)
-PRODUCT_BUNDLE_IDENTIFIER = net.burakkoc.studio.uitests
-GENERATE_INFOPLIST_FILE = YES
-TEST_TARGET_NAME = Studio
-LD_RUNPATH_SEARCH_PATHS = $(inherited) @executable_path/Frameworks @loader_path/Frameworks

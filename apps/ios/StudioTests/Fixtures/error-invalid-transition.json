@@ -1,6 +1,0 @@
-{
-  "error": {
-    "code": "invalid_transition",
-    "message": "job 01a1e3d2-9498-7000-af9e-82dc3731de30 is already cancelled"
-  }
-}

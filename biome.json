@@ -17,7 +17,6 @@
       "!**/worker-configuration.d.ts",
       "!**/migrations/meta",
       "!apps/apple",
-      "!apps/ios",
       "!agent/skills",
       "!apps/desktop/src/renderer/vendor"
     ]
