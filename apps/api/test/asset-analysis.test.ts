@@ -30,7 +30,7 @@ async function worker<T = unknown>(method: string, path: string, body?: unknown)
   const parsed = res.headers.get("content-type")?.includes("application/json")
     ? JSON.parse(text)
     : text;
-  return { status: res.status, body: parsed as T };
+  return { status: res.status, body: parsed as T, headers: res.headers };
 }
 
 /** A unit vector of `count` Float32 values pointing mostly along `axis`, base64 little-endian. */
