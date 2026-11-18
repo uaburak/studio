@@ -2,7 +2,7 @@
 // language, connected platforms, profile and status — with "Etkin | Arşiv", search and
 // "+ Yeni marka". A row opens the brand's profile; back comes here again.
 import type { Brand, SocialAccount } from "@studio/contract";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   Button,
   cn,
@@ -17,6 +17,7 @@ import { PageHeader } from "../pane-ui.tsx";
 import { cardProfile, useBrandKit, useBrandProfiles } from "./brand-data.ts";
 import { brandCard, languageLabel, platformsSummary } from "./brand-model.ts";
 import { BrandMark, NewBrandSheet, PlatformIcons } from "./brand-views.tsx";
+import { useNewBrandRequest } from "./new-brand-request.ts";
 
 type Filter = "active" | "archived";
 
@@ -41,6 +42,13 @@ export default function BrandsPage() {
   const [filter, setFilter] = useState<Filter>("active");
   const [query, setQuery] = useState("");
   const [creating, setCreating] = useState(false);
+  // Git → Yeni marka… (⇧⌘N).
+  const newBrandRequested = useNewBrandRequest((s) => s.pending);
+  useEffect(() => {
+    if (!newBrandRequested) return;
+    setCreating(true);
+    useNewBrandRequest.setState({ pending: false });
+  }, [newBrandRequested]);
   const all = brands.data ?? [];
   const shown = useMemo(() => brandsShown(all, filter, query), [all, filter, query]);
   const count = (status: Filter) => all.filter((b) => b.status === status).length;

@@ -173,42 +173,5 @@ export function numbered(steps: readonly string[]): string {
   return steps.map((s, i) => `${i + 1}. ${s}`).join("\n");
 }
 
-export interface TokenNotice {
-  id: string;
-  title: string;
-  body: string;
-}
-
-/**
- * macOS notices for accounts whose token is invalid or runs out within 7 days (StudioKit's
- * NoticePlanner.tokenNotices): one per account, state and day.
- */
-export function tokenNotices(accounts: SocialAccount[], now: Date = new Date()): TokenNotice[] {
-  const day = Math.floor(now.getTime() / 86_400_000);
-  const notices: TokenNotice[] = [];
-  for (const account of accounts) {
-    if (account.status === "disabled" || account.hasToken === false) continue;
-    const name = `${platformName(account.platform)} · ${account.handle}`;
-    if (account.status === "needs_reauth" || account.tokenHealth === "invalid") {
-      notices.push({
-        id: `token:${account.id}:invalid:${day}`,
-        title: "Hesap yeniden bağlanmalı",
-        body: `${name}: erişim anahtarı geçersiz. Ayarlar → Hesaplar'dan yeniden bağlayın.`,
-      });
-      continue;
-    }
-    const expires = account.tokenExpiresAt ? Date.parse(account.tokenExpiresAt) : null;
-    const soon =
-      account.tokenHealth === "expiring_soon" ||
-      (expires !== null && expires - now.getTime() < 7 * 86_400_000);
-    if (!soon) continue;
-    const left =
-      expires !== null ? Math.max(0, Math.ceil((expires - now.getTime()) / 86_400_000)) : null;
-    notices.push({
-      id: `token:${account.id}:expiring:${day}`,
-      title: "Hesap bağlantısı yakında doluyor",
-      body: `${name}: ${left !== null ? `${left} gün içinde` : "yakında"} yeniden bağlanmalı.`,
-    });
-  }
-  return notices;
-}
+// macOS notices for expiring tokens are posted by the main process (shared/token-health.ts).
+export { type TokenNotice, tokenNotices } from "../../../shared/token-health.ts";

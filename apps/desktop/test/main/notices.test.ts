@@ -171,8 +171,9 @@ describe("ActivityNotices (main-process notifications)", () => {
     const w = watcher();
     w.notices.start();
     w.sockets.last("/jobs/").events.onClose();
-    expect(w.timers).toHaveLength(1);
-    w.timers[0]?.();
+    // timers[0] is the token check's; timers[1] the reconnect.
+    expect(w.timers).toHaveLength(2);
+    w.timers[1]?.();
     expect(w.sockets.opened.filter((s) => s.url.includes("/jobs/"))).toHaveLength(2);
     w.setTarget({ port: 9000, ownerSecret: "own" });
     w.notices.refresh();
@@ -180,6 +181,119 @@ describe("ActivityNotices (main-process notifications)", () => {
     w.setTarget(null);
     w.notices.refresh();
     expect(w.sockets.closed).toContain("ws://127.0.0.1:9000/api/jobs/stream");
+  });
+
+  it("asks about Claude's limit in Sor mode once per window, also with the window in front", () => {
+    const w = watcher({ focused: true });
+    w.notices.start();
+    const limit = (over: Record<string, unknown>) => ({
+      claude: {
+        limit: {
+          resetsAt: "2026-11-18T14:30:00.000Z",
+          mode: "ask",
+          decision: null,
+          waiting: 3,
+          geminiReady: true,
+          ...over,
+        },
+      },
+    });
+    w.sockets.push("/jobs/", { type: "jobs.snapshot", jobs: [], presence: limit({}) });
+    w.sockets.push("/jobs/", { type: "presence", presence: limit({ waiting: 4 }) });
+    // Answered, another mode or nothing waiting: no notice.
+    w.sockets.push("/jobs/", { type: "presence", presence: limit({ decision: "wait" }) });
+    w.sockets.push("/jobs/", { type: "presence", presence: limit({ mode: "gemini" }) });
+    w.sockets.push("/jobs/", { type: "presence", presence: limit({ waiting: 0 }) });
+    w.sockets.push("/jobs/", { type: "presence", presence: { claude: {} } });
+    expect(w.posted.map((n) => n.id)).toEqual([
+      "claude-limit:2026-11-18T14:30:00.000Z",
+      "claude-limit:2026-11-18T14:30:00.000Z",
+    ]);
+    expect(w.posted[0]).toMatchObject({
+      title: "Claude sınırı doldu",
+      body: "3 iş cevabını bekliyor: Gemini ile devam et ya da sınırı bekle (Ayarlar → Yapay zekâ).",
+      route: "settings:ai",
+    });
+  });
+
+  it("warns about accounts to reconnect from the main process, on connect and every few hours", async () => {
+    const sockets = new FakeSockets();
+    const posted: NoticeInput[] = [];
+    const timers: (() => void)[] = [];
+    const now = new Date("2026-11-18T09:00:00.000Z");
+    const getJson = vi.fn(async (_t: unknown, path: string) =>
+      path.startsWith("/api/social-accounts")
+        ? {
+            items: [
+              {
+                id: "a1",
+                platform: "instagram",
+                handle: "@mtmagro",
+                status: "connected",
+                hasToken: true,
+                tokenHealth: "valid",
+                tokenExpiresAt: "2026-11-21T09:00:00.000Z",
+              },
+              {
+                id: "a2",
+                platform: "linkedin",
+                handle: "Burak",
+                status: "needs_reauth",
+                hasToken: true,
+              },
+              {
+                id: "a3",
+                platform: "facebook",
+                handle: "MTM",
+                status: "connected",
+                hasToken: true,
+              },
+            ],
+          }
+        : {},
+    );
+    const notices = new ActivityNotices({
+      target: () => ({ port: 8790, ownerSecret: "own" }),
+      socket: sockets.factory,
+      getJson,
+      post: (n) => posted.push(n),
+      windowFocused: () => true,
+      now: () => now,
+      setTimer: (fn) => {
+        timers.push(fn);
+        return timers.length;
+      },
+      clearTimer: () => undefined,
+    });
+    notices.start();
+    sockets.last("/jobs/").events.onOpen();
+    await flush();
+    expect(getJson).toHaveBeenCalledWith(
+      { port: 8790, ownerSecret: "own" },
+      "/api/social-accounts?limit=100",
+    );
+    expect(posted).toEqual([
+      {
+        id: "token:a1:expiring:20775",
+        title: "Hesap bağlantısı yakında doluyor",
+        body: "Instagram · @mtmagro: 3 gün içinde yeniden bağlanmalı.",
+        route: "settings:accounts",
+      },
+      {
+        id: "token:a2:invalid:20775",
+        title: "Hesap yeniden bağlanmalı",
+        body: "LinkedIn · Burak: erişim anahtarı geçersiz. Ayarlar → Hesaplar'dan yeniden bağlayın.",
+        route: "settings:accounts",
+      },
+    ]);
+    // A reconnect within the hour does not ask again; the timer does.
+    sockets.last("/jobs/").events.onOpen();
+    await flush();
+    expect(getJson).toHaveBeenCalledTimes(1);
+    timers[0]?.();
+    await flush();
+    expect(getJson).toHaveBeenCalledTimes(2);
+    notices.stop();
   });
 });
 

@@ -9,7 +9,7 @@ import { systemBridge } from "../../accounts/use-accounts.ts";
 import { openOnboarding } from "../../onboarding/store.ts";
 import { ITEMS } from "../catalog.ts";
 import { Pane, Row } from "../parts.tsx";
-import { closeSettings } from "../store.ts";
+import { closeSettings, useSettingsSheet } from "../store.ts";
 
 export function AppearanceSection() {
   const { settings, update } = useSettings();
@@ -74,6 +74,7 @@ export const SHORTCUTS: { title: string; rows: [string, string][] }[] = [
       ["⌘N", "Yeni sohbet"],
       ["⌘K", "Ara: sohbetler"],
       ["⌘,", "Ayarlar"],
+      ["⇧⌘/", "Klavye kısayolları"],
     ],
   },
   {
@@ -82,6 +83,25 @@ export const SHORTCUTS: { title: string; rows: [string, string][] }[] = [
       ["⌘[  ·  ⌘]", "Geri  ·  İleri"],
       ["⌘\\", "Kenar çubuğu"],
       ["⌥⌘I", "Sağ panel: Ayrıntılar, işler, takvim, medya, marka, iPhone"],
+      ["⇧⌘P", "Postlar"],
+      ["⇧⌘K", "Takvim"],
+      ["⇧⌘M", "Medya"],
+    ],
+  },
+  {
+    title: "Marka",
+    rows: [
+      ["⇧⌘N", "Yeni marka"],
+      ["⇧⌘B", "Marka ayarları"],
+    ],
+  },
+  {
+    title: "Post",
+    rows: [
+      ["␣", "Hızlı bakış"],
+      ["⌘↩", "Onayla"],
+      ["⌘Z  ·  ⇧⌘Z", "Geri al  ·  Yinele"],
+      ["← →", "Slaytlar"],
     ],
   },
   {
@@ -108,7 +128,14 @@ export function AboutSection() {
     queryFn: () => system?.info() ?? Promise.resolve(null),
     staleTime: Number.POSITIVE_INFINITY,
   });
+  const shortcutsRequested = useSettingsSheet((s) => s.shortcutsRequested);
   const [shortcuts, setShortcuts] = useState(false);
+  // Yardım → Klavye kısayolları (also while Hakkında is already open).
+  useEffect(() => {
+    if (!shortcutsRequested) return;
+    setShortcuts(true);
+    useSettingsSheet.setState({ shortcutsRequested: false });
+  }, [shortcutsRequested]);
   const version = info.data
     ? `${info.data.version} · Electron ${info.data.electron.split(".")[0]}`
     : system

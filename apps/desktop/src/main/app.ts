@@ -49,8 +49,10 @@ import { installMainLog, MainLog } from "./main-log.ts";
 import { buildMenu } from "./menu.ts";
 import { NoticeLog, Notifier } from "./notifications.ts";
 import { permissionAllowed } from "./permissions.ts";
+import { setupPostFiles } from "./post-files-ipc.ts";
 import { APP_ORIGIN, handleAppProtocol, OWNER_HEADER } from "./protocol.ts";
 import { needsOwnerHeader, originOf } from "./protocol-paths.ts";
+import { PublishingSync } from "./publishing-sync.ts";
 import { RendererLink, watchRenderer } from "./renderer-link.ts";
 import { defaultSettings, SettingsStore } from "./settings.ts";
 
@@ -396,6 +398,17 @@ export function startApp(): void {
     );
     ipcMain.handle(DRAFTS_IPC.remove, (_event, contentId: unknown) => {
       if (typeof contentId === "string") drafts.remove(contentId);
+    });
+    // Post export (save dialog, share menu, Finder) and the cloud sync when Studio comes forward.
+    const apiTarget = () =>
+      host.apiPort === null ? null : { port: host.apiPort, ownerSecret: currentOwnerSecret() };
+    setupPostFiles({ window: () => mainWindow, target: apiTarget });
+    const publishingSync = new PublishingSync({
+      target: apiTarget,
+      log: (message) => mainLog.write("warn", message),
+    });
+    app.on("browser-window-focus", (_event, window) => {
+      if (window === mainWindow) void publishingSync.focused();
     });
     ipcMain.handle(ACCOUNTS_IPC.backupCreate, () => backups.backup());
     ipcMain.handle(ACCOUNTS_IPC.backupRestore, () => backups.restore());

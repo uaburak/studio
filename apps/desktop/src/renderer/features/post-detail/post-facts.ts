@@ -95,8 +95,8 @@ export function usePostFacts(snapshot: EditorSnapshot) {
 export type PostFacts = ReturnType<typeof usePostFacts>;
 
 /**
- * The post's "…" menu: quick look, copy the caption, open in chat, cancel the schedule (when it
- * waits on one), duplicate, delete.
+ * The post's "…" menu: quick look, copy the caption, export and share, open in chat, cancel the
+ * schedule (when it waits on one), duplicate, delete.
  */
 export function postMenu({
   content,
@@ -105,6 +105,7 @@ export function postMenu({
   quickLook,
   openInChat,
   cancelSchedule,
+  exportEntries = [],
 }: {
   content: Content;
   version: ContentVersion | null;
@@ -113,6 +114,8 @@ export function postMenu({
   openInChat(): void;
   /** Opens "Zamanlamayı iptal et"; null when nothing waits to be published. */
   cancelSchedule?: (() => void) | null;
+  /** "Dışa aktar ▸" and "Paylaş…" (posts/export.ts). */
+  exportEntries?: MenuEntry[];
 }): MenuEntry[] {
   const blocker = deletionBlocker(content);
   const cancel: MenuEntry[] = cancelSchedule
@@ -132,6 +135,7 @@ export function postMenu({
       disabled: !content.caption.trim(),
       onSelect: () => void actions.copyCaption(content),
     },
+    ...exportEntries,
     { id: "chat", label: "Sohbette aç", onSelect: openInChat },
     ...cancel,
     { type: "separator" },

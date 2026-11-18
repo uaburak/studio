@@ -64,3 +64,55 @@ export function tokenHint(account: AccountHealth): string | null {
   }
   return null;
 }
+
+type TokenAccount = AccountHealth & Pick<SocialAccount, "id" | "handle">;
+
+/** Notice route of Ayarlar → Hesaplar (the page opens settings at that section). */
+export const ACCOUNTS_ROUTE = "settings:accounts";
+
+export interface TokenNotice {
+  id: string;
+  title: string;
+  body: string;
+  route: string;
+}
+
+/**
+ * macOS notices for accounts whose token is invalid or runs out within 7 days (StudioKit's
+ * NoticePlanner.tokenNotices): one per account, state and day. Posted by the main process, so
+ * they also come while the window is closed; a click opens Ayarlar → Hesaplar.
+ */
+export function tokenNotices(
+  accounts: readonly TokenAccount[],
+  now: Date = new Date(),
+): TokenNotice[] {
+  const day = Math.floor(now.getTime() / 86_400_000);
+  const notices: TokenNotice[] = [];
+  for (const account of accounts) {
+    if (account.status === "disabled" || account.hasToken === false) continue;
+    const name = `${platformName(account.platform)} · ${account.handle}`;
+    if (account.status === "needs_reauth" || account.tokenHealth === "invalid") {
+      notices.push({
+        id: `token:${account.id}:invalid:${day}`,
+        title: "Hesap yeniden bağlanmalı",
+        body: `${name}: erişim anahtarı geçersiz. Ayarlar → Hesaplar'dan yeniden bağlayın.`,
+        route: ACCOUNTS_ROUTE,
+      });
+      continue;
+    }
+    const expires = account.tokenExpiresAt ? Date.parse(account.tokenExpiresAt) : null;
+    const soon =
+      account.tokenHealth === "expiring_soon" ||
+      (expires !== null && expires - now.getTime() < 7 * 86_400_000);
+    if (!soon) continue;
+    const left =
+      expires !== null ? Math.max(0, Math.ceil((expires - now.getTime()) / 86_400_000)) : null;
+    notices.push({
+      id: `token:${account.id}:expiring:${day}`,
+      title: "Hesap bağlantısı yakında doluyor",
+      body: `${name}: ${left !== null ? `${left} gün içinde` : "yakında"} yeniden bağlanmalı.`,
+      route: ACCOUNTS_ROUTE,
+    });
+  }
+  return notices;
+}

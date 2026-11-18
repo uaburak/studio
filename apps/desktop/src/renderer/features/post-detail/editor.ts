@@ -17,6 +17,8 @@ import {
   isTerminalJobStatus,
   type Job,
   type JobCreate,
+  type ReelSpecPatch,
+  readReelVersionInfo,
   type Slide,
   statusIn,
   UNDELETABLE_STATUSES,
@@ -137,13 +139,33 @@ export function hasApproval(content: Content): boolean {
 
 /** Why the design cannot be edited right now (null: it can). */
 export function editBlocker(s: EditorSnapshot): string | null {
-  if (s.content.type === "reel") return "Reels metinleri ve süreleri sohbetten düzenlenir.";
+  if (s.content.type === "reel")
+    return "Reels metinleri ve süreleri Reels düzenleyicisinden değişir.";
   if (isLocked(s.content)) return "Yayındaki post düzenlenemez.";
   if (!activeVersion(s)) return "Henüz bir tasarım sürümü yok.";
   if (!isViewingCurrent(s))
     return "Eski bir sürümü görüntülüyorsun; düzenlemek için önce geri yükle.";
   if (s.activity.kind === "revising") return "AI düzenlemesi sürüyor.";
   if (s.activity.kind === "restoring") return "Sürüm geri yükleniyor.";
+  return null;
+}
+
+/** Why the shown reel's texts and timings cannot be edited now (null: they can). */
+export function reelEditBlocker(s: EditorSnapshot): string | null {
+  if (s.content.type !== "reel") return "Bu post bir Reels değil.";
+  if (isLocked(s.content)) return "Yayındaki Reels düzenlenemez.";
+  const version = activeVersion(s);
+  if (!version) return "Henüz bir video yok.";
+  const info = readReelVersionInfo(version.slides[0]?.html ?? "");
+  if (!info.videoAssetId)
+    return "Video üretilince metinleri ve süreleri buradan değiştirebilirsin.";
+  if (!info.spec)
+    return "Bu Reels eski biçimde kaydedilmiş; “Neyi değiştireyim?” ile yeni bir sürüm iste.";
+  if (!isViewingCurrent(s))
+    return "Eski bir sürümü görüntülüyorsun; düzenlemek için önce geri yükle.";
+  if (s.activity.kind === "revising") return "AI düzenlemesi sürüyor.";
+  if (s.activity.kind === "restoring") return "Sürüm geri yükleniyor.";
+  if (s.activity.kind === "rendering") return "Video yeniden oluşturuluyor.";
   return null;
 }
 
@@ -941,6 +963,62 @@ export class PostEditor {
       ok = true;
     } catch (e) {
       this.set({ error: `AI düzenlemesi: ${describeError(e)}` });
+    }
+    this.set({ revisionJobId: null, activity: IDLE });
+    this.flushQueued();
+    return ok;
+  }
+
+  // --- Reels editor ---------------------------------------------------------------------------
+
+  /**
+   * "Videoyu yeniden oluştur": re-render the reel with the editor's `patch` (`content.render`,
+   * `format: "mp4"`, no AI). The result is a new `manual_edit` version, undoable like any other
+   * edit (the AppKit app's PostDetailModel.rerenderReel). Resolves true when a new version came.
+   */
+  async renderReel(patch: ReelSpecPatch): Promise<boolean> {
+    const blocker = reelEditBlocker(this.s);
+    if (blocker) {
+      this.set({ error: blocker });
+      return false;
+    }
+    const base = activeVersion(this.s)?.version;
+    if (base === undefined) return false;
+    this.set({
+      activity: { kind: "rendering", message: "Video yeniden oluşturuluyor" },
+      error: null,
+    });
+    let ok = false;
+    try {
+      const job = await this.createJob({
+        type: "content.render",
+        contentId: this.s.content.id,
+        payload: { format: "mp4", version: base, reel: patch },
+      });
+      this.set({ revisionJobId: job.id });
+      const done = await this.waitForJob(job.id, this.revisionTimeoutMs, 1000, (j) => {
+        if (this.s.activity.kind !== "rendering") return;
+        const online = this.options.workerOnline?.() ?? true;
+        const message =
+          j.status === "queued"
+            ? online
+              ? "Sırada"
+              : "Mac'teki işçiyi bekliyor"
+            : (j.progressMessage ?? "Video yeniden oluşturuluyor");
+        this.set({ activity: { kind: "rendering", message } });
+      });
+      const number = (done.output as { version?: unknown } | undefined)?.version;
+      if (typeof number === "number" && number !== base) {
+        await this.adopt(number);
+        this.set({
+          undo: [...this.s.undo, { before: base, after: number, name: "Reels düzenlemesi" }],
+          redo: [],
+          notice: `Video v${number} olarak kaydedildi.`,
+        });
+        ok = true;
+      }
+    } catch (e) {
+      this.set({ error: `Video: ${describeError(e)}` });
     }
     this.set({ revisionJobId: null, activity: IDLE });
     this.flushQueued();

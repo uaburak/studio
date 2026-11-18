@@ -1,13 +1,19 @@
 // The window: sidebar | (top bar / content + right panel), overlays, shortcuts and menu
 // commands (Claude Code's: ⌘N new chat, ⌘K search, ⌘, settings, ⌘\ sidebar, ⌥⌘I panel,
-// ⌘[ ⌘] back / forward; also the mouse's back / forward buttons and a two-finger swipe).
+// ⌘[ ⌘] back / forward; also the mouse's back / forward buttons and a two-finger swipe; the
+// AppKit app's Git and Yardım menus: ⇧⌘P posts, ⇧⌘K calendar, ⇧⌘M media, ⇧⌘N new brand,
+// ⇧⌘B brand settings, ⇧⌘/ shortcuts).
 // The sidebar's and the panel's inner edges resize them.
 import { lazy, Suspense, useEffect } from "react";
 import type { MenuCommand } from "../../../shared/ipc.ts";
+import { requestNewBrand } from "../../features/brand/new-brand-request.ts";
 import { OnboardingSheet } from "../../features/onboarding/onboarding-sheet.tsx";
+import { openOnboarding } from "../../features/onboarding/store.ts";
 import { PostDetailLayer } from "../../features/post-detail/post-detail.tsx";
 import { PostsPage } from "../../features/posts/posts-page.tsx";
+import { isSectionId } from "../../features/settings/catalog.ts";
 import { SettingsSheet } from "../../features/settings/settings-sheet.tsx";
+import { openSettings, openShortcuts } from "../../features/settings/store.ts";
 import { installAppFlush } from "../../lib/app-flush.ts";
 import { bridge, isElectron } from "../../lib/bridge.ts";
 import {
@@ -100,6 +106,35 @@ export function runMenuCommand(command: MenuCommand): void {
     case "gallery":
       s.navigate({ kind: "gallery" });
       break;
+    // Git (the AppKit app's menu). ⇧⌘P / ⇧⌘K on the post canvas are Wecra's (pixel preview,
+    // place image): the canvas marked the key used.
+    case "go-posts":
+      if (!navKeyTakenByCanvas()) s.navigate({ kind: "posts" });
+      break;
+    case "go-calendar":
+      if (!navKeyTakenByCanvas()) s.navigate({ kind: "calendar" });
+      break;
+    case "go-media":
+      s.navigate({ kind: "media" });
+      break;
+    case "new-brand":
+      requestNewBrand();
+      break;
+    case "brand-settings":
+      if (s.currentBrandId) s.navigate({ kind: "brand", id: s.currentBrandId });
+      else s.navigate({ kind: "brands" });
+      break;
+    // Yardım.
+    case "help-shortcuts":
+      openShortcuts();
+      break;
+    case "help-onboarding":
+      s.setSettingsOpen(false);
+      openOnboarding();
+      break;
+    case "help-logs":
+      void bridge().system?.reveal("logs");
+      break;
     // The window's (three-finger) swipe: over the post canvas it pans there, never navigates.
     case "swipe-back":
       if (!noSwipeAt(pointerTarget)) navigateByGesture("back");
@@ -110,6 +145,19 @@ export function runMenuCommand(command: MenuCommand): void {
   }
 }
 
+/**
+ * A clicked notice's route: a page ("c:<id>", "calendar", …) or a settings section
+ * ("settings:ai" for Claude's limit, "settings:accounts" for expiring tokens).
+ */
+export function openNoticeRoute(route: string): void {
+  if (route.startsWith("settings:")) {
+    const section = route.slice("settings:".length);
+    openSettings(isSectionId(section) ? section : undefined);
+    return;
+  }
+  useAppStore.getState().navigate(parseRoute(route));
+}
+
 /** Keyboard shortcuts → menu commands (outside Electron; there the menu owns them). */
 export function shortcutCommand(
   event: Pick<KeyboardEvent, "key" | "metaKey" | "altKey" | "ctrlKey" | "shiftKey">,
@@ -117,6 +165,25 @@ export function shortcutCommand(
   if (!event.metaKey || event.ctrlKey) return null;
   if (event.altKey)
     return event.key.toLowerCase() === "i" || event.key === "ˆ" ? "toggle-panel" : null;
+  if (event.shiftKey) {
+    switch (event.key.toLowerCase()) {
+      case "p":
+        return "go-posts";
+      case "k":
+        return "go-calendar";
+      case "m":
+        return "go-media";
+      case "n":
+        return "new-brand";
+      case "b":
+        return "brand-settings";
+      case "/":
+      case "?":
+        return "help-shortcuts";
+      default:
+        return null;
+    }
+  }
   switch (event.key) {
     case "n":
       return "new-chat";
@@ -139,9 +206,7 @@ function useCommands() {
   useEffect(() => {
     const b = bridge();
     const offMenu = b.onMenuCommand(runMenuCommand);
-    const offNotice = b.onNoticeClicked((route) =>
-      useAppStore.getState().navigate(parseRoute(route)),
-    );
+    const offNotice = b.onNoticeClicked((route) => openNoticeRoute(route));
     const offAppNotice =
       b.onAppNotice?.((message) => useAppStore.getState().showToast({ message })) ?? (() => {});
     const onKey = (event: KeyboardEvent) => {

@@ -358,6 +358,13 @@ export class FakeContentApi {
           const ops = (payload.patches as { op: string }[]).map((p) => p.op).join(",");
           const slides = base.slides.map((s) => ({ ...s, html: `${s.html}<!--${ops}-->` }));
           output = { version: this.newVersion(contentId, slides, "manual_edit").version };
+        } else if (input.type === "content.render" && payload.reel) {
+          // Reels: the worker re-renders from the patched spec (here: the slides, marked).
+          const base = this.versions
+            .get(contentId)
+            ?.find((v) => v.version === payload.version) as ContentVersion;
+          const slides = base.slides.map((s) => ({ ...s, html: `${s.html}<!--reel-->` }));
+          output = { version: this.newVersion(contentId, slides, "manual_edit").version };
         } else if (input.type === "content.generate") {
           const base = this.versions
             .get(contentId)

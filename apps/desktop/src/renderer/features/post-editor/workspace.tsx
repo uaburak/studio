@@ -153,6 +153,13 @@ const isNavKey = (e: KeyboardEvent) =>
   !e.altKey &&
   (e.code === "BracketLeft" || e.code === "BracketRight" || e.key === "[" || e.key === "]");
 
+/**
+ * ⇧⌘K (Wecra's "Place image…") and ⇧⌘P (pixel preview) in the workspace; elsewhere they are the
+ * menu's Git → Takvim and Git → Postlar.
+ */
+const isWecraGoKey = (e: KeyboardEvent) =>
+  e.metaKey && e.shiftKey && !e.ctrlKey && !e.altKey && (e.code === "KeyK" || e.code === "KeyP");
+
 /** The dock's height and margin: zoom to fit keeps the slides above it. */
 const DOCK_INSET = 68;
 /** What zoom to fit keeps clear of: a margin on the left, the dock at the bottom. */
@@ -433,11 +440,14 @@ export function PostWorkspace(props: WorkspaceProps) {
   }, [session, approve, openSchedule, notify]);
 
   // ⌘[ / ⌘] on the canvas (or Wecra's layers) are Wecra's — send backward / bring forward —
-  // never the app's back / forward, even when Wecra had nothing to move (E8). After Wecra's own
+  // never the app's back / forward, even when Wecra had nothing to move (E8). So are ⇧⌘K / ⇧⌘P in
+  // the workspace (place image, pixel preview), never the menu's Git → Takvim / Postlar. After Wecra's own
   // handler (the window's, bubbling) the key is marked used, so the menu's Geri / İleri skip it.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (!isNavKey(e) || !inCanvas(e.target)) return;
+      const navKey = isNavKey(e) && inCanvas(e.target);
+      const placeKey = isWecraGoKey(e) && inWorkspace(e.target) && !isTyping(e.target);
+      if (!navKey && !placeKey) return;
       const after = (ev: KeyboardEvent) => {
         window.removeEventListener("keydown", after);
         if (ev !== e) return;

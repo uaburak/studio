@@ -538,6 +538,77 @@ describe("the chat plan card's Düzenle (N2)", () => {
     expect(useAppStore.getState().currentBrandId).toBe("b7");
     expect(usePostsStore.getState()).toMatchObject({ view: "plans", planId: "pl9" });
   });
+
+  it("shows the time and cost before generating more than five posts", async () => {
+    const item = (i: number) => ({
+      id: `x${i}`,
+      planId: "pl9",
+      position: i,
+      date: "2026-12-02",
+      platforms: ["instagram" as const],
+      contentType: "post" as const,
+      title: `Konu ${i}`,
+      brief: "",
+      pillar: null,
+      imageSlot: (i === 0 ? "ai_generate" : "none") as PlanItem["imageSlot"],
+      imageBrief: null,
+      status: "planned" as const,
+      contentId: null,
+      generation: null,
+      createdAt: T,
+      updatedAt: T,
+    });
+    const plan = {
+      id: "pl9",
+      brandId: "b7",
+      conversationId: "c1",
+      runId: null,
+      title: "Aralık",
+      periodStart: "2026-12-01",
+      periodEnd: "2026-12-31",
+      status: "proposed",
+      summary: "",
+      revision: 1,
+      decidedAt: null,
+      rejectionReason: null,
+      items: Array.from({ length: 6 }, (_, i) => item(i)),
+      createdAt: T,
+      updatedAt: T,
+    } as Plan;
+    const acceptAndGenerate = vi.fn(async () => undefined);
+    const generation = vi.fn(async () => ({
+      count: 6,
+      perItemSeconds: 180,
+      totalSeconds: 1_080,
+      basis: "default" as const,
+      sampleSize: 0,
+      defaultsAsOf: "2026-11-18",
+      perItemUsd: 0,
+      textUsd: 0,
+      imageSlots: 1,
+      perImageUsd: 0.04,
+      imagesIncluded: false,
+      imageUsd: 0.04,
+      totalUsd: 0,
+      budgetRemainingUsd: null,
+    }));
+    providers(
+      <PlanProposalCard
+        plan={plan}
+        busy={false}
+        controller={{ acceptAndGenerate } as never}
+        onEdit={() => undefined}
+      />,
+      { estimates: { generation } },
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Onayla ve üret" }));
+    const dialog = await screen.findByRole("dialog", { name: "Üretim başlasın mı?" });
+    await within(dialog).findByText(/≈ 18 dakika/);
+    expect(generation).toHaveBeenCalledWith({ count: 6, brandId: "b7", imageSlots: 1 });
+    expect(acceptAndGenerate).not.toHaveBeenCalled();
+    await userEvent.click(within(dialog).getByRole("button", { name: "Onayla ve üret" }));
+    await waitFor(() => expect(acceptAndGenerate).toHaveBeenCalledWith(plan));
+  });
 });
 
 describe("media delete (7)", () => {

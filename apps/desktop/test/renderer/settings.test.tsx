@@ -387,11 +387,13 @@ describe("accounts table", () => {
         id: "token:a2:invalid:20774",
         title: "Hesap yeniden bağlanmalı",
         body: "Facebook · MTM: erişim anahtarı geçersiz. Ayarlar → Hesaplar'dan yeniden bağlayın.",
+        route: "settings:accounts",
       },
       {
         id: "token:a3:expiring:20774",
         title: "Hesap bağlantısı yakında doluyor",
         body: "LinkedIn · Burak: 2 gün içinde yeniden bağlanmalı.",
+        route: "settings:accounts",
       },
     ]);
   });

@@ -10,6 +10,7 @@ import {
 import { DRAFTS_IPC } from "../shared/drafts.ts";
 import { FONTS_IPC } from "../shared/fonts.ts";
 import { IPC, type StudioBridge } from "../shared/ipc.ts";
+import { POST_FILES_IPC } from "../shared/post-files.ts";
 
 function subscribe<T>(channel: string, listener: (value: T) => void): () => void {
   const handler = (_event: IpcRendererEvent, value: T) => listener(value);
@@ -60,6 +61,11 @@ const bridge: StudioBridge = {
     saveSync: (draft) => ipcRenderer.sendSync(DRAFTS_IPC.saveSync, draft) === true,
     load: (contentId) => ipcRenderer.invoke(DRAFTS_IPC.load, contentId),
     remove: (contentId) => ipcRenderer.invoke(DRAFTS_IPC.remove, contentId),
+  },
+  postFiles: {
+    save: (request) => ipcRenderer.invoke(POST_FILES_IPC.save, request),
+    share: (request) => ipcRenderer.invoke(POST_FILES_IPC.share, request),
+    reveal: (paths) => ipcRenderer.invoke(POST_FILES_IPC.reveal, paths),
   },
   lifecycle: {
     onFlushRequest: (listener) => subscribe(DRAFTS_IPC.flushRequest, listener),
