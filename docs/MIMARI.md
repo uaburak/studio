@@ -95,18 +95,18 @@ worker'a ve eşli cihazlara bileşen ayrıntısı da verir (veritabanı, göç s
 D1 `jobs` tablosu tek doğru kaynaktır; Hub işleri bağlı worker'lara dağıtır (kiralama, heartbeat,
 yeniden deneme, iptal). Türler (`packages/contract/src/job.ts`):
 
-| Tür                           | Ne                                                                                           |
-| ----------------------------- | -------------------------------------------------------------------------------------------- |
-| `chat.turn`                   | Sohbet ajanının bir turu (araçlı; Studio araçları MCP köprüsüyle)                            |
-| `content.generate`            | Post / carousel / story / Reels üretimi (eleştiri turu ve kontrollerle)                      |
-| `content.render`              | HTML slaytları Chromium ile JPEG / PNG / PDF'e, Reels'i MP4'e                                |
-| `content.check`               | Üretim kontrolleri (taşma, güvenli alan, kontrast, yasaklı kelime, marka uyumu…) ve düzeltme |
-| `image.generate`              | Yapay zekâ görseli (Gemini / OpenAI)                                                         |
-| `brand.analyze`               | Marka kiti ve örneklerden marka profili                                                      |
-| `brand.skill_draft`           | Geçmiş postlardan marka skill taslağı                                                        |
-| `schedule.publish`            | Mac'ten yerel yayın (Meta, LinkedIn)                                                         |
-| `canvas.read`, `canvas.apply` | Tuval belgesini okuma / düzenleme (yalnızca tuval çalıştırıcısı)                             |
-| `demo.echo`                   | Duman testi                                                                                  |
+| Tür                           | Ne                                                                                                                                      |
+| ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| `chat.turn`                   | Sohbet ajanının bir turu (araçlı; Studio araçları MCP köprüsüyle)                                                                       |
+| `content.generate`            | Post / carousel / story / Reels üretimi (eleştiri turu ve kontrollerle); şablondan doldurma (N9), post → story / Reels dönüştürme (N10) |
+| `content.render`              | HTML slaytları Chromium ile JPEG / PNG / PDF'e, Reels'i MP4'e                                                                           |
+| `content.check`               | Üretim kontrolleri (taşma, güvenli alan, kontrast, yasaklı kelime, marka uyumu…) ve düzeltme                                            |
+| `image.generate`              | Yapay zekâ görseli (Gemini / OpenAI)                                                                                                    |
+| `brand.analyze`               | Marka kiti ve örneklerden marka profili                                                                                                 |
+| `brand.skill_draft`           | Geçmiş postlardan marka skill taslağı                                                                                                   |
+| `schedule.publish`            | Mac'ten yerel yayın (Meta, LinkedIn)                                                                                                    |
+| `canvas.read`, `canvas.apply` | Tuval belgesini okuma / düzenleme (yalnızca tuval çalıştırıcısı)                                                                        |
+| `demo.echo`                   | Duman testi                                                                                                                             |
 
 Mac kapalıyken iPhone'dan gelen istekler kuyrukta bekler; Mac açılınca işlenir.
 

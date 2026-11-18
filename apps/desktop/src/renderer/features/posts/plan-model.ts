@@ -235,6 +235,8 @@ export interface ItemDraft {
   title: string;
   brief: string;
   platforms: Platform[];
+  /** A brand template the post is made from (N9; null: designed anew). */
+  templateId?: string | null;
 }
 
 export function draftOf(item: PlanItem): ItemDraft {
@@ -244,6 +246,7 @@ export function draftOf(item: PlanItem): ItemDraft {
     title: item.title,
     brief: item.brief,
     platforms: [...item.platforms],
+    templateId: item.templateId ?? null,
   };
 }
 
@@ -286,5 +289,7 @@ export function draftPatch(item: PlanItem, draft: ItemDraft): PlanItemPatch {
     draft.platforms.length === item.platforms.length &&
     draft.platforms.every((p) => item.platforms.includes(p));
   if (!same) patch.platforms = draft.platforms;
+  if ((draft.templateId ?? null) !== (item.templateId ?? null))
+    patch.templateId = draft.templateId ?? null;
   return patch as PlanItemPatch;
 }

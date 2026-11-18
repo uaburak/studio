@@ -822,16 +822,8 @@ function newItemRow(planId: string, position: number, input: ItemInput, now: Dat
 function itemFields(
   i: Pick<
     PlanItemRow,
-    | "date"
-    | "platforms"
-    | "contentType"
-    | "title"
-    | "brief"
-    | "pillar"
-    | "imageSlot"
-    | "imageBrief"
-    | "templateId"
-  >,
+    "date" | "platforms" | "contentType" | "title" | "brief" | "pillar" | "imageSlot" | "imageBrief"
+  > & { templateId?: string | null | undefined },
 ) {
   return {
     date: i.date,
@@ -842,7 +834,7 @@ function itemFields(
     pillar: i.pillar,
     imageSlot: i.imageSlot,
     imageBrief: i.imageBrief,
-    templateId: i.templateId,
+    templateId: i.templateId ?? null,
   };
 }
 

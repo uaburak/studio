@@ -7,6 +7,7 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { TemplateSelect } from "../../src/renderer/features/brand/template-select.tsx";
 import { templateKeys } from "../../src/renderer/features/brand/templates-data.ts";
 import {
   conversionBlocker,
@@ -22,11 +23,12 @@ import { postMenu } from "../../src/renderer/features/post-detail/post-facts.ts"
 import type { PostCard } from "../../src/renderer/features/posts/board.ts";
 import { convertible } from "../../src/renderer/features/posts/convert-dialog.tsx";
 import { postKeys } from "../../src/renderer/features/posts/data.ts";
+import { draftOf, draftPatch } from "../../src/renderer/features/posts/plan-model.ts";
 import { PostLinks } from "../../src/renderer/features/posts/post-links.tsx";
 import { usePostsStore } from "../../src/renderer/features/posts/store.ts";
 import { ApiContext } from "../../src/renderer/lib/api.ts";
 import { useAppStore } from "../../src/renderer/state/app-store.ts";
-import { content, T } from "./post-fixtures.ts";
+import { content, plan, T } from "./post-fixtures.ts";
 
 // The live job feed (StudioProvider) is not mounted here: no jobs, worker offline.
 vi.mock("../../src/renderer/state/studio.tsx", async (importOriginal) => {
@@ -321,5 +323,37 @@ describe("a post's links and menu", () => {
     const ids = entries.map((e) => ("id" in e ? e.id : e.type));
     expect(ids.indexOf("save-template")).toBeLessThan(ids.indexOf("duplicate"));
     expect(ids.indexOf("repurpose-story")).toBeLessThan(ids.indexOf("delete"));
+  });
+});
+
+describe("a plan item's template", () => {
+  it("offers the brand's templates of the item's type and saves the choice", async () => {
+    const onChange = vi.fn();
+    providers(
+      <TemplateSelect brandId="b1" contentType="post" value={null} onChange={onChange} />,
+      {},
+      (q) =>
+        q.setQueryData(templateKeys.list("b1"), [
+          template(),
+          template({ id: "t2", name: "Seri", contentType: "carousel" }),
+        ]),
+    );
+    const select = screen.getByRole("combobox", { name: "Şablon" });
+    expect(
+      within(select)
+        .getAllByRole("option")
+        .map((o) => o.textContent),
+    ).toEqual(["Şablonsuz (yeni tasarım)", "Ürün duyurusu"]);
+    await userEvent.selectOptions(select, "t1");
+    expect(onChange).toHaveBeenCalledWith("t1");
+
+    const item = plan([{ contentId: "p1", date: "2026-11-03" }]).items[0];
+    if (!item) throw new Error("no item");
+    const draft = draftOf(item);
+    expect(draftPatch(item, draft)).toEqual({});
+    expect(draftPatch(item, { ...draft, templateId: "t1" })).toEqual({ templateId: "t1" });
+    expect(draftPatch({ ...item, templateId: "t1" }, { ...draft, templateId: null })).toEqual({
+      templateId: null,
+    });
   });
 });

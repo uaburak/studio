@@ -28,6 +28,7 @@ import { IconPencil, IconPlus, IconTrash } from "../../components/ui/icons.tsx";
 import { describeError, useApi } from "../../lib/api.ts";
 import { thumbUrl } from "../../lib/thumbnail.ts";
 import { useAppStore } from "../../state/app-store.ts";
+import { TemplateSelect } from "../brand/template-select.tsx";
 import { CONTENT_TYPE_LABEL, PLATFORM_LABEL } from "./board.ts";
 import { useContents, useCurrentVersions, usePlans } from "./data.ts";
 import { localDate, shortDay } from "./dates.ts";
@@ -575,6 +576,7 @@ function ItemDialog({
           title: draft.title.trim(),
           brief: draft.brief,
           platforms: draft.platforms,
+          ...(draft.templateId ? { templateId: draft.templateId } : {}),
         });
       } else {
         const patch = draftPatch(editing, draft);
@@ -622,10 +624,17 @@ function ItemDialog({
             <SegmentedControl
               label="Tür"
               value={draft.contentType}
-              onChange={(contentType) => update({ contentType })}
+              // A template is of one type: another type is designed anew.
+              onChange={(contentType) => update({ contentType, templateId: null })}
               options={CONTENT_TYPES}
             />
           </div>
+          <TemplateSelect
+            brandId={plan.brandId}
+            contentType={draft.contentType}
+            value={draft.templateId ?? null}
+            onChange={(templateId) => update({ templateId })}
+          />
           <div className="flex flex-col gap-1">
             <span className="text-footnote text-fg-2">Konu</span>
             <TextField

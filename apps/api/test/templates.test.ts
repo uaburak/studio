@@ -12,7 +12,6 @@ import {
   TemplateUseResult,
   WECRA_DOCUMENT_MIME,
 } from "@studio/contract";
-import { type CanvasFacts, canvasSlideHtml } from "@studio/design-kit/canvas";
 import { describe, expect, it } from "vitest";
 import { addVersion, api, createBrand, createContent, expectError, getContent } from "./helpers.ts";
 import { seedPlan, solidPng, uploadFile } from "./lifecycle-helpers.ts";
@@ -37,7 +36,32 @@ const htmlSlide = (photo: string) => `<!doctype html>
 </body>
 </html>`;
 
-const canvasFacts = (): CanvasFacts => ({
+const attr = (s: string) =>
+  s.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+/**
+ * A canvas version's slide HTML as the post editor writes it (`canvasSlideHtml` of
+ * @studio/design-kit/canvas, kept out of this Workers project's types): the render and the facts.
+ */
+const canvasSlideHtml = (o: { facts: unknown; src: string; sha256: string }) => `<!doctype html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8">
+  <meta name="studio:contract" content="v1">
+  <meta name="studio:format" content="1080x1350">
+  <meta name="studio:editor" content="wecra">
+  <meta name="studio:render" content="sha256:${o.sha256}">
+  <meta name="studio:canvas" content="${attr(JSON.stringify(o.facts))}">
+  <link rel="stylesheet" href="/brand/brand.css">
+</head>
+<body>
+  <main data-artboard style="width:1080px;height:1350px">
+    <img data-layer="canvas" data-type="image" data-role="background" src="${o.src}" alt="" style="position:absolute;left:0;top:0;width:1080px;height:1350px">
+  </main>
+</body>
+</html>`;
+
+const canvasFacts = () => ({
   v: 1,
   editor: "wecra",
   frame: {
