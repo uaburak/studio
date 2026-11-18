@@ -11,8 +11,9 @@ import { OnboardingSheet } from "../../features/onboarding/onboarding-sheet.tsx"
 import { openOnboarding } from "../../features/onboarding/store.ts";
 import { PostDetailLayer } from "../../features/post-detail/post-detail.tsx";
 import { PostsPage } from "../../features/posts/posts-page.tsx";
+import { isSectionId } from "../../features/settings/catalog.ts";
 import { SettingsSheet } from "../../features/settings/settings-sheet.tsx";
-import { openShortcuts } from "../../features/settings/store.ts";
+import { openSettings, openShortcuts } from "../../features/settings/store.ts";
 import { installAppFlush } from "../../lib/app-flush.ts";
 import { bridge, isElectron } from "../../lib/bridge.ts";
 import {
@@ -144,6 +145,19 @@ export function runMenuCommand(command: MenuCommand): void {
   }
 }
 
+/**
+ * A clicked notice's route: a page ("c:<id>", "calendar", …) or a settings section
+ * ("settings:ai" for Claude's limit, "settings:accounts" for expiring tokens).
+ */
+export function openNoticeRoute(route: string): void {
+  if (route.startsWith("settings:")) {
+    const section = route.slice("settings:".length);
+    openSettings(isSectionId(section) ? section : undefined);
+    return;
+  }
+  useAppStore.getState().navigate(parseRoute(route));
+}
+
 /** Keyboard shortcuts → menu commands (outside Electron; there the menu owns them). */
 export function shortcutCommand(
   event: Pick<KeyboardEvent, "key" | "metaKey" | "altKey" | "ctrlKey" | "shiftKey">,
@@ -192,9 +206,7 @@ function useCommands() {
   useEffect(() => {
     const b = bridge();
     const offMenu = b.onMenuCommand(runMenuCommand);
-    const offNotice = b.onNoticeClicked((route) =>
-      useAppStore.getState().navigate(parseRoute(route)),
-    );
+    const offNotice = b.onNoticeClicked((route) => openNoticeRoute(route));
     const offAppNotice =
       b.onAppNotice?.((message) => useAppStore.getState().showToast({ message })) ?? (() => {});
     const onKey = (event: KeyboardEvent) => {

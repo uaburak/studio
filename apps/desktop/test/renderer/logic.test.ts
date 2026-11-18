@@ -1,9 +1,13 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { shortcutCommand } from "../../src/renderer/components/shell/app-shell.tsx";
+import {
+  openNoticeRoute,
+  shortcutCommand,
+} from "../../src/renderer/components/shell/app-shell.tsx";
 import { searchConversations } from "../../src/renderer/components/shell/overlays.tsx";
 import { groupConversations } from "../../src/renderer/components/shell/sidebar.tsx";
+import { useSettingsSheet } from "../../src/renderer/features/settings/store.ts";
 import { rewriteSocketUrl } from "../../src/renderer/lib/api.ts";
 import {
   allocateAlias,
@@ -330,6 +334,13 @@ describe("window state", () => {
     expect(k("B", { shiftKey: true })).toBe("brand-settings");
     expect(k("?", { shiftKey: true })).toBe("help-shortcuts");
     expect(k("Z", { shiftKey: true })).toBeNull();
+    // A notice for Claude's limit or an expiring token opens Ayarlar at its section.
+    openNoticeRoute("settings:ai");
+    expect(useAppStore.getState().settingsOpen).toBe(true);
+    expect(useSettingsSheet.getState().requested).toBe("ai");
+    useAppStore.getState().setSettingsOpen(false);
+    openNoticeRoute("calendar");
+    expect(useAppStore.getState().route).toEqual({ kind: "calendar" });
     expect(
       shortcutCommand({ key: "n", metaKey: false, altKey: false, ctrlKey: false, shiftKey: false }),
     ).toBeNull();

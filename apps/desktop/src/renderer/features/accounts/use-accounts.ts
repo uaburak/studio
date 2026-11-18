@@ -1,6 +1,5 @@
 // The connect flows' state from the main process (`window.studio.accounts`), the owner's app
 // credentials, and a browser stand-in (gallery, headless checks: connecting needs the app).
-import type { SocialAccount } from "@studio/contract";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import type {
@@ -11,7 +10,6 @@ import type {
 } from "../../../shared/accounts-ipc.ts";
 import { bridge } from "../../lib/bridge.ts";
 import { queryKeys } from "../../state/studio.tsx";
-import { tokenNotices } from "./model.ts";
 
 const ONLY_IN_APP = "Hesap bağlama yalnızca Studio uygulamasında çalışır.";
 
@@ -96,12 +94,4 @@ export function usePublishingApps() {
     queryFn: () => accountsBridge().apps(),
     staleTime: 60_000,
   });
-}
-
-/** Posts a macOS notice for accounts that must be reconnected (once per account and day). */
-export function useTokenWarnings(accounts: SocialAccount[] | undefined): void {
-  useEffect(() => {
-    if (!accounts) return;
-    for (const notice of tokenNotices(accounts)) void bridge().notify(notice);
-  }, [accounts]);
 }

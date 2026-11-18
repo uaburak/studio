@@ -109,6 +109,36 @@ export function finishedNotice(job: JobLike, title: string): NoticeInput | null 
   };
 }
 
+// --- Claude's limit (S7, mode "Sor") ------------------------------------------------------------
+
+/** Notice route of Ayarlar → Yapay zekâ (the page opens settings at that section). */
+export const AI_SETTINGS_ROUTE = "settings:ai";
+
+interface ClaudeLimitLike {
+  resetsAt?: unknown;
+  mode?: unknown;
+  decision?: unknown;
+  waiting?: unknown;
+}
+
+/**
+ * Presence `claude.limit` waiting for the owner's answer (mode "Sor", no decision, work
+ * waiting): one notice per limit window; a click opens Ayarlar → Yapay zekâ. Null otherwise.
+ */
+export function claudeLimitNotice(presence: unknown): NoticeInput | null {
+  const limit = (presence as { claude?: { limit?: ClaudeLimitLike | null } } | null)?.claude?.limit;
+  if (limit?.mode !== "ask" || limit.decision != null) return null;
+  const waiting = typeof limit.waiting === "number" ? limit.waiting : 0;
+  if (waiting <= 0) return null;
+  const resets = typeof limit.resetsAt === "string" ? limit.resetsAt : "now";
+  return {
+    id: `claude-limit:${resets}`,
+    title: "Claude sınırı doldu",
+    body: `${waiting} iş cevabını bekliyor: Gemini ile devam et ya da sınırı bekle (Ayarlar → Yapay zekâ).`,
+    route: AI_SETTINGS_ROUTE,
+  };
+}
+
 // --- waiting on the user (consent / question cards) ------------------------------------------
 
 interface PartLike {

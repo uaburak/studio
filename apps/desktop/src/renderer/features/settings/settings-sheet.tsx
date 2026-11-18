@@ -25,7 +25,7 @@ import { useAppStore } from "../../state/app-store.ts";
 import { useAccounts, useBrands, useJobs, useSettings } from "../../state/studio.tsx";
 import { AccountsSection } from "../accounts/accounts-section.tsx";
 import { accountRows, flowBusy } from "../accounts/model.ts";
-import { accountsBridge, usePublishingApps, useTokenWarnings } from "../accounts/use-accounts.ts";
+import { accountsBridge, usePublishingApps } from "../accounts/use-accounts.ts";
 import {
   ALL_ITEMS,
   escapeAction,
@@ -131,8 +131,7 @@ function useDynamicRows(): SearchRow[] {
 
 export function SettingsSheet() {
   const open = useAppStore((s) => s.settingsOpen);
-  // Accounts that must be reconnected get a macOS notice even while Ayarlar is closed.
-  useTokenWarnings(useAccounts().data);
+  // Accounts that must be reconnected get a macOS notice from the main process (TokenWatch).
   if (!open) return null;
   return <SettingsPanel />;
 }

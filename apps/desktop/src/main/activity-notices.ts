@@ -6,8 +6,19 @@
 //
 // A running chat turn's conversation is followed too, only while the turn runs, to see a
 // consent or question card appear. Frames are read loosely (no contract runtime here).
+//
+// Also from here, whether the window is open or not: Claude's limit waiting for an answer in
+// "Sor" mode (presence `claude.limit`), and social accounts whose token is invalid or runs out
+// within 7 days (read on connect and every few hours; one notice per account and day).
 import type { NoticeInput } from "../shared/ipc.ts";
-import { conversationIdOf, finishedNotice, jobTitle, waitingNotice } from "../shared/notices.ts";
+import {
+  claudeLimitNotice,
+  conversationIdOf,
+  finishedNotice,
+  jobTitle,
+  waitingNotice,
+} from "../shared/notices.ts";
+import { tokenNotices } from "../shared/token-health.ts";
 
 export interface ActivitySocket {
   close(): void;
@@ -42,6 +53,9 @@ export interface ActivityDeps {
   windowFocused(): boolean;
   log?(message: string): void;
   retryMs?: number;
+  /** How often the accounts' tokens are looked at (default 6 h; also on connect, 1 h apart). */
+  tokenCheckMs?: number;
+  now?(): Date;
   setTimer?(fn: () => void, ms: number): unknown;
   clearTimer?(handle: unknown): void;
 }
@@ -99,6 +113,8 @@ export class ActivityNotices {
   /** Last status of each job seen (null until the first snapshot: nothing is announced). */
   private known: Map<string, string> | null = null;
   private readonly conversations = new Map<string, Watched>();
+  private tokenTimer: unknown;
+  private lastTokenCheck = Number.NEGATIVE_INFINITY;
   private readonly setTimer: (fn: () => void, ms: number) => unknown;
   private readonly clearTimer: (handle: unknown) => void;
 
@@ -111,11 +127,49 @@ export class ActivityNotices {
   start(): void {
     this.running = true;
     this.refresh();
+    this.scheduleTokenCheck();
   }
 
   stop(): void {
     this.running = false;
     this.disconnect();
+    if (this.tokenTimer !== undefined) this.clearTimer(this.tokenTimer);
+    this.tokenTimer = undefined;
+  }
+
+  // --- tokens ----------------------------------------------------------------------------------
+
+  private scheduleTokenCheck(): void {
+    if (!this.running) return;
+    this.tokenTimer = this.setTimer(
+      () => {
+        this.tokenTimer = undefined;
+        const target = this.deps.target();
+        if (target) void this.checkTokens(target, true);
+        this.scheduleTokenCheck();
+      },
+      this.deps.tokenCheckMs ?? 6 * 3_600_000,
+    );
+  }
+
+  /** Accounts that must be reconnected soon (StudioMac's PublishingModel.checkTokens). */
+  async checkTokens(target: ActivityTarget, force = false): Promise<void> {
+    const now = this.deps.now?.() ?? new Date();
+    if (!force && now.getTime() - this.lastTokenCheck < 3_600_000) return;
+    this.lastTokenCheck = now.getTime();
+    try {
+      const list = (await this.deps.getJson(target, "/api/social-accounts?limit=100")) as {
+        items?: unknown;
+      } | null;
+      if (!Array.isArray(list?.items)) return;
+      const accounts = list.items.filter(
+        (a): a is Parameters<typeof tokenNotices>[0][number] =>
+          !!a && typeof a === "object" && typeof (a as { id?: unknown }).id === "string",
+      );
+      for (const notice of tokenNotices(accounts, now)) this.post(notice);
+    } catch (error) {
+      this.deps.log?.(`token check failed: ${(error as Error).message}`);
+    }
   }
 
   /** The host changed (up, down, another port): follow the stream where the API is now. */
@@ -149,6 +203,7 @@ export class ActivityNotices {
     socket = this.deps.socket(url, this.headers(target), {
       onOpen: () => {
         this.failures = 0;
+        void this.checkTokens(target);
       },
       onMessage: (data) => {
         if (this.socket === socket) this.onJobFrame(target, parse(data));
@@ -175,6 +230,12 @@ export class ActivityNotices {
 
   private onJobFrame(target: ActivityTarget, frame: Record<string, unknown> | null): void {
     if (!frame) return;
+    if (frame.type === "presence" || frame.type === "jobs.snapshot") {
+      // Claude's limit waits for the owner's answer: worth a notice even with the window in
+      // front (the question sits in Ayarlar).
+      const limit = claudeLimitNotice(frame.presence);
+      if (limit) this.post(limit);
+    }
     if (frame.type === "jobs.snapshot" && Array.isArray(frame.jobs)) {
       const jobs = frame.jobs.map(asJob).filter((j): j is JobFrame => j !== null);
       const first = this.known === null;
@@ -227,6 +288,10 @@ export class ActivityNotices {
 
   private announce(notice: NoticeInput | null): void {
     if (!notice || this.deps.windowFocused()) return;
+    this.post(notice);
+  }
+
+  private post(notice: NoticeInput): void {
     try {
       this.deps.post(notice);
     } catch (error) {
