@@ -45,6 +45,7 @@ import {
 import { BulkBar } from "./bulk-bar.tsx";
 import { useBoard, useTrash } from "./data.ts";
 import { addMonths, monthKeyOf, monthName, monthTitle } from "./dates.ts";
+import { exportMenuEntries, usePostExport } from "./export.ts";
 import { PlansView } from "./plans-view.tsx";
 import type { PostCardActions } from "./post-card.tsx";
 import { PostCardView } from "./post-card.tsx";
@@ -174,6 +175,7 @@ export function Board({
   const openedId = usePostsStore((s) => s.opened?.contentId ?? null);
   const store = usePostsStore.getState;
   const actions = usePostActions();
+  const exporter = usePostExport();
   const context = useContextMenu();
   const trash = useTrash(grouped ? null : brandId);
   const months = useMemo(() => boardMonths(cards), [cards]);
@@ -302,6 +304,7 @@ export function Board({
         disabled: !card.content.caption.trim(),
         onSelect: () => cardActions.copyCaption(card),
       },
+      ...exportMenuEntries(exporter, card.content, card.version, null),
       {
         id: "duplicate",
         label: "Çoğalt",

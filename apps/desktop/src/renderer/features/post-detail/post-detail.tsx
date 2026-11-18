@@ -55,6 +55,7 @@ import {
   useVersion,
 } from "../posts/data.ts";
 import { localDate } from "../posts/dates.ts";
+import { exportMenuEntries, usePostExport } from "../posts/export.ts";
 import { type DetailTab, usePostsStore } from "../posts/store.ts";
 import { useCancelSchedule } from "./cancel-schedule.tsx";
 import {
@@ -245,6 +246,7 @@ function Editor({ content, version }: { content: Content; version: ContentVersio
 /** A post with slides: the canvas workspace with the post's approve guard and schedule sheet. */
 function PostCanvas({ editor, snapshot }: { editor: PostEditor; snapshot: EditorSnapshot }) {
   const actions = usePostActions();
+  const exporter = usePostExport();
   const facts = usePostFacts(snapshot);
   const approveGuard = useApproveGuard(snapshot);
   const [scheduleOpen, setScheduleOpen] = useState(false);
@@ -330,6 +332,7 @@ function PostCanvas({ editor, snapshot }: { editor: PostEditor; snapshot: Editor
           quickLook,
           openInChat,
           cancelSchedule: cancelFlow.targets.length > 0 ? () => cancelFlow.open() : null,
+          exportEntries: exportMenuEntries(exporter, content, version, snapshot.slideIndex),
         })}
         onClose={close}
         onPreview={quickLook}
@@ -370,6 +373,7 @@ export function EditorView({ editor, snapshot }: { editor: PostEditor; snapshot:
   const setTab = usePostsStore((s) => s.setTab);
   const close = () => usePostsStore.getState().close();
   const actions = usePostActions();
+  const exporter = usePostExport();
   const publishing = usePublishingStatus();
   const facts = usePostFacts(snapshot);
   const [instruction, setInstruction] = useState("");
@@ -533,6 +537,7 @@ export function EditorView({ editor, snapshot }: { editor: PostEditor; snapshot:
     quickLook,
     openInChat,
     cancelSchedule: cancelFlow.targets.length > 0 ? () => cancelFlow.open() : null,
+    exportEntries: exportMenuEntries(exporter, content, version, snapshot.slideIndex),
   });
 
   const statusText = facts.statusText;

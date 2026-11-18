@@ -82,8 +82,7 @@ export function draftProblems(d: ReelDraft): string[] {
     if (o.endMs <= o.startMs) out.push(`Metin ${i + 1}: bitiş başlangıçtan sonra olmalı.`);
     if (o.startMs >= total) out.push(`Metin ${i + 1}: video bittikten sonra başlıyor.`);
   });
-  if (d.base.recipe === "narration" && blank(d.narrationScript))
-    out.push("Seslendirme metni boş.");
+  if (d.base.recipe === "narration" && blank(d.narrationScript)) out.push("Seslendirme metni boş.");
   if (total < REEL_MIN_DURATION_MS) out.push("Video en az 3 sn olmalı.");
   if (total > REEL_MAX_DURATION_MS) out.push("Video en fazla 90 sn olabilir.");
   if ([...d.hook].length > 140) out.push("Kanca en fazla 140 karakter.");

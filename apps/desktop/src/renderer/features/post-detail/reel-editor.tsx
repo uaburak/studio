@@ -6,7 +6,13 @@
 import { readReelVersionInfo, reelDurationIssues } from "@studio/contract";
 import { useEffect, useMemo, useState } from "react";
 import { Button, Checkbox, IconButton, Spinner, TextField } from "../../components/ui/controls.tsx";
-import { IconPlus, IconRedo, IconTrash, IconUndo, IconWarning } from "../../components/ui/icons.tsx";
+import {
+  IconPlus,
+  IconRedo,
+  IconTrash,
+  IconUndo,
+  IconWarning,
+} from "../../components/ui/icons.tsx";
 import {
   activeVersion,
   canRedo,
@@ -81,7 +87,9 @@ export function ReelEditor({ snapshot, editor }: { snapshot: EditorSnapshot; edi
     return (
       <div className="flex flex-col gap-3">
         {header}
-        <p className="text-body text-fg-2">{blocker ?? "Bu Reels düzenlenebilir bilgi taşımıyor."}</p>
+        <p className="text-body text-fg-2">
+          {blocker ?? "Bu Reels düzenlenebilir bilgi taşımıyor."}
+        </p>
       </div>
     );
   }
@@ -127,7 +135,6 @@ export function ReelEditor({ snapshot, editor }: { snapshot: EditorSnapshot; edi
       {draft.base.recipe === "motion_graphics" && (
         <Section title="Sahneler">
           {draft.scenes.map((scene, i) => (
-            // biome-ignore lint/suspicious/noArrayIndexKey: scenes have no id; order is the identity
             <div key={i} className="flex items-center gap-1.5">
               <TextField
                 aria-label={`Sahne ${i + 1}`}
@@ -199,7 +206,6 @@ export function ReelEditor({ snapshot, editor }: { snapshot: EditorSnapshot; edi
         (draft.base.recipe === "narration" && draft.overlays.length > 0)) && (
         <Section title="Metin katmanları">
           {draft.overlays.map((overlay, i) => (
-            // biome-ignore lint/suspicious/noArrayIndexKey: overlays have no id; order is the identity
             <div key={i} className="flex items-center gap-1.5">
               <TextField
                 aria-label={`Metin ${i + 1}`}

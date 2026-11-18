@@ -1,12 +1,7 @@
 // The Reels editor (port of StudioKit's ReelDraft and StudioMac's ReelEditorView): the patch it
 // sends (only what changed, in the contract's ReelSpecPatch shape), what blocks re-rendering,
 // and the `content.render` mp4 job the post editor sends with it.
-import {
-  encodeReelSpec,
-  ReelSpec,
-  type ReelSpecInput,
-  ReelSpecPatch,
-} from "@studio/contract";
+import { encodeReelSpec, ReelSpec, type ReelSpecInput, ReelSpecPatch } from "@studio/contract";
 import { describe, expect, it } from "vitest";
 import {
   type EditorApi,
@@ -113,9 +108,7 @@ describe("reel draft", () => {
   it("lists what blocks re-rendering", () => {
     const d = reelDraft(spec());
     expect(draftProblems(d)).toEqual([]);
-    expect(draftProblems(updateScene(d, 0, { headline: " " }))).toContain(
-      "Sahne 1: başlık boş.",
-    );
+    expect(draftProblems(updateScene(d, 0, { headline: " " }))).toContain("Sahne 1: başlık boş.");
     expect(draftProblems(updateScene(d, 0, { durationMs: 500 }))).toContain(
       "Sahne 1: süre 0,8–20 sn olmalı.",
     );

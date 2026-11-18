@@ -139,7 +139,8 @@ export function hasApproval(content: Content): boolean {
 
 /** Why the design cannot be edited right now (null: it can). */
 export function editBlocker(s: EditorSnapshot): string | null {
-  if (s.content.type === "reel") return "Reels metinleri ve süreleri Reels düzenleyicisinden değişir.";
+  if (s.content.type === "reel")
+    return "Reels metinleri ve süreleri Reels düzenleyicisinden değişir.";
   if (isLocked(s.content)) return "Yayındaki post düzenlenemez.";
   if (!activeVersion(s)) return "Henüz bir tasarım sürümü yok.";
   if (!isViewingCurrent(s))
@@ -156,7 +157,8 @@ export function reelEditBlocker(s: EditorSnapshot): string | null {
   const version = activeVersion(s);
   if (!version) return "Henüz bir video yok.";
   const info = readReelVersionInfo(version.slides[0]?.html ?? "");
-  if (!info.videoAssetId) return "Video üretilince metinleri ve süreleri buradan değiştirebilirsin.";
+  if (!info.videoAssetId)
+    return "Video üretilince metinleri ve süreleri buradan değiştirebilirsin.";
   if (!info.spec)
     return "Bu Reels eski biçimde kaydedilmiş; “Neyi değiştireyim?” ile yeni bir sürüm iste.";
   if (!isViewingCurrent(s))
