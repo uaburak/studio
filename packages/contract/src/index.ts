@@ -25,3 +25,4 @@ export * from "./publishing.ts";
 export * from "./reel.ts";
 export * from "./schedule.ts";
 export * from "./social-account.ts";
+export * from "./template.ts";

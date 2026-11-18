@@ -42,6 +42,8 @@ export const ReelScene = z
     headline: z.string().min(1).max(160),
     subhead: z.string().max(240).default(""),
     durationMs: z.number().int().min(800).max(20_000),
+    /** A picture shown in this scene (`motion_graphics`; e.g. a converted post's slide image). */
+    imageAssetId: EntityId.nullable().optional(),
   })
   .meta({ id: "ReelScene" });
 export type ReelScene = z.infer<typeof ReelScene>;

@@ -61,6 +61,9 @@ export const ENUMS = {
   checkStrictness: ["relaxed", "standard", "strict"],
   // --- editor documents (the post editor's canvas, 0016) ---
   editorDocumentKind: ["wecra"],
+  // --- brand templates and repurposing (N9, N10; 0020) ---
+  templateKind: ["html", "canvas"],
+  contentSourceKind: ["story", "reel"],
 } as const;
 
 /** `col in ('a', 'b')` for CHECK constraints (values are constants above, never input). */
@@ -382,9 +385,22 @@ export const contents = sqliteTable(
     updatedAt: updatedAt(),
     /** In the trash ("Silinenler") since (0019); purged TRASH_RETENTION_DAYS later. */
     deletedAt: integer("deleted_at", { mode: "timestamp_ms" }),
+    /** The brand template the post was made from (N9, 0020). */
+    templateId: text("template_id").references((): AnySQLiteColumn => contentTemplates.id, {
+      onDelete: "set null",
+    }),
+    /** The post this one was converted from (N10, 0020), its version and what it became. */
+    sourceContentId: text("source_content_id").references((): AnySQLiteColumn => contents.id, {
+      onDelete: "set null",
+    }),
+    sourceVersion: integer("source_version"),
+    /** `ENUMS.contentSourceKind`; no CHECK (an added column), the API validates it. */
+    sourceKind: text("source_kind", { enum: ENUMS.contentSourceKind }),
   },
   (t) => [
     index("contents_brand_idx").on(t.brandId, t.id),
+    index("contents_source_idx").on(t.sourceContentId),
+    index("contents_template_idx").on(t.templateId),
     index("contents_brand_status_idx").on(t.brandId, t.status, t.id),
     index("contents_status_idx").on(t.status, t.id),
     index("contents_deleted_idx").on(t.deletedAt),
@@ -483,6 +499,94 @@ export const contentVersionDocuments = sqliteTable(
     index("content_version_documents_asset_idx").on(t.assetId),
     check("content_version_documents_kind_check", oneOf(t.kind, ENUMS.editorDocumentKind)),
     check("content_version_documents_format_check", sql`${t.format} >= 1`),
+  ],
+);
+
+// --- brand templates (N9, 0020) ---------------------------------------------------
+// An approved post saved as a layout of its brand: a copy of its slides (and, for a canvas
+// version, its Wecra document) whose text layers and image slots are fillable fields
+// (`TemplateField` JSON). The copy is the template's own: it outlives the post it came from.
+
+/** Stored shape of `content_templates.fields` (mirrors `TemplateField` in @studio/contract). */
+export type TemplateFieldJson = {
+  key: string;
+  label: string;
+  kind: "text" | "image";
+  role: string | null;
+  slide: number;
+  layer: string;
+  nodeId: string | null;
+  layerType: "text" | "slot" | "image";
+  example: string;
+  maxChars: number | null;
+  minFontSize: number | null;
+  multiline: boolean;
+  ratio: string | null;
+  metrics: {
+    box: { x: number; y: number; w: number; h: number };
+    fontSize: number | null;
+    lineHeight: number | null;
+    charWidth: number | null;
+    lines: number;
+    autoResize: "none" | "height" | "width-and-height" | null;
+  } | null;
+  autoFit: boolean;
+  locked: boolean;
+};
+
+export const contentTemplates = sqliteTable(
+  "content_templates",
+  {
+    id: text("id").primaryKey(),
+    brandId: text("brand_id")
+      .notNull()
+      .references(() => brands.id),
+    name: text("name").notNull(),
+    description: text("description").notNull().default(""),
+    kind: text("kind", { enum: ENUMS.templateKind }).notNull(),
+    contentType: text("content_type", { enum: ENUMS.contentType }).notNull(),
+    width: integer("width").notNull(),
+    height: integer("height").notNull(),
+    slideCount: integer("slide_count").notNull(),
+    fields: text("fields", { mode: "json" }).$type<TemplateFieldJson[]>().notNull(),
+    sourceContentId: text("source_content_id").references((): AnySQLiteColumn => contents.id, {
+      onDelete: "set null",
+    }),
+    sourceVersion: integer("source_version").notNull(),
+    sourceTitle: text("source_title").notNull().default(""),
+    /** Canvas templates: the Wecra bundle (an asset of the brand) and its format. */
+    documentAssetId: text("document_asset_id").references(() => assets.id),
+    documentFormat: integer("document_format"),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    index("content_templates_brand_idx").on(t.brandId, t.id),
+    index("content_templates_document_idx").on(t.documentAssetId),
+    check("content_templates_kind_check", oneOf(t.kind, ENUMS.templateKind)),
+    check("content_templates_type_check", oneOf(t.contentType, ENUMS.contentType)),
+    check("content_templates_slides_check", sql`${t.slideCount} >= 1`),
+  ],
+);
+
+/** The template's slides (one row each, like a version's). */
+export const contentTemplateSlides = sqliteTable(
+  "content_template_slides",
+  {
+    templateId: text("template_id")
+      .notNull()
+      .references(() => contentTemplates.id, { onDelete: "cascade" }),
+    position: integer("position").notNull(),
+    html: text("html").notNull(),
+    width: integer("width").notNull(),
+    height: integer("height").notNull(),
+    renderedAssetId: text("rendered_asset_id").references(() => assets.id),
+    layers: text("layers", { mode: "json" }).$type<SlideLayoutJson>(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.templateId, t.position] }),
+    index("content_template_slides_asset_idx").on(t.renderedAssetId),
+    check("content_template_slides_size_check", sql`${t.width} > 0 and ${t.height} > 0`),
   ],
 );
 
@@ -892,6 +996,10 @@ export const planItems = sqliteTable(
     pillar: text("pillar"),
     imageSlot: text("image_slot", { enum: ENUMS.imageSlot }).notNull().default("none"),
     imageBrief: text("image_brief"),
+    /** A brand template the post is made from (N9, 0020). */
+    templateId: text("template_id").references((): AnySQLiteColumn => contentTemplates.id, {
+      onDelete: "set null",
+    }),
     status: text("status", { enum: ENUMS.planItemStatus }).notNull().default("planned"),
     contentId: text("content_id").references(() => contents.id, { onDelete: "set null" }),
     /** Latest content.generate job; its live status is read through a join. */

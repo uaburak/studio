@@ -337,6 +337,19 @@ export const ContentApproval = z
   .meta({ id: "ContentApproval" });
 export type ContentApproval = z.infer<typeof ContentApproval>;
 
+/**
+ * What a post was made from by a conversion (N10): the source post and version, and what it was
+ * turned into (`story`, `reel`). Shown as "Kaynak: … postu" on the new post.
+ */
+export const ContentSource = z
+  .object({
+    contentId: EntityId,
+    version: z.number().int().min(1),
+    kind: z.enum(["story", "reel"]),
+  })
+  .meta({ id: "ContentSource" });
+export type ContentSource = z.infer<typeof ContentSource>;
+
 export const Content = z
   .object({
     id: EntityId,
@@ -360,6 +373,10 @@ export const Content = z
      * older servers (= not deleted).
      */
     deletedAt: Timestamp.nullable().optional(),
+    /** The brand template the post was made from (N9; null: none; absent from older servers). */
+    templateId: EntityId.nullable().optional(),
+    /** The post this one was converted from (N10; null: none; absent from older servers). */
+    source: ContentSource.nullable().optional(),
   })
   .meta({ id: "Content" });
 export type Content = z.infer<typeof Content>;
@@ -448,6 +465,10 @@ export const ContentListQuery = PageQuery.extend({
   type: ContentType.optional(),
   /** Trashed posts: left out by default (`exclude`), `only` lists "Silinenler". */
   deleted: TrashFilter.optional(),
+  /** Posts converted from this one (N10). */
+  sourceContentId: EntityId.optional(),
+  /** Posts made from this template (N9). */
+  templateId: EntityId.optional(),
 });
 export type ContentListQuery = z.input<typeof ContentListQuery>;
 

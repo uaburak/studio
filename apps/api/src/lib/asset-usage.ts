@@ -1,10 +1,12 @@
 import { type AssetUsage, BLOCKING_ASSET_USAGES } from "@studio/contract";
-import { and, eq, like } from "drizzle-orm";
+import { and, eq, like, or } from "drizzle-orm";
 import type { Db } from "../db/client.ts";
 import type { AssetRow } from "../db/mappers.ts";
 import {
   brandProducts,
   contents,
+  contentTemplateSlides,
+  contentTemplates,
   contentVersionDocuments,
   contentVersionSlides,
   contentVersions,
@@ -103,6 +105,39 @@ export async function assetUsages(
       label: versionLabel(r.title, r.version, trashed, `, ${r.position + 1}. karedeki görsel`),
       contentId: r.contentId,
       version: r.version,
+      productId: null,
+      conversationId: null,
+    });
+  }
+
+  // Brand templates (N9): their previews, canvas documents and pictures in their slides.
+  const templates = new Map<string, string>();
+  for (const t of await db
+    .select({ id: contentTemplates.id, name: contentTemplates.name })
+    .from(contentTemplateSlides)
+    .innerJoin(contentTemplates, eq(contentTemplateSlides.templateId, contentTemplates.id))
+    .where(
+      and(
+        eq(contentTemplates.brandId, asset.brandId),
+        or(
+          eq(contentTemplateSlides.renderedAssetId, asset.id),
+          like(contentTemplateSlides.html, `%${asset.id}%`),
+        ),
+      ),
+    ))
+    templates.set(t.id, t.name);
+  for (const t of await db
+    .select({ id: contentTemplates.id, name: contentTemplates.name })
+    .from(contentTemplates)
+    .where(eq(contentTemplates.documentAssetId, asset.id)))
+    templates.set(t.id, t.name);
+  for (const name of templates.values()) {
+    out.push({
+      kind: "template",
+      blocking: true,
+      label: `${quoted(name)} şablonu`,
+      contentId: null,
+      version: null,
       productId: null,
       conversationId: null,
     });

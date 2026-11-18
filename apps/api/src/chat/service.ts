@@ -94,6 +94,7 @@ import {
 } from "../db/schema.ts";
 import { ApiProblem, badRequest, conflict, invalidTransition, notFound } from "../lib/errors.ts";
 import { newId } from "../lib/ids.ts";
+import { assertPlanTemplates } from "../lib/templates.ts";
 import {
   activeRunOf,
   assistantMessageOf,
@@ -807,6 +808,7 @@ function newItemRow(planId: string, position: number, input: ItemInput, now: Dat
     pillar: input.pillar,
     imageSlot: input.imageSlot,
     imageBrief: input.imageBrief,
+    templateId: input.templateId ?? null,
     status: "planned",
     contentId: null,
     generationJobId: null,
@@ -820,7 +822,15 @@ function newItemRow(planId: string, position: number, input: ItemInput, now: Dat
 function itemFields(
   i: Pick<
     PlanItemRow,
-    "date" | "platforms" | "contentType" | "title" | "brief" | "pillar" | "imageSlot" | "imageBrief"
+    | "date"
+    | "platforms"
+    | "contentType"
+    | "title"
+    | "brief"
+    | "pillar"
+    | "imageSlot"
+    | "imageBrief"
+    | "templateId"
   >,
 ) {
   return {
@@ -832,6 +842,7 @@ function itemFields(
     pillar: i.pillar,
     imageSlot: i.imageSlot,
     imageBrief: i.imageBrief,
+    templateId: i.templateId,
   };
 }
 
@@ -1376,6 +1387,7 @@ async function putPlan(
     ]);
   }
   await requireActiveBrand(db, brandId);
+  await assertPlanTemplates(db, brandId, input.items);
   const periodProblem = checkPlanPeriod(
     input.periodStart,
     input.periodEnd,
@@ -1574,6 +1586,7 @@ async function updatePlan(
   };
   let nextItems = items;
   if (input.items) {
+    await assertPlanTemplates(db, plan.brandId, input.items);
     const ids = input.items.map((i) => i.id).filter((id): id is string => id !== undefined);
     if (new Set(ids).size !== ids.length) throw badRequest("item ids must be unique");
     nextItems = input.items.map((item, position) => {
@@ -1887,6 +1900,10 @@ async function generatePlan(
       ...(baseVersion ? { baseVersion } : {}),
       imageSlot: item.imageSlot,
       imageBrief: item.imageBrief,
+      // A template keeps its layout; the AI fills its fields from the item's brief (N9).
+      ...(item.templateId
+        ? { template: { templateId: item.templateId, fill: "ai", values: {}, images: {} } }
+        : {}),
       planItem: { planId, itemId: item.id, date: item.date, pillar: item.pillar },
       ...(plan.conversationId ? { conversationId: plan.conversationId } : {}),
       ...(profile ? { brandProfileVersion: profile.version } : {}),
@@ -2020,6 +2037,7 @@ async function addPlanItem(
     ]);
   }
   assertItemDate(plan, input.date);
+  await assertPlanTemplates(db, plan.brandId, [input]);
   const position = items.reduce((max, i) => Math.max(max, i.position + 1), 0);
   let row = newItemRow(planId, position, input, now);
   if (plan.status === "accepted") {
@@ -2060,8 +2078,11 @@ async function updatePlanItem(
     ...(input.pillar !== undefined ? { pillar: input.pillar } : {}),
     ...(input.imageSlot !== undefined ? { imageSlot: input.imageSlot } : {}),
     ...(input.imageBrief !== undefined ? { imageBrief: input.imageBrief } : {}),
+    ...(input.templateId !== undefined ? { templateId: input.templateId } : {}),
   };
   const nextItem: PlanItemRow = { ...item, ...fields, updatedAt: now };
+  if (fields.templateId !== undefined || fields.contentType !== undefined)
+    await assertPlanTemplates(db, plan.brandId, [nextItem]);
   if (fields.date !== undefined) assertItemDate(plan, nextItem.date);
 
   if (item.status === "accepted" && item.contentId) {

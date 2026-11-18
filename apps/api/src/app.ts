@@ -26,6 +26,7 @@ import { agentRunRoutes, planRoutes } from "./routes/plans.ts";
 import { publishingRoutes } from "./routes/publishing.ts";
 import { scheduleRoutes } from "./routes/schedules.ts";
 import { socialAccountRoutes } from "./routes/social-accounts.ts";
+import { templateRoutes } from "./routes/templates.ts";
 import { workerRunRoutes } from "./routes/worker-runs.ts";
 import { workerScheduleRoutes } from "./routes/worker-schedules.ts";
 import { API_VERSION } from "./version.ts";
@@ -102,6 +103,7 @@ app.route("/", contentRoutes);
 app.route("/", contentCheckRoutes); // /api/contents/{id}/checks, /api/brands/{id}/check-settings (roadmap 13)
 app.route("/", jobRoutes);
 app.route("/", bulkRoutes); // /api/contents/revise, /api/jobs/{id}/retry, /api/estimates/*, /api/maintenance/purge
+app.route("/", templateRoutes); // /api/templates/*, /api/brands/{id}/templates, /api/contents/{id}/repurpose (N9, N10)
 app.route("/", scheduleRoutes);
 app.route("/", publishingRoutes); // /api/publishing/*, /api/publish-logs, /api/worker/publishing/* (P3)
 app.route("/", aiRoutes); // /api/ai/*, /api/worker/ai/* (roadmap 7 + 11)
