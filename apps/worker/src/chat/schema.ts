@@ -130,6 +130,8 @@ export const ChatPlanItemOutput = z.object({
   imageSlot: z.enum(["none", "user_upload", "ai_generate"]),
   imageBrief: trimmed(3_800).optional(),
   imageAliases: z.array(z.string()).default([]),
+  /** A brand template (N9) the post is made from (`list_templates`). */
+  templateId: z.string().trim().min(1).max(128).optional(),
 });
 export type ChatPlanItemOutput = z.infer<typeof ChatPlanItemOutput>;
 
@@ -245,6 +247,7 @@ export function convertPlan(
       pillar: item.pillar ? item.pillar : null,
       imageSlot,
       imageBrief: imageBrief ? imageBrief.slice(0, 4_000) : null,
+      ...(item.templateId ? { templateId: item.templateId } : {}),
     };
   });
   if (plan.items.length > MAX_PLAN_ITEMS) notes.push(`items cut to ${MAX_PLAN_ITEMS}`);

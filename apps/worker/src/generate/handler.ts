@@ -11,10 +11,12 @@ import path from "node:path";
 import {
   ApiError,
   type ContentCheckBrief,
+  type ContentGenerateJobInput,
   ContentGeneratePayload,
   type ConversationAlias,
   parseContentGenerateJob,
   resolveAliasMentions,
+  type TemplateFill,
 } from "@studio/contract";
 import type { AgentDeps } from "../agent.ts";
 import { isBudgetExceeded } from "../ai/policy.ts";
@@ -47,7 +49,7 @@ import {
   generateAndRenderReel,
   type ReelEngineTestSeams,
 } from "../video/render-reel.ts";
-import { loadBrandContext } from "./brand.ts";
+import { type BrandContext, loadBrandContext } from "./brand.ts";
 import {
   type DesignRevision,
   exportIssues,
@@ -59,6 +61,8 @@ import {
   slideFailureMessage,
 } from "./pipeline.ts";
 import type { DesignBrief } from "./prompt.ts";
+import { loadRepurpose, reelSpecFromPost, repurposeMedia, storyBrief } from "./repurpose.ts";
+import { runTemplateGenerate, type TemplateAiCaller } from "./template.ts";
 
 export interface ContentGenerateDeps extends AgentDeps {
   /** Shared Chromium renderer (lazily launched). */
@@ -66,6 +70,9 @@ export interface ContentGenerateDeps extends AgentDeps {
   reelSeams?: ReelEngineTestSeams;
   /** Test seam: the checks' model pass (default: Gemini Flash-Lite, else Claude Haiku). */
   checkModelCaller?: ModelCaller | null;
+  /** Template fills on the canvas: poll interval and wait for the canvas runner (N9). */
+  canvasPollMs?: number;
+  canvasTimeoutMs?: number;
 }
 
 /** Most user images a single design takes. */
@@ -99,6 +106,23 @@ async function runContentGenerate(
     typeof ctx.job.payload.model === "string" ? ctx.job.payload.model : payload.model;
   const requestedEffort =
     typeof ctx.job.payload.effort === "string" ? ctx.job.payload.effort : payload.effort;
+
+  // A brand template (N9): its layout exactly, only its fields change (template.ts).
+  if (payload.template) {
+    try {
+      return await runTemplateJob(
+        ctx,
+        deps,
+        { ...payload, template: payload.template },
+        {
+          requestedModel,
+          requestedEffort,
+        },
+      );
+    } catch (error) {
+      throw describeGenerateError(error, ctx, deps);
+    }
+  }
 
   const health = deps.health();
   const geminiReady = hasGeminiApiKey(settings);
@@ -156,6 +180,16 @@ async function runContentGenerate(
           media.audioAssetId,
       };
       const heroFile = media.files[0];
+      // A post converted into a Reels (N10): its slides as motion-graphics scenes, no AI.
+      if (payload.repurpose) {
+        ctx.progress(0.05, "Kaynak post okunuyor");
+        const repurposed = await loadRepurpose(deps, payload.repurpose, signal);
+        const brandName = (await api.client.brands.get(brandId, init)).name;
+        options.spec = reelSpecFromPost(repurposed.post, {
+          brandName,
+          title: payload.title ?? content.title,
+        }) as NonNullable<typeof options.spec>;
+      }
       const reelOut = await generateAndRenderReel({
         deps,
         renderer: deps.renderer(),
@@ -217,6 +251,25 @@ async function runContentGenerate(
 
     ctx.progress(0.1, "Görseller hazırlanıyor");
     const media = await resolveMedia(deps, payload, signal);
+    // A post converted into a story (N10): its texts and pictures are the brief.
+    let repurposeNote = "";
+    if (payload.repurpose) {
+      const repurposed = await loadRepurpose(deps, payload.repurpose, signal);
+      const extra = await repurposeMedia(deps, repurposed.images, signal);
+      media.files.push(...extra.files.slice(0, Math.max(0, MAX_MEDIA - media.files.length)));
+      const story = storyBrief({
+        source: repurposed.source,
+        post: repurposed.post,
+        media: media.files,
+        platforms: payload.targetPlatforms?.length
+          ? payload.targetPlatforms
+          : content.targetPlatforms,
+        instructions: payload.instructions ?? null,
+      });
+      payload.brief = story.brief;
+      payload.instructions = story.instructions;
+      repurposeNote = `“${repurposed.source.title}” v${repurposed.version.version} postundan dönüştürüldü.`;
+    }
 
     const platforms = payload.targetPlatforms?.length
       ? payload.targetPlatforms
@@ -394,6 +447,7 @@ async function runContentGenerate(
       revision
         ? `AI düzenleme (v${revision.input.baseVersion} üzerine): ${instruction.slice(0, 400)}`
         : `Üretildi (${brand.label}).`,
+      repurposeNote,
       final.errors === 0
         ? `Denetim temiz (${final.warnings} uyarı).`
         : `Denetimde ${final.errors} hata kaldı; düzenleyicide düzeltilmeli.`,
@@ -748,4 +802,110 @@ async function checkGenerated(
     deps.logger.warn(`[job ${ctx.jobId}] checks failed: ${(error as Error).message}`);
     return { brief: failedBrief(input.version, error), fixedVersion: null };
   }
+}
+
+/** The template branch (N9): the post, its brand, the model that may write the fields. */
+async function runTemplateJob(
+  ctx: JobContext,
+  deps: ContentGenerateDeps,
+  payload: ContentGenerateJobInput & { template: TemplateFill },
+  choice: { requestedModel: string | undefined; requestedEffort: string | undefined },
+): Promise<Record<string, unknown>> {
+  const { api, settings } = deps;
+  const signal = ctx.signal;
+  const content = await api.client.contents.get(payload.contentId, { signal });
+  if (content.brandId !== payload.brandId)
+    throw new Error("Bu post başka bir markaya ait; üretim yapılmadı.");
+  let brandContext: Promise<BrandContext> | null = null;
+  const brand = () => {
+    brandContext ??= loadBrandContext({
+      api,
+      brandId: payload.brandId,
+      profileVersion: payload.brandProfileVersion,
+      cacheDir: path.join(deps.stateDir, "cache", "assets"),
+      signal,
+    });
+    return brandContext;
+  };
+  const health = deps.health();
+  const aiReady =
+    !(health.state === "unauthenticated" || health.state === "error") || hasGeminiApiKey(settings);
+  const ai: TemplateAiCaller | null = aiReady
+    ? async (call) => {
+        const route = resolveStructuredRoute({
+          requestedModel: choice.requestedModel,
+          requestedEffort: choice.requestedEffort,
+          defaultEffort: settings.effortDesign,
+          defaultGeminiAlias: "gemini-flash",
+          settings,
+          claudeHealth: health,
+          limitChoice: deps.aiPolicy?.limitChoice(),
+        });
+        const res = await callStructuredAi({
+          label: call.label,
+          system: call.system,
+          content: [{ type: "text", text: call.prompt }],
+          schema: call.schema,
+          route,
+          gate: deps.gate,
+          settings,
+          timeoutMs: settings.claudeTimeoutMs,
+          signal: call.signal,
+          ...(deps.geminiFetch ? { geminiFetch: deps.geminiFetch } : {}),
+          onGeminiUsage: geminiUsageSink(deps.aiUsage, { kind: "generate", jobId: ctx.jobId }),
+        });
+        return { output: res.output, provider: res.provider, model: res.model ?? null };
+      }
+    : null;
+  return runTemplateGenerate({
+    deps,
+    ctx,
+    payload,
+    content,
+    brand,
+    ai,
+    check: async (version, reports) =>
+      (
+        await checkGenerated(deps, ctx, {
+          contentId: content.id,
+          version,
+          fix: false,
+          brand: await brand(),
+          reports,
+        })
+      )?.brief ?? null,
+  });
+}
+
+/** A failure as the owner reads it (Turkish, what to do); transient ones are retried (U12). */
+function describeGenerateError(
+  error: unknown,
+  ctx: JobContext,
+  deps: ContentGenerateDeps,
+): unknown {
+  if (ctx.signal.aborted) return ctx.signal.reason ?? error;
+  deps.logger.warn(`[job ${ctx.jobId}] template fill failed: ${(error as Error).message}`);
+  if (isBudgetExceeded(error)) return error;
+  if (isClaudeError(error)) {
+    const message = describeClaudeError(error);
+    return error.code === "transient" || error.code === "timeout"
+      ? new RetryableError(message)
+      : new Error(message);
+  }
+  if (isGeminiError(error)) {
+    const message = describeGeminiError(error);
+    return error.code === "transient" || error.code === "timeout"
+      ? new RetryableError(message)
+      : new Error(message);
+  }
+  if (error instanceof ApiError) {
+    if (error.status === undefined || error.status >= 500)
+      return new RetryableError(
+        "Studio sunucusuna ulaşılamadı ya da sunucu hata verdi; üretim yeniden denenecek.",
+      );
+    if (error.status === 404)
+      return new Error("Post, şablon ya da markası bulunamadı (silinmiş olabilir).");
+    return new Error("Studio sunucusu şablon sonucunu kabul etmedi. Yeniden deneyin.");
+  }
+  return new Error(turkishOr(error, "Şablondan post üretilemedi. Yeniden deneyin."));
 }
