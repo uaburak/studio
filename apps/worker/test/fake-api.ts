@@ -37,10 +37,13 @@ import {
   type Plan,
   type PlanAccept,
   type PlanGenerate,
+  type PlanningContext,
+  type PlanningHistoryEntry,
   type PlanProposalPut,
   type Schedule,
   type ScheduleCreate,
   type SocialAccount,
+  type SpecialDay,
   slugify,
   sortCheckResults,
   summarizeCheckResults,
@@ -103,6 +106,10 @@ export interface FakeApiState {
   checkSettings: Map<string, BrandCheckSettings>;
   /** Brand products (every brand). */
   products: BrandProduct[];
+  /** What `planning.context` answers (N5, N6): the brand's history and the period's days. */
+  planningHistory: PlanningHistoryEntry[];
+  specialDays: SpecialDay[];
+  planningCalls: { brandId: string; periodStart: string; periodEnd: string }[];
   closed: boolean;
   /** Simulate the owner clicking Allow or Deny on a pending consent card. */
   decideConsent(consentId: string, allow: boolean): void;
@@ -215,6 +222,9 @@ export function createFakeApi(init: Partial<FakeApiState> = {}): {
     checkRuns: [],
     checkSettings: new Map(),
     products: [],
+    planningHistory: [],
+    specialDays: [],
+    planningCalls: [],
     closed: false,
     decideConsent(consentId: string, allow: boolean) {
       const idx = state.parts.findIndex((p) => p.type === "consent" && p.consentId === consentId);
@@ -333,9 +343,11 @@ export function createFakeApi(init: Partial<FakeApiState> = {}): {
             title: item.title,
             brief: item.brief ?? "",
             pillar: item.pillar ?? null,
+            hook: item.hook ?? null,
             imageSlot: item.imageSlot ?? "none",
             imageBrief: item.imageBrief ?? null,
             status: "planned",
+            similar: [],
             contentId: null,
             generation: null,
             createdAt: NOW,
@@ -453,6 +465,33 @@ export function createFakeApi(init: Partial<FakeApiState> = {}): {
         };
         state.skills.push(created);
         return created;
+      },
+    },
+    planning: {
+      context: async (
+        brandId: string,
+        query: { periodStart: string; periodEnd: string },
+      ): Promise<PlanningContext> => {
+        state.planningCalls.push({ brandId, ...query });
+        return {
+          brandId,
+          periodStart: query.periodStart,
+          periodEnd: query.periodEnd,
+          settings: {
+            brandId,
+            sectorTags: [],
+            disabledCategories: [],
+            suggestedTags: ["tarim"],
+            updatedAt: null,
+          },
+          specialDays: state.specialDays,
+          history: {
+            from: "2026-09-01",
+            to: query.periodEnd,
+            entries: state.planningHistory,
+            truncated: false,
+          },
+        };
       },
     },
     brandCheckSettings: {

@@ -1,6 +1,6 @@
 // "Marka profili" (port of StudioMac's brand settings sheet as a page, opened from Markalar):
 // Genel (name, short name, language, archive), Marka Kiti (logos, colours, fonts, sample posts,
-// notes; saved as you go), Profil (versions, tokens, voice and design rules; save, approve, new
+// notes, skills, checks, special days; saved as you go), Profil (versions, tokens, voice and design rules; save, approve, new
 // draft, AI analysis), Hesaplar (connection state; connecting lives in Settings), Ürünler
 // (the brand's products) and Şablonlar (approved posts saved as layouts, N9). The section is part of the route, so back / forward step through
 // sections too. The content uses the page's full width; only long text keeps a reading width.
@@ -59,6 +59,7 @@ import { AddSystemFontButton, KitFontList } from "./kit-fonts.tsx";
 import { ProductsTab } from "./products-tab.tsx";
 import { SkillsSection } from "./skills-section.tsx";
 import { TemplatesTab } from "./templates-tab.tsx";
+import { SpecialDaysSection } from "./special-days-section.tsx";
 
 export const BRAND_TAB_OPTIONS: { value: BrandTab; label: string }[] = [
   { value: "general", label: "Genel" },
@@ -662,6 +663,8 @@ function KitTab({ brand }: { brand: Brand }) {
       <SkillsSection brand={brand} />
 
       <ChecksSettingsSection brand={brand} />
+
+      <SpecialDaysSection brand={brand} />
     </div>
   );
 }

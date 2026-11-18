@@ -29,6 +29,14 @@ import { describeError, useApi } from "../../lib/api.ts";
 import { thumbUrl } from "../../lib/thumbnail.ts";
 import { useAppStore } from "../../state/app-store.ts";
 import { TemplateSelect } from "../brand/template-select.tsx";
+import { DayLabels, SimilarMark } from "../calendar/special-day-views.tsx";
+import { useSpecialDays } from "../calendar/special-days-data.ts";
+import {
+  dayLabelTitle,
+  labelsByDay,
+  marksOf,
+  planSpecialDays,
+} from "../calendar/special-days-model.ts";
 import { CONTENT_TYPE_LABEL, PLATFORM_LABEL } from "./board.ts";
 import { useContents, useCurrentVersions, usePlans } from "./data.ts";
 import { localDate, shortDay } from "./dates.ts";
@@ -183,6 +191,10 @@ function PlanDetail({
   const versions = useCurrentVersions(linked);
   const editable =
     plan.status === "draft" || plan.status === "proposed" || plan.status === "accepted";
+  // The period's special days for the brand (N5): above the items and next to their dates.
+  const special = useSpecialDays(plan.brandId, plan.periodStart, plan.periodEnd);
+  const labels = useMemo(() => labelsByDay(special.days), [special.days]);
+  const periodDays = planSpecialDays(special.days);
 
   const refresh = async () => {
     await Promise.all([
@@ -291,6 +303,19 @@ function PlanDetail({
             {counts.generating > 0 ? ` · ${counts.generating} üretiliyor` : ""}
             {counts.failed > 0 ? ` · ${counts.failed} başarısız` : ""}
           </p>
+          {periodDays.length > 0 && (
+            <ul
+              aria-label="Dönemin özel günleri"
+              className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-footnote text-fg-2"
+            >
+              {periodDays.map((d) => (
+                <li key={d.id} title={dayLabelTitle(d, d.date)}>
+                  <span className="text-fg-3">{shortDay(localDate(d.date) ?? new Date())}</span>{" "}
+                  {d.name}
+                </li>
+              ))}
+            </ul>
+          )}
         </div>
         <div className="flex flex-wrap items-center gap-2">
           {(plan.status === "proposed" || plan.status === "draft") && (
@@ -362,7 +387,7 @@ function PlanDetail({
       <table className="w-full table-fixed border-collapse text-body">
         <thead>
           <tr className="border-b border-hairline text-left text-footnote text-fg-3">
-            <th className="w-[64px] py-2 font-normal">Tarih</th>
+            <th className="w-[92px] py-2 font-normal">Tarih</th>
             <th className="w-[96px] py-2 font-normal">Tür</th>
             <th className="py-2 font-normal">Konu</th>
             <th className="w-[150px] py-2 font-normal">Durum</th>
@@ -384,14 +409,20 @@ function PlanDetail({
             const cover = coverAssetId(version, item.contentType === "reel");
             return (
               <tr key={item.id} className="border-b border-hairline align-top">
-                <td className="py-2.5 text-fg-2">
+                <td className="py-2.5 pr-1 text-fg-2">
                   {item.date ? shortDay(localDate(item.date) ?? new Date()) : "—"}
+                  {item.date && <DayLabels labels={labels.get(item.date) ?? []} max={1} />}
                 </td>
                 <td className="py-2.5 text-fg-2">{CONTENT_TYPE_LABEL[item.contentType]}</td>
                 <td className="py-2.5 pr-3">
                   <div className="truncate font-medium text-fg">{item.title}</div>
                   {item.brief && (
                     <div className="line-clamp-2 text-footnote text-fg-2">{item.brief}</div>
+                  )}
+                  {marksOf(item).length > 0 && (
+                    <div className="mt-1">
+                      <SimilarMark item={item} />
+                    </div>
                   )}
                 </td>
                 <td className="py-2.5 pr-2">
@@ -575,6 +606,7 @@ function ItemDialog({
           contentType: draft.contentType,
           title: draft.title.trim(),
           brief: draft.brief,
+          hook: draft.hook.trim() || null,
           platforms: draft.platforms,
           ...(draft.templateId ? { templateId: draft.templateId } : {}),
         });
@@ -642,6 +674,16 @@ function ItemDialog({
               value={draft.title}
               maxLength={200}
               onChange={(e) => update({ title: e.target.value })}
+            />
+          </div>
+          <div className="flex flex-col gap-1">
+            <span className="text-footnote text-fg-2">Açılış cümlesi (kanca)</span>
+            <TextField
+              aria-label="Açılış cümlesi (kanca)"
+              placeholder="Postun ilk cümlesi; önceki postlardan farklı olsun"
+              value={draft.hook}
+              maxLength={300}
+              onChange={(e) => update({ hook: e.target.value })}
             />
           </div>
           <label className="flex flex-col gap-1">

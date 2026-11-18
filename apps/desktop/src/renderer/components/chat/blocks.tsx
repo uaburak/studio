@@ -10,6 +10,7 @@ import type {
   ToolStepPart,
 } from "@studio/contract";
 import { useEffect, useState } from "react";
+import { SimilarMark } from "../../features/calendar/special-day-views.tsx";
 import { CONTENT_TYPE_LABEL } from "../../features/posts/board.ts";
 import { EstimateDialog, needsEstimate } from "../../features/posts/estimate.tsx";
 import { imageSlotsOf } from "../../features/posts/plan-model.ts";
@@ -266,6 +267,7 @@ export function PlanProposalCard({
               ))}
             </span>
             <span className="min-w-0 flex-1 truncate text-fg">{item.title}</span>
+            <SimilarMark item={item} />
             <span className="shrink-0 text-footnote text-fg-3">
               {CONTENT_TYPE_LABEL[item.contentType]}
             </span>

@@ -47,6 +47,9 @@ import {
   useCancelEntry,
   useScheduleDropTarget,
 } from "./calendar-views.tsx";
+import { DayLabels } from "./special-day-views.tsx";
+import { useSpecialDays } from "./special-days-data.ts";
+import { type DayLabel, gridRange, labelsByDay, weekRange } from "./special-days-model.ts";
 
 type View = "month" | "week";
 
@@ -95,6 +98,10 @@ function CalendarPageBody({ brandId, brandName }: { brandId: string; brandName: 
   }, [data.loaded, data.entries, month, today]);
 
   const week = weekDays(selected);
+  // Türkiye's special days for the brand (N5), as small labels on the days.
+  const range = view === "week" ? weekRange(week) : gridRange(month);
+  const special = useSpecialDays(brandId, range.from, range.to);
+  const labels = useMemo(() => labelsByDay(special.days), [special.days]);
   const title =
     view === "week"
       ? `${shortDay(week[0] as DayKey)} – ${shortDay(week[6] as DayKey)} ${parseDay(week[6] as DayKey).year}`
@@ -217,6 +224,7 @@ function CalendarPageBody({ brandId, brandName }: { brandId: string; brandName: 
             today={today}
             selected={selected}
             entries={data.entries}
+            labels={labels}
             onSelect={select}
             onOpen={open}
             onMove={move}
@@ -226,6 +234,7 @@ function CalendarPageBody({ brandId, brandName }: { brandId: string; brandName: 
             days={week}
             today={today}
             entries={data.entries}
+            labels={labels}
             onSelect={select}
             onOpen={open}
             onMove={move}
@@ -233,9 +242,12 @@ function CalendarPageBody({ brandId, brandName }: { brandId: string; brandName: 
         )}
         <section className="mt-6 max-w-[720px]">
           <div className="mb-2 flex items-center gap-3">
-            <h2 className="min-w-0 flex-1 text-heading font-semibold text-fg">
-              {scope === "day" ? dayTitle(selected) : monthTitle(month)}
-            </h2>
+            <div className="min-w-0 flex-1">
+              <h2 className="text-heading font-semibold text-fg">
+                {scope === "day" ? dayTitle(selected) : monthTitle(month)}
+              </h2>
+              {scope === "day" && <DayLabels labels={labels.get(selected) ?? []} max={4} />}
+            </div>
             <SegmentedControl<"day" | "month">
               label="Liste"
               value={scope}
@@ -328,6 +340,7 @@ function MonthGrid({
   today,
   selected,
   entries,
+  labels,
   onSelect,
   onOpen,
   onMove,
@@ -336,6 +349,7 @@ function MonthGrid({
   today: DayKey;
   selected: DayKey;
   entries: CalendarEntry[];
+  labels: ReadonlyMap<DayKey, DayLabel[]>;
   onSelect(day: DayKey): void;
   onOpen(entry: CalendarEntry, el: Element): void;
   onMove(scheduleId: string, target: string): void;
@@ -398,6 +412,7 @@ function MonthGrid({
                   {parseDay(cell.day).day}
                 </span>
               </div>
+              <DayLabels labels={labels.get(cell.day) ?? []} max={2} className="px-1.5" />
               {list.slice(0, 3).map((entry) => (
                 <EntryChip key={entry.id} entry={entry} onOpen={onOpen} />
               ))}
@@ -416,6 +431,7 @@ function WeekGrid({
   days,
   today,
   entries,
+  labels,
   onSelect,
   onOpen,
   onMove,
@@ -423,6 +439,7 @@ function WeekGrid({
   days: DayKey[];
   today: DayKey;
   entries: CalendarEntry[];
+  labels: ReadonlyMap<DayKey, DayLabel[]>;
   onSelect(day: DayKey): void;
   onOpen(entry: CalendarEntry, el: Element): void;
   onMove(scheduleId: string, target: string): void;
@@ -435,20 +452,22 @@ function WeekGrid({
       <div className="grid grid-cols-[56px_repeat(7,minmax(0,1fr))] border-b border-hairline">
         <div />
         {days.map((day, i) => (
-          <button
-            key={day}
-            type="button"
-            onClick={() => onSelect(day)}
-            className={cn(
-              "flex items-baseline gap-1.5 px-2.5 py-2 text-left text-footnote",
-              day === today ? "text-accent-text" : "text-fg-2",
-            )}
-          >
-            {WEEKDAY_LABELS[i]}
-            <span className={cn("text-body-lg", day === today ? "font-semibold" : "text-fg")}>
-              {parseDay(day).day}
-            </span>
-          </button>
+          <div key={day} className="flex min-w-0 flex-col pb-1.5">
+            <button
+              type="button"
+              onClick={() => onSelect(day)}
+              className={cn(
+                "flex items-baseline gap-1.5 px-2.5 pt-2 pb-0.5 text-left text-footnote",
+                day === today ? "text-accent-text" : "text-fg-2",
+              )}
+            >
+              {WEEKDAY_LABELS[i]}
+              <span className={cn("text-body-lg", day === today ? "font-semibold" : "text-fg")}>
+                {parseDay(day).day}
+              </span>
+            </button>
+            <DayLabels labels={labels.get(day) ?? []} max={2} className="px-2.5" />
+          </div>
         ))}
       </div>
       {/* Dated posts without a time. */}

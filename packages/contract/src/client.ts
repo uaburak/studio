@@ -157,6 +157,16 @@ import {
   type PlanReject,
   type PlanUpdate,
 } from "./plan.ts";
+import {
+  BrandPlanningSettings,
+  type BrandPlanningSettingsPut,
+  PlanningContext,
+  type PlanningContextQuery,
+  SpecialDayList,
+  SpecialDayOverrides,
+  type SpecialDayOverridesPut,
+  type SpecialDaysQuery,
+} from "./planning.ts";
 import { decodeJobStreamMessage, type JobStreamMessage } from "./protocol.ts";
 import {
   type PublishingCloudPut,
@@ -573,6 +583,37 @@ export function createApiClient(options: ApiClientOptions = {}) {
         call(BrandCheckSettings, `/api/brands/${enc(brandId)}/check-settings`, { init }),
       put: (brandId: string, input: BrandCheckSettingsPut, init?: RequestInit) =>
         call(BrandCheckSettings, `/api/brands/${enc(brandId)}/check-settings`, {
+          method: "PUT",
+          json: input,
+          init,
+        }),
+    },
+
+    /** Special days and planning context (N5, N6). */
+    planning: {
+      /** The brand's sector tags and switched-off special-day categories (defaults until saved). */
+      settings: (brandId: string, init?: RequestInit) =>
+        call(BrandPlanningSettings, `/api/brands/${enc(brandId)}/planning-settings`, { init }),
+      putSettings: (brandId: string, input: BrandPlanningSettingsPut, init?: RequestInit) =>
+        call(BrandPlanningSettings, `/api/brands/${enc(brandId)}/planning-settings`, {
+          method: "PUT",
+          json: input,
+          init,
+        }),
+      /** Special days, history and settings the plan agent reads before planning a period. */
+      context: (brandId: string, query: PlanningContextQuery, init?: RequestInit) =>
+        call(PlanningContext, `/api/brands/${enc(brandId)}/planning-context`, {
+          query: q(query),
+          init,
+        }),
+      /** Special days between two dates (with `brandId`: that brand's tags and categories). */
+      specialDays: (query: SpecialDaysQuery, init?: RequestInit) =>
+        call(SpecialDayList, "/api/special-days", { query: q(query), init }),
+      /** Owner corrections of the bayram dates (every brand). */
+      overrides: (init?: RequestInit) =>
+        call(SpecialDayOverrides, "/api/special-days/overrides", { init }),
+      putOverrides: (input: SpecialDayOverridesPut, init?: RequestInit) =>
+        call(SpecialDayOverrides, "/api/special-days/overrides", {
           method: "PUT",
           json: input,
           init,

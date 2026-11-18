@@ -78,6 +78,10 @@ export const CHAT_TURN_JSON_SCHEMA = {
               title: { type: "string" },
               brief: { type: "string" },
               pillar: { type: "string" },
+              hook: {
+                type: "string",
+                description: "Postun açılış cümlesi (kanca); geçmiştekilerden farklı.",
+              },
               imageSlot: { type: "string", enum: ["none", "user_upload", "ai_generate"] },
               imageBrief: { type: "string" },
               imageAliases: {
@@ -127,6 +131,8 @@ export const ChatPlanItemOutput = z.object({
   title: trimmed(200),
   brief: trimmed(20_000),
   pillar: trimmed(120).optional(),
+  /** The post's planned opening line (N6). */
+  hook: trimmed(300).optional(),
   imageSlot: z.enum(["none", "user_upload", "ai_generate"]),
   imageBrief: trimmed(3_800).optional(),
   imageAliases: z.array(z.string()).default([]),
@@ -245,6 +251,7 @@ export function convertPlan(
       title: item.title || `Post ${i + 1}`,
       brief: item.brief,
       pillar: item.pillar ? item.pillar : null,
+      hook: item.hook ? item.hook : null,
       imageSlot,
       imageBrief: imageBrief ? imageBrief.slice(0, 4_000) : null,
       ...(item.templateId ? { templateId: item.templateId } : {}),

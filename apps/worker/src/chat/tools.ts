@@ -23,12 +23,16 @@ import {
   type ContentGeneratePayload,
   ContentStatus,
   ContentType,
+  checkPlanPeriod,
   computeContentHash,
   ESTIMATE_CONFIRM_THRESHOLD,
   isTerminalJobStatus,
   type Job,
   type Plan,
+  type PlanningContext,
+  type PlanProposalPut,
   Platform,
+  planItemSimilarities,
   slugify,
 } from "@studio/contract";
 import { readCanvas } from "@studio/design-kit/canvas";
@@ -47,6 +51,7 @@ import {
   canvasScreenshotTool,
 } from "./canvas-tools.ts";
 import { estimateLine } from "./estimate-text.ts";
+import { historyBlock, similarityReport, specialDaysBlock } from "./planning.ts";
 import { profileFacts } from "./prompt.ts";
 import {
   CHAT_CONTENT_TYPES,
@@ -185,6 +190,11 @@ export const STUDIO_TOOLS: readonly StudioToolDefinition[] = [
                 type: "string",
                 description: "İçerik sütunu (ör. ürün tanıtımı, uygulama ipuçları).",
               },
+              hook: {
+                type: "string",
+                description:
+                  "Postun açılış cümlesi (kanca, tek satır); geçmiş postların kancalarından farklı.",
+              },
               imageSlot: {
                 type: "string",
                 enum: ["none", "user_upload", "ai_generate"],
@@ -206,6 +216,23 @@ export const STUDIO_TOOLS: readonly StudioToolDefinition[] = [
               },
             },
           },
+        },
+      },
+    },
+  },
+  {
+    name: "get_planning_context",
+    description:
+      "Bir dönemi planlamadan önce: o dönemin Türkiye özel günlerini (markanın sektör etiketleriyle; önem, hazırlık süresi, ton) ve markanın son üç ayının özetini (postlar, sütunlar, kancalar, reddedilen ve silinen konular) getirir.",
+    inputSchema: {
+      type: "object",
+      required: ["periodStart", "periodEnd"],
+      properties: {
+        periodStart: { type: "string", description: "Dönem başlangıcı (YYYY-MM-DD)." },
+        periodEnd: { type: "string", description: "Dönem sonu (YYYY-MM-DD)." },
+        brandId: {
+          type: "string",
+          description: "Marka id'si (boş bırakılırsa konuşmanın markası kullanılır).",
         },
       },
     },
@@ -684,6 +711,7 @@ const ProposePlanInput = z.object({
         title: trimmed(200),
         brief: trimmed(20_000).default(""),
         pillar: trimmed(120).optional(),
+        hook: trimmed(300).optional(),
         imageSlot: z.enum(["none", "user_upload", "ai_generate"]).default("none"),
         imageBrief: trimmed(3_800).optional(),
         imageAliases: z.array(z.string()).default([]),
@@ -691,6 +719,12 @@ const ProposePlanInput = z.object({
       }),
     )
     .min(1),
+});
+
+const PlanningContextInput = z.object({
+  periodStart: z.iso.date(),
+  periodEnd: z.iso.date(),
+  brandId: z.string().trim().min(1).optional(),
 });
 
 const AskQuestionInput = z.object({
@@ -937,6 +971,10 @@ export interface StudioToolExecutorOptions {
 export class StudioToolExecutor {
   private brandId: string | null;
   private openPlan: Plan | null;
+  /** Planning contexts fetched this turn (`brandId|start|end`). */
+  private readonly planningContexts = new Map<string, Promise<PlanningContext>>();
+  /** `propose_plan` already handed near-duplicates back once this turn (N6). */
+  private similarityReturned = false;
   private stepSeq = 0;
   private questionSeq = 0;
   private consentSeq = 0;
@@ -1042,6 +1080,14 @@ export class StudioToolExecutor {
           "İçerik planı hazırlanıyor…",
           "İçerik planı hazırlandı",
           () => this.proposePlan(args),
+        );
+      case "get_planning_context":
+        return this.runSafe(
+          stepId,
+          name,
+          "Özel günler ve geçmiş okunuyor…",
+          "Özel günler ve geçmiş okundu",
+          () => this.getPlanningContext(args),
         );
       case "ask_question":
         // Older name (no longer listed): adds the card without waiting for the answer.
@@ -1448,6 +1494,30 @@ export class StudioToolExecutor {
     if (notes.length > 0) {
       this.logger.info(`plan fixes (${this.options.runId}): ${notes.join("; ")}`);
     }
+    // N6: near-duplicates of the brand's last months (or of each other) go back to the agent once,
+    // before the plan is shown; a second proposal is saved and the API marks what is left.
+    const brandForCheck = explicitBrandId ?? this.brandId;
+    if (brandForCheck && !this.similarityReturned) {
+      const marks = await this.nearDuplicates(brandForCheck, plan).catch((error: unknown) => {
+        this.logger.warn(`similarity check skipped: ${(error as Error).message}`);
+        return null;
+      });
+      const flagged = marks?.filter((m) => m.length > 0).length ?? 0;
+      if (marks && flagged > 0) {
+        this.similarityReturned = true;
+        return {
+          data: {
+            ok: false,
+            saved: false,
+            reason: "similar",
+            message: `Plan henüz gösterilmedi: ${flagged} kalem markanın son aylarındaki içeriklere ya da plandaki başka bir kaleme çok benziyor. Bu kalemleri yeni bir konu ya da kancayla değiştirip propose_plan'ı yeniden çağır. Benzerliği bilerek koruyorsan aynı kalemlerle yeniden çağır; plan kaydedilir ve o kalemler "Benzer" diye işaretlenir.`,
+            similar: similarityReport(plan.items, marks),
+          },
+          summary: `${flagged} kalem geçmişe benziyor; plan düzeltiliyor`,
+          label: "Benzer kalemler bulundu",
+        };
+      }
+    }
     const saved = await this.options.writer.putPlan(plan);
     this.openPlan = saved.plan;
     this.brandId = saved.plan.brandId;
@@ -1468,6 +1538,66 @@ export class StudioToolExecutor {
         notes,
       },
       summary: `${saved.plan.items.length} post önerildi`,
+    };
+  }
+
+  /** The brand's planning context for a period (cached for the turn). */
+  private async planningContextFor(
+    brandId: string,
+    periodStart: string,
+    periodEnd: string,
+  ): Promise<PlanningContext> {
+    const key = `${brandId}|${periodStart}|${periodEnd}`;
+    let pending = this.planningContexts.get(key);
+    if (!pending) {
+      pending = this.options.api.client.planning.context(
+        brandId,
+        { periodStart, periodEnd },
+        { signal: this.options.signal },
+      );
+      this.planningContexts.set(key, pending);
+      pending.catch(() => this.planningContexts.delete(key));
+    }
+    return pending;
+  }
+
+  /** Near-duplicate marks of a proposed plan's items (history + the plan itself). */
+  private async nearDuplicates(brandId: string, plan: PlanProposalPut) {
+    const ctx = await this.planningContextFor(brandId, plan.periodStart, plan.periodEnd);
+    return planItemSimilarities(
+      plan.items.map((item) => ({
+        title: item.title,
+        hook: item.hook ?? null,
+        brief: item.brief ?? "",
+        date: item.date ?? null,
+      })),
+      ctx.history.entries,
+    );
+  }
+
+  private async getPlanningContext(args: Record<string, unknown>) {
+    const parsed = PlanningContextInput.safeParse(args);
+    if (!parsed.success) {
+      throw new Error(`Geçersiz dönem: ${z.prettifyError(parsed.error).slice(0, 300)}`);
+    }
+    const input = parsed.data;
+    const period = checkPlanPeriod(input.periodStart, input.periodEnd);
+    if (period) throw new Error(`Geçersiz dönem: ${period}`);
+    const brandId = input.brandId ? (await this.resolveBrand(input.brandId)).id : this.brandId;
+    if (!brandId) {
+      throw new Error("Konuşmanın markası yok; brandId ver ya da önce markayı belirle.");
+    }
+    const ctx = await this.planningContextFor(brandId, input.periodStart, input.periodEnd);
+    return {
+      data: {
+        ok: true,
+        brandId,
+        periodStart: ctx.periodStart,
+        periodEnd: ctx.periodEnd,
+        specialDays: specialDaysBlock(ctx),
+        history: historyBlock(ctx),
+      },
+      summary: `${ctx.specialDays.length} özel gün, ${ctx.history.entries.length} geçmiş kayıt`,
     };
   }
 

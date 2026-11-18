@@ -234,6 +234,8 @@ export interface ItemDraft {
   contentType: ContentType;
   title: string;
   brief: string;
+  /** Planned opening line (N6); empty = none. */
+  hook: string;
   platforms: Platform[];
   /** A brand template the post is made from (N9; null: designed anew). */
   templateId?: string | null;
@@ -245,6 +247,7 @@ export function draftOf(item: PlanItem): ItemDraft {
     contentType: item.contentType,
     title: item.title,
     brief: item.brief,
+    hook: item.hook ?? "",
     platforms: [...item.platforms],
     templateId: item.templateId ?? null,
   };
@@ -257,6 +260,7 @@ export function newItemDraft(plan: Pick<Plan, "periodStart">): ItemDraft {
     contentType: "post",
     title: "",
     brief: "",
+    hook: "",
     platforms: ["instagram"],
   };
 }
@@ -268,6 +272,7 @@ export function draftError(
 ): string | null {
   if (!draft.title.trim()) return "Konu boş olamaz.";
   if (draft.title.trim().length > 200) return "Konu en fazla 200 karakter olabilir.";
+  if (draft.hook.trim().length > 300) return "Kanca en fazla 300 karakter olabilir.";
   if (draft.platforms.length === 0) return "En az bir platform seç.";
   if (draft.date) {
     if (!localDate(draft.date)) return "Tarih geçersiz.";
@@ -285,6 +290,8 @@ export function draftPatch(item: PlanItem, draft: ItemDraft): PlanItemPatch {
   if (draft.contentType !== item.contentType) patch.contentType = draft.contentType;
   if (draft.title.trim() !== item.title) patch.title = draft.title.trim();
   if (draft.brief !== item.brief) patch.brief = draft.brief;
+  const hook = draft.hook.trim() || null;
+  if (hook !== (item.hook ?? null)) patch.hook = hook;
   const same =
     draft.platforms.length === item.platforms.length &&
     draft.platforms.every((p) => item.platforms.includes(p));

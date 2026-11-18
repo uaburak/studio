@@ -77,6 +77,8 @@ function planItem(over: Partial<PlanItem> = {}): PlanItem {
     title: "Damla sulama",
     brief: "",
     pillar: null,
+    hook: null,
+    similar: [],
     imageSlot: "none",
     imageBrief: null,
     status: "accepted",

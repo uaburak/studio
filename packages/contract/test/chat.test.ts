@@ -195,6 +195,7 @@ describe("plans", () => {
       title: "Hasat",
       brief: "",
       pillar: null,
+      hook: null,
       imageSlot: "none",
       imageBrief: null,
     });

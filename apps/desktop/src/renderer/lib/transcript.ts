@@ -483,6 +483,7 @@ const PHRASES: Record<string, Phrase> = {
   get_brand_profile: { counted: false, text: "marka profilini okudu" },
   set_conversation_brand: { counted: false, text: "markayı seçti" },
   propose_plan: { counted: false, text: "plan önerdi" },
+  get_planning_context: { counted: false, text: "özel günleri ve geçmişi okudu" },
   ask_user: { counted: true, text: "soru sordu" },
   list_aliases: { counted: false, text: "görselleri listeledi" },
   view_alias: { counted: true, text: "görsele baktı" },
