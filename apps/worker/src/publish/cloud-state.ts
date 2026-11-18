@@ -50,8 +50,11 @@ export function pushKey(s: {
   versionId: string;
   scheduledAt: string;
   contentHash: string;
+  /** N13: bumped when the post's publish details change; a new revision pushes again. */
+  detailsRevision?: number | undefined;
 }): string {
-  return `${s.versionId}:${s.scheduledAt}:${s.contentHash}`;
+  const base = `${s.versionId}:${s.scheduledAt}:${s.contentHash}`;
+  return s.detailsRevision ? `${base}:d${s.detailsRevision}` : base;
 }
 
 interface ConfigDeps {

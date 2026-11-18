@@ -23,6 +23,14 @@ export const PROMPT_BLOCK_TAGS = [
   "veri",
   "ozel_gunler",
   "gecmis_ozeti",
+  "performans_ozeti",
+  "yayin_performansi",
+  // comment replies (N16)
+  "marka_sesi",
+  "post_aciklamasi",
+  "yorum",
+  "yorum_dizisi",
+  "onceki_yanitlar",
   // design engine
   "design_contract",
   "brand_css",

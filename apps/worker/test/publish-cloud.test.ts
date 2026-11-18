@@ -526,3 +526,54 @@ describe("local mode", () => {
     });
   });
 });
+
+describe("publish details in cloud orders (N13)", () => {
+  it("sends the first comment, location, alt text and picture tags; a details change pushes again", async () => {
+    const cloud = fakeCloud();
+    const { api, state } = fakeApiWithPublishing({
+      url: "https://pub.test",
+      token: "cloud-token-xyz",
+    });
+    const s = seed(state, {
+      bytes: await image("jpeg"),
+      mime: "image/jpeg",
+      scheduledAt: "2026-11-20T12:00:00.000Z",
+    });
+    const content = state.contents.get(s.contentId) as Content;
+    state.contents.set(s.contentId, {
+      ...content,
+      publishDetails: {
+        firstComment: "#hasat #tarım",
+        altTexts: ["Tarlada buğday başakları"],
+        location: { id: "110011", name: "Konya" },
+        collaborators: ["ortak.marka"],
+        userTags: [{ slide: 0, username: "ciftci.ali", x: 0.4, y: 0.6 }],
+      },
+    });
+    const poller = new SchedulePoller(deps(api, {}, cloud.fetchImpl));
+    await poller.tick();
+    const order = cloud.calls.find((c) => c.method === "PUT" && c.path === `/v1/orders/${s.id}`)
+      ?.body as {
+      details?: unknown;
+      media: { altText?: string; userTags?: unknown }[];
+    };
+    expect(order.details).toEqual({
+      firstComment: "#hasat #tarım",
+      locationId: "110011",
+      collaborators: ["ortak.marka"],
+    });
+    expect(order.media[0]).toMatchObject({
+      altText: "Tarlada buğday başakları",
+      userTags: [{ username: "ciftci.ali", x: 0.4, y: 0.6 }],
+    });
+
+    // Unchanged: no push. The details changed (revision bumped): pushed again.
+    cloud.calls.length = 0;
+    await poller.tick();
+    expect(cloud.calls.map((c) => c.method)).toEqual(["GET"]);
+    state.schedules[0] = { ...(state.schedules[0] as Schedule), detailsRevision: 1 };
+    cloud.calls.length = 0;
+    await poller.tick();
+    expect(cloud.calls[0]).toMatchObject({ method: "PUT", path: `/v1/orders/${s.id}` });
+  });
+});

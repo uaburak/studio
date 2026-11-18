@@ -169,6 +169,8 @@ describe("AgentRuntime announcements", () => {
       "schedule.publish",
       "content.check",
       "media.analyze",
+      "insights.sync",
+      "comments.sync",
     ]);
     expect(r.versionSuffix()).toBe("+claude.unauthenticated");
 
@@ -180,11 +182,14 @@ describe("AgentRuntime announcements", () => {
       "schedule.publish",
       "content.check",
       "media.analyze",
+      "insights.sync",
+      "comments.sync",
       "chat.turn",
       "content.generate",
       "brand.analyze",
       "image.generate",
       "brand.skill_draft",
+      "comments.suggest",
     ]);
     expect(r.versionSuffix()).toBe("");
     expect(changes).toBe(2);
@@ -198,11 +203,14 @@ describe("AgentRuntime announcements", () => {
       "schedule.publish",
       "content.check",
       "media.analyze",
+      "insights.sync",
+      "comments.sync",
       "chat.turn",
       "content.generate",
       "brand.analyze",
       "image.generate",
       "brand.skill_draft",
+      "comments.suggest",
     ]);
     expect(r.gate.status().parkedUntil?.getTime()).toBe(until.getTime());
 
@@ -213,6 +221,8 @@ describe("AgentRuntime announcements", () => {
       "schedule.publish",
       "content.check",
       "media.analyze",
+      "insights.sync",
+      "comments.sync",
     ]);
     await r.stop();
   });
@@ -259,11 +269,14 @@ describe("worker with an agent runtime", () => {
         "schedule.publish",
         "content.check",
         "media.analyze",
+        "insights.sync",
+        "comments.sync",
         "chat.turn",
         "content.generate",
         "brand.analyze",
         "image.generate",
         "brand.skill_draft",
+        "comments.suggest",
       ],
       workerVersion: "0.1.0",
     });
@@ -293,6 +306,8 @@ describe("worker with an agent runtime", () => {
         "schedule.publish",
         "content.check",
         "media.analyze",
+        "insights.sync",
+        "comments.sync",
       ],
       workerVersion: "0.1.0+claude.unauthenticated",
     });

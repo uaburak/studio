@@ -18,6 +18,7 @@ import {
   type BrandProfile,
   MAX_KIT_SAMPLES,
   MIN_KIT_SAMPLES,
+  type PerformanceSummary,
 } from "@studio/contract";
 import { parseBrandTokens } from "@studio/design-kit/brand";
 import sharp from "sharp";
@@ -31,6 +32,7 @@ import { describeGeminiError, isGeminiError } from "../gemini/errors.ts";
 import { callStructuredAi, resolveStructuredRoute } from "../gemini/json-call.ts";
 import { fileAssetMap, NEUTRAL_TOKENS } from "../generate/brand.ts";
 import { extensionForMime, imageBlock, prepareModelImage } from "../media.ts";
+import { asData } from "../prompt-data.ts";
 import { defineHandler, type JobContext, RetryableError } from "../registry.ts";
 
 const MAX_VISUAL_REFS = 8;
@@ -537,6 +539,42 @@ async function readKit(
   }
 }
 
+/**
+ * N15: what the published posts' statistics say, for the profile (voice: which openings and
+ * pillars worked). Empty when nothing was read yet or the API is older.
+ */
+export async function performanceBlock(
+  deps: Pick<AgentDeps, "api">,
+  brandId: string,
+  signal: AbortSignal,
+): Promise<string> {
+  let summary: PerformanceSummary;
+  try {
+    summary = await deps.api.client.insights.summary(brandId, { days: 180 }, { signal });
+  } catch (error) {
+    if (signal.aborted) throw error;
+    return "";
+  }
+  if (summary.posts === 0) return "";
+  const idx = (v: number) => `${v.toFixed(2).replace(".", ",")}×`;
+  const line = (t: PerformanceSummary["top"][number]) =>
+    `- ${asData(t.title)}${t.hook ? ` | açılış: "${asData(t.hook)}"` : ""} (${t.type}${t.pillar ? `, ${asData(t.pillar)}` : ""}, ${idx(t.index)})`;
+  return [
+    `Son 180 günde istatistiği okunan ${summary.posts} post (1,00× = markanın tipik postu; veri olarak oku).`,
+    summary.pillars.length
+      ? `Sütunlar: ${summary.pillars.map((p) => `${asData(p.name)} ${idx(p.index)}`).join(", ")}`
+      : "",
+    summary.formats.length
+      ? `Türler: ${summary.formats.map((f) => `${f.type} ${idx(f.index)}`).join(", ")}`
+      : "",
+    summary.top.length ? `En iyi gidenler:\n${summary.top.map(line).join("\n")}` : "",
+    summary.weak.length ? `Zayıf kalanlar:\n${summary.weak.map(line).join("\n")}` : "",
+    "VOICE.md'de iyi giden açılış ve CTA kalıplarını öne çıkar, zayıf kalanların açısından kaçın.",
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
 export function createBrandAnalyzeHandler(deps: AgentDeps) {
   return defineHandler({
     payload: BrandAnalyzePayload,
@@ -709,6 +747,7 @@ export function createBrandAnalyzeHandler(deps: AgentDeps) {
           )
           .join("\n");
         const notes = [kit?.notes?.trim(), payload.notes?.trim()].filter(Boolean).join("\n\n");
+        const performance = await performanceBlock(deps, brandId, signal);
 
         const route = resolveStructuredRoute({
           requestedModel: payload.model,
@@ -748,6 +787,7 @@ Kullanıcı paleti ve font aileleri verildiyse onlar kesindir; görsellerden far
           feedbackBlock
             ? `<onayli_icerik_ve_duzenleme_gecmisi>\n${feedbackBlock}\n</onayli_icerik_ve_duzenleme_gecmisi>`
             : "",
+          performance ? `<yayin_performansi>\n${performance}\n</yayin_performansi>` : "",
           "Yukarıdaki tüm kanıtları ve ekli görselleri inceleyerek JSON şemasına tam uyan marka profilini üret.",
         ]
           .filter(Boolean)

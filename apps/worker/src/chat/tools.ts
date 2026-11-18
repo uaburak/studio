@@ -56,6 +56,7 @@ import {
 import { estimateLine } from "./estimate-text.ts";
 import { historyBlock, similarityReport, specialDaysBlock } from "./planning.ts";
 import { profileFacts } from "./prompt.ts";
+import { PUBLISH_TOOLS, setPublishDetailsTool } from "./publish-tools.ts";
 import {
   CHAT_CONTENT_TYPES,
   CHAT_PLATFORMS,
@@ -745,6 +746,8 @@ export const STUDIO_TOOLS: readonly StudioToolDefinition[] = [
   ...CANVAS_TOOLS,
   // Brand templates and repurposing (N9, N10; template-tools.ts).
   ...TEMPLATE_TOOLS,
+  // First comment and alt texts (N13; publish-tools.ts).
+  ...PUBLISH_TOOLS,
 ];
 
 // --- input schemas -------------------------------------------------------------------------
@@ -1294,6 +1297,14 @@ export class StudioToolExecutor {
       case "canvas_screenshot":
         return this.runSafe(stepId, name, "Karelere bakılıyor…", "Karelere bakıldı", () =>
           canvasScreenshotTool(this.canvasEnv(), args),
+        );
+      case "set_publish_details":
+        return this.runSafe(
+          stepId,
+          name,
+          "Yayın ayrıntıları kaydediliyor…",
+          "Yayın ayrıntıları kaydedildi",
+          () => setPublishDetailsTool({ api: this.options.api, signal: this.options.signal }, args),
         );
       case "list_templates":
         return this.runSafe(stepId, name, "Şablonlar okunuyor…", "Şablonlar okundu", () =>
