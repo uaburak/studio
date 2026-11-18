@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <title>Studio</title>
+  <!-- Placeholder Studio icon (owner will replace): macOS squircle-ish tile, black on white, orange accent. -->
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="#111111"/>
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="none" stroke="#2a2a2a" stroke-width="4"/>
+  <path d="M640 330c-28-40-82-66-148-66-96 0-162 52-162 128 0 70 50 104 150 128l44 10c62 15 86 33 86 66 0 40-42 68-104 68-66 0-114-30-130-78l-82 30c24 80 106 130 212 130 112 0 190-58 190-148 0-74-50-112-152-136l-46-11c-56-13-80-30-80-60 0-36 36-60 86-60 46 0 80 18 98 48z" fill="#ffffff"/>
+  <circle cx="712" cy="712" r="56" fill="#ff6a1a"/>
+</svg>

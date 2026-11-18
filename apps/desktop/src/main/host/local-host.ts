@@ -18,6 +18,8 @@ import { snapshotDatabase } from "./backup.ts";
 import type { Advertiser } from "./bonjour.ts";
 import * as env from "./environment.ts";
 import * as guards from "./guards.ts";
+import { type ChildLayout, devLayout, type NodeRuntime, shellNodeRuntime } from "./layout.ts";
+import { type HostLock, lockHeldMessage } from "./lock.ts";
 import {
   type ProcessLauncher,
   type ProcessSpec,
@@ -57,7 +59,7 @@ export interface HostDeps {
   /** Whether the API on `port` accepts this app's owner secret (before attaching to it). */
   ownerCheck(port: number): Promise<boolean>;
   isAlive(pid: number): boolean;
-  stopLeftovers(repoPath: string, stateDir: string): Promise<void>;
+  stopLeftovers(layout: ChildLayout, stateDir: string): Promise<void>;
   /** G5: copy the database before migrations. */
   snapshotDatabase(stateDir: string): void;
   /** May be slow (the login shell): read in the background. */
@@ -82,6 +84,23 @@ export interface HostDeps {
   sleep(ms: number, signal?: AbortSignal): Promise<void>;
   now(): number;
   supervisor?: SupervisorDeps;
+  /**
+   * Where the children come from (layout.ts). Default: the repo at `repoPath` (dev). Null: no
+   * usable layout (the start fails with a clear message).
+   */
+  layout?(config: HostConfiguration): ChildLayout | null;
+  /** Packaged: Electron's own binary as Node. Null / absent: `node` from the login PATH. */
+  nodeRuntime?(layout: ChildLayout, path: string): NodeRuntime | null;
+  /**
+   * Extra worker environment: provider keys from the app's secure settings (worker-env.ts), the
+   * Chromium folder, self-test switches. The host's own variables always win over these.
+   */
+  workerEnv?(
+    layout: ChildLayout,
+    path: string,
+  ): Record<string, string> | Promise<Record<string, string>>;
+  /** One host per state folder (P9): taken before anything touches the database. */
+  lock?: HostLock;
   /** How long a one-shot `d1 migrations apply` may take. */
   migrationTimeoutMs?: number;
   /** How long the API may take to answer after it was started. */
@@ -101,6 +120,8 @@ export interface MacRoutesInput {
   lanPort: number | null;
   bonjourName: string | null;
   tunnelUrl: string | null;
+  /** The tunnel as this app sees it (`/api/health`, P9). */
+  tunnel?: { state: "off" | "ok" | "warn" | "fail"; detail: string };
 }
 
 const SERVICE_LABELS: Record<ServiceName, string> = {
@@ -131,17 +152,22 @@ export function buildSpecs(input: {
   /** Codex CLI / Antigravity CLI (`agy`) when installed (optional: older callers omit them). */
   codex?: string | null;
   antigravity?: string | null;
+  /** Where the children come from (default: `devLayout(repo)`). */
+  layout?: ChildLayout;
+  /** How Node children start (default: `node` from the login PATH). */
+  runtime?: NodeRuntime;
+  /** Worker variables from the app (keys, Chromium folder); the host's own win over these. */
+  workerExtra?: Record<string, string>;
 }) {
-  const apiDir = join(input.repo, "apps", "api");
-  const workerDir = join(input.repo, "apps", "worker");
+  const layout = input.layout ?? devLayout(input.repo);
+  const runtime = input.runtime ?? shellNodeRuntime(input.node);
   const logs = join(input.stateDir, "logs");
   const persist = ["--persist-to", join(input.stateDir, "api", "state")];
-  const wrangler = join(apiDir, "node_modules", "wrangler", "bin", "wrangler.js");
-  const gatewayScript = join(apiDir, "scripts", "lan-gateway.mjs");
   // Secrets go through the environment: wrangler passes declared secrets
   // (wrangler.jsonc `secrets.required`) from process.env to the Worker.
   const wranglerEnv: Record<string, string> = {
     ...input.base,
+    ...runtime.env,
     WORKER_TOKEN: input.token,
     TOKEN_ENCRYPTION_KEY: input.vaultKey,
     STUDIO_OWNER_SECRET: input.ownerSecret,
@@ -153,17 +179,28 @@ export function buildSpecs(input: {
   };
   const migrate: ProcessSpec = {
     name: "migrate",
-    executable: input.node,
-    args: [wrangler, "d1", "migrations", "apply", "DB", "--local", ...persist],
+    executable: runtime.executable,
+    args: [
+      ...runtime.args,
+      layout.wrangler,
+      "d1",
+      "migrations",
+      "apply",
+      "DB",
+      "--local",
+      ...persist,
+      ...layout.wranglerArgs,
+    ],
     env: { ...wranglerEnv, CI: "1" },
-    cwd: apiDir,
+    cwd: layout.apiCwd,
     logFile: join(logs, "migrate.log"),
   };
   const api: ProcessSpec = {
     name: "api",
-    executable: input.node,
+    executable: runtime.executable,
     args: [
-      wrangler,
+      ...runtime.args,
+      layout.wrangler,
       "dev",
       "--ip",
       "127.0.0.1",
@@ -175,42 +212,47 @@ export function buildSpecs(input: {
       join(input.stateDir, "api", "no-dev-vars.env"),
       "--show-interactive-dev-session=false",
       ...persist,
+      ...layout.wranglerArgs,
     ],
     env: wranglerEnv,
-    cwd: apiDir,
+    cwd: layout.apiCwd,
     logFile: join(logs, "api.log"),
   };
   const gateway = (host: string, port: number): ProcessSpec => ({
     name: "gateway",
-    executable: input.node,
-    args: [gatewayScript],
+    executable: runtime.executable,
+    args: [...runtime.args, layout.gatewayScript],
     env: {
       ...input.base,
+      ...runtime.env,
       STUDIO_GATEWAY_HOST: host,
       STUDIO_GATEWAY_PORT: String(port),
       STUDIO_API_PORT: String(input.apiPort),
     },
-    cwd: apiDir,
+    cwd: layout.apiCwd,
     logFile: join(logs, "gateway.log"),
   });
   const workerEnv: Record<string, string> = {
     ...input.base,
+    ...(input.workerExtra ?? {}),
+    ...runtime.env,
     STUDIO_HUB_URL: `ws://127.0.0.1:${input.apiPort}/api/hub`,
     STUDIO_WORKER_TOKEN: input.token,
     STUDIO_STATE_DIR: join(input.stateDir, "worker"),
     STUDIO_SHUTDOWN_TIMEOUT_S: "5",
   };
+  if (layout.skillsDir) workerEnv.STUDIO_SKILLS_DIR = layout.skillsDir;
   if (input.claude) workerEnv.STUDIO_CLAUDE_BIN = input.claude;
   if (input.gemini) workerEnv.STUDIO_GEMINI_BIN = input.gemini;
   if (input.codex) workerEnv.STUDIO_CODEX_BIN = input.codex;
   if (input.antigravity) workerEnv.STUDIO_ANTIGRAVITY_BIN = input.antigravity;
   const worker: ProcessSpec = {
     name: "worker",
-    executable: input.node,
-    // Node loads the repo `.env` (e.g. GEMINI_API_KEY) itself; the app never reads it.
-    args: [`--env-file-if-exists=${join(input.repo, ".env")}`, "--import", "tsx", "src/main.ts"],
+    executable: runtime.executable,
+    // dev: Node loads the repo `.env` itself; packaged: no `.env`, keys come from the app.
+    args: [...runtime.args, ...layout.workerArgs],
     env: workerEnv,
-    cwd: workerDir,
+    cwd: layout.workerCwd,
     logFile: join(logs, "worker.log"),
   };
   return {
@@ -218,13 +260,8 @@ export function buildSpecs(input: {
     api,
     gateway,
     worker,
-    required: [
-      wrangler,
-      gatewayScript,
-      join(workerDir, "node_modules", "tsx"),
-      join(workerDir, "src", "main.ts"),
-    ],
-    probe: join(apiDir, "package.json"),
+    required: layout.required,
+    probe: layout.probe,
   };
 }
 
@@ -245,6 +282,8 @@ export class LocalHost {
   tunnelNote: string | null = null;
   private phases: Partial<Record<ServiceName, ServicePhase>> = {};
   private supervisors: Partial<Record<ServiceName, ServiceSupervisor>> = {};
+  /** Bumped each time the state folder's lock is taken (a late release never drops a newer one). */
+  private lockGeneration = 0;
   private startPromise: Promise<void> | undefined;
   private startAbort: AbortController | undefined;
   private attachAbort: AbortController | undefined;
@@ -403,6 +442,7 @@ export class LocalHost {
     this.tunnelNote = null;
     this.tunnelUrl = null;
     this.releaseHostFile();
+    this.deps.lock?.release();
     if (this.statusValue.kind !== "stopped") this.status = { kind: "stopped" };
   }
 
@@ -457,23 +497,16 @@ export class LocalHost {
     const instance = secrets.loadOrCreateInstanceId(stateDir);
     this.instance = instance;
     this.macName = await deps.computerName();
-    const repo = env.expandTilde(config.repoPath);
+    const layout = deps.layout ? deps.layout(config) : devLayout(env.expandTilde(config.repoPath));
+    const repo = layout?.root ?? "";
     const ownerSecret = deps.ownerSecret();
     this.redactor.add(ownerSecret);
 
     // 1. Attach to our own running copy, but only if the app that started it is still alive.
     //    Children left behind by a force-quit run old code against an old database
-    //    (migrations never ran), so they are stopped and started fresh.
+    //    (migrations never ran), so they are stopped and started fresh (below, once this app
+    //    holds the state folder's lock).
     const previous = secrets.readHostFile(stateDir);
-    if (
-      previous &&
-      previous.pid !== deps.ownPid &&
-      !deps.isAlive(previous.pid) &&
-      config.hostEnabled
-    ) {
-      await deps.stopLeftovers(repo, stateDir);
-      if (signal.aborted) return;
-    }
     const ownerAlive = previous
       ? previous.pid !== deps.ownPid && deps.isAlive(previous.pid)
       : false;
@@ -498,12 +531,40 @@ export class LocalHost {
     if (!config.hostEnabled) {
       return this.fail("Studio sunucusu çalışmıyor. Ayarlar → Mac sunucusu'ndan sunucuyu aç.");
     }
+    if (!layout) {
+      return this.fail(
+        "Studio'nun sunucu dosyaları bulunamadı: bu kopya ne paketlenmiş uygulama ne de bir depo klasöründen çalışıyor. Ayarlar → Gelişmiş → Depo klasörü'nü seç.",
+      );
+    }
+
+    // One host per state folder (P9): another app that runs the host here is attached to
+    // above; one that is still starting (or does not answer) is never started over.
+    if (deps.lock) {
+      const outcome = deps.lock.acquire();
+      if (outcome.kind === "held") return this.fail(lockHeldMessage(outcome.holder));
+      this.lockGeneration += 1;
+    }
+    if (previous && previous.pid !== deps.ownPid && !ownerAlive) {
+      await deps.stopLeftovers(layout, stateDir);
+      if (signal.aborted) return;
+    }
 
     // 2. Tools and sources.
     const path = await deps.loginShellPath();
     if (signal.aborted) return;
-    const node = deps.which("node", path);
-    if (!node) return this.fail(`node bulunamadı. PATH: ${path}`);
+    let runtime = deps.nodeRuntime?.(layout, path) ?? null;
+    if (!runtime) {
+      const node = deps.which("node", path);
+      if (!node) return this.fail(`node bulunamadı. PATH: ${path}`);
+      runtime = shellNodeRuntime(node);
+    }
+    let workerExtra: Record<string, string> = {};
+    try {
+      workerExtra = (await deps.workerEnv?.(layout, path)) ?? {};
+    } catch (error) {
+      return this.fail(`Worker ayarları okunamadı: ${(error as Error).message}`);
+    }
+    if (signal.aborted) return;
     const claude = deps.which("claude", path);
     const gemini = deps.which("gemini", path);
     const codex = deps.which("codex", path);
@@ -544,8 +605,11 @@ export class LocalHost {
     }
     if (signal.aborted) return;
 
+    for (const [name, value] of Object.entries(workerExtra)) {
+      if (/(KEY|TOKEN|SECRET|PASSWORD)/.test(name)) this.redactor.add(value);
+    }
     const specs = buildSpecs({
-      node,
+      node: runtime.executable,
       repo,
       stateDir,
       base: env.baseEnvironment(path),
@@ -558,13 +622,17 @@ export class LocalHost {
       gemini,
       codex,
       antigravity,
+      layout,
+      runtime,
+      workerExtra,
     });
     for (const required of specs.required) {
-      if (!deps.fileExists(required)) {
-        return this.fail(
-          `Depo klasörü eksik ya da \`pnpm install\` yapılmamış: ${required} yok. Ayarlar → Gelişmiş → Depo klasörü.`,
-        );
-      }
+      if (!deps.fileExists(required)) return this.fail(layout.missingMessage(required));
+    }
+    try {
+      layout.prepare(stateDir);
+    } catch (error) {
+      return this.fail(`Sunucu ayarları yazılamadı: ${(error as Error).message}`);
     }
 
     // Privacy protection: read one repo file first and say what to do while macOS asks.
@@ -758,7 +826,20 @@ export class LocalHost {
       lanPort: this.lanPort,
       bonjourName: this.deps.advertiser.isAdvertising ? name.slice(0, 63) : null,
       tunnelUrl: this.tunnelUrl,
+      tunnel: this.tunnelState(),
     };
+  }
+
+  /** Remote Control's state for `/api/health` (masked like everything else shown). */
+  tunnelState(): { state: "off" | "ok" | "warn" | "fail"; detail: string } {
+    const note = this.tunnelNote ? this.redactor.redact(this.tunnelNote).slice(0, 500) : "";
+    if (!this.configuration().remoteControlEnabled) return { state: "off", detail: "Kapalı." };
+    const phase = this.phases.tunnel;
+    if (phase?.kind === "failed") return { state: "fail", detail: note || phase.message };
+    if (this.tunnelUrl && phase?.kind === "running") {
+      return { state: "ok", detail: `Açık: ${this.tunnelUrl}` };
+    }
+    return { state: "warn", detail: note || "Tünel başlatılıyor." };
   }
 
   /** Tell the API where phones can reach this Mac (`PUT /api/pairing/routes`). */
@@ -854,7 +935,11 @@ export class LocalHost {
     this.status = { kind: "error", message, log: log ? this.deps.tail(this.logFile(log)) : "" };
     const owned = Object.values(this.supervisors);
     this.supervisors = {};
-    void Promise.all(owned.map((s) => s?.stop()));
+    const generation = this.lockGeneration;
+    void Promise.all(owned.map((s) => s?.stop())).then(() => {
+      // Released once the children are gone, unless a new start took the lock meanwhile.
+      if (generation === this.lockGeneration) this.deps.lock?.release();
+    });
   }
 
   /** While attached, take over if the other instance goes away (three missed checks). */

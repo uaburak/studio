@@ -1,4 +1,4 @@
-import { env } from "cloudflare:workers";
+import { env, exports } from "cloudflare:workers";
 import {
   AgentEffort,
   AssetKind,
@@ -22,6 +22,7 @@ import {
 import { describe, expect, it } from "vitest";
 import { ENUMS } from "../src/db/schema.ts";
 import * as entry from "../src/index.ts";
+import { LATEST_MIGRATION } from "../src/lib/health.ts";
 import { BASE, localFetch } from "./helpers.ts";
 
 describe("worker entry module", () => {
@@ -39,6 +40,39 @@ describe("GET /api/health", () => {
     const body = HealthResponse.parse(await res.json());
     expect(body.status).toBe("ok");
     expect(body.checks.db).toBe("ok");
+  });
+
+  it("reports every part of the host to the Mac itself (P9)", async () => {
+    const res = await localFetch(`${BASE}/api/health`);
+    const body = HealthResponse.parse(await res.json());
+    const byId = Object.fromEntries((body.components ?? []).map((c) => [c.id, c]));
+    expect(Object.keys(byId).sort()).toEqual(
+      ["canvas", "cloud", "db", "migrations", "storage", "tunnel", "vault", "worker"].sort(),
+    );
+    expect(byId.db?.state).toBe("ok");
+    expect(byId.storage?.state).toBe("ok");
+    expect(byId.migrations?.state).toBe("ok");
+    expect(body.migrations?.last).toBe(LATEST_MIGRATION);
+    expect(byId.vault?.state).toBe("ok");
+    // No worker in the test runtime: the Mac sees it, with a Turkish label.
+    expect(byId.worker?.state).toBe("fail");
+    expect(byId.worker?.label).toBe("Worker");
+    expect(byId.tunnel?.state).toBe("ok");
+  });
+
+  it("gives anonymous callers the summary only", async () => {
+    const res = await exports.default.fetch(`${BASE}/api/health`, {
+      headers: { "CF-Connecting-IP": "192.168.1.50" },
+    });
+    const body = HealthResponse.parse(await res.json());
+    expect(body.status).toBe("ok");
+    expect(body.components).toBeUndefined();
+    expect(body.migrations).toBeUndefined();
+  });
+
+  it("knows the last migration this build ships", () => {
+    const files = env.TEST_MIGRATIONS.map((m) => m.name).sort();
+    expect(files.at(-1)).toBe(LATEST_MIGRATION);
   });
 });
 

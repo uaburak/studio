@@ -5,8 +5,9 @@ import { createDb } from "./db/client.ts";
 import { toJob } from "./db/mappers.ts";
 import { jobs } from "./db/schema.ts";
 import { errorBody, handleError } from "./lib/errors.ts";
+import { hostComponents } from "./lib/health.ts";
 import { createRouter } from "./lib/router.ts";
-import { accessControl } from "./middleware/access.ts";
+import { accessControl, authenticate } from "./middleware/access.ts";
 import { aiRoutes } from "./routes/ai.ts";
 import { assetRoutes } from "./routes/assets.ts";
 import { brandKitRoutes } from "./routes/brand-kits.ts";
@@ -18,7 +19,7 @@ import { bulkRoutes } from "./routes/bulk.ts";
 import { contentCheckRoutes } from "./routes/content-checks.ts";
 import { contentRoutes } from "./routes/contents.ts";
 import { conversationRoutes } from "./routes/conversations.ts";
-import { deviceRoutes } from "./routes/devices.ts";
+import { deviceRoutes, readRoutes } from "./routes/devices.ts";
 import { hubRoutes } from "./routes/hub.ts";
 import { createJob, hubStub, jobRoutes } from "./routes/jobs.ts";
 import { agentRunRoutes, planRoutes } from "./routes/plans.ts";
@@ -56,12 +57,26 @@ const healthRoute = createRoute({
 
 app.openapi(healthRoute, async (c) => {
   let db: "ok" | "error" = "ok";
+  const database = createDb(c.env.DB);
   try {
-    await createDb(c.env.DB).run(sql`select 1`);
+    await database.run(sql`select 1`);
   } catch {
     db = "error";
   }
-  // Validate our own output against the shared contract before sending it.
+  // P9: every part of the host, only for the Mac itself, its worker and paired devices (the
+  // route is public: an anonymous caller on the LAN gets the summary only).
+  const principal = await authenticate(c).catch(() => null);
+  const detail = principal
+    ? await hostComponents({
+        db: database,
+        dbOk: db === "ok",
+        env: c.env,
+        presence: () => hubStub(c.env).presence(),
+        routes: () => readRoutes(database),
+      })
+    : null;
+  // `status` stays the API's own (reachable, database answers): phones decide on it. The
+  // components say how the rest of the host is doing.
   const body = HealthResponse.parse({
     status: db === "ok" ? "ok" : "degraded",
     service: "studio-api",
@@ -69,6 +84,7 @@ app.openapi(healthRoute, async (c) => {
     time: new Date().toISOString(),
     checks: { db },
     ...(c.env.STUDIO_INSTANCE_ID ? { instance: c.env.STUDIO_INSTANCE_ID } : {}),
+    ...(detail ? { components: detail.components, migrations: detail.migrations } : {}),
   });
   return c.json(body, 200);
 });

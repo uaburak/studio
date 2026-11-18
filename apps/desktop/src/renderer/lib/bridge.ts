@@ -38,6 +38,7 @@ export function fallbackSettings(): DesktopSettings {
     ownerName: "",
     appearance: "system",
     notificationsEnabled: true,
+    keepAwake: true,
     agent: { last: null, conversations: {} },
     session: { ...defaultSession },
     settingsSection: "",

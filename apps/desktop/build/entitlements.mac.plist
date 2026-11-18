@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Hardened runtime entitlements of Studio.app (main executable and, through
+  entitlementsInherit, every helper and bundled binary: workerd, esbuild, sharp's libvips).
+  - allow-jit / allow-unsigned-executable-memory: V8 (Electron, the Node children run with
+    ELECTRON_RUN_AS_NODE, workerd).
+  - disable-library-validation: native modules (sharp) and workerd are signed separately; with an
+    ad-hoc signature there is no Team ID to match. Keep it after Developer ID signing too.
+  No sandbox: Studio runs wrangler/workerd, the worker and CLIs as child processes.
+-->
+<plist version="1.0">
+  <dict>
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+  </dict>
+</plist>

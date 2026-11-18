@@ -11,6 +11,7 @@ import { DRAFTS_IPC } from "../shared/drafts.ts";
 import { FONTS_IPC } from "../shared/fonts.ts";
 import { IPC, type StudioBridge } from "../shared/ipc.ts";
 import { POST_FILES_IPC } from "../shared/post-files.ts";
+import { SYSTEM_IPC as S } from "../shared/system-ipc.ts";
 
 function subscribe<T>(channel: string, listener: (value: T) => void): () => void {
   const handler = (_event: IpcRendererEvent, value: T) => listener(value);
@@ -83,6 +84,22 @@ const bridge: StudioBridge = {
       create: () => ipcRenderer.invoke(A.backupCreate),
       restore: () => ipcRenderer.invoke(A.backupRestore),
     },
+  },
+  packaging: {
+    health: () => ipcRenderer.invoke(S.health),
+    tools: (refresh) => ipcRenderer.invoke(S.tools, refresh === true),
+    installChromium: () => ipcRenderer.invoke(S.chromiumInstall),
+    onChromium: (listener) => subscribe(S.chromiumChanged, listener),
+    workerEnv: {
+      get: () => ipcRenderer.invoke(S.workerEnv),
+      set: (name, value) => ipcRenderer.invoke(S.workerEnvSet, name, value),
+      remove: (name) => ipcRenderer.invoke(S.workerEnvRemove, name),
+    },
+    loginItem: {
+      get: () => ipcRenderer.invoke(S.loginItem),
+      set: (enabled) => ipcRenderer.invoke(S.loginItemSet, enabled),
+    },
+    runtime: () => ipcRenderer.invoke(S.runtime),
   },
 };
 

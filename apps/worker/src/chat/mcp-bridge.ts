@@ -25,6 +25,15 @@ import path from "node:path";
 import { buildGeminiCliSettings, buildGeminiPolicyToml } from "../gemini/cli-sandbox.ts";
 import type { StudioToolDefinition, StudioToolExecutor } from "./tools.ts";
 
+/**
+ * Studio.app runs the worker with its own binary in Node mode (`ELECTRON_RUN_AS_NODE=1`), so
+ * `process.execPath` is the app: a CLI that starts the bridge script with it must pass the same
+ * variable on, or it would open a second copy of the app instead of running the script.
+ */
+export function nodeModeEnv(env: NodeJS.ProcessEnv = process.env): Record<string, string> {
+  return env.ELECTRON_RUN_AS_NODE ? { ELECTRON_RUN_AS_NODE: "1" } : {};
+}
+
 export interface McpBridge {
   readonly url: string;
   readonly token: string;
@@ -220,6 +229,7 @@ export async function startMcpBridge(
     STUDIO_MCP_BRIDGE_URL: url,
     STUDIO_MCP_BRIDGE_TOKEN: token,
     STUDIO_MCP_IPC_DIR: ipcDir,
+    ...nodeModeEnv(),
   };
 
   const claudeMcpConfigPath = path.join(workDir, "claude-mcp-config.json");

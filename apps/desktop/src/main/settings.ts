@@ -22,6 +22,7 @@ export function defaultSettings(repoPath: string): DesktopSettings {
     ownerName: "",
     appearance: "system",
     notificationsEnabled: true,
+    keepAwake: true,
     agent: { last: null, conversations: {} },
     session: {
       sidebarPresented: true,
@@ -99,6 +100,7 @@ export function normalizeSettings(raw: unknown, defaults: DesktopSettings): Desk
     ownerName: str(r.ownerName, defaults.ownerName),
     appearance,
     notificationsEnabled: bool(r.notificationsEnabled, defaults.notificationsEnabled),
+    keepAwake: bool(r.keepAwake, defaults.keepAwake),
     agent: { last: choice(agentRaw.last), conversations },
     session,
     settingsSection: str(r.settingsSection, defaults.settingsSection),

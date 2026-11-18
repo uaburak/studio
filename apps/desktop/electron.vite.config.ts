@@ -80,7 +80,8 @@ export default defineConfig({
       outDir: "out/main",
       // Workspace packages ship TypeScript source; bundle them so Electron's Node never has to
       // strip types at runtime (it can't handle parameter properties, enums, …).
-      externalizeDeps: { exclude: ["@studio/contract", "@studio/design-kit"] },
+      // electron-updater too: the packaged app carries no node_modules (scripts/package.mjs).
+      externalizeDeps: { exclude: ["@studio/contract", "@studio/design-kit", "electron-updater"] },
       rolldownOptions: {
         input: { index: resolve(import.meta.dirname, "src/main/index.ts") },
       },
