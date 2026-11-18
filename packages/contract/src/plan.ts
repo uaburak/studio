@@ -85,6 +85,8 @@ const PlanSummary = z.string().max(20_000);
 const ItemTitle = z.string().trim().min(1).max(200);
 const ItemBrief = z.string().max(20_000);
 const Pillar = z.string().trim().min(1).max(120);
+/** The post's planned opening line (N6); compared with earlier hooks so they do not repeat. */
+const Hook = z.string().trim().min(1).max(300);
 const ImageBrief = z.string().max(4_000);
 const ItemPlatforms = z
   .array(Platform)
@@ -104,6 +106,8 @@ export const PlanItemInput = z
     brief: ItemBrief.default(""),
     /** Content pillar / theme, e.g. "ürün tanıtımı", "sezon ipuçları". */
     pillar: Pillar.nullable().default(null),
+    /** Planned opening line (hook) of the post. */
+    hook: Hook.nullable().default(null),
     imageSlot: ImageSlotExpectation.default("none"),
     /** What the image should show (for the user's upload or the image model). */
     imageBrief: ImageBrief.nullable().default(null),
@@ -121,6 +125,28 @@ export const PlanItemGeneration = z
   .meta({ id: "PlanItemGeneration" });
 export type PlanItemGeneration = z.infer<typeof PlanItemGeneration>;
 
+/**
+ * A near-duplicate of a plan item (N6), found when the plan was written: a post of the brand's
+ * last months, an item of another plan, something rejected or deleted, or another item of the
+ * same plan. See `planItemSimilarities` (planning.ts) and `similarLabel`.
+ */
+export const PlanItemSimilar = z
+  .object({
+    kind: z.enum(["post", "planned", "rejected", "skipped", "deleted", "same_plan"]),
+    /** The post (kinds `post`, `deleted`, and items that became posts). */
+    contentId: EntityId.nullable(),
+    /** The other plan item (kinds `planned`, `rejected`, `skipped`, `same_plan`). */
+    planItemId: EntityId.nullable(),
+    title: z.string(),
+    date: IsoDate.nullable(),
+    /** What matched: the topic (title), the opening line (hook) or the whole message. */
+    field: z.enum(["title", "hook", "topic"]),
+    /** Jaccard similarity of the compared texts, 0–1. */
+    score: z.number().min(0).max(1),
+  })
+  .meta({ id: "PlanItemSimilar" });
+export type PlanItemSimilar = z.infer<typeof PlanItemSimilar>;
+
 export const PlanItem = z
   .object({
     id: EntityId,
@@ -133,9 +159,13 @@ export const PlanItem = z
     title: z.string(),
     brief: z.string(),
     pillar: z.string().nullable(),
+    /** Planned opening line (absent from older servers). */
+    hook: z.string().nullable().default(null),
     imageSlot: ImageSlotExpectation,
     imageBrief: z.string().nullable(),
     status: PlanItemStatus,
+    /** Near-duplicates found when the item was written (absent from older servers). */
+    similar: z.array(PlanItemSimilar).default([]),
     /** Draft content item created when the plan was accepted (null if it was deleted since). */
     contentId: EntityId.nullable(),
     /** Latest generation request for this item, if any. */
@@ -322,6 +352,7 @@ export const PlanItemPatch = z
     title: ItemTitle.optional(),
     brief: ItemBrief.optional(),
     pillar: Pillar.nullable().optional(),
+    hook: Hook.nullable().optional(),
     imageSlot: ImageSlotExpectation.optional(),
     imageBrief: ImageBrief.nullable().optional(),
   })

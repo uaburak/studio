@@ -24,6 +24,7 @@ import {
   utf8Length,
 } from "./common.ts";
 import { MAX_PLAN_ITEMS, Plan, PlanItemInput } from "./plan.ts";
+import { PlanningContext } from "./planning.ts";
 
 /*
  * Conversations (task A2): the AI chat that is Studio's main surface.
@@ -635,6 +636,12 @@ export const TurnContext = z
      * brand. The worker puts them into the prompt within a size budget.
      */
     brandSkills: z.array(BrandSkill).optional(),
+    /**
+     * For a planning turn (the latest message asks for a plan, or an open plan is being
+     * revised) of a conversation with a brand: the special days, settings and recent history
+     * for the period the message most likely means (N5, N6). Null or absent otherwise.
+     */
+    planning: PlanningContext.nullable().optional(),
   })
   .meta({ id: "TurnContext" });
 export type TurnContext = z.infer<typeof TurnContext>;
