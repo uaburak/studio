@@ -31,3 +31,6 @@ apps/worker/docs/e2e/reels/*.mp4
 # Wecra (Burak's DesignerV2, closed source) vendored for the post editor: never commit it.
 # apps/desktop/scripts/vendor-wecra.mjs recreates it from DesignerV2's git history.
 apps/desktop/src/renderer/vendor/
+
+# Agent worktrees
+.claude/worktrees/

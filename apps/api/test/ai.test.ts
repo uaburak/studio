@@ -341,12 +341,16 @@ describe("AI preferences (S7)", () => {
       body: JSON.stringify({ claudeLimit: "gemini" }),
     });
     expect(viaGateway.status).toBe(403);
+  });
+
+  it("takes the Claude-limit answer from a paired phone too", async () => {
     const decision = await localFetch(`${BASE}/api/ai/claude-limit/decision`, {
       method: "POST",
       headers: { "X-Studio-Gateway": "1", ...AUTH(), "content-type": "application/json" },
       body: JSON.stringify({ choice: "wait" }),
     });
-    expect(decision.status).toBe(403);
+    expect(decision.status).not.toBe(403);
+    expect(decision.status).toBeLessThan(500);
   });
 });
 

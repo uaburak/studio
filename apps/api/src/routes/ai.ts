@@ -81,7 +81,8 @@ router.use("/api/ai/budget", requireLocal);
 router.use("/api/ai/preferences", async (c, next) =>
   c.req.method === "GET" || c.req.method === "HEAD" ? next() : requireLocal(c, next),
 );
-router.use("/api/ai/claude-limit/*", requireLocal);
+// The Claude-limit answer ("Gemini ile devam et / Sınırı bekle") may also come from a paired
+// phone: it only picks between two choices the owner already allowed in the preferences.
 router.use("/api/worker/ai/*", requireWorkerToken);
 
 /**
