@@ -693,6 +693,9 @@ enum ChatViews {
             if let summary = model.generationSummary(plan) {
                 card.stack.addArrangedSubview(UILabel.studio(summary, size: 13, color: IOSTheme.textSecondary, style: .footnote))
             }
+            if let note = model.planNotes[plan.id] {
+                card.stack.addArrangedSubview(UILabel.studio(note, size: 13, color: IOSTheme.textSecondary, lines: 0, style: .footnote))
+            }
             var actions: [UIView] = []
             if model.canStartGeneration(plan) {
                 let generate = UIButton.studioPill(title: "Üretimi başlat", kind: .primary) { Task { await model.generate(plan) } }
@@ -718,22 +721,25 @@ enum ChatViews {
         date.widthAnchor.constraint(equalToConstant: 52).isActive = true
         let title = UILabel.studio(item.title, size: 15, color: item.status == .skipped ? IOSTheme.textTertiary : IOSTheme.textPrimary, lines: 2, style: .subheadline)
         var views: [UIView] = [date, title, UIView.spacer()]
-        if let generation = item.generation {
+        if item.status == .skipped {
+            views.append(UILabel.studio("atlandı", size: 12, color: IOSTheme.textTertiary, style: .caption1))
+        } else if let generation = item.generation {
             let text: String = switch generation.status {
             case .queued: "sırada"
             case .running: "üretiliyor"
             case .succeeded: "hazır"
-            case .failed: "hata"
-            case .cancelled: "iptal"
+            case .failed: "üretilemedi"
+            case .cancelled: "durduruldu"
             case .unknown: ""
             }
-            views.append(IOSStatusDotView(color: generation.status.isActive ? IOSTheme.accent : IOSTheme.textTertiary, size: 6))
+            let tint = generation.status.isActive || generation.status == .failed ? IOSTheme.accent : IOSTheme.textTertiary
+            views.append(IOSStatusDotView(color: tint, size: 6))
             views.append(UILabel.studio(text, size: 12, color: IOSTheme.textSecondary, style: .caption1))
         } else if item.imageSlot == .userUpload {
             views.append(IOSStatusDotView(color: IOSTheme.accent, size: 6))
             views.append(UILabel.studio("görsel", size: 12, color: IOSTheme.textSecondary, style: .caption1))
-        } else if item.status == .skipped {
-            views.append(UILabel.studio("atlandı", size: 12, color: IOSTheme.textTertiary, style: .caption1))
+        } else if item.status == .accepted {
+            views.append(UILabel.studio("onaylandı", size: 12, color: IOSTheme.textTertiary, style: .caption1))
         }
         let row = UIStackView.h(views, spacing: 8)
         row.isLayoutMarginsRelativeArrangement = true

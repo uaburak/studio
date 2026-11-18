@@ -326,3 +326,18 @@ public struct PostBoard: Sendable, Equatable {
         cards.filter { $0.state == .ready && $0.approvableHash != nil }
     }
 }
+
+/// Which post a finished job changed (M6): the phone refreshes only that post instead of the
+/// whole list. Chat answers, brand work and echo jobs touch no post (nil).
+public enum PostRefreshPlanner {
+    public static func affectedContent(of job: Job) -> EntityID? {
+        switch job.type {
+        case .contentGenerate, .contentRender, .contentCheck, .schedulePublish, .canvasApply:
+            return job.contentId
+        case .imageGenerate:
+            return job.contentId ?? job.payload["targetContentId"]?.stringValue
+        default:
+            return nil
+        }
+    }
+}

@@ -132,13 +132,70 @@ final class IOSPostsModel {
         guard job.brandId == loadedBrandId || job.contentId.map({ card($0) != nil }) == true else { return }
         if let index = jobs.firstIndex(where: { $0.id == job.id }) { jobs[index] = job } else { jobs.append(job) }
         if let contentId = job.contentId { sessions[contentId]?.session?.noteJob(job) }
-        if job.status.isTerminal {
-            Task {
-                await load()
-                if let contentId = job.contentId, let session = sessions[contentId]?.session { await session.reloadContent() }
+        rebuild(contents: board.cards.map(\.content))
+        // M6: a finished job refreshes only the post it touched (debounced); a chat answer or a
+        // brand job refreshes nothing here (the posts screen reloads when it appears).
+        if job.status.isTerminal, let contentId = PostRefreshPlanner.affectedContent(of: job) {
+            scheduleRefresh(contentId, schedules: job.type == .schedulePublish)
+        }
+    }
+
+    /// Posts waiting for a refresh, gathered for `refreshDelay` so a burst of jobs costs one round.
+    @ObservationIgnored private var pendingRefresh: Set<EntityID> = []
+    @ObservationIgnored private var pendingSchedules = false
+    @ObservationIgnored private var refreshTask: Task<Void, Never>?
+    @ObservationIgnored var refreshDelay: Duration = .milliseconds(700)
+
+    private func scheduleRefresh(_ contentId: EntityID, schedules: Bool) {
+        pendingRefresh.insert(contentId)
+        pendingSchedules = pendingSchedules || schedules
+        guard refreshTask == nil else { return }
+        refreshTask = Task { [weak self] in
+            guard let self else { return }
+            try? await Task.sleep(for: self.refreshDelay)
+            let ids = self.pendingRefresh
+            let withSchedules = self.pendingSchedules
+            self.pendingRefresh = []
+            self.pendingSchedules = false
+            self.refreshTask = nil
+            await self.refresh(contentIds: ids, schedules: withSchedules)
+        }
+    }
+
+    /// Reload one post (content, its current version) and the open post screen.
+    func refresh(contentId: EntityID) async {
+        await refresh(contentIds: [contentId], schedules: false)
+    }
+
+    private func refresh(contentIds: Set<EntityID>, schedules withSchedules: Bool) async {
+        guard let app, let brandId = loadedBrandId, !contentIds.isEmpty else { return }
+        let service = app.dataService
+        var fresh: [EntityID: Content] = [:]
+        var gone: Set<EntityID> = []
+        await withTaskGroup(of: (EntityID, Content?, Bool).self) { group in
+            for id in contentIds {
+                group.addTask {
+                    do { return (id, try await service.content(id), false) } catch {
+                        let missing = (error as? StudioAPIError)?.code == .notFound
+                        return (id, nil, missing)
+                    }
+                }
             }
-        } else {
-            rebuild(contents: board.cards.map(\.content))
+            for await (id, content, missing) in group {
+                if let content { fresh[id] = content } else if missing { gone.insert(id) }
+            }
+        }
+        if withSchedules, let loaded = try? await service.schedules(brandId: brandId) { schedules = loaded }
+        guard brandId == loadedBrandId else { return }
+        await loadVersions(for: Array(fresh.values))
+        var contents = board.cards.map(\.content).filter { !gone.contains($0.id) }
+        for content in fresh.values {
+            contents.removeAll { $0.id == content.id }
+            if content.deletedAt == nil, content.brandId == brandId { contents.append(content) }
+        }
+        rebuild(contents: contents)
+        for id in fresh.keys {
+            if let session = sessions[id]?.session { await session.reloadContent() }
         }
     }
 
@@ -146,6 +203,11 @@ final class IOSPostsModel {
     func cardChanged(_ card: PostCard) {
         if let version = card.version { versions[card.id] = version }
         var contents = board.cards.map(\.content)
+        // Moved to the trash elsewhere (the Mac): it leaves the board.
+        if card.content.deletedAt != nil {
+            rebuild(contents: contents.filter { $0.id != card.id })
+            return
+        }
         if let index = contents.firstIndex(where: { $0.id == card.id }) { contents[index] = card.content } else if card.content.brandId == loadedBrandId { contents.append(card.content) }
         rebuild(contents: contents)
     }
@@ -287,6 +349,23 @@ final class IOSPostsModel {
         }
     }
 
+    static let deleteMessage = "Post Silinenler'e taşınır; 30 gün içinde geri alınabilir."
+
+    /// "Silindi · Geri al" after a delete.
+    static func showUndo(for card: PostCard, model: IOSPostsModel, in view: UIView?) {
+        Toast.show("“\(card.title)” silindi", in: view, action: "Geri al") { [weak model] in
+            guard let model else { return }
+            Task {
+                if await model.restore(card.id) {
+                    Haptics.success()
+                    Toast.show("Post geri alındı", in: view)
+                } else if let error = model.error {
+                    Toast.show(error, in: view, isError: true)
+                }
+            }
+        }
+    }
+
     static func deletionBlocker(_ card: PostCard) -> String? {
         switch card.content.status {
         case .scheduled: "Zamanlanmış post silinemez; önce Takvim'den zamanlamayı iptal et."
@@ -306,6 +385,39 @@ final class IOSPostsModel {
             try await app.dataService.deleteContent(card.id)
             versions[card.id] = nil
             rebuild(contents: board.cards.map(\.content).filter { $0.id != card.id })
+            error = nil
+            return true
+        } catch {
+            self.error = "\(card.title): \(IOSAppModel.describe(error))"
+            return false
+        }
+    }
+
+    /// "Geri al" after a delete: the post comes back out of the trash.
+    func restore(_ contentId: EntityID) async -> Bool {
+        guard let app else { return false }
+        do {
+            let content = try await app.dataService.restoreContent(contentId)
+            var contents = board.cards.map(\.content).filter { $0.id != content.id }
+            if content.brandId == loadedBrandId { contents.append(content) }
+            rebuild(contents: contents)
+            await refresh(contentId: contentId)
+            error = nil
+            return true
+        } catch {
+            self.error = IOSAppModel.describe(error)
+            return false
+        }
+    }
+
+    /// "Yeniden dene" on a post that could not be generated: the failed job is queued again.
+    func retryGeneration(_ card: PostCard) async -> Bool {
+        guard let app, let failure = card.generationFailure else { return false }
+        do {
+            let job = try await app.dataService.retryJob(failure.jobId)
+            jobs.removeAll { $0.id == job.id }
+            jobs.append(job)
+            rebuild(contents: board.cards.map(\.content))
             error = nil
             return true
         } catch {

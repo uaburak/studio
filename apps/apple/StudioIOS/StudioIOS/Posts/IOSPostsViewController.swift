@@ -256,6 +256,14 @@ final class IOSPostsViewController: UIViewController, UICollectionViewDelegate {
                 self.approveGuarded(card)
             })
         }
+        if card.state == .generationFailed {
+            primary.append(UIAction(title: "Yeniden dene", image: UIImage(systemName: "arrow.clockwise")) { [weak self] _ in
+                guard let self else { return }
+                Task {
+                    if await self.model.retryGeneration(card) { Toast.show("Yeniden üretiliyor", in: self.view) } else if let error = self.model.error { self.presentError(error) }
+                }
+            })
+        }
         if !card.slots.isEmpty, !card.isCanvasVersion {
             var slotActions: [UIMenuElement] = [UIAction(title: "Fotoğraflardan", image: UIImage(systemName: "photo")) { [weak self] _ in
                 guard let self else { return }
@@ -287,9 +295,12 @@ final class IOSPostsViewController: UIViewController, UICollectionViewDelegate {
             },
             UIAction(title: "Sil…", image: UIImage(systemName: "trash"), attributes: IOSPostsModel.deletionBlocker(card) == nil ? .destructive : [.destructive, .disabled]) { [weak self] _ in
                 guard let self else { return }
-                self.confirm("“\(card.title)” silinsin mi?", message: "Post ve tüm sürümleri silinir. Bu geri alınamaz.", action: "Sil") {
+                self.confirm("“\(card.title)” silinsin mi?", message: IOSPostsModel.deleteMessage, action: "Sil") {
                     Task {
-                        if await self.model.delete(card) { Haptics.success() } else if let error = self.model.error { self.presentError(error) }
+                        if await self.model.delete(card) {
+                            Haptics.success()
+                            IOSPostsModel.showUndo(for: card, model: self.model, in: self.view)
+                        } else if let error = self.model.error { self.presentError(error) }
                     }
                 }
             },

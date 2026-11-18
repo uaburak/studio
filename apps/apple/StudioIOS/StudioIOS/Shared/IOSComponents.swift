@@ -139,6 +139,47 @@ final class EmptyStateView: UIView {
 /// A short message that slides in at the bottom and leaves by itself.
 @MainActor
 enum Toast {
+    /// A toast with one button ("Geri al"); stays a little longer so there is time to tap it.
+    static func show(_ text: String, in view: UIView?, action: String, handler: @escaping @MainActor () -> Void) {
+        guard let host = view?.window ?? view else { return }
+        let label = UILabel.studio(text, size: 14, weight: .medium, color: IOSTheme.onInk, lines: 2, style: .subheadline)
+        let pill = UIView()
+        var config = UIButton.Configuration.plain()
+        config.title = action
+        config.baseForegroundColor = IOSTheme.accent
+        config.contentInsets = NSDirectionalEdgeInsets(top: 6, leading: 8, bottom: 6, trailing: 8)
+        config.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { incoming in
+            var outgoing = incoming
+            outgoing.font = IOSTheme.font(14, .semibold, style: .subheadline)
+            return outgoing
+        }
+        let button = UIButton(configuration: config, primaryAction: UIAction { [weak pill] _ in
+            handler()
+            UIView.animate(withDuration: 0.2, animations: { pill?.alpha = 0 }, completion: { _ in pill?.removeFromSuperview() })
+        })
+        button.setContentCompressionResistancePriority(.required, for: .horizontal)
+        pill.translatesAutoresizingMaskIntoConstraints = false
+        pill.backgroundColor = IOSTheme.ink
+        pill.layer.cornerRadius = 22
+        pill.layer.cornerCurve = .continuous
+        let row = UIStackView.h([label, button], spacing: 8)
+        pill.addSubview(row)
+        row.pin(to: pill, insets: UIEdgeInsets(top: 4, left: 16, bottom: 4, right: 6))
+        host.addSubview(pill)
+        NSLayoutConstraint.activate([
+            pill.centerXAnchor.constraint(equalTo: host.centerXAnchor),
+            pill.leadingAnchor.constraint(greaterThanOrEqualTo: host.leadingAnchor, constant: 16),
+            pill.bottomAnchor.constraint(equalTo: host.safeAreaLayoutGuide.bottomAnchor, constant: -96),
+        ])
+        pill.alpha = 0
+        UIAccessibility.post(notification: .announcement, argument: "\(text). \(action) düğmesi.")
+        UIView.animate(withDuration: 0.25) { pill.alpha = 1 }
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(6))
+            UIView.animate(withDuration: 0.25, animations: { pill.alpha = 0 }, completion: { _ in pill.removeFromSuperview() })
+        }
+    }
+
     static func show(_ text: String, in view: UIView?, isError: Bool = false) {
         guard let host = view?.window ?? view else { return }
         let label = UILabel.studio(text, size: 14, weight: .medium, color: isError ? IOSTheme.onAccent : IOSTheme.onInk, lines: 3, style: .subheadline)
