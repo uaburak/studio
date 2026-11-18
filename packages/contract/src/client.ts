@@ -109,6 +109,19 @@ import {
   type ConversationStreamQuery,
   decodeConversationStreamMessage,
 } from "./chat-stream.ts";
+import {
+  CommentList,
+  type CommentListQuery,
+  type CommentModerate,
+  type CommentReadInput,
+  CommentReadResult,
+  type CommentReplyCreate,
+  type CommentSuggestInput,
+  CommentSummary,
+  type CommentSummaryQuery,
+  type CommentsSyncInput,
+  CommentThread,
+} from "./comments.ts";
 import { ApiErrorBody, type ErrorCode, type ErrorIssue } from "./common.ts";
 import {
   Content,
@@ -144,7 +157,27 @@ import {
   PairingCode,
   PairingResult,
 } from "./device.ts";
+import {
+  type WorkerCommentActionUpdate,
+  WorkerCommentContext,
+  type WorkerCommentSuggestion,
+  WorkerCommentsAck,
+  type WorkerCommentsReport,
+  WorkerEngagementTargets,
+  type WorkerEngagementTargetsQuery,
+  WorkerInsightsAck,
+  type WorkerInsightsReport,
+} from "./engagement.ts";
 import { HealthResponse } from "./health.ts";
+import {
+  BestTimes,
+  type BestTimesQuery,
+  BrandPerformance,
+  ContentPerformance,
+  type InsightsSyncInput,
+  type PerformanceQuery,
+  PerformanceSummary,
+} from "./insights.ts";
 import {
   Job,
   type JobCreate,
@@ -177,6 +210,11 @@ import {
   type SpecialDaysQuery,
 } from "./planning.ts";
 import { decodeJobStreamMessage, type JobStreamMessage } from "./protocol.ts";
+import {
+  type KnownLocationCreate,
+  KnownLocationList,
+  type PublishDetailsPut,
+} from "./publish-details.ts";
 import {
   type PublishingCloudPut,
   type PublishingSettingsPatch,
@@ -787,6 +825,20 @@ export function createApiClient(options: ApiClientOptions = {}) {
       /** Take a post back out of the trash. */
       restore: (id: string, init?: RequestInit) =>
         call(Content, `/api/contents/${enc(id)}/restore`, { method: "POST", init }),
+      /**
+       * Replace the publish details (N13: first comment, alt texts, location, collaborators,
+       * people tags, Reels cover). Does not revoke the approval; pending cloud orders are pushed
+       * again. Refused (409) while the post is publishing or published.
+       */
+      setPublishDetails: (id: string, input: PublishDetailsPut, init?: RequestInit) =>
+        call(Content, `/api/contents/${enc(id)}/publish-details`, {
+          method: "PUT",
+          json: input,
+          init,
+        }),
+      /** Statistics of every account the post went to, with their history (N15). */
+      performance: (id: string, init?: RequestInit) =>
+        call(ContentPerformance, `/api/contents/${enc(id)}/performance`, { init }),
       /** One instruction applied to many posts (N3): revision jobs, canvas posts via the chat. */
       revise: (input: ContentReviseRequest, init?: RequestInit) =>
         call(ContentReviseResult, "/api/contents/revise", { method: "POST", json: input, init }),
@@ -881,6 +933,80 @@ export function createApiClient(options: ApiClientOptions = {}) {
             init,
           }),
       },
+    },
+
+    /** Known locations of a brand for Instagram's location (N13). */
+    publishLocations: {
+      list: (brandId: string, init?: RequestInit) =>
+        call(KnownLocationList, `/api/brands/${enc(brandId)}/publish-locations`, { init }),
+      add: (brandId: string, input: KnownLocationCreate, init?: RequestInit) =>
+        call(KnownLocationList, `/api/brands/${enc(brandId)}/publish-locations`, {
+          method: "POST",
+          json: input,
+          init,
+        }),
+      remove: (brandId: string, locationId: string, init?: RequestInit) =>
+        call(
+          KnownLocationList,
+          `/api/brands/${enc(brandId)}/publish-locations/${enc(locationId)}`,
+          { method: "DELETE", init },
+        ),
+    },
+
+    /** Statistics (N15). */
+    insights: {
+      /** The brand's performance page: top posts, pillars, formats, weekday / hour, trend. */
+      brand: (brandId: string, query?: PerformanceQuery, init?: RequestInit) =>
+        call(BrandPerformance, `/api/brands/${enc(brandId)}/performance`, {
+          query: q(query),
+          init,
+        }),
+      /** Hour × weekday grid and suggested slots ("Önerilen saatler"). */
+      bestTimes: (brandId: string, query?: BestTimesQuery, init?: RequestInit) =>
+        call(BestTimes, `/api/brands/${enc(brandId)}/best-times`, { query: q(query), init }),
+      /** What worked lately, in short (the plan agent and the brand analysis read it). */
+      summary: (brandId: string, query?: PerformanceQuery, init?: RequestInit) =>
+        call(PerformanceSummary, `/api/brands/${enc(brandId)}/performance-summary`, {
+          query: q(query),
+          init,
+        }),
+      /** Read statistics now (a brand, a post, or everything due). */
+      sync: (input: InsightsSyncInput = {}, init?: RequestInit) =>
+        call(Job, "/api/insights/sync", { method: "POST", json: input, init }),
+    },
+
+    /** Comment inbox (N16). */
+    comments: {
+      list: (query?: CommentListQuery, init?: RequestInit) =>
+        call(CommentList, "/api/comments", { query: q(query), init }),
+      get: (id: string, init?: RequestInit) =>
+        call(CommentThread, `/api/comments/${enc(id)}`, { init }),
+      summary: (query?: CommentSummaryQuery, init?: RequestInit) =>
+        call(CommentSummary, "/api/comments/summary", { query: q(query), init }),
+      /** Queue a reply (the worker sends it; never sent without the owner). */
+      reply: (id: string, input: CommentReplyCreate, init?: RequestInit) =>
+        call(CommentThread, `/api/comments/${enc(id)}/reply`, {
+          method: "POST",
+          json: input,
+          init,
+        }),
+      moderate: (id: string, input: CommentModerate, init?: RequestInit) =>
+        call(CommentThread, `/api/comments/${enc(id)}/moderate`, {
+          method: "POST",
+          json: input,
+          init,
+        }),
+      /** Retry a failed reply / moderation. */
+      retryAction: (id: string, init?: RequestInit) =>
+        call(CommentThread, `/api/comments/${enc(id)}/retry`, { method: "POST", init }),
+      read: (input: CommentReadInput, init?: RequestInit) =>
+        call(CommentReadResult, "/api/comments/read", { method: "POST", json: input, init }),
+      /** "Yanıt öner": queue `comments.suggest`; the draft lands on the comment. */
+      suggest: (id: string, input: CommentSuggestInput = {}, init?: RequestInit) =>
+        call(Job, `/api/comments/${enc(id)}/suggest`, { method: "POST", json: input, init }),
+      /** Read new comments now. */
+      sync: (input: CommentsSyncInput = {}, init?: RequestInit) =>
+        call(Job, "/api/comments/sync", { method: "POST", json: input, init }),
     },
 
     templates: {
@@ -1317,6 +1443,41 @@ export function createApiClient(options: ApiClientOptions = {}) {
         call(WorkerAiSettings, "/api/worker/ai/settings", { query: q(query), init }),
       reportUsage: (input: WorkerAiUsageReport, init?: RequestInit) =>
         call(WorkerAiUsageAck, "/api/worker/ai/usage", { method: "POST", json: input, init }),
+    },
+
+    /** Statistics and comments for the worker (N15, N16). */
+    workerEngagement: {
+      targets: (query: WorkerEngagementTargetsQuery, init?: RequestInit) =>
+        call(WorkerEngagementTargets, "/api/worker/engagement/targets", {
+          query: q(query),
+          init,
+        }),
+      reportInsights: (input: WorkerInsightsReport, init?: RequestInit) =>
+        call(WorkerInsightsAck, "/api/worker/engagement/insights", {
+          method: "POST",
+          json: input,
+          init,
+        }),
+      reportComments: (input: WorkerCommentsReport, init?: RequestInit) =>
+        call(WorkerCommentsAck, "/api/worker/engagement/comments", {
+          method: "POST",
+          json: input,
+          init,
+        }),
+      action: (id: string, input: WorkerCommentActionUpdate, init?: RequestInit) =>
+        send(`/api/worker/engagement/actions/${enc(id)}`, {
+          method: "POST",
+          json: input,
+          init,
+        }).then(() => undefined),
+      commentContext: (id: string, init?: RequestInit) =>
+        call(WorkerCommentContext, `/api/worker/comments/${enc(id)}/context`, { init }),
+      putSuggestion: (id: string, input: WorkerCommentSuggestion, init?: RequestInit) =>
+        call(CommentThread, `/api/worker/comments/${enc(id)}/suggestion`, {
+          method: "PUT",
+          json: input,
+          init,
+        }),
     },
 
     workerPublishing: {

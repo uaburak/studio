@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { EntityId, Timestamp } from "./common.ts";
 import { ContentType } from "./content.ts";
+import { PerformanceSummary } from "./insights.ts";
 import { IsoDate, MAX_PLAN_PERIOD_DAYS, monthPeriod, type PlanItemSimilar } from "./plan.ts";
 import { findNearDuplicates, normalizeTurkish, topicWords } from "./similarity.ts";
 import {
@@ -164,6 +165,18 @@ export const PlanningHistoryEntry = z
     status: z.string().nullable(),
     /** Why the plan was rejected (the owner's words), when given. */
     reason: z.string().nullable(),
+    /**
+     * Published posts with statistics (N15): relative engagement (1 = the brand's typical post)
+     * and reach. Absent from older servers.
+     */
+    performance: z
+      .object({
+        index: z.number(),
+        reach: z.number().nullable(),
+        engagementRate: z.number().nullable(),
+      })
+      .nullable()
+      .optional(),
   })
   .meta({ id: "PlanningHistoryEntry" });
 export type PlanningHistoryEntry = z.infer<typeof PlanningHistoryEntry>;
@@ -236,6 +249,8 @@ export const PlanningContext = z
     /** Special days of the period for this brand (tags and categories applied). */
     specialDays: z.array(SpecialDay),
     history: PlanningHistory,
+    /** What worked lately (N15): pillars, formats, best and weakest posts, best slots. */
+    performance: PerformanceSummary.nullable().optional(),
   })
   .meta({ id: "PlanningContext" });
 export type PlanningContext = z.infer<typeof PlanningContext>;

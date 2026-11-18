@@ -13,6 +13,7 @@ import {
   Timestamp,
 } from "./common.ts";
 import { ContentCheckPayload } from "./content-check.ts";
+import { CommentsSuggestPayload, CommentsSyncPayload, InsightsSyncPayload } from "./engagement.ts";
 import { ReelSpecPatch } from "./reel.ts";
 
 export const JobId = z.string().min(1).max(128);
@@ -38,6 +39,9 @@ export type JobId = z.infer<typeof JobId>;
  *   engine, in an Electron page), not in the worker: `CANVAS_JOB_TYPES`.
  * - `media.analyze` tags uploaded pictures on the Mac with Apple's Vision (N12,
  *   `MediaAnalyzePayload`); the API queues it after an upload and for the backfill.
+ * - `insights.sync` reads published posts' statistics and follower counts (N15),
+ *   `comments.sync` sends queued replies and reads new comments (N16) — the Hub queues both
+ *   while the worker is connected; `comments.suggest` drafts a reply with AI (never sent).
  */
 export const JobType = z
   .enum([
@@ -53,6 +57,9 @@ export const JobType = z
     "canvas.read",
     "canvas.apply",
     "media.analyze",
+    "insights.sync",
+    "comments.sync",
+    "comments.suggest",
   ])
   .meta({ id: "JobType" });
 export type JobType = z.infer<typeof JobType>;
@@ -76,6 +83,9 @@ export const JOB_TYPE_REQUIREMENTS = {
   "canvas.read": { brand: true, content: true },
   "canvas.apply": { brand: true, content: true },
   "media.analyze": { brand: false, content: false },
+  "insights.sync": { brand: false, content: false },
+  "comments.sync": { brand: false, content: false },
+  "comments.suggest": { brand: true, content: false },
 } as const satisfies Record<JobType, { brand: boolean; content: boolean }>;
 
 export const MAX_JOB_PAYLOAD_BYTES = 100_000;
@@ -441,6 +451,9 @@ export const JOB_PAYLOAD_SCHEMAS: Partial<Record<JobType, z.ZodType>> = {
   "canvas.read": CanvasReadPayload,
   "canvas.apply": CanvasApplyPayload,
   "media.analyze": MediaAnalyzePayload,
+  "insights.sync": InsightsSyncPayload,
+  "comments.sync": CommentsSyncPayload,
+  "comments.suggest": CommentsSuggestPayload,
 };
 
 // --- Live updates and worker presence (F1-6) --------------------------------
