@@ -448,12 +448,15 @@ public struct Asset: Codable, Sendable, Hashable, Identifiable {
     public var createdAt: Date
     /// Set while the file is in the trash (restore with `POST /api/assets/{id}/restore`).
     public var deletedAt: Date?
+    /// What the Mac read on a picture (N12); nil until analysed, absent from older servers.
+    public var analysis: AssetAnalysisSummary?
 
     public init(
         id: EntityID, brandId: EntityID, kind: AssetKind, source: AssetSource, objectKey: String,
         mimeType: String, bytes: Int, sha256: String, width: Int?, height: Int?, durationMs: Int? = nil,
-        originalFilename: String?, createdAt: Date, deletedAt: Date? = nil
+        originalFilename: String?, createdAt: Date, deletedAt: Date? = nil, analysis: AssetAnalysisSummary? = nil
     ) {
+        self.analysis = analysis
         self.deletedAt = deletedAt
         self.id = id
         self.brandId = brandId

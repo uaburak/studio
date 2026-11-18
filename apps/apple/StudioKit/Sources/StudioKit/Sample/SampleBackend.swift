@@ -389,19 +389,64 @@ public actor SampleBackend: ConversationService, StudioDataService {
             progress(Double(step) / Double(steps) * 0.97)
         }
         let resolvedKind = kind ?? Self.inferAssetKind(mimeType: file.mimeType)
+        let bytes = try file.fileURL.map { try Data(contentsOf: $0, options: .mappedIfSafe) } ?? file.data
         let asset = Asset(
             id: nextId("asset"), brandId: brandId, kind: resolvedKind, source: .upload,
             objectKey: "brands/\(brandId)/assets/\(file.filename)", mimeType: file.mimeType,
-            bytes: file.data.count, sha256: String(repeating: "0", count: 64), width: file.width, height: file.height,
-            originalFilename: file.filename, createdAt: now)
+            bytes: bytes.count, sha256: String(repeating: "0", count: 64), width: file.width, height: file.height,
+            durationMs: file.durationMs, originalFilename: file.filename, createdAt: now)
         data.assets[asset.id] = asset
-        uploads[asset.id] = file.data
+        uploads[asset.id] = bytes
         progress(1)
         return asset
     }
 
     public func uploadImage(_ file: UploadFile, brandId: EntityID, progress: @escaping @Sendable (Double) -> Void) async throws -> Asset {
-        try await uploadAsset(file, brandId: brandId, kind: .image, progress: progress)
+        try await uploadAsset(file, brandId: brandId, kind: file.assetKind, progress: progress)
+    }
+
+    // MARK: - Products (N23)
+
+    private var products: [EntityID: [BrandProduct]] = [:]
+
+    public func products(brandId: EntityID) async throws -> [BrandProduct] {
+        products[brandId] ?? []
+    }
+
+    public func createProduct(brandId: EntityID, _ input: BrandProductCreate) async throws -> BrandProduct {
+        let input = input.cleaned
+        if let problem = input.problem { throw StudioAPIError.invalidConfiguration(problem) }
+        let product = BrandProduct(
+            id: nextId("product"), brandId: brandId, name: input.name, description: input.description, category: input.category,
+            tags: input.tags, notes: input.notes, imageAssetIds: input.imageAssetIds, createdAt: now, updatedAt: now)
+        products[brandId, default: []].append(product)
+        return product
+    }
+
+    public func updateProduct(brandId: EntityID, id: EntityID, _ input: BrandProductUpdate) async throws -> BrandProduct {
+        guard var product = products[brandId]?.first(where: { $0.id == id }) else {
+            throw StudioAPIError.server(status: 404, code: .notFound, message: "product \(id) not found", issues: [])
+        }
+        if let name = input.name { product.name = name }
+        if let description = input.description { product.description = description }
+        if let category = input.category { product.category = category }
+        if let tags = input.tags { product.tags = tags }
+        if let notes = input.notes { product.notes = notes }
+        if let images = input.imageAssetIds { product.imageAssetIds = images }
+        product.updatedAt = now
+        products[brandId] = products[brandId]?.map { $0.id == id ? product : $0 }
+        return product
+    }
+
+    public func deleteProduct(brandId: EntityID, id: EntityID) async throws {
+        products[brandId]?.removeAll { $0.id == id }
+    }
+
+    public func asset(_ id: EntityID) async throws -> Asset {
+        guard let asset = data.assets[id] else {
+            throw StudioAPIError.server(status: 404, code: .notFound, message: "asset \(id) not found", issues: [])
+        }
+        return asset
     }
 
     private static func inferAssetKind(mimeType: String) -> AssetKind {

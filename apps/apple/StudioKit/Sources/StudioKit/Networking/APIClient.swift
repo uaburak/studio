@@ -549,29 +549,59 @@ public final class APIClient: Sendable {
     }
 
     /// `POST /api/assets` (multipart). `progress` gets 0...1 while the body is sent.
-    public func uploadAsset(_ file: UploadFile, brandId: EntityID, kind: AssetKind? = .image, progress: (@Sendable (Double) -> Void)? = nil) async throws(StudioAPIError) -> Asset {
+    ///
+    /// A file on disk (`UploadFile.fileURL`, videos) is streamed into a body file in
+    /// `bodyDirectory` (default: the temporary folder) and sent from there; `tag` names that
+    /// upload for a process that may finish it later (the share extension's background session).
+    public func uploadAsset(
+        _ file: UploadFile, brandId: EntityID, kind: AssetKind? = .image, tag: String? = nil, bodyDirectory: URL? = nil,
+        progress: (@Sendable (Double) -> Void)? = nil
+    ) async throws(StudioAPIError) -> Asset {
         var form = MultipartForm()
         form.addField("brandId", brandId)
         if let kind, kind != .unknown { form.addField("kind", kind.rawValue) }
         form.addField("source", "upload")
         if let width = file.width { form.addField("width", String(width)) }
         if let height = file.height { form.addField("height", String(height)) }
-        form.addFile("file", filename: file.filename, mimeType: file.mimeType, data: file.data)
-        let body = form.finalize()
+        if let durationMs = file.durationMs, durationMs > 0 { form.addField("durationMs", String(durationMs)) }
         let (configured, retry) = uploads.withLock { $0 }
         let transport = configured ?? ForegroundUploadTransport(session: session)
+
+        // The body: in memory, or written next to the other upload bodies.
+        var body = Data()
+        var bodyFile: URL?
+        if let source = file.fileURL {
+            let folder = bodyDirectory ?? FileManager.default.temporaryDirectory
+            let name = tag.map(Self.bodyFileName(forTag:)) ?? "studio-upload-\(UUID().uuidString).multipart"
+            let url = folder.appendingPathComponent(name)
+            do {
+                try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+                try form.writeBody(to: url, fileField: "file", filename: file.filename, mimeType: file.mimeType, source: source)
+            } catch {
+                throw .invalidConfiguration("Dosya hazırlanamadı: \(error.localizedDescription)")
+            }
+            bodyFile = url
+        } else {
+            form.addFile("file", filename: file.filename, mimeType: file.mimeType, data: file.data)
+            body = form.finalize()
+        }
+        defer { if let bodyFile { try? FileManager.default.removeItem(at: bodyFile) } }
 
         var attempt = 1
         while true {
             // Built again for every attempt: the Mac may have moved (Wi-Fi → tunnel) meanwhile.
             var request = try await makeRequest(.post, "/api/assets")
             request.setValue(form.contentType, forHTTPHeaderField: "Content-Type")
-            request.timeoutInterval = 120
+            request.timeoutInterval = file.fileURL == nil ? 120 : 600
             do throws(StudioAPIError) {
                 let data: Data
                 let response: URLResponse
                 do {
-                    (data, response) = try await transport.upload(request, body: body, progress: progress)
+                    if let bodyFile {
+                        (data, response) = try await transport.upload(request, bodyFile: bodyFile, tag: tag, progress: progress)
+                    } else {
+                        (data, response) = try await transport.upload(request, body: body, progress: progress)
+                    }
                 } catch {
                     throw StudioAPIError.from(error)
                 }
@@ -585,5 +615,11 @@ public final class APIClient: Sendable {
                 do { try await Task.sleep(for: retry.delay(beforeAttempt: attempt)) } catch { throw .cancelled }
             }
         }
+    }
+
+    /// Where a tagged upload's body is written (a finished upload's process removes it by tag).
+    public static func bodyFileName(forTag tag: String) -> String {
+        let safe = tag.unicodeScalars.map { CharacterSet.alphanumerics.contains($0) || $0 == "-" ? Character($0) : "_" }
+        return "studio-upload-\(String(safe)).multipart"
     }
 }
