@@ -1,148 +1,80 @@
-# Studio — Apple uygulamaları
+# Studio — Apple tarafı
 
-Native macOS uygulaması (`StudioMac`, %100 AppKit), native iOS uygulaması (`StudioIOS`, %100 UIKit) ve paylaşılan arayüzsüz çekirdek (`StudioKit`).
-Swift 6 dil modu (tam katı eşzamanlılık), üçüncü taraf bağımlılık yok. Arayüz Türkçe.
+iPhone uygulaması (`StudioIOS`, %100 UIKit) ve onun arayüzsüz çekirdeği (`StudioKit`, Swift paketi).
+Swift 6 dil modu (tam katı eşzamanlılık), üçüncü taraf bağımlılık yok, arayüz Türkçe.
+
+Mac uygulaması burada değil: Electron uygulaması `apps/desktop`. Eski AppKit uygulaması (`StudioMac`)
+kaldırıldı; özellikleri Electron'a taşındı.
 
 ## Yapı
 
 | Klasör | İçerik |
 | --- | --- |
-| `StudioKit/` | Swift paketi (macOS 26+, iOS 26+). Arayüz yok; hem macOS hem iOS uygulaması doğrudan kullanır. |
-| `StudioKit/Sources/StudioKit/Models` | `packages/contract` aynası: marka, marka profili, sosyal hesap & OAuth jeton sağlığı, varlık (`image`, `video`, `document`, `audio`), içerik/sürüm, zamanlama & yayın günlükleri, iş (`image.generate`, `schedule.publish` dahil), presence, sohbet, plan, akış çerçeveleri, `ConversationState` |
-| `.../Networking` | `APIClient` (async/await, tek hata türü `StudioAPIError`, ayarlanabilir adres), `AuthProvider` (Cloudflare Access + cihaz eşleştirme Bearer jetonu, Anahtar Zinciri), çok parçalı yükleme + ilerleme |
-| `.../Streams` | `JobStream` (yeniden bağlanma, üstel bekleme, HTTP yoklama yedeği), `ConversationStream` (`?after=seq` ile kaldığı yerden devam, boşlukta yeniden bağlanma) |
-| `.../Domain` | İçerik hash'i (`computeContentHash` ile bit bit aynı), görsel yuvası tarayıcı (`Slots`), HTML katman tarayıcı ve yama üretici (`SlideLayers`), post panosu, takma ad ve `@anma` kuralları, Türkçe tarih biçimleri |
-| `.../Services` | `ConversationService` ve `StudioDataService` protokolleri; gerçek API uygulamaları (`RemoteConversationService`, `RemoteStudioDataService`); mesajın tel biçimi tek yerde (`MessageWire`) |
-| `.../Sample` | `SampleBackend`: bellekte, taslaklarla aynı Türkçe örnek veri (önizleme, test ve ekran görüntüsü için). |
-| `StudioMac/` | macOS masaüstü uygulaması (%100 AppKit). Yerel API + Worker + Cloudflare Tunnel (`cloudflared`) gözetmeni içerir. |
-| `StudioIOS/` | iPhone uzaktan kumanda uygulaması (yalnızca iPhone, `TARGETED_DEVICE_FAMILY = 1`) (%100 UIKit). Kök ekran sohbet; çekmeceden Postlar, Takvim, Markalar, Mac durumu ve Ayarlar (kod ile eşleştirme + uzaktan tünel bağlantısı). |
-| `scripts/` | `generate-project.sh` (macOS), `generate-ios-project.sh` (iOS), yerel API'ye örnek veri, fixture yakalama, ekran görüntüsü betikleri |
+| `StudioKit/` | Swift paketi (iOS 26+; testler için macOS 26+). Arayüz yok. |
+| `StudioKit/Sources/StudioKit/Models` | `packages/contract` aynası: marka, marka kiti, profil, sosyal hesap ve token sağlığı, varlık, içerik/sürüm, kontroller, zamanlama ve yayın kayıtları, işler, presence, sohbet, plan, akış çerçeveleri, yapay zekâ harcaması |
+| `.../Networking` | `APIClient` (async/await, tek hata türü `StudioAPIError`), `AuthProvider` + cihaz anahtarı (`DeviceTokenAuth`, Anahtar Zinciri), çok parçalı ve arka planda yükleme |
+| `.../Pairing` | Mac'i bulma (`StudioBrowser`, Bonjour `_studio._tcp`), QR ve kodla eşleştirme (`PairingClient`, `PairingInvite`), adres seçimi: önce yerel ağ, sonra tünel (`MacLink`) |
+| `.../Streams` | `JobStream`, `ConversationStream` (`?after=seq` ile kaldığı yerden devam), yeniden bağlanma |
+| `.../Domain` | İçerik hash'i (`computeContentHash` ile bit bit aynı), görsel yuvaları, katmanlar ve yamalar, post düzenleme oturumu, kontroller, takvim, Reels, `@anma`, Türkçe tarih biçimleri |
+| `.../Services`, `.../Sample` | Servis protokolleri ve gerçek API uygulamaları; `SampleBackend` (önizleme ve test için bellekte örnek veri) |
+| `StudioIOS/` | iPhone uygulaması (yalnızca iPhone, `TARGETED_DEVICE_FAMILY = 1`) |
+| `scripts/` | `generate-ios-project.sh` (Xcode projesini üretir), `install-ios-device.sh` (bağlı iPhone'a kurar), `seed-local-api.sh` + `capture-fixtures.sh` (uygulamasız bir API'ye örnek veri ve StudioKit fixture'ları), `make-icon.swift` |
 
-## Proje üretimi ve derleme
+## Derleme ve test
 
-Xcode projeleri elle değil, sabit şablonlardan üretilir (Xcode 16+ dosya sistemiyle eşzamanlı gruplar; ayarlar `Config/*.xcconfig` içinde):
+Xcode projesi elle değil, sabit şablondan üretilir (dosya sistemiyle eşzamanlı gruplar; ayarlar
+`StudioIOS/Config/*.xcconfig` içinde):
 
 ```sh
-apps/apple/scripts/generate-project.sh
 apps/apple/scripts/generate-ios-project.sh
-```
 
-```sh
-# StudioKit
 swift test --package-path apps/apple/StudioKit
-
-# macOS uygulaması (StudioMac)
-xcodebuild -project apps/apple/StudioMac/StudioMac.xcodeproj -scheme StudioMac -configuration Debug build
-xcodebuild -project apps/apple/StudioMac/StudioMac.xcodeproj -scheme StudioMac -configuration Debug test
-
-# iOS uygulaması (StudioIOS)
-xcodebuild -project apps/apple/StudioIOS/StudioIOS.xcodeproj -scheme StudioIOS -configuration Debug -destination 'generic/platform=iOS Simulator' build-for-testing
+xcodebuild -project apps/apple/StudioIOS/StudioIOS.xcodeproj -scheme StudioIOS -configuration Debug \
+  -destination 'generic/platform=iOS Simulator' build-for-testing
 ```
 
-## Ekranlar ve yetenekler
+Simülatör derlemesi imza istemez. Kendi iPhone'una kurmak için:
 
-### `StudioMac` (AppKit)
-- **Sohbet**: Canlı akış, araç adımları, yetki onay kartı (`consent`), soru kartı, plan kartı ("Onayla ve üret"), ekli görseller ve `@takma-ad` tamamlama.
-- **Postlar**: ‹ › ile ay gezintisi, durum filtresi (Tümü / Hazır / Görsel bekliyor / Onaylandı / Zamanlandı / Yayınlandı), render edilmiş 4:5 kartlar, kartta "Render ediliyor" rozeti, klavye seçimi ve sağ tık menüsü (Aç, Hızlı bakış, Dışa aktar, Açıklamayı kopyala, Çoğalt, Sil…), yükleniyor / boş / hata durumları, hazır postlar için yüzen onay çubuğu.
-- **Açık post ve editör**: karttan büyüyerek açılır; solda render edilmiş slayt ve renderer'ın ölçtüğü katman kutuları (tıkla seç, sürükle taşı, köşeden boyutlandır, çift tıkla metni düzenle, görseli yuvaya/görsel katmanına bırak), sağda **Post | Düzenle | Sürümler**. Her değişiklik design-kit yaması olarak `content.render` işine gider, yeni `manual_edit` sürümü render edilince görüntü değişir ("Render ediliyor"). Geri al/yinele sürümleri geri yükler. "Neyi değiştireyim?" bu sürümü AI ile düzeltir (`content.generate` + `baseVersion`). Açıklama ve etiketlerde platform karakter sayaçları; sürüm listesi ve "Bu sürümü geri yükle"; hash ile onay; zamanlama. Dışa aktarma: JPEG / PNG (bu slayt ya da tümü), PDF, Finder'da göster, paylaşma menüsü, açıklamayı kopyala; çoğaltma ve onaylı silme. Ortak mantık `StudioKit`'te (`DesignPatch`, `SlideCanvasGeometry`, `PostExporter`, `CaptionLimits`).
-- **Takvim (`⇧⌘K`)**: Ay · Hafta (saat satırlı) · Yayın günlüğü. Bekleyen zamanlamalar sürüklenerek başka güne (saat korunur) ya da haftada başka saate taşınır (`PATCH /api/schedules/{id}`). Her satır durumu söyler: Zamanlandı (Mac açık olmalı) / Buluta gönderiliyor / Bulutta / Yayınlanıyor / Yayınlandı (bağlantı) / Hata (neden + **Yeniden dene**). "Zamanla" (ya da güne çift tık) ortak **zamanlama sayfasını** açar: onaylı post, hesaplar, yerel saat, platform kuralları (ön denetim, Türkçe), "Şimdi yayınla" (onaylı). Açık posttaki "Zamanla" da aynı sayfayı açar.
-- **Medya Kütüphanesi (`⇧⌘M`)**: Tür filtreleri (`Tümü`, `Görseller`, `Videolar`, `Belgeler (PDF)`), sürükle-bırak yükleme ve **"AI Görsel Üret"** sayfası (oran, 1K/2K çözünürlük, referans ürün fotoğrafı ve **"Ürün etiketini bozmadan koru"**).
-- **İlk açılış (`Start/Onboarding*`)**: marka yoksa ya da Claude girişi yoksa açılır: Hoş geldin → Claude hesabı (`POST /api/workers/claude/login` ile `claude auth login --claudeai`, durum yoklanır) → Mac sunucusu (durum, worker, yerel ağ, telefon eşleştirme yönlendirmesi) → ilk marka (ad, kısa ad, dil, Instagram) → Hazır. Geçilebilir, kaldığı adımı hatırlar (`studio.onboarding.*`), tamamlanınca kendiliğinden açılmaz; Yardım → Başlangıç rehberi.
-- **Marka ayarları (`Brands/`, ⇧⌘B; kenar çubuğunda marka başlığına sağ tık)**: Genel (ad, kısa ad, dil, onaylı arşivle / geri yükle) · Marka kiti (3–12 örnek post, açık/koyu zemin logoları, font + lisans notu, renk seçicili palet, notlar; kendiliğinden kaydedilir) ve **Profili çıkar** (`brand.analyze`, ilerleme ve hata görünür, yeniden açılınca çalışan iş izlenir) · Profil (sürüm geçmişi, token tablosu, DESIGN.md, VOICE.md, gerçekler/izinli sayılar, taslak kaydet, onayla, eski sürümü geçerli yap) · Hesaplar (platform başına hesap adı ve durumu; bağlama bu ekranda henüz yok). Yeni marka: ⇧⌘N. Kenar çubuğunda marka başlığına tıklamak markayı seçer (yeni sohbet, postlar, takvim, medya onu izler). Arşivlenmiş markalar Ayarlar → Markalar'da.
-- **Hesaplar (Ayarlar → Hesaplar; sağ paneldeki hesap satırı)**: sahibin kendi Meta uygulaması (App ID; App Secret Anahtar Zinciri'nde) ile Facebook Login tarayıcıda açılır, yönlendirme `http://localhost:8793/meta/callback` (Mac'te tek seferlik dinleyici) ile döner; Sayfalar ve bağlı Instagram hesapları listelenir, marka için seçilenler bağlanır. LinkedIn aynı şekilde (Client ID/Secret, `http://localhost:8793/linkedin/callback`, 60 gün). Hesap başına sağlık (süre, geçersiz, eksik izin), Denetle (canlı), Yeniden bağla, Bağlantıyı kes. Uygulama girilmemişse ekran neyin nerede oluşturulacağını adım adım yazar. "Gelişmiş" altında elle token girme.
-- **Yayın (Ayarlar → Yayın)**: bulut yayıncı adresi + `PUBLISHER_TOKEN` (denenir, API kasasına ve Anahtar Zinciri'ne yazılır); yoksa yayını Mac yapar. Son eşitleme ve hatası. Bildirimler anahtarı.
-- **Bildirimler (`Notifications/`)**: yayınlandı / yayınlanamadı (tıklayınca gönderi açılır), post üretimi / AI görsel / marka profili bitti-başarısız, süresi dolmak üzere ya da geçersiz hesap. İzin ilk zamanlamada istenir; aynı olay iki kez gönderilmez. Uygulama öne gelince worker'dan bulut eşitlemesi istenir (`POST /api/publishing/sync`).
-- **Yerel Sunucu & Uzaktan Erişim (Ayarlar → Bu Mac)**: gömülü API + Worker süreç gözetimi, 6 haneli telefon eşleştirme kodu üretimi ve `cloudflared` tünel yönetimi (`social.burakkoc.net`).
+1. `cp apps/apple/StudioIOS/Config/Local.xcconfig.example apps/apple/StudioIOS/Config/Local.xcconfig`
+   ve içine Apple takım kimliğini (`DEVELOPMENT_TEAM`) yaz. Bu dosya git'e girmez; takım kimliği
+   depoda hiçbir yerde tutulmaz.
+2. Paket kimliği tek yerde: `Config/Base.xcconfig` → `STUDIO_BUNDLE_ID` (varsayılan
+   `net.burakkoc.studio.ios`). Kendi takımın için değiştirmen gerekirse `Local.xcconfig`'te ez;
+   Info.plist (`.pair`, `.refresh`) ve kod (arka plan görevi, yükleme oturumu, Anahtar Zinciri
+   servisi) ondan türetir.
+3. Xcode'da Run, ya da Xcode'da hesap oturumu yokken `apps/apple/scripts/install-ios-device.sh`
+   (joker geliştirme profiliyle elle imzalar; varsayılan yalnızca kurar, açmaz).
 
-### `StudioIOS` (UIKit)
-- **Kök ekran sohbet (Claude uygulaması düzeni, sekme çubuğu yok)**: `StudioRootViewController` sohbeti tam ekran gösterir; sol üstteki cam düğme ya da soldan kaydırma **çekmeceyi** açar (sohbet sağa kayar, kararır, köşeleri yuvarlanır; dokununca/kaydırınca kapanır). Çekmece (`DrawerViewController`): serif "Studio" başlığı, sohbet arama, Postlar (onay bekleyen sayısı), Takvim, Markalar, Mac durumu, "Geçmiş" (seçili markanın sohbetleri; kaydırarak arşivle/adlandır), altta avatar (Ayarlar) ve "Yeni sohbet". Sayfalar sohbetin üstüne geri düğmeli tam sayfa olarak açılır; bildirim ve bağlantılar `IOSRoute` ile buraya düşer.
-- **Sohbet**: boş sohbette Studio'nun turuncu işareti ve saate göre serif selamlama (ad: Ayarlar → Karşılama ya da eşleşmiş Mac'in adı), sağ üstte marka/model menüsü; sohbette yeni sohbet + "…" (marka, model, düşünme, kullanım, görseller, adlandır, paylaş, arşivle). Asistan yanıtları New York serif, başlıklar kalın serif, listeler asılı girintili; kullanıcı mesajı sağda gri balon; araç adımları katlanır satır; onay/soru/plan kartları. Yanıtın altında kopyala, sesli oku (Türkçe ses) ve paylaş. Yüzen cam besteci: + (Fotoğraflar, Kamera, Dosyalar, Pano), Türkçe dikte (mikrofon), birincil düğme (yazı varken gönder, yanıt sürerken durdur, boşken basılı tutup konuş). En alta git düğmesi.
-- **Postlar & Post Detayı**: Filtreli `UICollectionView` ızgarası, tam hash doğrulamalı onaylama, slayt geçişi, açıklama/etiket düzenleme, `UIDatePicker` ile zamanlama ve revizyon isteme.
-- **Takvim**: Aylık ızgara + zamanlanmış post listesi, yayın bağlantısı ve iptal aksiyonu.
-- **Ayarlar & Eşleştirme**: Mac'teki 6 haneli kod ile eşleştirme (`PairingSheetViewController`), Anahtar Zinciri Bearer jetonu, Uzaktan Kumanda (`https://social.burakkoc.net`) anahtarı ve görünüm seçimi.
+## iPhone uygulaması
 
-## Mac sunucusu: API ve worker'ı uygulama çalıştırır (L1)
+- **Kök ekran sohbet**: tam ekran sohbet, soldan çekmece (Postlar, Takvim, Markalar, Mac durumu, geçmiş
+  sohbetler, Ayarlar). Marka / model menüsü, araç adımları, onay / soru / plan kartları, fotoğraf ve
+  dosya ekleme, Türkçe dikte.
+- **Postlar ve post ayrıntısı**: ızgara, hash doğrulamalı onay, kontroller listesi ve onay uyarısı,
+  açıklama düzenleme, yuva doldurma, zamanlama, "Neyi değiştireyim?". Tuvalde düzenlenmiş postlar
+  telefonda salt-okunur ("Mac'te düzenle").
+- **Takvim**: aylık ızgara, zamanlanmış postlar, iptal.
+- **Bildirimler**: biten işler, onay / soru bekleyen sohbetler, yayın sonuçları; arka planda yenileme
+  önce yerel adresleri, sonra tünel adresini dener. Gerçek push yok (Apple Developer üyeliği bekliyor, S8).
 
-Veriler ve üretim Mac'te. `StudioMac` açılınca (`studio.host.enabled`, varsayılan açık) `StudioMac/Host/LocalHost.swift`
-şunları alt süreç olarak başlatır, gözetir ve kapanışta durdurur:
+## Mac'e bağlanma
 
-| Süreç | Komut | Adres |
-| --- | --- | --- |
-| migration (tek sefer) | `node wrangler.js d1 migrations apply DB --local --persist-to …` (120 sn zaman aşımı) | — |
-| API | `node wrangler.js dev --ip 127.0.0.1 --port 8790 --persist-to …` (`apps/api`) | `127.0.0.1:8790` |
-| yerel ağ geçidi | `node apps/api/scripts/lan-gateway.mjs` ("Yerel ağdan erişim" açıksa) | `0.0.0.0:8791` |
-| worker | `node --import tsx src/main.ts` (`apps/worker`) | API'ye `ws://127.0.0.1:8790/api/hub` |
+Mac uygulaması yerel sunucuyu çalıştırır; telefon ona **yerel ağ geçidinden** (`:8791`) ya da evin
+dışındaysa **Cloudflare Tunnel** adresinden bağlanır. Mimari: [docs/MIMARI.md](../../docs/MIMARI.md).
 
-- **Durum klasörü:** `~/Library/Application Support/Studio/` → `api/state` (D1, R2, Durable Object), `worker/` (outbox,
-  Claude durum dosyaları), `logs/{migrate,api,gateway,worker}.log` (5 MB'ta bir önceki kuşak `.1` olur), `instance-id`,
-  `host.json` (son portlar). Repodaki `.wrangler/state` ile elle başlatılan geliştirme sunucusunun verisi ayrı kalır.
-- **Gözetim:** her alt süreç kendi süreç grubunda (`posix_spawn`); çökünce 1, 2, 4 … 30 sn beklemeyle yeniden başlar,
-  60 sn sağlıklı çalışınca sayaç sıfırlanır, art arda 8 hızlı çöküşte durur ("Yeniden başlat" ile tekrar). Lider süreç
-  bitince grubunda kalan her şey (ör. `workerd`) öldürülür. Durdurma: SIGTERM, 8 sn sonra SIGKILL; önce worker (işleri geri
-  verir), sonra geçit ve API. ⌘Q ve `kill <pid>` (SIGTERM) aynı yoldan kapatır.
-- **İkinci kopya yok:** açılışta son port ve 8790 `/api/health` ile yoklanır; yanıt bu durum klasörünün `instance-id`'sini
-  taşıyorsa (başka bir uygulama kopyası ya da çökmeden kalan süreçler) yeni süreç başlatılmaz, ona bağlanılır ("bağlandı").
-  Port başka bir şeyde (ör. elle açılmış `wrangler dev`) ise boş bir port seçilir.
-- **Araçlar:** Finder'dan açılan uygulamanın PATH'i kısadır; PATH bir kez giriş kabuğundan (`$SHELL -l -i -c`) okunur,
-  `node` ve `claude` oradan bulunur. Depo yolu Ayarlar → Mac sunucusu → "Depo klasörü" (varsayılan: uygulamanın derlendiği
-  depo, yoksa `~/Desktop/Burak/Code/Studio`); orada `pnpm install` yapılmış olmalı. **Node, wrangler ve worker'ın uygulama
-  paketine gömülmesi sonraki adım.**
-- **Electron uygulamasıyla birlikte kullanım (G1, G10, 2026-11):** API artık yalnızca 127.0.0.1'den gelen isteği Mac
-  saymaz; masaüstü uygulamasının sahip anahtarını (`X-Studio-Owner`, `STUDIO_OWNER_SECRET`) ister. StudioMac bu anahtarı
-  vermez ve göndermez, bu yüzden onun başlattığı sunucuda Mac'e özel her istek `401` alır ve Electron uygulaması ona
-  bağlanmaz ("başka bir uygulama tarafından açılmış" der). Electron uygulaması ayrıca `vault-key` ve `worker-token`
-  dosyalarını safeStorage ile şifreleyip (`host-secrets.json`) siler; StudioMac açılırsa yeni bir `vault-key` üretir ve
-  kayıtlı hesap token'larını çözemez (Electron uygulaması kendi şifreli anahtarını kullanmaya devam eder, yeni dosyayı
-  `vault-key.appkit-<zaman>` olarak kenara koyar). StudioMac'te sunucuyu başlatmayın; uygulama emekliye ayrılıyor (S2).
-- **TOKEN_ENCRYPTION_KEY (P3):** token kasası anahtarı; ilk açılışta 32 rastgele bayt üretilip `vault-key` dosyasına (0600) yazılır,
-  API'ye yalnızca ortam değişkeniyle verilir. Silinirse kayıtlı hesap token'ları çözülemez (hesaplar yeniden bağlanır).
-- **WORKER_TOKEN:** ilk açılışta rastgele üretilir, Anahtar Zinciri'nde (`net.burakkoc.studio` / `local-worker-token`)
-  saklanır, iki alt sürece yalnızca ortam değişkeniyle verilir (wrangler'a `--env-file` ile boş bir dosya gösterilir ki
-  `apps/api/.dev.vars` okunmasın). Depoya ya da diske yazılmaz.
-- **Ayarlar → "Mac sunucusu":** durum (çalışıyor / başlatılıyor / hata + son günlük satırları), süreç durumları,
-  "Yeniden başlat", "Yerel ağdan erişim", depo klasörü, kayıt klasörü. Anahtar kapatılırsa uygulama eskisi gibi "Sunucu"
-  adresine bağlanır.
-- **Bonjour:** geçit `_studio._tcp` olarak duyurulur (TXT: `name`, `api=1`, `pairing=required`). Info.plist:
-  `NSLocalNetworkUsageDescription`, `NSBonjourServices`. macOS güvenlik duvarı açıksa `node` için gelen bağlantı izni
-  sorulabilir.
+**Eşleştirme** (Mac: "iPhone'u bağla", sağ paneldeki iPhone bölmesinde ya da Ayarlar → Cihazlar'da):
 
-### Telefon eşleştirme
+1. Mac bir QR kodu ve 6 haneli kod gösterir. QR, Mac'in adını, kimliğini, yerel adreslerini, portunu,
+   (açıksa) tünel adresini ve tek kullanımlık bir sır taşır (`studio://pair?...`).
+2. Telefon QR'ı okutur ya da Bonjour ile Mac'i bulup kodu girer; `POST /api/pairing/claim` uzun bir
+   cihaz anahtarı döner, telefon onu Anahtar Zinciri'ne yazar ve her istekte
+   `Authorization: Bearer …` gönderir.
+3. Mac eşleşmiş cihazları listeler; **Kaldır** anahtarı anında geçersiz kılar ve açık akışları kapatır.
 
-1. Mac: Ayarlar → "Cihazlar" → **Telefon ekle**. 6 haneli kod çıkar (2 dakika, tek kullanımlık; yenisi eskisini geçersiz kılar).
-2. Telefon: Bonjour ile Mac'i bulur (`StudioBrowser`), kodu ve cihaz adını `POST /api/pairing/claim`'e gönderir
-   (`PairingClient`), dönen uzun cihaz anahtarını Anahtar Zinciri'ne yazar (`KeychainDeviceTokenStore`) ve sonraki her
-   istekte `Authorization: Bearer …` gönderir (`DeviceTokenAuth`).
-3. Mac: aynı bölümde eşleşmiş cihazlar listelenir; **Kaldır** anahtarı anında geçersiz kılar.
+**Uzaktan erişim**: Mac'te Ayarlar → Gelişmiş → Uzaktan erişim (tünel adresi ve anahtarı; varsayılan
+adres yoktur). Telefonda Ayarlar → Gelişmiş → "Ek uzak adres" isteğe bağlıdır; QR'daki tünel adresi
+yeterlidir.
 
-Mac uygulamasının kendisi eşleşmez: `127.0.0.1`'e konuşur ve "yerel" sayılır. Elle deneme:
-
-```sh
-CODE=$(curl -s -X POST 127.0.0.1:8790/api/pairing/codes | jq -r .code)
-TOKEN=$(curl -s -X POST http://<mac-ip>:8791/api/pairing/claim -H 'content-type: application/json' \
-  -d "{\"code\":\"$CODE\",\"deviceName\":\"Deneme\",\"platform\":\"ios\"}" | jq -r .token)
-curl -s http://<mac-ip>:8791/api/brands                                  # 401
-curl -s http://<mac-ip>:8791/api/brands -H "Authorization: Bearer $TOKEN"  # 200
-```
-
-Testler: `StudioKitTests/PairingTests` (URLProtocol taklidiyle eşleştirme istemcisi, hata eşleme, Anahtar Zinciri gidiş-dönüş,
-TXT okuma), `StudioMacTests/HostSupervisorTests` (sahte süreç başlatıcıyla geri çekilme, sağlıklı çalışmada sıfırlama, pes
-etme, durdurma; gerçek `posix_spawn` ile günlük yakalama ve SIGTERM'i yok sayan süreç grubunun öldürülmesi).
-
-## Kısayollar (`StudioMac`)
-
-Menüler: Studio · Dosya · Düzen · Görüntü · Git · Marka · Pencere · Yardım (hepsi `validateMenuItem` ile; bir sayfa açıkken
-pencereye dokunan komutlar kapalı). ⌘N yeni sohbet · ⌘F (ya da ⌘K) ara: markalar, sohbetler, tüm markaların postları (başlık +
-açıklama metni, istemci tarafında) · ⌘, ayarlar · ⌘R yenile · ⌘1…⌘9 markaya geç (alfabetik; Marka menüsü) · ⇧⌘N yeni marka ·
-⇧⌘B marka ayarları (içinde ⌘1–⌘4 sekmeler) · ⌃⌘S kenar çubuğu · ⌥⌘I sağ panel · ⌘[ / ⌘] geri / ileri · ⇧⌘P postlar ·
-⇧⌘K takvim · ⇧⌘M medya · ⇧⌘L görünüm (Sistem → Açık → Koyu) · ⌃⌘F tam ekran · ⌘W kapat · ⇧⌘/ kısayol listesi ·
-⌘↩ açık postu onayla · composer'da ↩ gönder, ⇧↩ yeni satır, `@` takma ad öner, ⌘V görseli ek olarak yapıştırır.
-
-Pencere boyutu/konumu (`StudioMainWindow`), son ekran (sohbet / postlar / takvim / medya), seçili marka ve panellerin
-açık/kapalı durumu (`studio.session`) yeniden açılışta geri gelir; arşivlenmiş sohbet yeni sohbete düşer. Sunucu, API, worker
-ve Claude sorunları pencerenin üstünde tek bir şeritte, düzeltme düğmesiyle (Yeniden dene / Yeniden başlat / Ayarlar /
-Giriş yap) görünür; kenar çubuğunun altında Mac sunucusunun durumu yazar. Cam yüzeyler "Saydamlığı azalt" açıkken opak,
-"Karşıtlığı artır" açıkken kenarlıklıdır; simge düğmelerinin VoiceOver adları ve Tam Klavye Erişimi desteği vardır.
-
-Postlar ve editör: oklar kart seçer, ↩ açar, boşluk Hızlı Bakış, ⌫ siler (onaylı), ⌘D çoğaltır, ⌘E dışa aktarır. Açık postta
-esc seçimi kaldırır / kapatır, ← → slayt değiştirir ya da seçili katmanı 1 px (⇧ 10 px) kaydırır, ⇥ sonraki katman, ↩ metni
-düzenler, ⌫ seçili katmanı gizler (seçim yoksa postu siler), ⌘Z / ⇧⌘Z geri al / yinele, ⌘W kapatır.
+Testler: `StudioKitTests` (çözümleme fixture'ları, istemci, akışlar, eşleştirme, QR, domain kuralları;
+`Live*` testleri yalnızca ortam değişkeniyle özel bir API'ye karşı koşar), `StudioIOSTests` (model,
+bağlantı, kabuk ve ekranların duman testleri; simülatörde).

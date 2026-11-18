@@ -1,7 +1,11 @@
 # @studio/api
 
-Cloudflare Workers API (Hono + `@hono/zod-openapi`), `Hub` Durable Object, D1 (Drizzle) ve R2.
-Şemalar `packages/contract` içindedir; web, worker ve iOS aynı sözleşmeyi kullanır.
+Studio'nun API'si: Hono + `@hono/zod-openapi`, `Hub` Durable Object, D1 (Drizzle) ve R2. Cloudflare
+Workers çalışma zamanında yazılmıştır ama **buluta dağıtılmaz**: sahibin Mac'inde, Mac uygulamasının
+başlattığı `wrangler dev` (workerd) içinde, `127.0.0.1:8790`'da çalışır; veriler
+`~/Library/Application Support/Studio/api/state` altındadır. Şemalar `packages/contract` içindedir;
+masaüstü uygulaması ve worker aynı sözleşmeyi, iPhone uygulaması onun Swift aynasını (`StudioKit`)
+kullanır. Genel resim: [docs/MIMARI.md](../../docs/MIMARI.md).
 
 ## Veri modeli
 
@@ -109,8 +113,8 @@ Dosya içeriği bildirilen türle eşleşmezse (ör. PNG adı altında metin) `4
 ## Mac'te çalışma, erişim ve cihaz eşleştirme (L1)
 
 API sahibin Mac'inde çalışır: Mac uygulaması `wrangler dev`'i `127.0.0.1:8790`'da, durumu
-`~/Library/Application Support/Studio/api/state` altında (`--persist-to`) başlatır, önce migration'ları uygular
-(ayrıntı: `apps/apple/README.md`). Telefonlar aynı ağdan **yerel ağ geçidi** ile gelir: `scripts/lan-gateway.mjs`
+`~/Library/Application Support/Studio/api/state` altında (`--persist-to`) başlatır, önce veritabanını yedekleyip
+migration'ları uygular (ayrıntı: `apps/desktop/src/main/host/local-host.ts`, [docs/PACKAGING.md](../../docs/PACKAGING.md)). Telefonlar aynı ağdan **yerel ağ geçidi** ile gelir: `scripts/lan-gateway.mjs`
 (`0.0.0.0:8791` → `127.0.0.1:8790`, HTTP ve WebSocket, bağımlılıksız Node).
 
 **Neden geçit:** Miniflare `CF-Connecting-IP`'yi soketten yalnızca istemci göndermediyse yazar; ağdaki biri
@@ -165,6 +169,14 @@ kopyasını elle başlatılmış bir API'den ayırıp ona bağlanır. `wrangler.
 ortam değişkeni onu ezer. Elle `pnpm dev` ile çalışırken `.dev.vars` içine `STUDIO_OWNER_SECRET` koyup istekte
 `X-Studio-Owner` gönderin (ya da worker anahtarını kullanın); yalnızca 127.0.0.1'den gelmek artık yetmez.
 
+## Sağlık (`GET /api/health`, P9)
+
+Herkese özet döner: `status` yalnızca API ve veritabanına bakar, `instance` bu Mac'in kimliğidir. Mac uygulaması,
+worker ve eşli cihazlar ayrıca `components` alır: veritabanı, medya deposu (R2), veritabanı sürümü (uygulanan son
+göç `LATEST_MIGRATION` ile karşılaştırılır), worker, tuval çalıştırıcısı, token kasası, bulut yayıncı (son eşitleme)
+ve uzaktan erişim tüneli; her biri `ok` / `warn` / `fail`, Türkçe etiket ve açıklamayla (`src/lib/health.ts`).
+Mac uygulaması Ayarlar → Gelişmiş → Sunucu sağlığı'nda gösterir.
+
 ## İş kuyruğu ve Hub (F1-6)
 
 D1 `jobs` tablosu tek doğru kaynaktır; `Hub` Durable Object (tek örnek, `main`) dağıtıcıdır. Hub bellekte iş durumu
@@ -210,10 +222,9 @@ uygulayamaz. Mesajlar, RPC'ler ve alarm Hub içinde sıraya alınır (D1 çağr�
   yukarıdaki uzlaştırma çalışır. Uyuyan (hibernation) soketler ek bir şey gerektirmez. DO deposunda yalnızca worker'ın
   son görülme zamanı (`presence:lastSeenAt`) tutulur.
 - **Yetkilendirme:** worker `/api/hub`'a `Authorization: Bearer <WORKER_TOKEN>` gönderir; sabit zamanlı karşılaştırılır
-  (`src/hub/auth.ts`). `WORKER_TOKEN` tanımlı değilse hiçbir worker bağlanamaz (503). Yerelde `.dev.vars.example` →
-  `.dev.vars`; dağıtımda `wrangler secret put WORKER_TOKEN`. Cloudflare Access kurulunca worker ayrıca Access servis
-  token'ı gönderecek ve `middleware/access.ts` JWT'yi doğrulayacak; bu paylaşılan anahtar o zaman ek savunma olarak kalabilir
-  ya da kaldırılabilir (tek yer: `hub/auth.ts`).
+  (`src/hub/auth.ts`). `WORKER_TOKEN` tanımlı değilse hiçbir worker bağlanamaz (503). Mac uygulaması anahtarı üretir,
+  safeStorage ile şifreli saklar (`host-secrets.json`), API'ye ve worker'a ortam değişkeniyle verir (tuval
+  çalıştırıcısı ana süreçte kullanır); uygulamasız çalıştırırken `.dev.vars.example` → `.dev.vars`.
 
 **Kalıcılık özeti:** D1 `jobs`: durum, payload, çıktı, hata, ilerleme ve mesajı, öncelik, deneme / en fazla deneme,
 worker kimliği, kiralama bitişi, dağıtım / ack / iptal isteği / başlangıç / bitiş zamanları. DO alarmı: bir sonraki
@@ -475,21 +486,25 @@ indirgeyici `state.aliases`'ı tutar (snapshot'tan alır, `conversation.updated.
   `cloud_synced_at` sıfırlanır, worker yeniden gönderir; buluta gitmiş ve iptal edilen zamanlamalar
   `/api/worker/schedules/cancelled` ile worker'a bildirilir, worker bulutta iptal eder.
 - **Bildirim akışı:** `GET /api/publish-logs?finishedAfter=` biten denemeleri (eskiden yeniye) başlık ve hesapla verir;
-  Mac bunları macOS bildirimine çevirir.
+  Mac uygulaması bunları macOS bildirimine çevirir.
 
 ## Migration
 
-Şema `src/db/schema.ts`. Migration SQL'leri `migrations/` altında (`0000_init`, `0001_core_model`, `0002_job_queue`, `0003_chat`, `0004_attachment_aliases`, `0005_run_model_effort`, `0006_devices`, …, `0010_publishing`: `publishing_settings`, `schedules.delivery/cloud_synced_at/last_error`, `social_account_tokens.key_version`).
+Şema `src/db/schema.ts`. Migration SQL'leri `migrations/` altında, `0000_init`'ten `0019_delete_safety`'ye kadar
+(ör. `0006_devices`, `0010_publishing`: `publishing_settings`, `schedules.delivery/cloud_synced_at/last_error`,
+`social_account_tokens.key_version`; `0011_qr_pairing`, `0016_editor_documents`, `0017_publish_safety`).
+Mac uygulaması her açılışta, alt süreçleri başlatmadan önce veritabanını `…/Studio/backups/` altına kopyalar ve
+bekleyen göçleri uygular. Yeni bir göç eklenince `src/lib/health.ts` → `LATEST_MIGRATION` güncellenir (test hatırlatır).
 `0002` yalnızca `jobs` tablosuna sütun ve indeks ekler (tablo yeniden kurulmaz); yeni sütunların aralıkları API'de doğrulanır.
 `0003` yalnızca yeni tablolar ekler (konuşmalar, mesajlar, turlar, akış olayları, planlar, plan kalemleri).
 `0004` iki yeni tablo (`conversation_aliases`, `conversation_alias_names`) ve `messages.mentions` sütununu ekler (null = anma yok).
 
 ```sh
 pnpm --filter @studio/api db:generate --name <kisa_ad>      # şema değişince yeni migration üretir (çevrimdışı)
-pnpm --filter @studio/api db:migrate                       # yerel D1'e uygular (.wrangler/state)
+pnpm --filter @studio/api db:migrate                       # elle çalıştırılan API'nin D1'ine uygular (.wrangler/state)
 ```
 
-Uzak D1'e migration uygulanmadı; dağıtım görevi bunu yapacak.
+API buluta dağıtılmaz; uzak D1 yoktur.
 
 ## Test
 
@@ -509,13 +524,15 @@ plan düzenleme/ret/geçersizleşme, iş kaybında tur durumu, worker token'ı),
 adlandırmadan sonra adın tekrar verilmemesi, istenen ad çakışmaları, eşzamanlı gönderim ve yeniden adlandırma,
 mention ayrıştırma, worker bağlamı ve akış).
 
-Elle deneme (API çalışırken, `pnpm dev`):
+Elle deneme (API'yi uygulamasız çalıştırırken: `pnpm --filter @studio/api dev`, `.dev.vars` içinde
+`STUDIO_OWNER_SECRET`; çalışan Studio'nun API'sine değil):
 
 ```sh
-B=$(curl -s -X POST localhost:8787/api/brands -H 'content-type: application/json' -d '{"name":"Deneme"}' | jq -r .id)
-C=$(curl -s -X POST localhost:8787/api/contents -H 'content-type: application/json' \
+O="X-Studio-Owner: <STUDIO_OWNER_SECRET>"
+B=$(curl -s -X POST 127.0.0.1:8787/api/brands -H "$O" -H 'content-type: application/json' -d '{"name":"Deneme"}' | jq -r .id)
+C=$(curl -s -X POST 127.0.0.1:8787/api/contents -H "$O" -H 'content-type: application/json' \
   -d "{\"brandId\":\"$B\",\"type\":\"post\",\"title\":\"İlk post\",\"targetPlatforms\":[\"instagram\"]}" | jq -r .id)
-H=$(curl -s -X POST localhost:8787/api/contents/$C/versions -H 'content-type: application/json' \
+H=$(curl -s -X POST 127.0.0.1:8787/api/contents/$C/versions -H "$O" -H 'content-type: application/json' \
   -d '{"origin":"generated","slides":[{"html":"<html></html>","width":1080,"height":1350}]}' | jq -r .contentHash)
-curl -s -X POST localhost:8787/api/contents/$C/approve -H 'content-type: application/json' -d "{\"hash\":\"$H\"}"
+curl -s -X POST 127.0.0.1:8787/api/contents/$C/approve -H "$O" -H 'content-type: application/json' -d "{\"hash\":\"$H\"}"
 ```

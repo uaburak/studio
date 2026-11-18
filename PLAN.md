@@ -1,6 +1,22 @@
 # Studio — Sosyal Medya Üretim ve Yayın Aracı
 
-Plan v0.2 · 2026-11-16 · Durum: Burak üretime geçilmesini istedi; Faz 0 yürütülüyor. Görev dağılımı ve durum: [TASKS.md](TASKS.md)
+> **Tarihsel belge (2026-11-16).** İlk plan ve araştırma notları olarak duruyor; güncel değil.
+> Güncel mimari: [README.md](README.md) ve [docs/MIMARI.md](docs/MIMARI.md); durum ve açık işler:
+> [docs/DENETIM-PLANI.md](docs/DENETIM-PLANI.md). Bu plandan bugün farklı olanlar:
+>
+> - **Kontrol düzlemi bulutta değil.** API, veritabanı (D1), medya (R2) ve Hub, Mac'teki Studio
+>   uygulamasının başlattığı yerel sunucuda (`wrangler dev`) çalışır. Bulutta yalnızca isteğe bağlı
+>   bulut yayıncı (`apps/cloud-publisher`) vardır. `social.…` gibi bir bulut alan adı yoktur; telefon
+>   evin dışından Mac'e Cloudflare Tunnel ile, sahibin Ayarlar'da girdiği adresten bağlanır.
+> - **Web arayüzü yok; Mac uygulaması Electron + React** (`apps/desktop`). SwiftUI ve AppKit
+>   uygulamaları kaldırıldı; iPhone uygulaması UIKit (`apps/apple/StudioIOS`).
+> - **Kimlik Cloudflare Access değil**: sahip anahtarı (yalnızca Mac uygulaması), worker anahtarı ve
+>   eşleştirmeyle verilen cihaz anahtarları (`apps/api/src/middleware/access.ts`).
+> - Hesap token'ları Mac'teki API'nin şifreli kasasında durur; bulut modunda yalnızca zamanlanan
+>   yayının token'ı bulut yayıncıya gider.
+> - Görev listesi (`TASKS.md`) denetim planıyla değiştirildi.
+
+Plan v0.2 · 2026-11-16 · Durum (o gün): üretime geçilmesi istendi; Faz 0 yürütülüyordu.
 
 Bu belge araştırma bulgularını, verilen kararları ve üretim planını tek yerde toplar. "Doğrulanmadı" diye işaretlenen her madde Faz 0'daki bir testle kapatılır; o testler geçmeden üzerine bir şey inşa edilmez.
 
@@ -12,7 +28,7 @@ Bu belge araştırma bulgularını, verilen kararları ve üretim planını tek 
 
 Tek kullanıcılı (Burak) bir içerik stüdyosu. Kendi hesapları ve yönettiği müşteri hesapları için Instagram, Facebook ve LinkedIn'e post, carousel, story ve Reels üretir; her markanın tasarım diline ve metin tonuna sadık kalır; üretilen her şey elle düzenlenebilir; onaylanan içerik zamanlanıp otomatik paylaşılır.
 
-Üretim Mac'te, Claude Code aboneliğiyle çalışır. Arayüz ve zamanlayıcı Cloudflare'dedir (`social.burakkoc.net`). iPhone'daki native uygulama her yerden prompt gönderir, sonucu önizler, onaylar.
+Üretim Mac'te, Claude Code aboneliğiyle çalışır. ~~Arayüz ve zamanlayıcı Cloudflare'dedir.~~ (Bugün: her şey Mac'te; bulutta yalnızca isteğe bağlı yayıncı, bkz. yukarıdaki not.) iPhone'daki native uygulama her yerden prompt gönderir, sonucu önizler, onaylar.
 
 ## 2. Kesinleşen kararlar
 
@@ -23,8 +39,8 @@ Tek kullanıcılı (Burak) bir içerik stüdyosu. Kendi hesapları ve yönettiğ
 | Reels         | Motion graphics, kendi çekimlerin kurgusu, seslendirmeli anlatım                                                                                      |
 | Paylaşım      | Onay + zamanlama. Onaysız hiçbir şey yayınlanmaz                                                                                                      |
 | LinkedIn      | Kişisel profil(ler). İlk sürümde üretim + export; otomatik paylaşım sonraki fazda                                                                     |
-| Mimari        | Hibrit: kontrol düzlemi Cloudflare'de, üretim ve render Mac'te                                                                                        |
-| Mobil         | Native iOS (SwiftUI). İlk kapsam: komuta + onay; görsel düzenleme Mac'teki editörde                                                                   |
+| Mimari        | ~~Hibrit: kontrol düzlemi Cloudflare'de~~ → bugün her şey Mac'te, bulutta yalnızca yayıncı (docs/MIMARI.md)                                           |
+| Mobil         | Native iOS (~~SwiftUI~~ → UIKit). İlk kapsam: komuta + onay; görsel düzenleme Mac'teki editörde                                                       |
 | Seslendirme   | Üç kaynak: ElevenLabs, kendi ses kaydı, yerel model (sağlayıcı arayüzü arkasında)                                                                     |
 | AI görsel     | Gemini API (T5 testiyle teyit edilecek). Antigravity CLI kullanılmıyor. Elle üretip yükleme her zaman açık                                            |
 | Marka kaynağı | Yayınlanmış postlar, Figma, marka kiti dosyaları, Wecra; sistemi net olmayan hesaplarda uygulama önerir, Burak onaylar                                |
@@ -77,11 +93,9 @@ Henüz karar verilmeyenler 14. bölümde.
 - Google Cloud hoş geldin ve ücretsiz deneme kredileri Gemini API'de geçmiyor.
 - İlk ücretli katmanda (Tier 1) aylık harcama tavanı 250 $, 10 dakikada 10 $. Üretilen tüm görsellerde görünmez SynthID filigranı var. ([rate-limits](https://aistudio.google.com/docs/rate-limits), [image-generation](https://aistudio.google.com/docs/image-generation))
 - Kurulum: AI Studio → API keys → proje → Projects sayfasında "Set up billing" → mevcut faturalama hesabı → (ön ödemeliyse) en az 5 $ → anahtarı "Restrict to Gemini API only" ile kısıtla → Spend sayfasından aylık harcama sınırı. ([api-key](https://aistudio.google.com/docs/api-key))
-- Burak'ın faturalama hesabında 2026-11-16 itibarıyla birikmiş Developer Program kredisi var (kabaca 200 $ karşılığı, bitişleri Ocak–Kasım 2027). API anahtarının projesi bu faturalama hesabına bağlı olmalı.
+- Sahibin faturalama hesabında Developer Program kredisi var; API anahtarının projesi bu faturalama hesabına bağlı olmalı.
 - Aynı hesaptaki "GenAI App Builder" deneme kredisi Gemini API çağrılarında geçmiyor; yalnızca Vertex AI Search içindir (forum kaynaklı; resmi koşullardan doğrulanmadı).
-- Hesap durumu (2026-11-16, AI Studio'dan okundu): faturalama hesabı "Tier 1 · Prepay". Ön ödeme bakiyesi ₺250 (Burak yükledi; otomatik yükleme kapalı), servis açık. AI Studio ₺10,21K "eligible GCP credits" gösteriyor (GenAI App Builder kredisi bu tutara dahil değil). En düşük ön ödeme ₺250.
-- Bu faturalama hesabına en fazla 5 proje bağlanabiliyor. Eski "Designer" projesinin faturalama bağlantısı kesildi (proje silinmedi), yerine yeni "Studio" projesi (`gen-lang-client-0853064149`) bağlandı. Çalışan projeler: DesignerV2, FinvoApp.
-- Studio projesinde aylık harcama sınırı ₺2.000 (yaklaşık 40 $; sınır TL cinsinden tutuluyor).
+- Hesap kurulumu (2026-11-16): faturalama "Tier 1 · Prepay", ayrı bir "Studio" projesi ve o projede aylık harcama sınırı. (Hesaba özel ayrıntılar bu belgeden çıkarıldı.)
 - T5 ilk sonuç (2026-11-16): API anahtarı çalışıyor. `gemini-nano-banana-2.1` ile `generateContent` üzerinden referanssız 4:5 bir ürün görseli 13 saniyede üretildi (`spikes/gemini-image/generate.mjs`). 1K çıktı 928×1152, 2K çıktı 1856×2304 piksel geliyor. İstek AI Studio kullanım sayfasında göründü.
 - T5 referanslı üretim (2026-11-16): Venta Borinc ürün fotoğrafıyla tarla sahnesi hem Nano Banana 2.1 hem Nano Banana Pro ile üretildi (2K, yaklaşık 26 saniye). Sahne, torba biçimi, logo ve ürün adı korunuyor; **etiketteki küçük yazılar iki modelde de bozuluyor** (başlıklar ve açıklama satırı yanlış harflerle yeniden çiziliyor). Bu haliyle ürün etiketi olan görseller yayınlanamaz. Çözüm adayı: sahneyi AI üretir, gerçek ürün görüntüsü sahneye bindirilir (etiket pikselleri aslından gelir). Henüz denenmedi.
 - Burak'ın tercihi: AI görselleri 2K (1856×2304, 4:5) üretilir ve küçültülmez. Not: Instagram API en fazla 1440 piksel genişlik kabul ediyor; yayın anında bu sınıra göre küçültme gerekebilir.
@@ -89,13 +103,16 @@ Henüz karar verilmeyenler 14. bölümde.
 
 ## 4. Mimari
 
+> Bu bölüm ilk tasarımdır ve **artık geçerli değildir** (bulutta kontrol düzlemi, web arayüzü,
+> SwiftUI, Cloudflare Access). Güncel hali: [docs/MIMARI.md](docs/MIMARI.md).
+
 ```
  iPhone (SwiftUI)          Tarayıcı (Mac)
       │                        │
       └──────────┬─────────────┘
                  ▼
    ┌───────────────────────────────────────────┐
-   │ Cloudflare · social.burakkoc.net          │
+   │ Cloudflare · (bulut alan adı)             │
    │  Web arayüzü (editör + pano)              │
    │  API (Workers)                            │
    │  Hub (Durable Object, WebSocket)          │

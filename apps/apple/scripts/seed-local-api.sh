@@ -1,9 +1,12 @@
 #!/bin/sh
 # Fills a LOCAL Studio API with realistic Turkish test data (MTM Agro, posts,
-# conversations) so the Mac app can be tried against the real API.
+# conversations) so the apps can be tried against an API run without the Mac app
+# (`pnpm --filter @studio/api dev`). Never the running Studio's own data.
 #
-#   STUDIO_API_URL=http://127.0.0.1:8787 apps/apple/scripts/seed-local-api.sh
+#   STUDIO_API_URL=http://127.0.0.1:8787 STUDIO_OWNER_SECRET=<value> apps/apple/scripts/seed-local-api.sh
 #
+# The API accepts the owner's requests only with its owner secret (X-Studio-Owner): start it with
+# STUDIO_OWNER_SECRET in apps/api/.dev.vars and pass the same value here as STUDIO_OWNER_SECRET.
 # Optional: STUDIO_SEED_WORKER_TOKEN = the WORKER_TOKEN of that API instance.
 # With it the script also writes assistant replies through the worker turn API
 # (/api/worker/runs/...), i.e. it plays the Mac worker's chat agent, which does
@@ -21,6 +24,9 @@ case "$API" in
   http://127.0.0.1:*|http://localhost:*) ;;
   *) echo "Refusing to seed $API: only local APIs (127.0.0.1 / localhost)." >&2; exit 1 ;;
 esac
+
+# Every request carries the owner secret (apps/api/src/middleware/access.ts).
+curl() { command curl -H "X-Studio-Owner: ${STUDIO_OWNER_SECRET:-}" "$@"; }
 
 req() { # METHOD PATH [JSON]
   if [ $# -ge 3 ]; then

@@ -1,35 +1,50 @@
 # @studio/worker — Mac worker
 
-Mac'te çalışan Node süreci. Buluttaki hub'a (Durable Object) **dışarıya doğru** WebSocket ile bağlanır,
-kendisine gönderilen işleri çalıştırır, ilerlemeyi ve sonucu geri bildirir. Mac kapalı ya da uykudaysa
-işler D1'de `queued` olarak bekler; worker bağlanınca dağıtılır.
+Mac'te çalışan Node süreci. Mac'teki API'nin hub'ına (`Hub` Durable Object, `GET /api/hub`)
+WebSocket ile bağlanır, kendisine verilen işleri çalıştırır, ilerlemeyi ve sonucu geri bildirir.
+Bağlı worker yoksa işler D1'de `queued` olarak bekler; worker bağlanınca dağıtılır.
 
-## Yerelde çalıştırma
+Normalde worker'ı **Mac uygulaması başlatır** (`pnpm dev` ya da Studio.app): `WORKER_TOKEN`'ı üretir
+ve şifreli saklar, worker'a ortam değişkeniyle verir, çalışma klasörü
+`~/Library/Application Support/Studio/worker`, log `…/Studio/logs/worker.log`. Paketlenmiş uygulama
+depodaki `.env`'i okumaz; worker anahtarları Ayarlar → Gelişmiş → Worker anahtarları'ndan girilir
+([docs/PACKAGING.md](../../docs/PACKAGING.md#yapay-zekâ-anahtarları)). Mimari: [docs/MIMARI.md](../../docs/MIMARI.md).
+
+İşler: `chat.turn`, `content.generate`, `content.render`, `content.check`, `image.generate`,
+`brand.analyze`, `brand.skill_draft`, `schedule.publish`, `demo.echo`. (`canvas.read` / `canvas.apply`
+worker'da değil, Mac uygulamasının gizli tuval çalıştırıcısında koşar.)
+
+## Uygulama olmadan çalıştırma
+
+Yalnızca worker'ı ya da API'yi geliştirirken; gerçek veri klasörüne dokunmaz (API kendi
+`.wrangler/state` klasörünü kullanır).
 
 ```sh
-# 1) API tarafı: gizli anahtar ve migration (bir kez)
-cp apps/api/.dev.vars.example apps/api/.dev.vars      # WORKER_TOKEN değerini değiştirin
+# 1) API tarafı: anahtarlar ve göçler (bir kez)
+cp apps/api/.dev.vars.example apps/api/.dev.vars   # WORKER_TOKEN, STUDIO_OWNER_SECRET, TOKEN_ENCRYPTION_KEY
 pnpm --filter @studio/api db:migrate
 
-# 2) Worker tarafı: aynı anahtar
-cp apps/worker/.env.example apps/worker/.env          # STUDIO_WORKER_TOKEN = WORKER_TOKEN
+# 2) Worker tarafı: aynı worker anahtarı
+cp apps/worker/.env.example apps/worker/.env       # STUDIO_WORKER_TOKEN = WORKER_TOKEN
 
 # 3) İki ayrı terminal
-pnpm dev          # API http://127.0.0.1:8787 (+ web)
-pnpm dev:worker   # worker, ws://127.0.0.1:8787/api/hub adresine bağlanır
+pnpm --filter @studio/api dev   # API http://127.0.0.1:8787
+pnpm dev:worker                 # worker, ws://127.0.0.1:8787/api/hub adresine bağlanır
 
 # Uçtan uca kontrol (API çalışırken)
 pnpm --filter @studio/worker smoke
 ```
 
-Bir iş oluşturup izlemek:
+Bir iş oluşturup izlemek: API sahibin isteklerini yalnızca sahip anahtarıyla kabul eder
+(`X-Studio-Owner`, değeri `.dev.vars`'taki `STUDIO_OWNER_SECRET`):
 
 ```sh
-curl -s -X POST localhost:8787/api/jobs -H 'content-type: application/json' \
+O="X-Studio-Owner: <STUDIO_OWNER_SECRET>"
+curl -s -X POST 127.0.0.1:8787/api/jobs -H "$O" -H 'content-type: application/json' \
   -d '{"type":"demo.echo","payload":{"text":"merhaba","delayMs":20000,"steps":5}}'
-curl -s localhost:8787/api/jobs/<id>                 # durum, ilerleme, deneme sayısı
-curl -s -X POST localhost:8787/api/jobs/<id>/cancel  # iptal
-curl -s localhost:8787/api/workers/presence          # Mac çevrimiçi mi?
+curl -s 127.0.0.1:8787/api/jobs/<id> -H "$O"                 # durum, ilerleme, deneme sayısı
+curl -s -X POST 127.0.0.1:8787/api/jobs/<id>/cancel -H "$O"  # iptal
+curl -s 127.0.0.1:8787/api/workers/presence -H "$O"          # worker bağlı mı?
 ```
 
 Ayarların tamamı ve varsayılanlar: `.env.example`. Yalnızca `STUDIO_WORKER_TOKEN` zorunludur; yoksa worker
@@ -60,7 +75,7 @@ Ayrı bir oturum istenirse: `CLAUDE_CONFIG_DIR=~/.studio/claude claude auth logi
 ### Çalıştırma
 
 ```sh
-pnpm dev:worker      # geliştirme (tsx watch, apps/worker/.env okunur)
+pnpm dev:worker      # uygulama olmadan geliştirme (tsx watch, apps/worker/.env okunur)
 pnpm --filter @studio/worker build && pnpm --filter @studio/worker start   # paketlenmiş
 ```
 
