@@ -1,6 +1,8 @@
 # Studio — Denetim ve Plan (2026-11-18)
 
-Durum: **onaylandı (2026-11-18).** Burak Faz 0'daki sekiz kararı önerilen şekilde kabul etti; Faz 1–2 başladı.
+Durum: **onaylandı (2026-11-18).** Burak Faz 0'daki sekiz kararı önerilen şekilde kabul etti.
+
+İlerleme: **Faz 1** G1–G5, G6, G7, G8 (iptal kısmı), G9, G10, G11, G12, G13 tamam (`956702d`). **Faz 2** Y1–Y16 tamam; Y13'ün süre dolmadan hatırlatma bildirimi ve Y17 (gerçek hesapla deneme) açık. A6 ve A9'un büyük kısmı tamam. **P3** eski uygulamalar kaldırıldı (`1b99342`), **P6** lint temiz. Gerçek model turuyla denenmesi gerekenler: Gemini CLI ve Codex'in Studio araçlarını hâlâ çağırabilmesi. Sonraki iş: Faz 3 (düzenleyici, S1).
 
 Kabul edilen kararlar: S1 Wecra belgesi asıl kaynak · S2 `apps/ios`, `apps/web`, `apps/mac` şimdi silinir, `StudioMac` iki özelliği taşınıp uygulama paketlenince silinir · S3 Studio.app paketlenir · S4 depo özel yapılır (görünürlüğü Burak değiştirir) ve kişisel değerler temizlenir · S5 taslak/sürüm ayrımı · S6 gecikme sınırı varsayılan 2 saat · S7 Ayarlar'da "sor / geç / bekle" tercihi + bütçe sınırı · S8 Apple Developer üyeliği alınana kadar push maddesi bekler.
 
