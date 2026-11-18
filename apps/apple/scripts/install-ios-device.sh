@@ -34,23 +34,44 @@ APP=build/DeviceData/Build/Products/Debug-iphoneos/Studio.app
 cp "$PROFILE" "$APP/embedded.mobileprovision"
 BUNDLE_ID=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Info.plist")
 
-ENT=$(mktemp -t studio-ent).plist
-cat > "$ENT" <<EOF
+# Entitlements: the app's own Keychain group plus the group it shares with its extensions
+# (`<team>.<bundle id>.shared`, N20/N22). A wildcard profile cannot carry an App Group, so
+# the share sheet uploads only while it is open and the widget caches in its own folder
+# (apps/apple/README.md, STUDIO_SHARING = KEYCHAIN).
+entitlements() { # file, bundle id, keychain groups...
+  out="$1"; id="$2"; shift 2
+  groups=""
+  for g in "$@"; do groups="$groups<string>$g</string>"; done
+  cat > "$out" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
-<key>application-identifier</key><string>$TEAM.$BUNDLE_ID</string>
+<key>application-identifier</key><string>$TEAM.$id</string>
 <key>com.apple.developer.team-identifier</key><string>$TEAM</string>
 <key>get-task-allow</key><true/>
-<key>keychain-access-groups</key><array><string>$TEAM.$BUNDLE_ID</string></array>
+<key>keychain-access-groups</key><array>$groups</array>
 </dict></plist>
 EOF
+}
+ENT=$(mktemp -t studio-ent).plist
 # Every nested binary must be signed too (frameworks, and any *.dylib next to the
 # executable, e.g. Xcode's debug dylib), or dyld refuses to load it at launch.
 if [ -d "$APP/Frameworks" ]; then
   for fw in "$APP"/Frameworks/*; do codesign -f -s "$IDENTITY" "$fw"; done
 fi
 for lib in "$APP"/*.dylib; do [ -e "$lib" ] && codesign -f -s "$IDENTITY" "$lib"; done
+# The share extension and the widget (PlugIns/*.appex), inside out.
+if [ -d "$APP/PlugIns" ]; then
+  for appex in "$APP"/PlugIns/*.appex; do
+    [ -e "$appex" ] || continue
+    cp "$PROFILE" "$appex/embedded.mobileprovision"
+    for lib in "$appex"/*.dylib; do [ -e "$lib" ] && codesign -f -s "$IDENTITY" "$lib"; done
+    APPEX_ID=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$appex/Info.plist")
+    entitlements "$ENT" "$APPEX_ID" "$TEAM.$BUNDLE_ID.shared"
+    codesign -f -s "$IDENTITY" --entitlements "$ENT" "$appex"
+  done
+fi
+entitlements "$ENT" "$BUNDLE_ID" "$TEAM.$BUNDLE_ID" "$TEAM.$BUNDLE_ID.shared"
 codesign -f -s "$IDENTITY" --entitlements "$ENT" "$APP"
 rm -f "$ENT"
 

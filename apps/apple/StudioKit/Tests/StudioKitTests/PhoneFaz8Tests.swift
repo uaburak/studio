@@ -534,6 +534,18 @@ struct PhoneFaz8Tests {
         #expect(opaque.file.width == ImagePreparation.maxPixel)
         #expect(opaque.thumbnail.map { max($0.width, $0.height) } == 240)
         #expect(throws: StudioAPIError.self) { _ = try ImagePreparation.prepare(data: Data("not a picture".utf8)) }
+        // The share extension decodes smaller.
+        let small = try ImagePreparation.prepare(data: Self.png(width: 4000, height: 1000, alpha: false), longestSide: 2560)
+        #expect(small.file.width == 2560)
+    }
+
+    @Test func widgetTimesInTurkish() {
+        let zone = TimeZone(identifier: "Europe/Istanbul")!
+        let now = Date(timeIntervalSince1970: 1_800_000_000) // 15 Ocak 2027 11:00 (İstanbul)
+        #expect(TurkishFormat.relativeDayTime(now.addingTimeInterval(3 * 3600), now: now, timeZone: zone) == "Bugün 14:00")
+        #expect(TurkishFormat.relativeDayTime(now.addingTimeInterval(24 * 3600), now: now, timeZone: zone) == "Yarın 11:00")
+        #expect(TurkishFormat.relativeDayTime(now.addingTimeInterval(3 * 24 * 3600), now: now, timeZone: zone).hasSuffix(" 11:00"))
+        #expect(TurkishFormat.clockOrDay(now.addingTimeInterval(-600), now: now, timeZone: zone) == "10:50")
     }
 
     // MARK: Share sheet delivery

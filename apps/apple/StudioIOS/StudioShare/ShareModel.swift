@@ -234,12 +234,16 @@ final class ShareModel {
         changed()
     }
 
+    /// Pictures are decoded at most this large here: a share extension has little memory (the
+    /// Mac's renders use 1080–2160 px).
+    static let longestSide = 2560
+
     private func loadImage(_ provider: NSItemProvider, index: Int) async -> Item {
         let fallbackName = "gorsel-\(index + 1)"
         var item = Item(kind: .image, filename: provider.suggestedName ?? fallbackName)
         do {
             let file = try await copyFile(provider, type: .image, name: "image-\(index)")
-            let prepared = try ImagePreparation.prepare(fileAt: file, filename: provider.suggestedName ?? file.lastPathComponent)
+            let prepared = try ImagePreparation.prepare(fileAt: file, filename: provider.suggestedName ?? file.lastPathComponent, longestSide: Self.longestSide)
             try? FileManager.default.removeItem(at: file)
             item.prepared = try writePrepared(prepared.file, index: index)
             item.filename = prepared.file.filename
@@ -249,7 +253,7 @@ final class ShareModel {
         } catch {
             // Some apps hand over only an image object (a screenshot being edited).
             if let image = await loadUIImage(provider), let data = image.pngData(),
-               let prepared = try? ImagePreparation.prepare(data: data, filename: provider.suggestedName ?? fallbackName),
+               let prepared = try? ImagePreparation.prepare(data: data, filename: provider.suggestedName ?? fallbackName, longestSide: Self.longestSide),
                let written = try? writePrepared(prepared.file, index: index) {
                 item.prepared = written
                 item.filename = prepared.file.filename

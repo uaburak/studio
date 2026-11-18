@@ -17,30 +17,33 @@ public enum ImagePreparation {
         public var thumbnail: CGImage?
     }
 
-    public static func prepare(data: Data, filename: String? = nil) throws -> Prepared {
+    /// `longestSide`: the share extension asks for less (its memory is small; renders use
+    /// 1080–2160 px).
+    public static func prepare(data: Data, filename: String? = nil, longestSide: Int = maxPixel) throws -> Prepared {
         guard let source = CGImageSourceCreateWithData(data as CFData, [kCGImageSourceShouldCache: false] as CFDictionary) else {
             throw StudioAPIError.invalidConfiguration("Görsel açılamadı (desteklenmeyen biçim).")
         }
-        return try prepare(source: source, filename: filename)
+        return try prepare(source: source, filename: filename, longestSide: longestSide)
     }
 
-    public static func prepare(fileAt url: URL, filename: String? = nil) throws -> Prepared {
+    public static func prepare(fileAt url: URL, filename: String? = nil, longestSide: Int = maxPixel) throws -> Prepared {
         guard let source = CGImageSourceCreateWithURL(url as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary) else {
             throw StudioAPIError.invalidConfiguration("Görsel açılamadı (desteklenmeyen biçim).")
         }
-        return try prepare(source: source, filename: filename ?? url.lastPathComponent)
+        return try prepare(source: source, filename: filename ?? url.lastPathComponent, longestSide: longestSide)
     }
 
-    static func prepare(source: CGImageSource, filename: String?) throws -> Prepared {
+    static func prepare(source: CGImageSource, filename: String?, longestSide: Int = maxPixel) throws -> Prepared {
+        let limit = max(240, min(longestSide, maxPixel))
         guard CGImageSourceGetCount(source) > 0,
-              let image = downsampled(source, maxPixel: maxPixel) else {
+              let image = downsampled(source, maxPixel: limit) else {
             throw StudioAPIError.invalidConfiguration("Görsel açılamadı (desteklenmeyen biçim).")
         }
         let stem = stemName(filename)
         let thumbnail = downsampled(source, maxPixel: 240)
         if hasAlpha(image.alphaInfo) {
-            for side in [maxPixel, 2048, 1536] {
-                let sized = side == maxPixel ? image : (downsampled(source, maxPixel: side) ?? image)
+            for side in [limit, 2048, 1536] where side <= limit {
+                let sized = side == limit ? image : (downsampled(source, maxPixel: side) ?? image)
                 guard let png = encode(sized, type: .png) else { break }
                 if png.count <= AssetMimeRules.imageMaxBytes {
                     return Prepared(file: UploadFile(filename: "\(stem).png", mimeType: "image/png", data: png, width: sized.width, height: sized.height), thumbnail: thumbnail)

@@ -139,9 +139,21 @@ final class IOSAdvancedConnectionViewController: UITableViewController {
         }))
         rows[.nearby] = nearby
 
-        rows[.device] = [
+        var device = [
             Row(title: UIDevice.current.name, detail: credential.map { "Cihaz no: \($0.deviceId.suffix(8))" } ?? MacLinkState.notPaired.title),
         ]
+        // Whether the share sheet and the widget can use this pairing (N20, N22).
+        if !app.isSample, credential != nil {
+            let container = StudioSharedContainer.current
+            let keychain: String = switch app.settings.tokenLocation {
+            case .some(.shared): "ortak anahtar var"
+            case .some(.appOnly): "ortak anahtar yok (bu kurulumda)"
+            case .some(.none), nil: "anahtar yok"
+            }
+            let group = container.isAppGroupAvailable ? "uygulama grubu var" : "uygulama grubu yok"
+            device.append(Row(title: "Paylaşım ve widget", detail: "\(keychain.prefix(1).uppercased() + keychain.dropFirst()), \(group)"))
+        }
+        rows[.device] = device
 
         self.rows = rows
         tableView.reloadData()
