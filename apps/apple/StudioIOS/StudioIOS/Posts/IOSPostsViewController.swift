@@ -1,23 +1,69 @@
 import StudioKit
 import UIKit
 
-/// Postlar: a month of the brand's posts in a two-column 4:5 grid, with status filters,
-/// rendered images, a floating "approve all ready" bar and a menu on every card.
-final class IOSPostsViewController: UIViewController, UICollectionViewDelegate {
+/// What a Postlar tab lists, like an Instagram profile: the grid (posts and carousels), Reels
+/// and stories.
+enum PostTab: Int, CaseIterable {
+    case grid, reels, stories
+
+    var symbol: String {
+        switch self {
+        case .grid: "square.grid.3x3"
+        case .reels: "play.rectangle"
+        case .stories: "circle.dashed"
+        }
+    }
+
+    var label: String {
+        switch self {
+        case .grid: "Gönderiler"
+        case .reels: "Reels"
+        case .stories: "Hikâyeler"
+        }
+    }
+
+    func matches(_ type: ContentType) -> Bool {
+        switch self {
+        case .grid: type != .reel && type != .story
+        case .reels: type == .reel
+        case .stories: type == .story
+        }
+    }
+
+    /// Height ÷ width of a tile (Instagram's 3:4 grid, tall Reels and stories).
+    var tileRatio: CGFloat { self == .grid ? 4.0 / 3.0 : 16.0 / 9.0 }
+}
+
+/// Postlar, like an Instagram profile (no tab bar): the drawer button, the brand picker in the
+/// middle and "+" at the right; under the brand's header, Gönderiler / Reels / Hikâyeler tabs that
+/// stay pinned and also change with a sideways swipe; a three-column grid. A post opens on its
+/// own in the picture viewer (zooming out of its tile, as in Medya), where "Düzenle" opens the
+/// editor.
+final class IOSPostsViewController: UIViewController, UICollectionViewDelegate, UIGestureRecognizerDelegate, DrawerSwipeBlocking {
     private unowned let app: IOSAppModel
     private var model: IOSPostsModel { app.posts }
 
     private var collectionView: UICollectionView!
     private var dataSource: UICollectionViewDiffableDataSource<Int, EntityID>!
-    private let header = PostsHeaderView()
+    private let profile = PostsProfileHeader()
+    private let tabs = PostsTabBar()
+    private let brandButton = UIButton(type: .system)
     private let approveBar = UIView()
     private let approveLabel = UILabel.studio("", size: 15, weight: .semibold, style: .subheadline)
     private var approveButton: UIButton!
     private let emptyView = EmptyStateView()
-    private var navToken: IOSObservationToken?
     private var observation: IOSObservationToken?
     private var lastBrandId: EntityID?
     private var signatures: [EntityID: Int] = [:]
+
+    private var currentTab: PostTab = .grid
+    /// The page sliding sideways between tabs (stopped where it is when a swipe catches it).
+    private var pageAnimator: UIViewPropertyAnimator?
+    private var pageTarget: PostTab?
+    private var pageOffset: CGFloat = 0
+    private var panBase: CGFloat = 0
+    private var isPaging = false
+    private lazy var pagePan = UIPanGestureRecognizer(target: self, action: #selector(paged(_:)))
 
     init(app: IOSAppModel) {
         self.app = app
@@ -30,56 +76,59 @@ final class IOSPostsViewController: UIViewController, UICollectionViewDelegate {
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = IOSTheme.canvas
-        navToken = StudioNavBarItems.install(on: self, app: app)
+        buildBar()
 
-        collectionView = UICollectionView(frame: .zero, collectionViewLayout: Self.layout())
+        collectionView = UICollectionView(frame: .zero, collectionViewLayout: makeLayout())
         collectionView.translatesAutoresizingMaskIntoConstraints = false
         collectionView.backgroundColor = IOSTheme.canvas
         collectionView.delegate = self
         collectionView.alwaysBounceVertical = true
         collectionView.contentInset.bottom = 90
+        collectionView.topEdgeEffect.style = .soft
+        setContentScrollView(collectionView, for: .top)
         view.addSubview(collectionView)
         collectionView.pin(to: view)
+        pagePan.delegate = self
+        view.addGestureRecognizer(pagePan)
+        collectionView.panGestureRecognizer.require(toFail: pagePan)
 
         let cellRegistration = UICollectionView.CellRegistration<PostGridCell, EntityID> { [weak self] cell, _, id in
             guard let self, let card = self.model.card(id) else { return }
             cell.configure(card: card, images: self.app.images, job: self.model.activeJob(for: id), upload: self.model.slotUploads[id])
+            cell.transform = CGAffineTransform(translationX: self.pageOffset, y: 0)
         }
         dataSource = UICollectionViewDiffableDataSource(collectionView: collectionView) { collectionView, indexPath, id in
             collectionView.dequeueConfiguredReusableCell(using: cellRegistration, for: indexPath, item: id)
         }
-        let headerRegistration = UICollectionView.SupplementaryRegistration<UICollectionReusableView>(elementKind: UICollectionView.elementKindSectionHeader) { [weak self] supplementary, _, _ in
-            guard let self else { return }
-            if self.header.superview !== supplementary {
-                supplementary.subviews.forEach { $0.removeFromSuperview() }
-                supplementary.addSubview(self.header)
-                self.header.pin(to: supplementary)
-            }
+        let profileRegistration = UICollectionView.SupplementaryRegistration<UICollectionReusableView>(elementKind: PostsLayout.profileKind) { [weak self] supplementary, _, _ in
+            guard let self, self.profile.superview !== supplementary else { return }
+            supplementary.subviews.forEach { $0.removeFromSuperview() }
+            supplementary.addSubview(self.profile)
+            self.profile.pin(to: supplementary)
+        }
+        let tabsRegistration = UICollectionView.SupplementaryRegistration<UICollectionReusableView>(elementKind: PostsLayout.tabsKind) { [weak self] supplementary, _, _ in
+            guard let self, self.tabs.superview !== supplementary else { return }
+            supplementary.subviews.forEach { $0.removeFromSuperview() }
+            supplementary.addSubview(self.tabs)
+            self.tabs.pin(to: supplementary)
         }
         dataSource.supplementaryViewProvider = { collectionView, kind, indexPath in
-            collectionView.dequeueConfiguredReusableSupplementary(using: headerRegistration, for: indexPath)
+            kind == PostsLayout.profileKind
+                ? collectionView.dequeueConfiguredReusableSupplementary(using: profileRegistration, for: indexPath)
+                : collectionView.dequeueConfiguredReusableSupplementary(using: tabsRegistration, for: indexPath)
         }
 
-        header.onPrevious = { [weak self] in
-            self?.model.month = self?.model.month.previous ?? MonthKey(Date())
-            Haptics.selection()
-        }
-        header.onNext = { [weak self] in
-            self?.model.month = self?.model.month.next ?? MonthKey(Date())
-            Haptics.selection()
-        }
-        header.onFilter = { [weak self] filter in
-            self?.model.filter = filter
-            Haptics.selection()
-        }
+        tabs.onSelect = { [weak self] tab in self?.slide(to: tab) }
+        profile.onCreate = { [weak self] in self?.app.open(.newConversation) }
+        profile.onCalendar = { [weak self] in self?.app.open(.calendar) }
 
         emptyView.isUserInteractionEnabled = true
+        emptyView.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(emptyView)
         NSLayoutConstraint.activate([
-            emptyView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            emptyView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            emptyView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 120),
-            emptyView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            emptyView.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 32),
+            emptyView.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -32),
+            emptyView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 290),
         ])
 
         buildApproveBar()
@@ -102,25 +151,76 @@ final class IOSPostsViewController: UIViewController, UICollectionViewDelegate {
         if model.hasLoaded { Task { await model.load() } }
     }
 
-    private static func layout() -> UICollectionViewLayout {
-        UICollectionViewCompositionalLayout { _, environment in
+    // MARK: Bar
+
+    /// The brand picker in the middle (its menu lists the brands), "+" at the right; the drawer
+    /// button at the left comes from the root.
+    private func buildBar() {
+        var config = UIButton.Configuration.plain()
+        config.image = UIImage(systemName: "chevron.down", withConfiguration: UIImage.SymbolConfiguration(pointSize: 12, weight: .semibold))
+        config.imagePlacement = .trailing
+        config.imagePadding = 5
+        config.baseForegroundColor = IOSTheme.textPrimary
+        config.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { var a = $0; a.font = .systemFont(ofSize: 20, weight: .bold); return a }
+        brandButton.configuration = config
+        brandButton.showsMenuAsPrimaryAction = true
+        brandButton.menu = UIMenu(children: [UIDeferredMenuElement.uncached { [weak self] completion in
+            guard let self else { return completion([]) }
+            completion(StudioMenus.brandSection(self.app, onPick: { self.app.selectBrand($0) }, onProfile: { self.app.open(.brand($0)) }))
+        }])
+        brandButton.accessibilityHint = "Markayı değiştirir"
+        navigationItem.titleView = brandButton
+        navigationItem.largeTitleDisplayMode = .never
+        let create = UIBarButtonItem(image: UIImage(systemName: "plus"), menu: UIMenu(children: [
+            UIAction(title: "Sohbette üret", image: UIImage(systemName: "bubble.left.and.text.bubble.right")) { [weak self] _ in self?.app.open(.newConversation) },
+            UIAction(title: "Takvimi aç", image: UIImage(systemName: "calendar")) { [weak self] _ in self?.app.open(.calendar) },
+        ]))
+        create.accessibilityLabel = "Yeni post"
+        navigationItem.rightBarButtonItem = create
+    }
+
+    private func renderBar() {
+        let name = app.currentBrand?.name ?? (app.brands.isEmpty ? "Marka yok" : "Marka seç")
+        var config = brandButton.configuration
+        config?.title = name.count > 20 ? String(name.prefix(19)) + "…" : name
+        brandButton.configuration = config
+        brandButton.accessibilityLabel = "Marka: \(app.currentBrand?.name ?? "seçilmedi")"
+        brandButton.sizeToFit()
+    }
+
+    // MARK: Layout
+
+    private func makeLayout() -> UICollectionViewLayout {
+        UICollectionViewCompositionalLayout { [weak self] sectionIndex, environment in
             let width = environment.container.effectiveContentSize.width
-            let columns = width > 700 ? 3 : 2
-            let spacing: CGFloat = 12
-            let itemWidth = (width - 2 * IOSTheme.gutter - CGFloat(columns - 1) * spacing) / CGFloat(columns)
-            let metaHeight = UIFontMetrics(forTextStyle: .footnote).scaledValue(for: 30)
-            let item = NSCollectionLayoutItem(layoutSize: NSCollectionLayoutSize(widthDimension: .fractionalWidth(1 / CGFloat(columns)), heightDimension: .fractionalHeight(1)))
+            if sectionIndex == 0 {
+                // The brand's header (no items; it scrolls away).
+                let item = NSCollectionLayoutItem(layoutSize: NSCollectionLayoutSize(widthDimension: .fractionalWidth(1), heightDimension: .absolute(0.1)))
+                let group = NSCollectionLayoutGroup.horizontal(layoutSize: NSCollectionLayoutSize(widthDimension: .fractionalWidth(1), heightDimension: .absolute(0.1)), subitems: [item])
+                let section = NSCollectionLayoutSection(group: group)
+                let header = NSCollectionLayoutBoundarySupplementaryItem(
+                    layoutSize: NSCollectionLayoutSize(widthDimension: .fractionalWidth(1), heightDimension: .estimated(170)),
+                    elementKind: PostsLayout.profileKind, alignment: .top)
+                section.boundarySupplementaryItems = [header]
+                return section
+            }
+            let tab = self?.currentTab ?? .grid
+            let spacing: CGFloat = 1.5
+            let itemWidth = (width - 2 * spacing) / 3
+            let item = NSCollectionLayoutItem(layoutSize: NSCollectionLayoutSize(widthDimension: .fractionalWidth(1 / 3), heightDimension: .fractionalHeight(1)))
             let group = NSCollectionLayoutGroup.horizontal(
-                layoutSize: NSCollectionLayoutSize(widthDimension: .fractionalWidth(1), heightDimension: .absolute(itemWidth * 5 / 4 + metaHeight)),
-                repeatingSubitem: item, count: columns)
+                layoutSize: NSCollectionLayoutSize(widthDimension: .fractionalWidth(1), heightDimension: .absolute((itemWidth * tab.tileRatio).rounded())),
+                repeatingSubitem: item, count: 3)
             group.interItemSpacing = .fixed(spacing)
             let section = NSCollectionLayoutSection(group: group)
-            section.interGroupSpacing = 18
-            section.contentInsets = NSDirectionalEdgeInsets(top: 8, leading: IOSTheme.gutter, bottom: 16, trailing: IOSTheme.gutter)
-            let header = NSCollectionLayoutBoundarySupplementaryItem(
-                layoutSize: NSCollectionLayoutSize(widthDimension: .fractionalWidth(1), heightDimension: .estimated(96)),
-                elementKind: UICollectionView.elementKindSectionHeader, alignment: .top)
-            section.boundarySupplementaryItems = [header]
+            section.interGroupSpacing = spacing
+            // The tabs stay under the bar while the grid scrolls (as on Instagram).
+            let tabs = NSCollectionLayoutBoundarySupplementaryItem(
+                layoutSize: NSCollectionLayoutSize(widthDimension: .fractionalWidth(1), heightDimension: .absolute(48)),
+                elementKind: PostsLayout.tabsKind, alignment: .top)
+            tabs.pinToVisibleBounds = true
+            tabs.zIndex = 2
+            section.boundarySupplementaryItems = [tabs]
             return section
         }
     }
@@ -156,14 +256,31 @@ final class IOSPostsViewController: UIViewController, UICollectionViewDelegate {
 
     // MARK: Render
 
+    /// Every post of the brand on the tab, newest day first (undated last).
+    private func cards(on tab: PostTab) -> [PostCard] {
+        model.board.cards
+            .filter { tab.matches($0.content.type) }
+            .sorted { lhs, rhs in
+                switch (lhs.day, rhs.day) {
+                case let (l?, r?): l != r ? l > r : lhs.title < rhs.title
+                case (_?, nil): true
+                case (nil, _?): false
+                default: lhs.title < rhs.title
+                }
+            }
+    }
+
     private func render() {
         if app.currentBrandId != lastBrandId {
             lastBrandId = app.currentBrandId
             Task { await model.load() }
         }
-        header.configure(month: model.month, filter: model.filter, counts: model.counts, loading: model.isLoading)
+        renderBar()
+        let counts = Dictionary(uniqueKeysWithValues: PostTab.allCases.map { ($0, cards(on: $0).count) })
+        profile.configure(brand: app.currentBrand?.name ?? "Marka seçilmedi", counts: counts, waiting: model.attentionCount, loading: model.isLoading)
+        tabs.select(currentTab, animated: false)
 
-        let cards = model.visibleCards
+        let cards = cards(on: currentTab)
         var newSignatures: [EntityID: Int] = [:]
         for card in cards {
             var hasher = Hasher()
@@ -176,12 +293,11 @@ final class IOSPostsViewController: UIViewController, UICollectionViewDelegate {
         let changed = cards.map(\.id).filter { signatures[$0] != nil && signatures[$0] != newSignatures[$0] }
         signatures = newSignatures
         var snapshot = NSDiffableDataSourceSnapshot<Int, EntityID>()
-        snapshot.appendSections([0])
-        snapshot.appendItems(cards.map(\.id))
+        snapshot.appendSections([0, 1])
+        snapshot.appendItems(cards.map(\.id), toSection: 1)
         snapshot.reconfigureItems(changed)
-        dataSource.apply(snapshot, animatingDifferences: view.window != nil)
+        dataSource.apply(snapshot, animatingDifferences: view.window != nil && !isPaging)
 
-        // Empty / error / loading states
         if app.connection == .notPaired {
             emptyView.isHidden = false
             emptyView.configure(icon: "laptopcomputer.and.iphone", title: MacLinkState.notPaired.title, message: "Postlar Mac'te üretilir. Mac'teki QR kodu okutarak iPhone'u bağla.",
@@ -192,19 +308,18 @@ final class IOSPostsViewController: UIViewController, UICollectionViewDelegate {
                                 actions: [UIButton.studioPill(title: "Yeniden dene", kind: .secondary) { [weak self] in Task { await self?.model.load() } }])
         } else if cards.isEmpty && model.hasLoaded {
             emptyView.isHidden = false
-            let others = model.months.filter { $0 != model.month }
-            var actions: [UIButton] = []
-            if model.filter != .all {
-                actions.append(UIButton.studioPill(title: "Tümünü göster", kind: .secondary) { [weak self] in self?.model.filter = .all })
-            } else if let nearest = others.min(by: { abs($0.distance(to: model.month)) < abs($1.distance(to: model.month)) }) {
-                actions.append(UIButton.studioPill(title: "\(TurkishFormat.monthName(nearest)) \(nearest.year)", kind: .secondary) { [weak self] in self?.model.month = nearest })
+            let what = switch currentTab {
+            case .grid: "Henüz gönderi yok"
+            case .reels: "Henüz Reels yok"
+            case .stories: "Henüz hikâye yok"
             }
-            actions.append(UIButton.studioPill(title: "Sohbette üret", kind: .primary) { [weak self] in self?.app.open(.newConversation) })
-            emptyView.configure(icon: "square.grid.2x2", title: model.filter == .all ? "Bu ayda post yok" : "Bu filtrede post yok",
-                                message: "Sohbette “bu ayın postlarını üret” de; plan onaylanınca postlar burada belirir.", actions: actions)
+            emptyView.configure(icon: currentTab.symbol, title: what,
+                                message: "Sohbette “bu ayın postlarını üret” de; plan onaylanınca burada belirir.",
+                                actions: [UIButton.studioPill(title: "Sohbette üret", kind: .primary) { [weak self] in self?.app.open(.newConversation) }])
         } else {
             emptyView.isHidden = true
         }
+        emptyView.transform = CGAffineTransform(translationX: pageOffset, y: 0)
 
         let ready = model.approvable.count
         approveBar.isHidden = ready == 0
@@ -213,39 +328,156 @@ final class IOSPostsViewController: UIViewController, UICollectionViewDelegate {
         approveButton.isEnabled = !model.isApproving
     }
 
-    // MARK: UICollectionViewDelegate
+    // MARK: Tabs: swipe and slide
+
+    private var pageHeading: PostTab { pageAnimator != nil ? (pageTarget ?? currentTab) : currentTab }
+
+    /// Rightward swipes page back while not on the first tab; on it the drawer takes them.
+    var blocksDrawerSwipe: Bool { pageHeading != .grid }
+
+    func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+        guard gestureRecognizer === pagePan else { return true }
+        let velocity = pagePan.velocity(in: view)
+        guard abs(velocity.x) > abs(velocity.y) * 1.2 else { return false }
+        if velocity.x < 0 { return pageAnimator != nil || currentTab != .stories }
+        return pageHeading != .grid
+    }
+
+    @objc private func paged(_ pan: UIPanGestureRecognizer) {
+        let width = max(collectionView.bounds.width, 1)
+        let dx = pan.translation(in: view).x
+        switch pan.state {
+        case .began:
+            panBase = interruptPaging()
+        case .changed:
+            var offset = panBase + dx
+            if (currentTab == .grid && offset > 0) || (currentTab == .stories && offset < 0) { offset *= 0.3 }
+            setPage(offset: offset)
+        case .ended, .cancelled, .failed:
+            let offset = panBase + dx
+            let velocity = pan.state == .ended ? pan.velocity(in: view).x : 0
+            var target = currentTab
+            if offset < -width * 0.25 || velocity < -500, let next = PostTab(rawValue: currentTab.rawValue + 1) { target = next }
+            if offset > width * 0.25 || velocity > 500, let previous = PostTab(rawValue: currentTab.rawValue - 1) { target = previous }
+            slide(to: target, from: pageOffset)
+        default:
+            break
+        }
+    }
+
+    /// The grid's tiles and the empty state moved sideways (the header and the tabs stay).
+    private func setPage(offset: CGFloat) {
+        pageOffset = offset
+        let move = CGAffineTransform(translationX: offset, y: 0)
+        for cell in collectionView.visibleCells { cell.transform = move }
+        emptyView.transform = move
+    }
+
+    private func interruptPaging() -> CGFloat {
+        if let animator = pageAnimator {
+            pageAnimator = nil
+            animator.stopAnimation(false)
+            animator.finishAnimation(at: .current)
+        }
+        tabs.select(currentTab, animated: true)
+        return pageOffset
+    }
+
+    /// To `target`: the tiles slide out and the other tab's slide in from its side, or back into
+    /// place. Interruptible at any moment (a new swipe or tap takes over).
+    private func slide(to target: PostTab, from offset: CGFloat? = nil) {
+        let start = offset ?? interruptPaging()
+        if let animator = pageAnimator {
+            pageAnimator = nil
+            animator.stopAnimation(true)
+        }
+        let width = max(collectionView.bounds.width, 1)
+        tabs.select(target, animated: true)
+        setPage(offset: start)
+        pageTarget = target
+        guard target != currentTab else {
+            let back = UIViewPropertyAnimator(duration: 0.3, dampingRatio: 0.85) { self.setPage(offset: 0) }
+            back.addCompletion { [weak self] position in
+                if position == .end, self?.pageAnimator === back { self?.pageAnimator = nil }
+            }
+            pageAnimator = back
+            back.startAnimation()
+            return
+        }
+        let direction: CGFloat = target.rawValue > currentTab.rawValue ? -1 : 1
+        let remaining = min(max(abs(direction * width - start) / width, 0.15), 1)
+        let out = UIViewPropertyAnimator(duration: 0.16 * remaining, curve: .easeIn) { self.setPage(offset: direction * width) }
+        out.addCompletion { [weak self] position in
+            guard let self, position == .end, self.pageAnimator === out else { return }
+            self.isPaging = true
+            self.currentTab = target
+            self.collectionView.collectionViewLayout.invalidateLayout()
+            self.render()
+            self.collectionView.layoutIfNeeded()
+            self.isPaging = false
+            self.setPage(offset: -direction * width)
+            let into = UIViewPropertyAnimator(duration: 0.3, dampingRatio: 1) { self.setPage(offset: 0) }
+            into.addCompletion { [weak self] position in
+                if position == .end, self?.pageAnimator === into { self?.pageAnimator = nil }
+            }
+            self.pageAnimator = into
+            into.startAnimation()
+        }
+        pageAnimator = out
+        out.startAnimation()
+        Haptics.selection()
+    }
+
+    // MARK: Opening a post
 
     func collectionView(_ collectionView: UICollectionView, didSelectItemAt indexPath: IndexPath) {
         guard let id = dataSource.itemIdentifier(for: indexPath), let card = model.card(id) else { return }
         open(card)
     }
 
+    /// The post on its own: in the picture viewer with the tab's other posts (zooming out of
+    /// its tile, as in Medya); a post with no picture yet opens the editor.
     private func open(_ card: PostCard) {
-        let vc = IOSPostDetailViewController(app: app, card: card)
-        navigationController?.pushViewController(vc, animated: true)
+        let shown = cards(on: currentTab).filter { $0.renderedAssetIds.first != nil && !$0.needsImage }
+        guard let start = shown.firstIndex(where: { $0.id == card.id }) else {
+            navigationController?.pushViewController(IOSPostDetailViewController(app: app, card: card), animated: true)
+            return
+        }
+        let items = shown.map { card -> PhotoViewerItem in
+            var aspect: CGFloat?
+            if let slide = card.version?.slides.first, slide.width > 0, slide.height > 0 { aspect = CGFloat(slide.width) / CGFloat(slide.height) }
+            let day = card.day.map(TurkishFormat.longDay) ?? "Tarih yok"
+            return PhotoViewerItem(assetId: card.renderedAssetIds[0], title: card.title, subtitle: "\(day) · \(card.state.label)", aspect: aspect)
+        }
+        let viewer = PhotoViewerViewController(images: app.images, items: items, index: start, sourceFor: { [weak self] index in
+            guard let self, shown.indices.contains(index),
+                  let path = self.dataSource.indexPath(for: shown[index].id),
+                  let cell = self.collectionView.cellForItem(at: path) as? PostGridCell else { return nil }
+            return cell.artworkView
+        }, actionsFor: { [weak self] item in
+            guard let self, let card = shown.first(where: { $0.renderedAssetIds.first == item.assetId }) else { return PhotoViewerBar() }
+            var menu: [PhotoViewerAction] = []
+            if card.state == .ready, card.approvableHash != nil {
+                menu.append(PhotoViewerAction(label: "Onayla", symbol: "checkmark.circle") { _, _ in self.approveGuarded(card) })
+            }
+            menu.append(PhotoViewerAction(label: "Açıklamayı kopyala", symbol: "doc.on.doc") { viewer, _ in
+                UIPasteboard.general.string = card.content.caption
+                Toast.show("Açıklama kopyalandı", in: viewer.view)
+            })
+            return PhotoViewerBar(menu: menu, trailing: PhotoViewerAction(label: "Düzenle", symbol: "pencil") { viewer, _ in
+                viewer.navigationController?.pushViewController(IOSPostDetailViewController(app: self.app, card: card), animated: true)
+            })
+        })
+        viewer.open(from: self)
     }
 
     func collectionView(_ collectionView: UICollectionView, contextMenuConfigurationForItemsAt indexPaths: [IndexPath], point: CGPoint) -> UIContextMenuConfiguration? {
         guard let indexPath = indexPaths.first, let id = dataSource.itemIdentifier(for: indexPath), let card = model.card(id) else { return nil }
         let source = collectionView.cellForItem(at: indexPath)
-        return UIContextMenuConfiguration(identifier: id as NSString, previewProvider: { [weak self] in
-            guard let self, let rendered = card.renderedAssetIds.first,
-                  let image = self.app.images.image(rendered) ?? self.app.images.image(rendered, width: 640) else { return nil }
-            let preview = UIViewController()
-            let imageView = UIImageView(image: image)
-            imageView.contentMode = .scaleAspectFit
-            preview.view = imageView
-            preview.preferredContentSize = CGSize(width: 340, height: 340 * image.size.height / max(image.size.width, 1))
-            return preview
-        }) { [weak self] _ in
+        return UIContextMenuConfiguration(identifier: id as NSString, previewProvider: nil) { [weak self] _ in
             guard let self else { return nil }
             return self.menu(for: card, source: source)
         }
-    }
-
-    func collectionView(_ collectionView: UICollectionView, willPerformPreviewActionForMenuWith configuration: UIContextMenuConfiguration, animator: any UIContextMenuInteractionCommitAnimating) {
-        guard let id = configuration.identifier as? String, let card = model.card(id) else { return }
-        animator.addCompletion { [weak self] in self?.open(card) }
     }
 
     private func menu(for card: PostCard, source: UIView?) -> UIMenu {
@@ -324,132 +556,227 @@ final class IOSPostsViewController: UIViewController, UICollectionViewDelegate {
     }
 }
 
-// MARK: - Header (month + filters)
+/// Element kinds of the Postlar layout.
+enum PostsLayout {
+    static let profileKind = "posts-profile"
+    static let tabsKind = "posts-tabs"
+}
 
-final class PostsHeaderView: UIView {
-    var onPrevious: (() -> Void)?
-    var onNext: (() -> Void)?
-    var onFilter: ((PostListFilter) -> Void)?
+// MARK: - Brand header
 
-    private let monthLabel = UILabel.studio("", size: 22, weight: .bold, style: .title2)
+/// The brand at the top, like an Instagram profile: its initial in a ring, its name, the number
+/// of posts, Reels and stories, and two wide buttons.
+final class PostsProfileHeader: UIView {
+    var onCreate: (() -> Void)?
+    var onCalendar: (() -> Void)?
+
+    private let avatar = UILabel()
+    private let ring = UIView()
+    private let nameLabel = UILabel.studio("", size: 17, weight: .semibold, style: .headline)
+    private let waitingLabel = UILabel.studio("", size: 14, color: IOSTheme.textSecondary, lines: 2, style: .subheadline)
+    private let countStack = UIStackView()
     private let spinner = UIActivityIndicatorView(style: .medium)
-    private let filterStack = UIStackView()
-    private var rendered: (PostListFilter, [PostListFilter: Int])?
 
     override init(frame: CGRect) {
         super.init(frame: frame)
         translatesAutoresizingMaskIntoConstraints = false
-        let previous = UIButton.studioIcon("chevron.left", label: "Önceki ay") { [weak self] in self?.onPrevious?() }
-        let next = UIButton.studioIcon("chevron.right", label: "Sonraki ay") { [weak self] in self?.onNext?() }
-        spinner.hidesWhenStopped = true
-        let monthRow = UIStackView.h([monthLabel, spinner, UIView.spacer(), previous, next], spacing: 4)
-        monthLabel.accessibilityTraits = .header
-
-        let scroll = UIScrollView()
-        scroll.translatesAutoresizingMaskIntoConstraints = false
-        scroll.showsHorizontalScrollIndicator = false
-        filterStack.axis = .horizontal
-        filterStack.spacing = 8
-        filterStack.translatesAutoresizingMaskIntoConstraints = false
-        scroll.addSubview(filterStack)
+        ring.translatesAutoresizingMaskIntoConstraints = false
+        ring.layer.cornerRadius = 43
+        ring.layer.borderWidth = 2.5
+        ring.layer.borderColor = IOSTheme.accent.cgColor
+        avatar.translatesAutoresizingMaskIntoConstraints = false
+        avatar.font = .systemFont(ofSize: 32, weight: .bold)
+        avatar.textAlignment = .center
+        avatar.textColor = IOSTheme.textPrimary
+        avatar.backgroundColor = IOSTheme.fill
+        avatar.layer.cornerRadius = 38
+        avatar.clipsToBounds = true
+        ring.addSubview(avatar)
         NSLayoutConstraint.activate([
-            filterStack.leadingAnchor.constraint(equalTo: scroll.contentLayoutGuide.leadingAnchor),
-            filterStack.trailingAnchor.constraint(equalTo: scroll.contentLayoutGuide.trailingAnchor),
-            filterStack.topAnchor.constraint(equalTo: scroll.contentLayoutGuide.topAnchor),
-            filterStack.bottomAnchor.constraint(equalTo: scroll.contentLayoutGuide.bottomAnchor),
-            filterStack.heightAnchor.constraint(equalTo: scroll.frameLayoutGuide.heightAnchor),
-            scroll.heightAnchor.constraint(equalToConstant: 38),
+            ring.widthAnchor.constraint(equalToConstant: 86),
+            ring.heightAnchor.constraint(equalToConstant: 86),
+            avatar.widthAnchor.constraint(equalToConstant: 76),
+            avatar.heightAnchor.constraint(equalToConstant: 76),
+            avatar.centerXAnchor.constraint(equalTo: ring.centerXAnchor),
+            avatar.centerYAnchor.constraint(equalTo: ring.centerYAnchor),
         ])
-        let stack = UIStackView.v([monthRow, scroll], spacing: 8)
+        countStack.axis = .horizontal
+        countStack.distribution = .fillEqually
+        countStack.spacing = 8
+        spinner.hidesWhenStopped = true
+        let nameRow = UIStackView.h([nameLabel, spinner, UIView.spacer()], spacing: 6)
+        let right = UIStackView.v([nameRow, countStack], spacing: 6)
+        let top = UIStackView.h([ring, right], spacing: 18, alignment: .center)
+
+        let create = UIButton.studioPill(title: "Sohbette üret", kind: .secondary) { [weak self] in self?.onCreate?() }
+        let calendar = UIButton.studioPill(title: "Takvim", kind: .secondary) { [weak self] in self?.onCalendar?() }
+        let buttons = UIStackView.h([create, calendar], spacing: 8)
+        buttons.distribution = .fillEqually
+        let stack = UIStackView.v([top, waitingLabel, buttons], spacing: 12)
         addSubview(stack)
-        stack.pin(to: self, insets: UIEdgeInsets(top: 0, left: 0, bottom: 4, right: 0))
+        stack.pin(to: self, insets: UIEdgeInsets(top: 8, left: IOSTheme.gutter, bottom: 14, right: IOSTheme.gutter))
+        registerForTraitChanges([UITraitUserInterfaceStyle.self]) { (self: Self, _) in
+            self.ring.layer.borderColor = IOSTheme.accent.cgColor
+        }
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
 
-    func configure(month: MonthKey, filter: PostListFilter, counts: [PostListFilter: Int], loading: Bool) {
-        let currentYear = CalendarDay(Date()).year
-        monthLabel.text = TurkishFormat.monthTitle(month, currentYear: currentYear)
+    func configure(brand: String, counts: [PostTab: Int], waiting: Int, loading: Bool) {
+        nameLabel.text = brand
+        avatar.text = String(brand.prefix(1)).uppercased(with: Locale(identifier: "tr_TR"))
         loading ? spinner.startAnimating() : spinner.stopAnimating()
-        if let rendered, rendered.0 == filter, rendered.1 == counts { return }
-        rendered = (filter, counts)
-        filterStack.removeAllArranged()
-        for option in PostListFilter.allCases {
-            let count = counts[option] ?? 0
-            guard option == .all || count > 0 || option == filter else { continue }
-            let button = UIButton.studioPill(title: "\(option.label) \(count)", kind: option == filter ? .ink : .secondary) { [weak self] in self?.onFilter?(option) }
-            button.accessibilityLabel = "\(option.label), \(count) post"
-            button.accessibilityTraits.insert(option == filter ? .selected : [])
-            filterStack.addArrangedSubview(button)
+        waitingLabel.text = waiting > 0 ? "\(waiting) post seni bekliyor (onay ya da görsel)" : nil
+        waitingLabel.isHidden = waiting == 0
+        ring.layer.borderColor = (waiting > 0 ? IOSTheme.accent : IOSTheme.border).cgColor
+        countStack.removeAllArranged()
+        for (tab, title) in [(PostTab.grid, "gönderi"), (.reels, "reels"), (.stories, "hikâye")] {
+            let number = UILabel.studio("\(counts[tab] ?? 0)", size: 17, weight: .semibold, style: .headline)
+            let label = UILabel.studio(title, size: 14, color: IOSTheme.textSecondary, style: .subheadline)
+            let column = UIStackView.v([number, label], spacing: 0)
+            column.isAccessibilityElement = true
+            column.accessibilityLabel = "\(counts[tab] ?? 0) \(title)"
+            countStack.addArrangedSubview(column)
         }
     }
 }
 
-// MARK: - Card
+// MARK: - Tabs
 
-final class PostGridCell: UICollectionViewCell {
-    /// About how wide a card is on an iPhone (two columns), in points: grids load thumbnails.
-    static let displayWidth: CGFloat = 200
-    private let artboard = UIView()
-    private let imageView = IOSAssetImageView(store: nil, cornerRadius: 0, displayWidth: PostGridCell.displayWidth)
-    private let placeholder = UIStackView()
-    private let eyebrow = UILabel.studio("", size: 10, weight: .bold, color: IOSTheme.accent, style: .caption2)
-    private let titleLabel = UILabel.studio("", size: 16, weight: .heavy, lines: 4, style: .headline)
-    private let slotHint = UILabel.studio("+ Görsel ekle", size: 12, weight: .semibold, color: IOSTheme.accent, style: .caption1)
-    private let badge = UIView()
-    private let badgeSpinner = UIActivityIndicatorView(style: .medium)
-    private let badgeLabel = UILabel.studio("", size: 11, weight: .semibold, color: .white, style: .caption2)
-    private let dateLabel = UILabel.studio("", size: 13, weight: .medium, style: .footnote)
-    private let dot = IOSStatusDotView(size: 6)
-    private let stateLabel = UILabel.studio("", size: 12, color: IOSTheme.textSecondary, style: .caption1)
+/// Gönderiler / Reels / Hikâyeler as icons with a sliding underline (pinned under the bar).
+final class PostsTabBar: UIView {
+    var onSelect: ((PostTab) -> Void)?
+    private var buttons: [UIButton] = []
+    private let underline = UIView()
+    private var selected: PostTab = .grid
 
     override init(frame: CGRect) {
         super.init(frame: frame)
-        artboard.translatesAutoresizingMaskIntoConstraints = false
-        artboard.layer.cornerRadius = 16
-        artboard.layer.cornerCurve = .continuous
-        artboard.clipsToBounds = true
-        artboard.addSubview(imageView)
-        imageView.pin(to: artboard)
+        translatesAutoresizingMaskIntoConstraints = false
+        backgroundColor = IOSTheme.canvas
+        let row = UIStackView()
+        row.axis = .horizontal
+        row.distribution = .fillEqually
+        row.translatesAutoresizingMaskIntoConstraints = false
+        for tab in PostTab.allCases {
+            let button = UIButton(type: .system)
+            button.setImage(UIImage(systemName: tab.symbol, withConfiguration: UIImage.SymbolConfiguration(pointSize: 21, weight: .regular)), for: .normal)
+            button.accessibilityLabel = tab.label
+            button.addAction(UIAction { [weak self] _ in self?.onSelect?(tab) }, for: .touchUpInside)
+            buttons.append(button)
+            row.addArrangedSubview(button)
+        }
+        addSubview(row)
+        row.pin(to: self)
+        underline.backgroundColor = IOSTheme.textPrimary
+        addSubview(underline)
+        select(.grid, animated: false)
+    }
+
+    required init?(coder: NSCoder) { fatalError("not used") }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        placeUnderline()
+    }
+
+    func select(_ tab: PostTab, animated: Bool) {
+        selected = tab
+        for (index, button) in buttons.enumerated() {
+            button.tintColor = index == tab.rawValue ? IOSTheme.textPrimary : IOSTheme.textTertiary
+            button.accessibilityTraits = index == tab.rawValue ? [.button, .selected] : .button
+        }
+        if animated {
+            UIView.animate(springDuration: 0.3, bounce: 0) { self.placeUnderline() }
+        } else {
+            placeUnderline()
+        }
+    }
+
+    private func placeUnderline() {
+        guard bounds.width > 0 else { return }
+        let width = bounds.width / CGFloat(PostTab.allCases.count)
+        underline.frame = CGRect(x: width * CGFloat(selected.rawValue) + width * 0.18, y: bounds.height - 1.5, width: width * 0.64, height: 1.5)
+    }
+}
+
+// MARK: - Tile
+
+/// One tile of the grid: the rendered picture (or the post's title on its tone while it has
+/// none), a carousel / Reels mark at the top right, a status dot at the top left and a badge
+/// while it is being made.
+final class PostGridCell: UICollectionViewCell {
+    /// About how wide a tile is on an iPhone (three columns), in points: grids load thumbnails.
+    static let displayWidth: CGFloat = 140
+    private let imageView = IOSAssetImageView(store: nil, cornerRadius: 0, displayWidth: PostGridCell.displayWidth)
+    private let placeholder = UIStackView()
+    private let titleLabel = UILabel.studio("", size: 12, weight: .heavy, lines: 5, style: .caption1)
+    private let slotHint = UILabel.studio("+ Görsel", size: 11, weight: .semibold, color: IOSTheme.accent, style: .caption2)
+    private let kindMark = UIImageView()
+    private let dot = IOSStatusDotView(size: 8)
+    private let badge = UIView()
+    private let badgeSpinner = UIActivityIndicatorView(style: .medium)
+    private let badgeLabel = UILabel.studio("", size: 10, weight: .semibold, color: .white, style: .caption2)
+
+    /// The picture the viewer zooms out of and back into.
+    var artworkView: UIView { imageView }
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        contentView.clipsToBounds = true
+        contentView.addSubview(imageView)
+        imageView.pin(to: contentView)
 
         placeholder.axis = .vertical
         placeholder.alignment = .leading
-        placeholder.spacing = 6
+        placeholder.spacing = 4
         placeholder.translatesAutoresizingMaskIntoConstraints = false
-        placeholder.addArrangedSubview(eyebrow)
         placeholder.addArrangedSubview(titleLabel)
         placeholder.addArrangedSubview(UIView.spacer())
         placeholder.addArrangedSubview(slotHint)
-        artboard.addSubview(placeholder)
-        placeholder.pin(to: artboard, insets: UIEdgeInsets(top: 14, left: 12, bottom: 14, right: 12))
+        contentView.addSubview(placeholder)
+        placeholder.pin(to: contentView, insets: UIEdgeInsets(top: 24, left: 8, bottom: 10, right: 8))
+
+        kindMark.translatesAutoresizingMaskIntoConstraints = false
+        kindMark.tintColor = .white
+        kindMark.layer.shadowColor = UIColor.black.cgColor
+        kindMark.layer.shadowOpacity = 0.35
+        kindMark.layer.shadowRadius = 3
+        kindMark.layer.shadowOffset = .zero
+        contentView.addSubview(kindMark)
+        dot.translatesAutoresizingMaskIntoConstraints = false
+        dot.layer.borderColor = UIColor.white.cgColor
+        dot.layer.borderWidth = 1.5
+        contentView.addSubview(dot)
 
         badge.translatesAutoresizingMaskIntoConstraints = false
         badge.backgroundColor = UIColor.black.withAlphaComponent(0.6)
-        badge.layer.cornerRadius = 12
+        badge.layer.cornerRadius = 10
         badgeSpinner.color = .white
-        badgeSpinner.transform = CGAffineTransform(scaleX: 0.65, y: 0.65)
-        let badgeRow = UIStackView.h([badgeSpinner, badgeLabel], spacing: 2)
+        badgeSpinner.transform = CGAffineTransform(scaleX: 0.55, y: 0.55)
+        let badgeRow = UIStackView.h([badgeSpinner, badgeLabel], spacing: 0)
         badge.addSubview(badgeRow)
-        badgeRow.pin(to: badge, insets: UIEdgeInsets(top: 3, left: 4, bottom: 3, right: 9))
-        artboard.addSubview(badge)
+        badgeRow.pin(to: badge, insets: UIEdgeInsets(top: 2, left: 2, bottom: 2, right: 7))
+        contentView.addSubview(badge)
         NSLayoutConstraint.activate([
-            badge.leadingAnchor.constraint(equalTo: artboard.leadingAnchor, constant: 8),
-            badge.bottomAnchor.constraint(equalTo: artboard.bottomAnchor, constant: -8),
-            badge.trailingAnchor.constraint(lessThanOrEqualTo: artboard.trailingAnchor, constant: -8),
+            kindMark.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 7),
+            kindMark.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -7),
+            dot.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 8),
+            dot.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 8),
+            badge.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 6),
+            badge.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -6),
+            badge.trailingAnchor.constraint(lessThanOrEqualTo: contentView.trailingAnchor, constant: -6),
         ])
-
-        stateLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        let meta = UIStackView.h([dateLabel, UIView.spacer(), dot, stateLabel], spacing: 5)
-        let stack = UIStackView.v([artboard, meta], spacing: 7)
-        contentView.addSubview(stack)
-        stack.pin(to: contentView)
-        artboard.heightAnchor.constraint(equalTo: artboard.widthAnchor, multiplier: 5.0 / 4.0).isActive = true
-
         isAccessibilityElement = true
         accessibilityTraits = .button
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
+
+    override func prepareForReuse() {
+        super.prepareForReuse()
+        transform = .identity
+    }
 
     func configure(card: PostCard, images: IOSImageStore, job: Job?, upload: Double?) {
         imageView.store = images
@@ -458,25 +785,31 @@ final class PostGridCell: UICollectionViewCell {
         if showImage { imageView.assetId = rendered }
         imageView.isHidden = !showImage
         placeholder.isHidden = showImage
-        artboard.layer.borderWidth = showImage ? 0 : 1
-        artboard.layer.borderColor = IOSTheme.border.cgColor
         switch card.placeholderTone {
-        case .light: artboard.backgroundColor = IOSTheme.postLight
-        case .dark: artboard.backgroundColor = IOSTheme.postDark
-        case .muted: artboard.backgroundColor = IOSTheme.postMuted
+        case .light: contentView.backgroundColor = IOSTheme.postLight
+        case .dark: contentView.backgroundColor = IOSTheme.postDark
+        case .muted: contentView.backgroundColor = IOSTheme.postMuted
         }
-        let ink: UIColor = card.placeholderTone == .dark ? .white : (card.placeholderTone == .light ? .black : IOSTheme.textPrimary)
-        eyebrow.text = card.eyebrow
-        eyebrow.isHidden = card.eyebrow == nil
         titleLabel.text = TurkishFormat.upper(card.title)
-        titleLabel.textColor = ink
+        titleLabel.textColor = card.placeholderTone == .dark ? .white : (card.placeholderTone == .light ? .black : IOSTheme.textPrimary)
         slotHint.isHidden = !card.needsImage
+
+        let mark: String? = switch card.content.type {
+        case .carousel: "square.fill.on.square.fill"
+        case .reel: "play.fill"
+        default: card.renderedAssetIds.count > 1 ? "square.fill.on.square.fill" : nil
+        }
+        kindMark.image = mark.map { UIImage(systemName: $0, withConfiguration: UIImage.SymbolConfiguration(pointSize: 14, weight: .semibold)) } ?? nil
+        kindMark.isHidden = mark == nil
+        // Published posts carry no dot (they are simply on the profile); the rest show their state.
+        dot.dotColor = card.state.tone.uiColor
+        dot.isHidden = card.state == .published
 
         var badgeText: String?
         if let upload {
-            badgeText = upload >= 1 ? "Yerleştiriliyor" : "Yükleniyor %\(Int(upload * 100))"
+            badgeText = upload >= 1 ? "Yerleştiriliyor" : "%\(Int(upload * 100))"
         } else if let job {
-            badgeText = job.type == .contentRender ? "Render ediliyor" : (job.status == .queued ? "Sırada" : "Üretiliyor")
+            badgeText = job.type == .contentRender ? "Render" : (job.status == .queued ? "Sırada" : "Üretiliyor")
         } else if card.state == .generating {
             badgeText = "Üretiliyor"
         }
@@ -484,9 +817,6 @@ final class PostGridCell: UICollectionViewCell {
         badgeLabel.text = badgeText
         badgeText == nil ? badgeSpinner.stopAnimating() : badgeSpinner.startAnimating()
 
-        dateLabel.text = card.day.map(TurkishFormat.shortDay) ?? "Tarih yok"
-        dot.dotColor = card.state.tone.uiColor
-        stateLabel.text = card.state.label
         accessibilityLabel = "\(card.title), \(card.day.map(TurkishFormat.longDay) ?? "tarih yok"), \(card.state.label)\(badgeText.map { ", \($0)" } ?? "")"
         accessibilityHint = "Postu açar. Daha fazla işlem için basılı tut."
     }

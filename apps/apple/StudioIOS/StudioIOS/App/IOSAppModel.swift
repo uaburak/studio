@@ -76,6 +76,17 @@ final class IOSAppSettings {
         self.remoteURLString = shared.string(forKey: Self.remoteURLKey) ?? ""
         self.ownerName = defaults.string(forKey: Self.ownerNameKey) ?? ""
         let launchSample = ProcessInfo.processInfo.arguments.drop { $0 != "-StudioSampleData" }.dropFirst().first?.uppercased() == "YES"
+        #if DEBUG
+        // `-StudioSamplePictures <folder>`: the sample posts show these pictures (simulator only).
+        if let folder = ProcessInfo.processInfo.arguments.drop(while: { $0 != "-StudioSamplePictures" }).dropFirst().first {
+            let url = URL(fileURLWithPath: folder)
+            let files = (try? FileManager.default.contentsOfDirectory(at: url, includingPropertiesForKeys: nil)) ?? []
+            SampleImages.realPictures = files
+                .filter { ["jpg", "jpeg", "png"].contains($0.pathExtension.lowercased()) }
+                .sorted { $0.lastPathComponent < $1.lastPathComponent }
+                .compactMap { try? Data(contentsOf: $0) }
+        }
+        #endif
         self.useSampleData = useSampleData ?? (launchSample || defaults.bool(forKey: Self.sampleKey))
         for category in ActivityNotice.Category.allCases {
             noticeCategories[category] = defaults.object(forKey: Self.noticePrefix + category.rawValue) as? Bool ?? true

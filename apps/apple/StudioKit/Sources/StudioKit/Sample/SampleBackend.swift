@@ -26,6 +26,23 @@ public actor SampleBackend: ConversationService, StudioDataService {
     private let uploadDelay: Duration
 
     public init(data: SampleData = SampleData(), uploadDelay: Duration = .milliseconds(600)) {
+        var data = data
+        // With real pictures loaded (a debug launch), the sample posts come out already rendered.
+        if !SampleImages.realPictures.isEmpty {
+            for (contentId, var version) in data.versions {
+                guard let content = data.contents.first(where: { $0.id == contentId }) else { continue }
+                for i in version.slides.indices where version.slides[i].renderedAssetId == nil {
+                    let id = "render-sample-\(contentId)-\(i)"
+                    data.assets[id] = Asset(
+                        id: id, brandId: content.brandId, kind: .image, source: .generated,
+                        objectKey: "brands/\(content.brandId)/assets/\(id)", mimeType: "image/jpeg", bytes: 1,
+                        sha256: String(repeating: "d", count: 64), width: 1080, height: 1350,
+                        originalFilename: "\(id).jpg", createdAt: Date())
+                    version.slides[i].renderedAssetId = id
+                }
+                data.versions[contentId] = version
+            }
+        }
         self.data = data
         self.uploadDelay = uploadDelay
         var hist: [EntityID: [ContentVersion]] = [:]
@@ -1437,7 +1454,16 @@ public actor SampleBackend: ConversationService, StudioDataService {
 
 /// Grayscale placeholder photographs for sample attachments (no files shipped).
 public enum SampleImages {
+    /// Real pictures to stand in for the drawn placeholders (a debug launch can load a folder of
+    /// a brand's posts); each seed picks one of them the same way every time.
+    nonisolated(unsafe) public static var realPictures: [Data] = []
+
     public static func png(seed: String, width: Int = 540, height: Int = 675) -> Data? {
+        if !realPictures.isEmpty {
+            var hash: UInt64 = 1469598103934665603
+            for byte in seed.utf8 { hash = (hash ^ UInt64(byte)) &* 1099511628211 }
+            return realPictures[Int(hash % UInt64(realPictures.count))]
+        }
         var hash: UInt64 = 1469598103934665603
         for byte in seed.utf8 { hash = (hash ^ UInt64(byte)) &* 1099511628211 }
         let horizon = 0.35 + Double(hash % 30) / 100
