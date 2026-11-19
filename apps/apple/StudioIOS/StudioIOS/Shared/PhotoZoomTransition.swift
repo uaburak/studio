@@ -70,14 +70,6 @@ final class PhotoZoomTransition: NSObject, UIViewControllerAnimatedTransitioning
     /// pull can turn the whole thing around at any moment, without waiting for it to end.
     func interruptibleAnimator(using transitionContext: UIViewControllerContextTransitioning) -> UIViewImplicitlyAnimating {
         if let flight { return flight }
-        if isInteractive {
-            // The pull-down close moves the picture by hand; this animator only carries the bars'
-            // change, scrubbed by UIKit with the pull's progress.
-            let bars = UIViewPropertyAnimator(duration: transitionDuration(using: transitionContext), curve: .easeOut)
-            bars.addAnimations {}
-            flight = bars
-            return bars
-        }
         if let viewer, context == nil {
             context = transitionContext
             if let setup = prepare(in: transitionContext) {
@@ -341,6 +333,29 @@ final class PhotoZoomTransition: NSObject, UIViewControllerAnimatedTransitioning
     }
 }
 
+/// The pull-down close handed to UIKit without an interruptible animator: UIKit then drives the
+/// bars (the corner buttons' change) by the pull's progress, as in the system's swipe back.
+@MainActor
+final class PhotoPullTransition: NSObject, UIViewControllerAnimatedTransitioning, UIViewControllerInteractiveTransitioning {
+    let inner: PhotoZoomTransition
+
+    init(_ inner: PhotoZoomTransition) {
+        self.inner = inner
+    }
+
+    func transitionDuration(using transitionContext: UIViewControllerContextTransitioning?) -> TimeInterval {
+        inner.transitionDuration(using: transitionContext)
+    }
+
+    func animateTransition(using transitionContext: UIViewControllerContextTransitioning) {
+        inner.startInteractiveTransition(transitionContext)
+    }
+
+    func startInteractiveTransition(_ transitionContext: UIViewControllerContextTransitioning) {
+        inner.startInteractiveTransition(transitionContext)
+    }
+}
+
 /// Hands the viewer's transitions to a navigation controller (the root's delegate forwards here;
 /// a navigation controller without a delegate, like a sheet's, gets this one).
 @MainActor
@@ -360,12 +375,14 @@ final class PhotoViewerNavigationDelegate: NSObject, UINavigationControllerDeleg
             return viewer.makeTransition(.push)
         }
         if operation == .pop, let viewer = fromVC as? PhotoViewerViewController {
-            return viewer.makeTransition(.pop)
+            let transition = viewer.makeTransition(.pop)
+            return transition.isInteractive ? PhotoPullTransition(transition) : transition
         }
         return nil
     }
 
     static func interaction(for animator: UIViewControllerAnimatedTransitioning) -> UIViewControllerInteractiveTransitioning? {
+        if let pull = animator as? PhotoPullTransition { return pull }
         guard let transition = animator as? PhotoZoomTransition,
               transition.isInteractive || transition.operation == .push else { return nil }
         return transition
