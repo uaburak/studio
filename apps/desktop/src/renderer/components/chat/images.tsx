@@ -34,7 +34,10 @@ export function ImageGrid({ images, className }: { images: ChatImage[]; classNam
             imgClassName={
               known
                 ? "size-full object-contain"
-                : cn("block h-auto w-auto", single ? "max-h-[360px] max-w-[480px]" : "max-w-[168px]")
+                : cn(
+                    "block h-auto w-auto",
+                    single ? "max-h-[360px] max-w-[480px]" : "max-w-[168px]",
+                  )
             }
           >
             <span className="pointer-events-none absolute inset-0 bg-black/0 transition-colors duration-200 group-hover:bg-black/20" />
