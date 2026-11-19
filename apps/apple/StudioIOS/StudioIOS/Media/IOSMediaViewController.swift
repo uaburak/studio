@@ -700,7 +700,7 @@ final class IOSMediaViewController: UIViewController, UICollectionViewDelegate, 
         collectionView.deselectItem(at: indexPath, animated: true)
         guard let id = dataSource.itemIdentifier(for: indexPath), let asset = assetsById[id] else { return }
         if asset.kind == .video {
-            ReelVideo.play(asset.id, app: app, from: self)
+            showVideo(asset, source: collectionView.cellForItem(at: indexPath)?.contentView)
         } else {
             showPhoto(asset, source: collectionView.cellForItem(at: indexPath)?.contentView)
         }
@@ -731,13 +731,38 @@ final class IOSMediaViewController: UIViewController, UICollectionViewDelegate, 
         viewer.open(from: self)
     }
 
+    /// Opens the video in the same viewer as pictures, with the library's other videos to page
+    /// through; it plays in place.
+    private func showVideo(_ asset: Asset, source: UIView?) {
+        let videos = model.visible.filter { $0.kind == .video }
+        let items = videos.map { video -> PhotoViewerItem in
+            var aspect: CGFloat?
+            if let w = video.width, let h = video.height, h > 0 { aspect = CGFloat(w) / CGFloat(h) }
+            return PhotoViewerItem(assetId: video.id, title: video.originalFilename ?? "Video", subtitle: PhotoViewerItem.addedText(video.createdAt), aspect: aspect, isVideo: true)
+        }
+        let start = videos.firstIndex { $0.id == asset.id } ?? 0
+        let viewer = PhotoViewerViewController(images: app.images, items: items, index: start, sourceFor: { [weak self] index in
+            guard let self else { return source }
+            guard videos.indices.contains(index),
+                  let path = self.dataSource.indexPath(for: videos[index].id),
+                  let cell = self.collection.cellForItem(at: path) else { return source ?? self.collection }
+            return cell.contentView
+        }, actionsFor: { [weak self] item in
+            PhotoViewerBar(trailing: PhotoViewerAction(label: "Bu çekimden Reels yap", symbol: "film") { viewer, item in
+                guard let self, let video = self.assetsById[item.assetId] else { return }
+                self.askForReel(video, from: viewer)
+            })
+        })
+        viewer.openOnPoster(from: self)
+    }
+
     func collectionView(_ collectionView: UICollectionView, contextMenuConfigurationForItemsAt indexPaths: [IndexPath], point: CGPoint) -> UIContextMenuConfiguration? {
         guard let indexPath = indexPaths.first, let id = dataSource.itemIdentifier(for: indexPath), let asset = assetsById[id] else { return nil }
         return UIContextMenuConfiguration(identifier: nil, previewProvider: nil) { [weak self] _ in
             guard let self else { return nil }
             if asset.kind == .video {
                 return UIMenu(children: [
-                    UIAction(title: "Oynat", image: UIImage(systemName: "play")) { _ in ReelVideo.play(asset.id, app: self.app, from: self) },
+                    UIAction(title: "Oynat", image: UIImage(systemName: "play")) { _ in self.showVideo(asset, source: nil) },
                     UIAction(title: "Bu çekimden Reels yap", image: UIImage(systemName: "film")) { _ in self.askForReel(asset) },
                 ])
             }
@@ -753,19 +778,21 @@ final class IOSMediaViewController: UIViewController, UICollectionViewDelegate, 
         }
     }
 
-    private func askForReel(_ asset: Asset) {
-        prompt("Bu çekimden Reels", message: "Ne anlatsın? Boş bırakırsan Studio kısa bir kurgu yapar.", text: nil,
-               placeholder: "Örn. Hasat gününden 20 saniyelik bir özet", action: "Üret") { [weak self] brief in
+    /// `presenter`: the screen on top (the viewer, when asked from there).
+    private func askForReel(_ asset: Asset, from presenter: UIViewController? = nil) {
+        let presenter = presenter ?? self
+        presenter.prompt("Bu çekimden Reels", message: "Ne anlatsın? Boş bırakırsan Studio kısa bir kurgu yapar.", text: nil,
+               placeholder: "Örn. Hasat gününden 20 saniyelik bir özet", action: "Üret") { [weak self, weak presenter] brief in
             guard let self else { return }
             Task {
                 do {
                     let content = try await self.model.makeReel(from: asset, brief: brief)
                     Haptics.success()
-                    Toast.show("Reels üretime alındı", in: self.view)
+                    Toast.show("Reels üretime alındı", in: (presenter ?? self).view)
                     await self.app.posts.load()
                     self.app.open(.post(content.id))
                 } catch {
-                    self.presentError(IOSAppModel.describe(error))
+                    (presenter ?? self).presentError(IOSAppModel.describe(error))
                 }
             }
         }
