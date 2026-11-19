@@ -245,7 +245,7 @@ final class PostFeedCell: UITableViewCell, UIScrollViewDelegate {
     private let avatar = PostAvatarView(side: 32)
     private let nameLabel = UILabel.studio("", size: 14, weight: .semibold, style: .subheadline)
     private let titleLabel = UILabel.studio("", size: 12, color: IOSTheme.textSecondary, style: .caption1)
-    private let menuButton = UIButton.insta(.menu, label: "Diğer", size: 14)
+    private let menuButton = UIButton.insta(.menu, label: "Diğer", size: 22)
     /// The picture (all slides, paging sideways); the flight lands on it. It lays its pages out
     /// itself: the cell's own layout runs before the picture takes a reused cell's new height,
     /// which left pages stretched or cut to the previous post's size.
@@ -256,11 +256,11 @@ final class PostFeedCell: UITableViewCell, UIScrollViewDelegate {
     private let counter = UILabel.studio("", size: 12, weight: .semibold, color: .white, style: .caption1)
     private let dots = UIPageControl()
     // Instagram's row: like, comment, repost, send … save (see `InstaIcon` for what each does).
-    private let approveButton = UIButton.insta(.like, label: "Onayla", size: 20)
-    private let editButton = UIButton.insta(.comment, label: "Düzenle", size: 20)
-    private let repostButton = UIButton.insta(.repost, label: "Çoğalt", size: 20)
-    private let shareButton = UIButton.insta(.send, label: "Paylaş", size: 20)
-    private let scheduleButton = UIButton.insta(.save, label: "Zamanla", size: 20)
+    private let approveButton = UIButton.insta(.like, label: "Onayla", size: 22)
+    private let editButton = UIButton.insta(.comment, label: "Düzenle", size: 22)
+    private let repostButton = UIButton.insta(.repost, label: "Çoğalt", size: 22)
+    private let shareButton = UIButton.insta(.send, label: "Paylaş", size: 22)
+    private let scheduleButton = UIButton.insta(.save, label: "Zamanla", size: 22)
     private let captionLabel = UILabel.studio("", size: 14, lines: 0, style: .subheadline)
     private let metaLabel = UILabel.studio("", size: 12, color: IOSTheme.textSecondary, style: .caption1)
     private var card: PostCard?
@@ -339,7 +339,7 @@ final class PostFeedCell: UITableViewCell, UIScrollViewDelegate {
             guard let self, let card = self.card else { return }
             self.actions?.duplicate(card)
         }, for: .touchUpInside)
-        let left = UIStackView.h([approveButton, editButton, repostButton, shareButton], spacing: 0)
+        let left = UIStackView.h([approveButton, editButton, repostButton, shareButton], spacing: -6)
         left.translatesAutoresizingMaskIntoConstraints = false
         scheduleButton.translatesAutoresizingMaskIntoConstraints = false
         actionsRow.addSubview(left)
@@ -410,13 +410,13 @@ final class PostFeedCell: UITableViewCell, UIScrollViewDelegate {
         let canApprove = PostActions.canApprove(card)
         approveButton.isEnabled = canApprove || card.state == .approved || card.state == .scheduled
         let approved = card.content.status.hasApproval
-        approveButton.setInsta(approved ? .liked : .like, size: 20, tint: approved ? InstaIcon.likeRed : IOSTheme.textPrimary)
+        approveButton.setInsta(approved ? .liked : .like, size: 22, tint: approved ? InstaIcon.likeRed : IOSTheme.textPrimary)
         approveButton.accessibilityLabel = card.content.status.hasApproval ? "Onaylandı" : "Onayla"
         approveButton.isUserInteractionEnabled = canApprove
         shareButton.isEnabled = !card.renderedAssetIds.isEmpty
         scheduleButton.isEnabled = PostActions.canSchedule(card)
         scheduleButton.accessibilityLabel = card.schedule != nil ? "Zamanı değiştir" : "Zamanla"
-        scheduleButton.setInsta(card.schedule != nil ? .saved : .save, size: 20, tint: IOSTheme.textPrimary)
+        scheduleButton.setInsta(card.schedule != nil ? .saved : .save, size: 22, tint: IOSTheme.textPrimary)
 
         let textWidth = max(width - 28, 1)
         let (caption, isTruncated) = Self.caption(brand: brand, text: card.content.caption, width: textWidth, expanded: expanded)

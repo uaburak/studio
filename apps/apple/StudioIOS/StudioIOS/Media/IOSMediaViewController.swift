@@ -853,13 +853,18 @@ final class MediaCell: UICollectionViewCell {
 
     func configure(_ asset: Asset, store: IOSImageStore) {
         let isVideo = asset.kind == .video
-        placeholder.isHidden = !isVideo
         videoBadge.isHidden = !isVideo
         durationLabel.text = VideoThumbnail.duration(asset.durationMs) ?? "Video"
+        // A video shows its poster frame (its first frame, as Photos does; the Mac makes none,
+        // the phone takes it once and keeps it as the asset's picture). Marked before the view
+        // binds, so the store never fetches the whole file as a "thumbnail".
         if isVideo {
-            imageView?.removeFromSuperview()
-            imageView = nil
-        } else if let imageView {
+            store.expectPhoneMade(asset.id)
+            if store.anyCached(asset.id) == nil { Task { await VideoPosters.load(asset.id, images: store) } }
+        }
+        // The play badge marks a video; the poster fills the tile once made (the fill until then).
+        placeholder.isHidden = true
+        if let imageView {
             imageView.assetId = asset.id
         } else {
             let view = IOSAssetImageView(store: store, assetId: asset.id, displayWidth: 130)

@@ -186,48 +186,184 @@ class PostZoomPage: UIViewController, ZoomTransitionDestination {
 
 // MARK: - Actions
 
-/// Instagram's post icons, on the actions they stand for here: the heart approves (red and
-/// full once approved), the comment bubble edits, repost duplicates, the paper plane shares,
-/// the bookmark schedules (full once scheduled), the two lines open the menu.
+/// Instagram's post icons, drawn the way Instagram draws them (its 24-unit grid, 2-unit lines,
+/// round joins), on the actions they stand for here: the heart approves (red and full once
+/// approved), the comment bubble edits, repost duplicates, the paper plane shares, the bookmark
+/// schedules (full once scheduled), the three dots open the menu.
 enum InstaIcon {
     case like, liked, comment, repost, send, save, saved, menu, close, back
 
     /// Instagram's like red.
     static let likeRed = UIColor(red: 1, green: 0.19, blue: 0.25, alpha: 1)
 
-    func image(_ size: CGFloat) -> UIImage? {
-        let name: String
-        switch self {
-        case .like: name = "heart"
-        case .liked: name = "heart.fill"
-        case .comment: name = "message"
-        case .repost: name = "arrow.2.squarepath"
-        case .send: name = "paperplane"
-        case .save: name = "bookmark"
-        case .saved: name = "bookmark.fill"
-        case .back: name = "chevron.left"
-        case .close: return UIImage(systemName: "xmark", withConfiguration: UIImage.SymbolConfiguration(pointSize: size, weight: .light))
-        case .menu: return Self.menuImage(size)
-        }
-        return UIImage(systemName: name, withConfiguration: UIImage.SymbolConfiguration(pointSize: size, weight: .regular))
+    /// The icon in a `size` × `size` point box (Instagram's 24-unit grid scaled to it).
+    func image(_ size: CGFloat) -> UIImage {
+        UIGraphicsImageRenderer(size: CGSize(width: size, height: size)).image { context in
+            let cg = context.cgContext
+            cg.scaleBy(x: size / 24, y: size / 24)
+            UIColor.black.setStroke()
+            UIColor.black.setFill()
+            let path = self.path
+            path.lineWidth = 2
+            path.lineCapStyle = .round
+            path.lineJoinStyle = .round
+            switch self {
+            case .liked, .saved:
+                path.fill()
+                path.stroke()
+            case .menu:
+                path.fill()
+            default:
+                path.stroke()
+            }
+        }.withRenderingMode(.alwaysTemplate)
     }
 
-    /// Instagram's menu mark: two lines, the lower one shorter and flush right.
-    private static func menuImage(_ size: CGFloat) -> UIImage {
-        let width = (size * 1.15).rounded()
-        let height = (size * 0.62).rounded()
-        let line = max(size / 11, 1.6)
-        return UIGraphicsImageRenderer(size: CGSize(width: width, height: height)).image { _ in
+    private var path: UIBezierPath {
+        switch self {
+        case .like, .liked:
+            return SVGPath.parse("M16.792 3.904A4.989 4.989 0 0 1 21.5 9.122c0 3.072-2.652 4.959-5.197 7.222-2.512 2.243-3.865 3.469-4.303 3.752-.477-.309-2.143-1.823-4.303-3.752C5.141 14.072 2.5 12.167 2.5 9.122a4.989 4.989 0 0 1 4.708-5.218 4.21 4.21 0 0 1 3.675 1.941c.84 1.175.98 1.763 1.12 1.763s.278-.588 1.11-1.766a4.17 4.17 0 0 1 3.679-1.938Z")
+        case .comment:
+            return SVGPath.parse("M20.656 17.008a9.993 9.993 0 1 0-3.59 3.615L22 22Z")
+        case .send:
+            let path = SVGPath.parse("M22 3 9.218 10.083M11.698 20.334 22 3.001H2l7.218 7.083 2.48 10.25Z")
+            return path
+        case .save, .saved:
+            return SVGPath.parse("M20 21 12 13.44 4 21V3h16Z")
+        case .repost:
+            // Two arrows chasing each other round a rounded square.
+            return SVGPath.parse("M2.5 13.5V9.5A4.5 4.5 0 0 1 7 5h13M17 2l3 3-3 3M21.5 10.5v4A4.5 4.5 0 0 1 17 19H4M7 16l-3 3 3 3")
+        case .close:
+            return SVGPath.parse("M4 4 20 20M20 4 4 20")
+        case .back:
+            return SVGPath.parse("M16 3 7 12l9 9")
+        case .menu:
             let path = UIBezierPath()
-            path.lineWidth = line
-            path.lineCapStyle = .round
-            path.move(to: CGPoint(x: line / 2, y: line / 2 + 1))
-            path.addLine(to: CGPoint(x: width - line / 2, y: line / 2 + 1))
-            path.move(to: CGPoint(x: width * 0.42, y: height - line / 2 - 1))
-            path.addLine(to: CGPoint(x: width - line / 2, y: height - line / 2 - 1))
-            UIColor.black.setStroke()
-            path.stroke()
-        }.withRenderingMode(.alwaysTemplate)
+            for x in [5.5, 12, 18.5] as [CGFloat] {
+                path.append(UIBezierPath(ovalIn: CGRect(x: x - 1.5, y: 10.5, width: 3, height: 3)))
+            }
+            return path
+        }
+    }
+}
+
+/// Just enough of SVG's path syntax for the icons above: M L H V C S A Z, absolute and relative.
+enum SVGPath {
+    static func parse(_ data: String) -> UIBezierPath {
+        let path = UIBezierPath()
+        var tokens = tokenize(data)[...]
+        var command: Character = "M"
+        var current = CGPoint.zero
+        var start = CGPoint.zero
+        var lastControl: CGPoint?
+        func number() -> CGFloat {
+            guard case .number(let value)? = tokens.first else { return 0 }
+            tokens = tokens.dropFirst()
+            return value
+        }
+        func point(_ relative: Bool) -> CGPoint {
+            let x = number(), y = number()
+            return relative ? CGPoint(x: current.x + x, y: current.y + y) : CGPoint(x: x, y: y)
+        }
+        while let token = tokens.first {
+            if case .command(let c) = token {
+                command = c
+                tokens = tokens.dropFirst()
+                if c == "Z" || c == "z" {
+                    path.close()
+                    current = start
+                    lastControl = nil
+                    continue
+                }
+            }
+            let relative = command.isLowercase
+            switch command.uppercased().first! {
+            case "M":
+                current = point(relative)
+                start = current
+                path.move(to: current)
+                command = relative ? "l" : "L"
+                lastControl = nil
+            case "L":
+                current = point(relative)
+                path.addLine(to: current)
+                lastControl = nil
+            case "H":
+                let x = number()
+                current.x = relative ? current.x + x : x
+                path.addLine(to: current)
+                lastControl = nil
+            case "V":
+                let y = number()
+                current.y = relative ? current.y + y : y
+                path.addLine(to: current)
+                lastControl = nil
+            case "C":
+                let c1 = point(relative), c2 = point(relative), end = point(relative)
+                path.addCurve(to: end, controlPoint1: c1, controlPoint2: c2)
+                lastControl = c2
+                current = end
+            case "S":
+                let c1 = lastControl.map { CGPoint(x: 2 * current.x - $0.x, y: 2 * current.y - $0.y) } ?? current
+                let c2 = point(relative), end = point(relative)
+                path.addCurve(to: end, controlPoint1: c1, controlPoint2: c2)
+                lastControl = c2
+                current = end
+            case "A":
+                let rx = number(), ry = number(), rotation = number(), large = number() != 0, sweep = number() != 0
+                let end = point(relative)
+                arc(path, from: current, to: end, rx: rx, ry: ry, rotation: rotation, large: large, sweep: sweep)
+                current = end
+                lastControl = nil
+            default:
+                tokens = tokens.dropFirst()
+            }
+        }
+        return path
+    }
+
+    private enum Token { case command(Character), number(CGFloat) }
+
+    private static func tokenize(_ data: String) -> [Token] {
+        var tokens: [Token] = []
+        var buffer = ""
+        func flush() {
+            if let value = Double(buffer) { tokens.append(.number(CGFloat(value))) }
+            buffer = ""
+        }
+        for char in data {
+            if char.isLetter, char != "e" {
+                flush()
+                tokens.append(.command(char))
+            } else if char == " " || char == "," {
+                flush()
+            } else if char == "-" {
+                if buffer.last != "e" { flush() }
+                buffer.append(char)
+            } else if char == "." {
+                if buffer.contains(".") { flush() }
+                buffer.append(char)
+            } else {
+                buffer.append(char)
+            }
+        }
+        flush()
+        return tokens
+    }
+
+    /// SVG's endpoint arc as a circular arc (the icons only use circles, rotation 0).
+    private static func arc(_ path: UIBezierPath, from p1: CGPoint, to p2: CGPoint, rx: CGFloat, ry: CGFloat, rotation: CGFloat, large: Bool, sweep: Bool) {
+        var r = max(rx, ry)
+        let dx = (p1.x - p2.x) / 2, dy = (p1.y - p2.y) / 2
+        let d2 = dx * dx + dy * dy
+        if d2 == 0 { return }
+        if r * r < d2 { r = sqrt(d2) }
+        let factor = sqrt(max(r * r - d2, 0) / d2) * (large == sweep ? -1 : 1)
+        let cx = (p1.x + p2.x) / 2 + factor * dy
+        let cy = (p1.y + p2.y) / 2 - factor * dx
+        let a1 = atan2(p1.y - cy, p1.x - cx)
+        let a2 = atan2(p2.y - cy, p2.x - cx)
+        path.addArc(withCenter: CGPoint(x: cx, y: cy), radius: r, startAngle: a1, endAngle: a2, clockwise: sweep)
     }
 }
 
@@ -237,10 +373,15 @@ extension UIButton {
         var config = UIButton.Configuration.plain()
         config.image = icon.image(size)
         config.baseForegroundColor = tint
-        config.contentInsets = NSDirectionalEdgeInsets(top: 8, leading: 8, bottom: 8, trailing: 8)
+        config.contentInsets = .zero
         let button = UIButton(configuration: config)
         button.translatesAutoresizingMaskIntoConstraints = false
         button.accessibilityLabel = label
+        // The same 44-point square for every icon, so a row or a column lines up.
+        NSLayoutConstraint.activate([
+            button.widthAnchor.constraint(equalToConstant: 44),
+            button.heightAnchor.constraint(equalToConstant: 44),
+        ])
         return button
     }
 
