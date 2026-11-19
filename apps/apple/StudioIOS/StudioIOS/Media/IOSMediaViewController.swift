@@ -202,6 +202,8 @@ final class IOSMediaViewController: UIViewController, UICollectionViewDelegate, 
     /// The slide between Resim and Video (stopped where it is when a swipe catches it).
     private var pageAnimator: UIViewPropertyAnimator?
     private var panBase: CGFloat = 0
+    /// Where the running slide is going.
+    private var pageTarget: IOSMediaModel.Filter?
     private lazy var pagePan = UIPanGestureRecognizer(target: self, action: #selector(paged(_:)))
     private let searchController = UISearchController(searchResultsController: nil)
     private let uploadsStack = UIStackView.v([], spacing: 6)
@@ -307,16 +309,20 @@ final class IOSMediaViewController: UIViewController, UICollectionViewDelegate, 
 
     /// On the Video page a rightward swipe goes back to Resim, so the drawer stays shut there;
     /// on the Resim page it opens the drawer as everywhere else (not while a page is sliding).
-    var blocksDrawerSwipe: Bool { model.filter == .videos || pageAnimator != nil }
+    var blocksDrawerSwipe: Bool { pageHeading == .videos }
+
+    /// The page the screen is on or sliding to (a slide toward Resim already counts as Resim, so
+    /// a quick swipe right after it opens the drawer instead of catching the slide).
+    private var pageHeading: IOSMediaModel.Filter { pageAnimator != nil ? (pageTarget ?? model.filter) : model.filter }
 
     func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
         guard gestureRecognizer === pagePan else { return true }
         let velocity = pagePan.velocity(in: view)
         guard abs(velocity.x) > abs(velocity.y) * 1.2 else { return false }
-        // A page still sliding can be caught in either direction.
-        if pageAnimator != nil { return true }
-        // Leftward: Resim → Video. Rightward: Video → Resim (on Resim the drawer takes it).
-        return velocity.x < 0 ? model.filter == .images : model.filter == .videos
+        // Leftward always pages (Resim → Video, or catching a slide). Rightward pages only on or
+        // toward Video; on or toward Resim the drawer takes it.
+        if velocity.x < 0 { return pageAnimator != nil || model.filter == .images }
+        return pageHeading == .videos
     }
 
     @objc private func paged(_ pan: UIPanGestureRecognizer) {
@@ -375,6 +381,7 @@ final class IOSMediaViewController: UIViewController, UICollectionViewDelegate, 
         let width = max(collection.bounds.width, 1)
         segmented.selectedSegmentIndex = filter == .videos ? 1 : 0
         setPage(offset: start)
+        pageTarget = filter
         guard filter != model.filter else {
             let back = UIViewPropertyAnimator(duration: 0.3, dampingRatio: 0.85) { self.setPage(offset: 0) }
             back.addCompletion { [weak self] position in
