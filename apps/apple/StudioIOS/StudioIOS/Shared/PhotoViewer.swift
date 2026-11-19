@@ -168,10 +168,10 @@ final class PhotoViewerViewController: UIViewController, UICollectionViewDelegat
 
         // Top bar: back at the left, the picture's name in a glass pill, "…" at the right.
         navigationItem.largeTitleDisplayMode = .never
-        // The name pill is not the bar's title view: during a push or pop the bar runs its own
-        // crossfade on its items and the pill popped in and out. It sits over the bar instead
-        // (see `installPill`), where the transition fades it step by step with the backdrop.
-        navigationItem.titleView = nil
+        // The name pill is the bar's own title view, like Medya's segmented control: the
+        // navigation bar carries both through the push and pop itself, as it does the corner
+        // buttons (nothing is moved or faded by hand).
+        navigationItem.titleView = titlePill
         let back = UIBarButtonItem(image: UIImage(systemName: "chevron.left"), primaryAction: UIAction { [weak self] _ in self?.close() })
         back.accessibilityLabel = "Kapat"
         navigationItem.leftBarButtonItem = back
@@ -211,24 +211,6 @@ final class PhotoViewerViewController: UIViewController, UICollectionViewDelegat
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
         navigationController?.setToolbarHidden(false, animated: animated)
-        installPill()
-    }
-
-    override func viewDidDisappear(_ animated: Bool) {
-        super.viewDidDisappear(animated)
-        titlePill.removeFromSuperview()
-    }
-
-    /// Puts the name pill over the navigation bar, centred on it (above the transition too).
-    private func installPill() {
-        guard let navigation = navigationController, titlePill.superview !== navigation.view else { return }
-        titlePill.removeFromSuperview()
-        titlePill.translatesAutoresizingMaskIntoConstraints = false
-        navigation.view.addSubview(titlePill)
-        NSLayoutConstraint.activate([
-            titlePill.centerXAnchor.constraint(equalTo: navigation.view.centerXAnchor),
-            titlePill.centerYAnchor.constraint(equalTo: navigation.navigationBar.centerYAnchor),
-        ])
     }
 
     override func viewDidAppear(_ animated: Bool) {
@@ -463,8 +445,6 @@ final class PhotoViewerViewController: UIViewController, UICollectionViewDelegat
             // Zoomed in, only the picture strip steps aside; the other buttons stay.
             self.stripHolder.alpha = self.zoomHidden ? 0 : 1
             self.view.backgroundColor = hidden || self.zoomHidden ? .black : Self.backdrop
-            self.titlePill.setVisible(!hidden)
-            self.titlePill.alpha = hidden ? 0 : 1
             self.setNeedsStatusBarAppearanceUpdate()
         }
     }
@@ -720,14 +700,12 @@ private final class FadingEdgesView: UIView {
     }
 }
 
-/// The viewer's name pill: Liquid Glass with the name and, under it, when the picture was added.
-/// Glass cannot fade with alpha (it popped in and out), so it shows and hides by materialising
-/// the glass (`setVisible` inside an animation) while the text fades.
+/// The viewer's name pill (the navigation bar's title view): Liquid Glass with the name and,
+/// under it, when the picture was added.
 final class GlassTitlePill: UIView {
     private let glass = UIVisualEffectView(effect: nil)
     private let titleLabel = UILabel()
     private let subtitleLabel = UILabel()
-    private(set) var isShown = true
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -767,17 +745,5 @@ final class GlassTitlePill: UIView {
         subtitleLabel.text = subtitle
         subtitleLabel.isHidden = subtitle?.isEmpty ?? true
         invalidateIntrinsicContentSize()
-    }
-
-    /// The name and date only (the glass stays): used while the pill morphs.
-    func setContentVisible(_ visible: Bool) {
-        glass.contentView.alpha = visible ? 1 : 0
-    }
-
-    /// Call inside an animation block to fade it in or out like the backdrop.
-    func setVisible(_ visible: Bool) {
-        isShown = visible
-        glass.effect = visible ? UIGlassEffect(style: .regular) : nil
-        glass.contentView.alpha = visible ? 1 : 0
     }
 }
