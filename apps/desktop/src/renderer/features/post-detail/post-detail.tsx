@@ -45,6 +45,7 @@ import { useJobsSnapshot } from "../../state/studio.tsx";
 import { ChecksPanel, useApproveGuard } from "../checks/checks-panel.tsx";
 import { WECRA_MISSING, wecraVendored } from "../post-editor/wecra/vendored.ts";
 import { usePostActions } from "../posts/actions.ts";
+import { revokeState } from "../posts/board.ts";
 import {
   invalidatePosts,
   storeContent,
@@ -55,9 +56,10 @@ import {
   useVersion,
 } from "../posts/data.ts";
 import { localDate } from "../posts/dates.ts";
-import { exportMenuEntries, usePostExport } from "../posts/export.ts";
+import { downloadMenuEntry, exportMenuEntries, usePostExport } from "../posts/export.ts";
 import { PostLinks, usePostConversions } from "../posts/post-links.tsx";
 import { type DetailTab, usePostsStore } from "../posts/store.ts";
+import { ApprovalHeart, type RevokeControl } from "./approval-heart.tsx";
 import { useCancelSchedule } from "./cancel-schedule.tsx";
 import {
   CaptionCard,
@@ -106,11 +108,52 @@ export function PostDetailLayer() {
     <>
       {opened && <PostDetail key={opened.contentId} contentId={opened.contentId} />}
       <DeletePostDialog />
+      <RevokeApprovalDialog />
     </>
   );
 }
 
 type OpenedOrigin = { x: number; y: number; width: number; height: number } | null;
+
+function revokeControl(
+  content: Content,
+  actions: ReturnType<typeof usePostActions>,
+  editor: PostEditor,
+): RevokeControl {
+  const state = revokeState(content);
+  return {
+    state,
+    onRevoke:
+      state === null
+        ? null
+        : () => actions.askRevoke(content, (fresh) => editor.replaceContent(fresh)),
+  };
+}
+
+/** "Onayı geri al" (board tiles, the post's "…" menu, the title bar's heart): ask first. */
+function RevokeApprovalDialog() {
+  const revoking = usePostsStore((s) => s.revoking);
+  const actions = usePostActions();
+  const [busy, setBusy] = useState(false);
+  return (
+    <ConfirmDialog
+      open={!!revoking}
+      title={revoking ? `“${revoking.content.title}” onayı geri alınsın mı?` : ""}
+      message="Post taslağa döner; zamanlamak için yeniden onaylaman gerekir."
+      confirmLabel="Onayı geri al"
+      busy={busy}
+      onClose={() => usePostsStore.getState().askRevoke(null)}
+      onConfirm={async () => {
+        if (!revoking) return;
+        setBusy(true);
+        const fresh = await actions.revokeApproval(revoking.content);
+        setBusy(false);
+        if (fresh) revoking.onDone?.(fresh);
+        usePostsStore.getState().askRevoke(null);
+      }}
+    />
+  );
+}
 
 /**
  * "Kalıcı olarak sil" of a post in the trash (Silinenler). Deleting from the board or the detail
@@ -287,6 +330,7 @@ function PostCanvas({ editor, snapshot }: { editor: PostEditor; snapshot: Editor
       content.brandId,
     );
   };
+  const revoke = revokeControl(content, actions, editor);
   if (!wecraVendored)
     return (
       <Shell title={content.title}>
@@ -329,6 +373,7 @@ function PostCanvas({ editor, snapshot }: { editor: PostEditor; snapshot: Editor
           const copy = await actions.duplicate(content);
           if (copy) usePostsStore.getState().open(copy.id);
         }}
+        revoke={revoke}
         menu={postMenu({
           content,
           version,
@@ -338,6 +383,8 @@ function PostCanvas({ editor, snapshot }: { editor: PostEditor; snapshot: Editor
           cancelSchedule: cancelFlow.targets.length > 0 ? () => cancelFlow.open() : null,
           exportEntries: exportMenuEntries(exporter, content, version, snapshot.slideIndex),
           conversionEntries: conversions.entries,
+          download: downloadMenuEntry(exporter, content, version),
+          onRevoke: revoke.onRevoke,
         })}
         onClose={close}
         onPreview={quickLook}
@@ -546,6 +593,8 @@ export function EditorView({ editor, snapshot }: { editor: PostEditor; snapshot:
     cancelSchedule: cancelFlow.targets.length > 0 ? () => cancelFlow.open() : null,
     exportEntries: exportMenuEntries(exporter, content, version, snapshot.slideIndex),
     conversionEntries: conversions.entries,
+    download: downloadMenuEntry(exporter, content, version),
+    onRevoke: revokeControl(content, actions, editor).onRevoke,
   });
 
   const statusText = facts.statusText;
@@ -575,7 +624,7 @@ export function EditorView({ editor, snapshot }: { editor: PostEditor; snapshot:
               aria-label="Konum"
               className="flex min-w-0 flex-1 items-center gap-1 pt-1.5 text-footnote text-fg-3"
             >
-              <span>Postlar</span>
+              <span>Profil</span>
               <IconChevronRight size={11} className="shrink-0" />
               <span className="truncate">{brand?.name ?? "Marka"}</span>
               {planItem?.pillar && (
@@ -604,6 +653,7 @@ export function EditorView({ editor, snapshot }: { editor: PostEditor; snapshot:
           </h1>
           <div className="mt-3 flex flex-wrap items-center gap-1.5">
             <TagPill tone={facts.tone}>{statusText}</TagPill>
+            <ApprovalHeart {...revokeControl(content, actions, editor)} className="-my-1" />
             {version && (
               <TagPill tone={viewingCurrent ? "neutral" : "warning"}>
                 v{version.version}

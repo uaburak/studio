@@ -45,6 +45,7 @@ import { bridge } from "../../lib/bridge.ts";
 import { noteCanvasNavKey } from "../../lib/nav-gestures.ts";
 import { useAppStore } from "../../state/app-store.ts";
 import { useJobsSnapshot } from "../../state/studio.tsx";
+import type { RevokeControl } from "../post-detail/approval-heart.tsx";
 import {
   activeVersion,
   approveBlocker,
@@ -100,6 +101,8 @@ export interface WorkspaceProps {
   approvalFirst: boolean;
   /** The post's "…" menu (quick look, copy caption, open in chat, duplicate, delete). */
   menu?: MenuEntry[];
+  /** "Onayı geri al": the heart next to the title bar's "Onaylandı". */
+  revoke?: RevokeControl | null;
   /** Back to where the post was opened from (the app's back does it; kept for the shell). */
   onClose(): void;
   onPreview(): void;
@@ -155,7 +158,7 @@ const isNavKey = (e: KeyboardEvent) =>
 
 /**
  * ⇧⌘K (Wecra's "Place image…") and ⇧⌘P (pixel preview) in the workspace; elsewhere they are the
- * menu's Git → Takvim and Git → Postlar.
+ * menu's Git → Takvim and Git → Profil.
  */
 const isWecraGoKey = (e: KeyboardEvent) =>
   e.metaKey && e.shiftKey && !e.ctrlKey && !e.altKey && (e.code === "KeyK" || e.code === "KeyP");
@@ -578,6 +581,7 @@ export function PostWorkspace(props: WorkspaceProps) {
           editor={editor}
           snapshot={snapshot}
           status={props.status}
+          revoke={props.revoke ?? null}
           menu={props.menu ?? []}
           onApprove={() => void approve()}
           onSchedule={() => void openSchedule()}

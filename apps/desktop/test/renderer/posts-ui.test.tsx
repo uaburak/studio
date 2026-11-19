@@ -1,4 +1,4 @@
-import type { ApiClient, Brand } from "@studio/contract";
+import type { ApiClient, Brand, Content } from "@studio/contract";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -6,6 +6,7 @@ import { type ReactNode, useSyncExternalStore } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { type EditorApi, PostEditor } from "../../src/renderer/features/post-detail/editor.ts";
 import { EditorView } from "../../src/renderer/features/post-detail/post-detail.tsx";
+import { usePostActions } from "../../src/renderer/features/posts/actions.ts";
 import { buildBoard } from "../../src/renderer/features/posts/board.ts";
 import { ChatPostCard } from "../../src/renderer/features/posts/chat-post-card.tsx";
 import { postKeys } from "../../src/renderer/features/posts/data.ts";
@@ -163,9 +164,19 @@ describe("posts board", () => {
     );
   }
 
-  it("shows the month, the count, the filters with counts and the cards", () => {
+  it("shows the profile header, the month, the count, the filters with counts and the tiles", () => {
     renderBoard();
-    expect(screen.getByRole("heading", { name: "Postlar" })).toBeInTheDocument();
+    // Like an Instagram profile: the brand, its counts and what waits for the owner.
+    expect(screen.getByRole("heading", { name: "MTM Agro" })).toBeInTheDocument();
+    expect(screen.getByText("3 gönderi · 0 reels · 0 hikâye")).toBeInTheDocument();
+    expect(screen.getByText("1 post seni bekliyor (onay ya da görsel)")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Sohbette üret" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Takvim" })).toBeInTheDocument();
+    const tabs = screen.getByRole("tablist", { name: "Profil sekmeleri" });
+    expect(within(tabs).getByRole("tab", { name: "Gönderiler" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
     expect(screen.getByText("Kasım 2026")).toBeInTheDocument();
     expect(screen.getByText("3 post")).toBeInTheDocument();
     const filters = screen.getByRole("radiogroup", { name: "Durum" });
@@ -181,6 +192,15 @@ describe("posts board", () => {
       within(items[0] as HTMLElement).getByText("Instagram · 20 Kas 13:30"),
     ).toBeInTheDocument();
     expect(within(items[2] as HTMLElement).getAllByText("Üretiliyor").length).toBeGreaterThan(0);
+  });
+
+  it("lists Reels and stories on their own tabs", async () => {
+    renderBoard();
+    await userEvent.click(screen.getByRole("tab", { name: "Reels" }));
+    expect(usePostsStore.getState().profileTab).toBe("reels");
+    expect(screen.queryAllByRole("listitem")).toHaveLength(0);
+    expect(screen.getByText("Kasım 2026 için Reels yok")).toBeInTheDocument();
+    act(() => usePostsStore.getState().setProfileTab("grid"));
   });
 
   it("filters by status and searches", async () => {
@@ -199,7 +219,7 @@ describe("posts board", () => {
     const remove = vi.fn(async () => undefined);
     const restore = vi.fn(async () => content({ id: "p1" }));
     renderBoard({ contents: { delete: remove, restore } });
-    const region = screen.getByRole("region", { name: "Postlar" });
+    const region = screen.getByRole("region", { name: "Profil" });
     region.focus();
     fireEvent.keyDown(region, { key: "ArrowRight" });
     expect(usePostsStore.getState().selectedId).toBe("p2");
@@ -230,29 +250,72 @@ describe("posts board", () => {
     expect(usePostsStore.getState().selectedId).toBeNull();
   });
 
-  it("offers quick look, copy, duplicate and delete on the card", async () => {
+  it("offers İndir and the tile's menu: quick look, copy, duplicate and delete", async () => {
     const duplicate = vi.fn(async () => content({ id: "p9", title: "Hasat sonrası (kopya)" }));
     const writeText = vi.fn(async () => undefined);
     Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
     const remove = vi.fn(async () => undefined);
     renderBoard({ contents: { duplicate, delete: remove } });
-    const first = screen.getAllByRole("listitem")[1] as HTMLElement; // p1
-    const tools = within(first).getByRole("toolbar", { name: "Post işlemleri" });
-    await userEvent.click(within(tools).getByRole("button", { name: "Hızlı bakış" }));
+    const first = () => screen.getAllByRole("listitem")[1] as HTMLElement; // p1
+    const tools = () => within(first()).getByRole("toolbar", { name: "Post işlemleri" });
+    // Outside the Studio app (no file bridge) İndir says so.
+    await userEvent.click(within(tools()).getByRole("button", { name: "İndir" }));
+    await waitFor(() =>
+      expect(useAppStore.getState().toasts.at(-1)?.message).toMatch(/yalnızca Studio/),
+    );
+    const menu = async (item: string | RegExp) => {
+      await userEvent.click(within(tools()).getByRole("button", { name: "Diğer işlemler" }));
+      await userEvent.click(await screen.findByRole("menuitem", { name: item }));
+    };
+    await menu(/^Hızlı bakış/);
     expect(useAppStore.getState().lightbox?.images.map((i) => i.assetId)).toEqual(["r1"]);
-    await userEvent.click(within(tools).getByRole("button", { name: "Açıklamayı kopyala" }));
+    await menu("Açıklamayı kopyala");
     expect(writeText).toHaveBeenCalledWith("Hasat bitti ama iş bitmedi.\n\n#hasat #toprak");
-    await userEvent.click(within(tools).getByRole("button", { name: "Çoğalt" }));
+    await menu(/^Çoğalt/);
     await waitFor(() => expect(duplicate).toHaveBeenCalledWith("p1"));
     expect(usePostsStore.getState().selectedId).toBe("p9");
-    await userEvent.click(within(tools).getByRole("button", { name: "Sil" }));
+    await menu(/^Sil/);
     await waitFor(() => expect(remove).toHaveBeenCalledWith("p1"));
-    // The scheduled card's delete is disabled with the reason as its label.
-    const scheduled = screen.getAllByRole("listitem")[0] as HTMLElement;
-    expect(
-      within(scheduled).getByRole("button", { name: /Zamanlanmış post silinemez/ }),
-    ).toBeDisabled();
-    expect(within(scheduled).getByRole("button", { name: "Açıklamayı kopyala" })).toBeDisabled();
+  });
+
+  it("takes an approval back from the tile's menu, and says why a scheduled one can't", async () => {
+    const approved = version("a1", 1);
+    const scheduledV = version("s1", 1);
+    const local = buildBoard({
+      contents: [
+        contentFor(approved, { id: "a1", title: "Onaylı", status: "approved" }),
+        contentFor(scheduledV, { id: "s1", title: "Zamanlı", status: "scheduled" }),
+      ],
+      versions: new Map([
+        ["a1", approved],
+        ["s1", scheduledV],
+      ]),
+      schedules: [schedule({ contentId: "s1", scheduledAt: "2026-11-20T10:30:00.000Z" })],
+    });
+    providers(
+      <Board
+        cards={local}
+        loading={false}
+        error={null}
+        onRetry={() => undefined}
+        brands={brands}
+        brandName={(id) => brands.find((b) => b.id === id)?.name}
+        grouped={false}
+        brandId="b1"
+        now={NOW}
+      />,
+    );
+    const tile = (id: string) =>
+      screen.getAllByRole("listitem").find((li) => li.dataset.cardId === id) as HTMLElement;
+    fireEvent.contextMenu(tile("s1"));
+    const blocked = await screen.findByRole("menuitem", { name: /Onayı geri al/ });
+    expect(blocked).toHaveAttribute("aria-disabled", "true");
+    expect(blocked).toHaveTextContent("Önce zamanlamayı iptal et");
+    await userEvent.keyboard("{Escape}");
+    fireEvent.contextMenu(tile("a1"));
+    await userEvent.click(await screen.findByRole("menuitem", { name: /Onayı geri al/ }));
+    expect(usePostsStore.getState().revoking?.content.id).toBe("a1");
+    act(() => usePostsStore.getState().askRevoke(null));
   });
 
   it("shows an empty month with a way to the nearest posts", async () => {
@@ -261,6 +324,43 @@ describe("posts board", () => {
     expect(screen.getByText("Aralık 2026 için post yok")).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "‹ Kasım" }));
     expect(usePostsStore.getState().month).toBe("2026-11");
+  });
+});
+
+describe("taking an approval back", () => {
+  function Harness({ post, onDone }: { post: Content; onDone(fresh: Content | null): void }) {
+    const actions = usePostActions();
+    return (
+      <button type="button" onClick={async () => onDone(await actions.revokeApproval(post))}>
+        geri al
+      </button>
+    );
+  }
+
+  it("moves an approved post back to draft through the transition", async () => {
+    const draft = content({ id: "a1", title: "Onaylı", status: "draft" });
+    const transition = vi.fn(async () => draft);
+    const onDone = vi.fn();
+    providers(
+      <Harness post={content({ id: "a1", title: "Onaylı", status: "approved" })} onDone={onDone} />,
+      { contents: { transition } },
+    );
+    await userEvent.click(screen.getByRole("button", { name: "geri al" }));
+    await waitFor(() => expect(onDone).toHaveBeenCalledWith(draft));
+    expect(transition).toHaveBeenCalledWith("a1", "draft");
+    expect(useAppStore.getState().toasts.at(-1)?.message).toMatch(/onayı geri alındı/);
+  });
+
+  it("refuses a scheduled post (its schedule is cancelled first)", async () => {
+    const transition = vi.fn();
+    const onDone = vi.fn();
+    providers(<Harness post={content({ status: "scheduled" })} onDone={onDone} />, {
+      contents: { transition },
+    });
+    await userEvent.click(screen.getByRole("button", { name: "geri al" }));
+    await waitFor(() => expect(onDone).toHaveBeenCalledWith(null));
+    expect(transition).not.toHaveBeenCalled();
+    expect(useAppStore.getState().toasts.at(-1)?.message).toBe("Önce zamanlamayı iptal et");
   });
 });
 

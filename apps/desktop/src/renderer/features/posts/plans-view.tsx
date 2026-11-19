@@ -517,7 +517,7 @@ function PlanDetail({
       <ConfirmDialog
         open={removing !== null}
         title={removing ? `“${removing.title}” plandan çıkarılsın mı?` : ""}
-        message="Tasarımı olmayan taslak postu Silinenler'e taşınır; tasarımı olan post Postlar'da kalır."
+        message="Tasarımı olmayan taslak postu Silinenler'e taşınır; tasarımı olan post Profil'de kalır."
         confirmLabel="Plandan çıkar"
         destructive
         busy={busy}

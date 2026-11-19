@@ -1,4 +1,4 @@
-// The top bar's title on the posts screen ("Kasım postları ⌄", or the opened post's title)
+// The top bar's title on the Profil screen ("Profil · MTM Agro ⌄", or the opened post's title)
 // with the brand scope menu.
 import { useState } from "react";
 import { cn } from "../../components/ui/controls.tsx";
@@ -8,12 +8,10 @@ import { useAppStore } from "../../state/app-store.ts";
 import { useBrands } from "../../state/studio.tsx";
 import { TemplatePicker } from "../brand/template-use.tsx";
 import { useContent } from "./data.ts";
-import { monthKeyOf, monthName } from "./dates.ts";
 import { usePostsStore } from "./store.ts";
 
 export function PostsTitleButton() {
   const opened = usePostsStore((s) => s.opened);
-  const month = usePostsStore((s) => s.month);
   const allBrands = usePostsStore((s) => s.allBrands);
   const currentBrandId = useAppStore((s) => s.currentBrandId);
   const setCurrentBrand = useAppStore((s) => s.setCurrentBrand);
@@ -22,9 +20,7 @@ export function PostsTitleButton() {
   const [picking, setPicking] = useState<string | null>(null);
   const active = (brands.data ?? []).filter((b) => b.status === "active");
   const brandName = allBrands ? "Tüm markalar" : active.find((b) => b.id === currentBrandId)?.name;
-  const title = opened
-    ? (content.data?.title ?? "Post")
-    : `${monthName(month ?? monthKeyOf(new Date()))} postları`;
+  const title = opened ? (content.data?.title ?? "Post") : "Profil";
   const entries = (): MenuEntry[] => [
     { type: "label", label: "Marka" },
     ...active.map((b, i) => ({
@@ -55,7 +51,7 @@ export function PostsTitleButton() {
   ];
   return (
     <>
-      <MenuButton entries={entries} placement="bottom-start" label="Postlar menüsü" width={240}>
+      <MenuButton entries={entries} placement="bottom-start" label="Profil menüsü" width={240}>
         {({ ref, onClick, onKeyDown, open, ...aria }) => (
           <button
             ref={ref}

@@ -296,6 +296,14 @@ export function usePostExport() {
     return {
       exportSlides: (content: Content, version: ContentVersion, choice: ExportChoice) =>
         deliver(slideRequest(content, version, choice), "save"),
+      /** "İndir": every rendered slide as JPEG (a reel: its MP4), where the owner picks. */
+      download: (content: Content, version: ContentVersion) =>
+        deliver(
+          content.type === "reel"
+            ? reelRequest(content, version, false)
+            : slideRequest(content, version, { format: "jpeg", slides: null }),
+          "save",
+        ),
       exportReel: (content: Content, version: ContentVersion, cover: boolean) =>
         deliver(reelRequest(content, version, cover), "save"),
       /** Every slide as JPEG (a reel: its MP4) in the macOS share menu. */
@@ -316,6 +324,24 @@ export function usePostExport() {
 }
 
 export type PostExport = ReturnType<typeof usePostExport>;
+
+/** "İndir" of a post's menus: all its pictures (a reel: the video) to a folder the owner picks. */
+export function downloadMenuEntry(
+  exporter: PostExport,
+  content: Content,
+  version: ContentVersion | null,
+): MenuEntry {
+  const blocker = exportBlocker(content, version);
+  return {
+    id: "download",
+    label: content.type === "reel" ? "İndir (video)" : "İndir",
+    disabled: blocker !== null || version === null,
+    ...(blocker ? { detail: blocker } : {}),
+    onSelect: () => {
+      if (version) void exporter.download(content, version);
+    },
+  };
+}
 
 /** "Dışa aktar ▸" and "Paylaş…" entries of a post's menus. */
 export function exportMenuEntries(

@@ -1,13 +1,14 @@
 // Post actions shared by the board, its cards and the opened post: quick look (the lightbox
 // with the rendered slides), copy the caption, duplicate, delete (to the trash, with "Geri al"),
-// "Yeniden dene" of a failed generation, and the trash's restore / "Kalıcı olarak sil".
+// "Yeniden dene" of a failed generation, "Onayı geri al" (approved → draft), and the trash's
+// restore / "Kalıcı olarak sil".
 import type { Content, ContentVersion } from "@studio/contract";
 import { useQueryClient } from "@tanstack/react-query";
 import { useMemo } from "react";
 import { describeError, useApi } from "../../lib/api.ts";
 import { useAppStore } from "../../state/app-store.ts";
-import { deletionBlocker } from "./board.ts";
-import { invalidatePosts } from "./data.ts";
+import { deletionBlocker, revokeState } from "./board.ts";
+import { invalidatePosts, storeContent } from "./data.ts";
 import { usePostsStore } from "./store.ts";
 import { purgePost, restorePosts, trashPosts } from "./trash.ts";
 
@@ -103,6 +104,39 @@ export function usePostActions() {
           return false;
         }
         return (await trashPosts(api, queryClient, [content])).length > 0;
+      },
+
+      /**
+       * "Onayı geri al…": ask first (the confirmation in the post layer). A scheduled post says
+       * why it can't (its schedule has to be cancelled first). `onDone` gets the fresh post.
+       */
+      askRevoke(content: Content, onDone?: (fresh: Content) => void) {
+        const state = revokeState(content);
+        if (state === null) return;
+        if (state !== "ok") {
+          toast({ message: `${state}; onay, zamanlama iptal edilince geri alınabilir.` });
+          return;
+        }
+        usePostsStore.getState().askRevoke(content, onDone);
+      },
+
+      /** Approved → draft (`POST /contents/{id}/transition`): the approval is cleared. */
+      async revokeApproval(content: Content): Promise<Content | null> {
+        const state = revokeState(content);
+        if (state !== "ok") {
+          if (state) toast({ message: state, tone: "danger" });
+          return null;
+        }
+        try {
+          const fresh = await api.contents.transition(content.id, "draft");
+          storeContent(queryClient, fresh);
+          await invalidatePosts(queryClient, content.id);
+          toast({ message: `“${content.title}” onayı geri alındı; post taslağa döndü.` });
+          return fresh;
+        } catch (e) {
+          toast({ message: `${content.title}: ${describeError(e)}`, tone: "danger" });
+          return null;
+        }
       },
 
       /** Take a post back out of the trash ("Silinenler"). */

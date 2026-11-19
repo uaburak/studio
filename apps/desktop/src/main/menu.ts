@@ -81,7 +81,7 @@ export function buildMenu(
       // pixel preview): the page marks them used and the renderer skips the command.
       label: "Git",
       submenu: [
-        item("Postlar", "go-posts", "Shift+Cmd+P"),
+        item("Profil", "go-posts", "Shift+Cmd+P"),
         item("Takvim", "go-calendar", "Shift+Cmd+K"),
         item("Medya", "go-media", "Shift+Cmd+M"),
         { type: "separator" },

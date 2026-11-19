@@ -4,7 +4,7 @@
 import type { Content } from "@studio/contract";
 import { create } from "zustand";
 import { useAppStore } from "../../state/app-store.ts";
-import type { PostFilter } from "./board.ts";
+import type { PostFilter, ProfileTab } from "./board.ts";
 import type { MonthKey } from "./dates.ts";
 
 export type DetailTab = "post" | "edit" | "versions";
@@ -40,9 +40,15 @@ interface PostsState {
   opened: OpenedPost | null;
   /** A trashed post waiting for the "Kalıcı olarak sil" confirmation. */
   deleting: Content | null;
+  /** The profile's tab: the grid (posts, carousels), Reels or stories. */
+  profileTab: ProfileTab;
+  /** An approved post waiting for the "Onayı geri al" confirmation (`onDone`: the fresh post). */
+  revoking: { content: Content; onDone?: ((fresh: Content) => void) | undefined } | null;
 
   setAllBrands(all: boolean): void;
   askDelete(content: Content | null): void;
+  setProfileTab(tab: ProfileTab): void;
+  askRevoke(content: Content | null, onDone?: (fresh: Content) => void): void;
   setView(view: PostsView): void;
   /** Open the plans view on a plan (the chat plan card's "Düzenle"). */
   showPlan(planId: string | null): void;
@@ -71,12 +77,20 @@ export const usePostsStore = create<PostsState>((set, get) => ({
   selectedId: null,
   opened: null,
   deleting: null,
+  profileTab: "grid",
+  revoking: null,
 
   setAllBrands(allBrands) {
     set({ allBrands, month: null, selectedId: null, picked: [], anchorId: null, planId: null });
   },
   askDelete(deleting) {
     set({ deleting });
+  },
+  setProfileTab(profileTab) {
+    set({ profileTab, selectedId: null, picked: [], anchorId: null });
+  },
+  askRevoke(content, onDone) {
+    set({ revoking: content ? { content, onDone } : null });
   },
   setView(view) {
     set({ view, picked: [], anchorId: null });

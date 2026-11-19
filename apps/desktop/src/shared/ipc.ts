@@ -109,7 +109,7 @@ export type MenuCommand =
   | "forward"
   | "rename"
   | "gallery"
-  /** Git: Postlar, Takvim (⇧⌘K), Medya (⇧⌘M), Yeni marka (⇧⌘N), Marka ayarları (⇧⌘B). */
+  /** Git: Profil, Takvim (⇧⌘K), Medya (⇧⌘M), Yeni marka (⇧⌘N), Marka ayarları (⇧⌘B). */
   | "go-posts"
   | "go-calendar"
   | "go-media"

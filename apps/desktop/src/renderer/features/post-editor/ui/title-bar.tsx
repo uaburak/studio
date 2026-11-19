@@ -8,6 +8,7 @@ import { IconChevronDown, IconClock, IconWarning } from "../../../components/ui/
 import { MenuButton, type MenuEntry } from "../../../components/ui/menu.tsx";
 import { Popover } from "../../../components/ui/popover.tsx";
 import { formatAgo } from "../../../lib/format.ts";
+import { ApprovalHeart, type RevokeControl } from "../../post-detail/approval-heart.tsx";
 import {
   activeVersion,
   type EditorSnapshot,
@@ -54,7 +55,10 @@ export function TitleBar({
   schedule,
   versionsOpen,
   setVersionsOpen,
+  revoke = null,
 }: {
+  /** "Onayı geri al": the heart next to "Onaylandı" (null: not offered). */
+  revoke?: RevokeControl | null;
   save: SaveControl;
   editor: PostEditor;
   snapshot: EditorSnapshot;
@@ -131,6 +135,7 @@ export function TitleBar({
       <span className="hidden shrink-0 @[600px]:inline-flex">
         <TagPill tone={status.tone}>{status.label}</TagPill>
       </span>
+      {revoke && <ApprovalHeart state={revoke.state} onRevoke={revoke.onRevoke} />}
       <button
         ref={setChip}
         type="button"
