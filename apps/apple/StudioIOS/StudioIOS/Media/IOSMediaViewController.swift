@@ -199,6 +199,9 @@ final class IOSMediaViewController: UIViewController, UICollectionViewDelegate, 
     private let filterItem = UIBarButtonItem()
     /// While the page slides, the grid changes at once (no fade of the old pictures).
     private var isPaging = false
+    /// The slide between Resim and Video (stopped where it is when a swipe catches it).
+    private var pageAnimator: UIViewPropertyAnimator?
+    private var panBase: CGFloat = 0
     private lazy var pagePan = UIPanGestureRecognizer(target: self, action: #selector(paged(_:)))
     private let searchController = UISearchController(searchResultsController: nil)
     private let uploadsStack = UIStackView.v([], spacing: 6)
@@ -303,13 +306,15 @@ final class IOSMediaViewController: UIViewController, UICollectionViewDelegate, 
     // MARK: Resim / Video pages
 
     /// On the Video page a rightward swipe goes back to Resim, so the drawer stays shut there;
-    /// on the Resim page it opens the drawer as everywhere else.
-    var blocksDrawerSwipe: Bool { model.filter == .videos }
+    /// on the Resim page it opens the drawer as everywhere else (not while a page is sliding).
+    var blocksDrawerSwipe: Bool { model.filter == .videos || pageAnimator != nil }
 
     func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
         guard gestureRecognizer === pagePan else { return true }
         let velocity = pagePan.velocity(in: view)
         guard abs(velocity.x) > abs(velocity.y) * 1.2 else { return false }
+        // A page still sliding can be caught in either direction.
+        if pageAnimator != nil { return true }
         // Leftward: Resim → Video. Rightward: Video → Resim (on Resim the drawer takes it).
         return velocity.x < 0 ? model.filter == .images : model.filter == .videos
     }
@@ -318,22 +323,28 @@ final class IOSMediaViewController: UIViewController, UICollectionViewDelegate, 
         let width = max(collection.bounds.width, 1)
         let dx = pan.translation(in: view).x
         switch pan.state {
+        case .began:
+            // Catch the page wherever it is (the slide stops there, no waiting for it to end).
+            panBase = interruptPaging()
         case .changed:
-            setPage(offset: dx)
-        case .ended:
-            let velocity = pan.velocity(in: view).x
-            let target: IOSMediaModel.Filter = dx < 0 ? .videos : .images
-            if target != model.filter, abs(dx) > width * 0.25 || abs(velocity) > 500 {
-                slide(to: target, from: dx)
-            } else {
-                UIView.animate(springDuration: 0.3, bounce: 0.15) { self.setPage(offset: 0) }
-            }
-        case .cancelled, .failed:
-            UIView.animate(springDuration: 0.3, bounce: 0.15) { self.setPage(offset: 0) }
+            var offset = panBase + dx
+            // Nothing beyond the two pages: resist past the ends.
+            if (model.filter == .images && offset > 0) || (model.filter == .videos && offset < 0) { offset *= 0.3 }
+            setPage(offset: offset)
+        case .ended, .cancelled, .failed:
+            let offset = panBase + dx
+            let velocity = pan.state == .ended ? pan.velocity(in: view).x : 0
+            var target = model.filter
+            if offset < -width * 0.25 || velocity < -500 { target = .videos }
+            if offset > width * 0.25 || velocity > 500 { target = .images }
+            slide(to: target, from: pageOffset)
         default:
             break
         }
     }
+
+    /// Where the page is now (the grid and its empty state move together).
+    private var pageOffset: CGFloat { collection.transform.tx }
 
     /// The page (the grid and its empty state) moved sideways by `offset`.
     private func setPage(offset: CGFloat) {
@@ -342,23 +353,57 @@ final class IOSMediaViewController: UIViewController, UICollectionViewDelegate, 
         emptyView.transform = move
     }
 
-    /// Slides the current page out and the other one in (from the side it lies on).
-    private func slide(to filter: IOSMediaModel.Filter, from offset: CGFloat = 0) {
-        guard filter != model.filter else { return }
+    /// Stops a running slide where it is on screen and returns that offset.
+    private func interruptPaging() -> CGFloat {
+        if let animator = pageAnimator {
+            pageAnimator = nil
+            animator.stopAnimation(false)
+            animator.finishAnimation(at: .current)
+        }
+        segmented.selectedSegmentIndex = model.filter == .videos ? 1 : 0
+        return pageOffset
+    }
+
+    /// Slides the page to `filter`: the current one out and the other in from its side, or back
+    /// into place when it stays. Interruptible at any moment (a new swipe or tap takes over).
+    private func slide(to filter: IOSMediaModel.Filter, from offset: CGFloat? = nil) {
+        let start = offset ?? interruptPaging()
+        if let animator = pageAnimator {
+            pageAnimator = nil
+            animator.stopAnimation(true)
+        }
         let width = max(collection.bounds.width, 1)
-        let direction: CGFloat = filter == .videos ? -1 : 1
         segmented.selectedSegmentIndex = filter == .videos ? 1 : 0
-        setPage(offset: offset)
-        UIView.animate(withDuration: 0.16, delay: 0, options: [.curveEaseIn]) {
-            self.setPage(offset: direction * width)
-        } completion: { _ in
+        setPage(offset: start)
+        guard filter != model.filter else {
+            let back = UIViewPropertyAnimator(duration: 0.3, dampingRatio: 0.85) { self.setPage(offset: 0) }
+            back.addCompletion { [weak self] position in
+                if position == .end, self?.pageAnimator === back { self?.pageAnimator = nil }
+            }
+            pageAnimator = back
+            back.startAnimation()
+            return
+        }
+        let direction: CGFloat = filter == .videos ? -1 : 1
+        let remaining = min(max(abs(direction * width - start) / width, 0.15), 1)
+        let out = UIViewPropertyAnimator(duration: 0.16 * remaining, curve: .easeIn) { self.setPage(offset: direction * width) }
+        out.addCompletion { [weak self] position in
+            // Stopped midway (caught by a swipe): the page stays where it is, nothing switches.
+            guard let self, position == .end, self.pageAnimator === out else { return }
             self.isPaging = true
             self.model.filter = filter
             self.render()
             self.isPaging = false
             self.setPage(offset: -direction * width)
-            UIView.animate(springDuration: 0.3, bounce: 0) { self.setPage(offset: 0) }
+            let into = UIViewPropertyAnimator(duration: 0.3, dampingRatio: 1) { self.setPage(offset: 0) }
+            into.addCompletion { [weak self] position in
+                if position == .end, self?.pageAnimator === into { self?.pageAnimator = nil }
+            }
+            self.pageAnimator = into
+            into.startAnimation()
         }
+        pageAnimator = out
+        out.startAnimation()
         Haptics.selection()
     }
 
