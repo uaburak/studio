@@ -301,6 +301,9 @@ private final class TitleMorph {
     private static let blurRadius: CGFloat = 7
 
     private let overlay = UIVisualEffectView(effect: nil)
+    /// Holds the glass and clips it to a fully round capsule. Clipping the glass itself was lost
+    /// while the pull-down scrubbed the animation (the corners went square).
+    private let shell = UIView()
     private let page: (sharp: UIImageView, blurred: UIImageView)?
     private let pillContent: (sharp: UIImageView, blurred: UIImageView)
     private let pageFrame: CGRect
@@ -365,12 +368,18 @@ private final class TitleMorph {
         overlay.layer.cornerRadius = radius
         overlay.layer.cornerCurve = .continuous
         overlay.clipsToBounds = true
+        overlay.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        shell.layer.cornerRadius = radius
+        shell.layer.cornerCurve = .continuous
+        shell.clipsToBounds = true
+        shell.isUserInteractionEnabled = false
+        shell.addSubview(overlay)
         overlay.contentView.clipsToBounds = true
         overlay.isUserInteractionEnabled = false
         for view in [page?.sharp, page?.blurred, pillContent.blurred, pillContent.sharp].compactMap({ $0 }) {
             overlay.contentView.addSubview(view)
         }
-        host.addSubview(overlay)
+        host.addSubview(shell)
         pageTitle?.isHidden = true
         pill.isHidden = true
     }
@@ -379,7 +388,7 @@ private final class TitleMorph {
     func setState(atPill: Bool) {
         UIView.performWithoutAnimation {
             place(atPill ? pillFrame : pageFrame)
-            overlay.transform = .identity
+            shell.transform = .identity
             page?.sharp.alpha = atPill ? 0 : 1
             page?.blurred.alpha = 0
             pillContent.sharp.alpha = atPill ? 1 : 0
@@ -403,9 +412,9 @@ private final class TitleMorph {
         // The glass: stretches to the new size, swelling on the way.
         UIView.addKeyframe(withRelativeStartTime: 0, relativeDuration: 1) { self.place(target) }
         UIView.addKeyframe(withRelativeStartTime: 0, relativeDuration: 0.45) {
-            self.overlay.transform = CGAffineTransform(scaleX: Self.swell, y: Self.swell)
+            self.shell.transform = CGAffineTransform(scaleX: Self.swell, y: Self.swell)
         }
-        UIView.addKeyframe(withRelativeStartTime: 0.45, relativeDuration: 0.55) { self.overlay.transform = .identity }
+        UIView.addKeyframe(withRelativeStartTime: 0.45, relativeDuration: 0.55) { self.shell.transform = .identity }
         if page == nil {
             UIView.addKeyframe(withRelativeStartTime: 0, relativeDuration: 0.6) {
                 self.overlay.effect = toPill ? UIGlassEffect(style: .regular) : nil
@@ -426,7 +435,7 @@ private final class TitleMorph {
     }
 
     func remove() {
-        overlay.removeFromSuperview()
+        shell.removeFromSuperview()
         pageTitle?.isHidden = false
         pill?.isHidden = false
     }
@@ -434,8 +443,9 @@ private final class TitleMorph {
     /// The capsule at `frame` (bounds and centre, so the swell transform stays separate); the
     /// content stays centred in it.
     private func place(_ frame: CGRect) {
-        overlay.bounds = CGRect(origin: .zero, size: frame.size)
-        overlay.center = CGPoint(x: frame.midX, y: frame.midY)
+        shell.bounds = CGRect(origin: .zero, size: frame.size)
+        shell.center = CGPoint(x: frame.midX, y: frame.midY)
+        overlay.frame = shell.bounds
         let middle = CGPoint(x: frame.width / 2, y: frame.height / 2)
         for view in [page?.sharp, page?.blurred, pillContent.sharp, pillContent.blurred].compactMap({ $0 }) {
             view.center = middle
