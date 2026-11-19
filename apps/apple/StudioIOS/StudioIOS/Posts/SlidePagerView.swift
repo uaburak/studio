@@ -299,19 +299,10 @@ enum ReelVideo {
         removeLeftovers()
         Task {
             do {
+                let stream = try await VideoStream.open(assetId, app: app)
                 let player = ReelPlayerViewController()
-                if app.isSample {
-                    let data = try await app.dataService.imageData(assetId: assetId)
-                    let url = FileManager.default.temporaryDirectory.appendingPathComponent("\(tempPrefix)\(UUID().uuidString).mp4")
-                    try data.write(to: url, options: .atomic)
-                    player.temporaryFile = url
-                    player.player = AVPlayer(url: url)
-                } else {
-                    let url = try app.client.assetContentURL(assetId)
-                    let loader = AuthenticatedMediaLoader(source: url, headers: try await app.client.authHeaders(), session: app.client.session)
-                    player.loader = loader
-                    player.player = AVPlayer(playerItem: AVPlayerItem(asset: loader.makeAsset()))
-                }
+                player.stream = stream
+                player.player = AVPlayer(playerItem: AVPlayerItem(asset: stream.asset))
                 presenter.present(player, animated: true) { player.player?.play() }
             } catch {
                 presenter.presentError(IOSAppModel.describe(error))
@@ -331,21 +322,16 @@ enum ReelVideo {
     }
 }
 
-/// The full-screen player: keeps the streaming loader alive while it plays and deletes a
-/// temporary file (sample data) when it closes.
+/// The full-screen player: keeps the stream alive while it plays and lets it go (a temporary
+/// file of sample data is deleted with it) when it closes.
 final class ReelPlayerViewController: AVPlayerViewController {
-    var loader: AuthenticatedMediaLoader?
-    var temporaryFile: URL?
+    var stream: VideoStream?
 
     override func viewDidDisappear(_ animated: Bool) {
         super.viewDidDisappear(animated)
         guard isBeingDismissed || presentingViewController == nil else { return }
         player?.pause()
         player?.replaceCurrentItem(with: nil)
-        loader = nil
-        if let temporaryFile {
-            try? FileManager.default.removeItem(at: temporaryFile)
-            self.temporaryFile = nil
-        }
+        stream = nil
     }
 }

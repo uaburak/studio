@@ -389,6 +389,8 @@ final class IOSImageStore {
     /// Pictures the phone itself picked (uploads), shown until the Mac's copy loads.
     @ObservationIgnored private let seeded = NSCache<NSString, UIImage>()
     @ObservationIgnored private var observers: [any NSObjectProtocol] = []
+    @ObservationIgnored private var phoneMade: Set<EntityID> = []
+    private var failedPhoneMade: Set<EntityID> = []
 
     /// About 80 MB of decoded pixels (a 1280×1600 slide is ~8 MB, a grid thumbnail ~1.6 MB).
     static let costLimit = 80 * 1024 * 1024
@@ -424,6 +426,27 @@ final class IOSImageStore {
         revisions[IOSImageKey(assetId), default: 0] += 1
     }
 
+    /// Marks an asset the Mac makes no thumbnail of (a video): it is never fetched here (the
+    /// thumbnail route would fall back to the whole file); the phone makes its picture and hands
+    /// it over with `store`, or reports with `phoneMadeFailed`.
+    func expectPhoneMade(_ assetId: EntityID) {
+        phoneMade.insert(assetId)
+    }
+
+    /// A picture the phone made for an asset the Mac has no thumbnail of (a video's poster frame).
+    /// Kept as the full-size copy, so every view bound to the asset, at any width, shows it.
+    func store(_ image: UIImage, for assetId: EntityID) {
+        let key = IOSImageKey(assetId)
+        cache.setObject(image, forKey: KeyBox(key), cost: Self.cost(image))
+        failedPhoneMade.remove(assetId)
+        revisions[key, default: 0] += 1
+    }
+
+    func phoneMadeFailed(_ assetId: EntityID) {
+        guard phoneMade.contains(assetId) else { return }
+        failedPhoneMade.insert(assetId)
+    }
+
     /// The picture at `width` px (nil: full size); a seeded or larger cached copy stands in.
     func image(_ assetId: EntityID, width: Int? = nil) -> UIImage? {
         let key = IOSImageKey(assetId, width: width)
@@ -445,13 +468,13 @@ final class IOSImageStore {
     }
 
     func hasFailed(_ assetId: EntityID, width: Int? = nil) -> Bool {
-        failed.contains(IOSImageKey(assetId, width: width))
+        failed.contains(IOSImageKey(assetId, width: width)) || failedPhoneMade.contains(assetId)
     }
 
     func load(_ assetId: EntityID, width: Int? = nil) {
         let key = IOSImageKey(assetId, width: width)
         guard cache.object(forKey: KeyBox(key)) == nil, !loading.contains(key), !failed.contains(key),
-              let service = app?.dataService else { return }
+              !phoneMade.contains(assetId), let service = app?.dataService else { return }
         loading.insert(key)
         Task {
             defer { loading.remove(key) }
@@ -475,12 +498,16 @@ final class IOSImageStore {
     }
 
     /// Retry images that failed (e.g. after reconnecting).
-    func retryFailed() { failed = [] }
+    func retryFailed() {
+        failed = []
+        failedPhoneMade = []
+    }
 
     func clear() {
         purge()
         revisions = [:]
         failed = []
+        failedPhoneMade = []
     }
 
     static func cost(_ image: UIImage) -> Int {

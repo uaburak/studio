@@ -1,13 +1,16 @@
+import AVFoundation
 import StudioKit
 import UIKit
 
-/// One picture of a viewer group.
+/// One picture (or video) of a viewer group.
 struct PhotoViewerItem {
     var assetId: EntityID
     var title: String
     /// Second line of the title pill (a date, a file name).
     var subtitle: String?
     var aspect: CGFloat?
+    /// A video: its page shows the poster frame, then plays inline with the playback capsule.
+    var isVideo = false
 }
 
 extension PhotoViewerItem {
@@ -41,9 +44,10 @@ struct PhotoViewerBar {
 /// Full-screen picture viewer used everywhere a picture opens, like Photos: the picture zooms out
 /// of its thumbnail (iOS zoom transition), swipe pages through the group, a strip of the group's
 /// pictures sits above the toolbar (share at the left, the picture's own action at the right),
-/// pinch / double-tap zooms, a drag down closes it, a tap hides the controls.
+/// pinch / double-tap zooms, a drag down closes it, a tap hides the controls. A video opens the
+/// same way on its poster frame and plays in place, with Photos' playback capsule above the strip.
 final class PhotoViewerViewController: UIViewController, UICollectionViewDelegate, UICollectionViewDataSource, UICollectionViewDelegateFlowLayout, UIGestureRecognizerDelegate {
-    private let images: IOSImageStore
+    let images: IOSImageStore
     private(set) var items: [PhotoViewerItem]
     private(set) var index: Int
     private let sourceFor: (Int) -> UIView?
@@ -105,6 +109,20 @@ final class PhotoViewerViewController: UIViewController, UICollectionViewDelegat
     private var zoomHidden = false
     private let singleTap = UITapGestureRecognizer()
     private var laidOutWidth: CGFloat = 0
+
+    /// The video playing on the shown page (nil on a picture).
+    private var playback: VideoPlayback?
+    /// Sound off, kept from one video to the next (as in Photos).
+    private var muted = false
+    /// Play / pause, scrubber and sound above the strip; only on a video page.
+    private let videoControls = VideoControlsView()
+    private var videoControlsBottom: NSLayoutConstraint?
+    /// The scrubber took the video while it was playing (it plays on when let go).
+    private var playingBeforeScrub = false
+    /// It was playing when the viewer went out of sight (it plays on when back).
+    private var playingBeforeDisappear = true
+    /// Videos whose poster frame has been asked for.
+    private var postersAsked: Set<EntityID> = []
     /// Where the strip stands, in pictures (2.4 = 40 % from the third to the fourth). While a
     /// page is dragged it follows the finger, so the squares grow and shrink with it.
     private var stripPosition: CGFloat = 0
@@ -172,6 +190,8 @@ final class PhotoViewerViewController: UIViewController, UICollectionViewDelegat
         super.viewDidLoad()
         view.backgroundColor = Self.backdrop
         view.addGestureRecognizer(dismissPan)
+        // A video's picture is its poster frame, made here (never the Mac's thumbnail route).
+        for item in items where item.isVideo { images.expectPhoneMade(item.assetId) }
 
         pagerLayout.scrollDirection = .horizontal
         pagerLayout.minimumLineSpacing = 0
@@ -229,6 +249,7 @@ final class PhotoViewerViewController: UIViewController, UICollectionViewDelegat
             strip.topAnchor.constraint(equalTo: stripHolder.topAnchor),
             strip.bottomAnchor.constraint(equalTo: stripHolder.bottomAnchor),
         ])
+        setUpVideoControls()
         refreshChrome()
     }
 
@@ -240,6 +261,7 @@ final class PhotoViewerViewController: UIViewController, UICollectionViewDelegat
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
         openingDidFinish()
+        updatePlayback(resume: playingBeforeDisappear)
 
         // Closing is only the downward drag: no edge or full-width swipe back.
         guard let navigation = navigationController, pausedPopGestures.isEmpty else { return }
@@ -252,12 +274,22 @@ final class PhotoViewerViewController: UIViewController, UICollectionViewDelegat
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
 
+        playingBeforeDisappear = playback?.isPlaying ?? false
+        playback?.pause()
         for gesture in pausedPopGestures { gesture.isEnabled = true }
         pausedPopGestures = []
         if chromeHidden { navigationController?.setNavigationBarHidden(false, animated: animated) }
         // The page underneath may have its own toolbar (Medya); otherwise the toolbar goes.
         if navigationController?.topViewController?.toolbarItems?.isEmpty ?? true {
             navigationController?.setToolbarHidden(true, animated: animated)
+        }
+    }
+
+    override func viewDidDisappear(_ animated: Bool) {
+        super.viewDidDisappear(animated)
+        // Gone for good (not just covered): the video and its stream go too.
+        if isMovingFromParent || isBeingDismissed || navigationController?.isBeingDismissed == true {
+            stopPlayback()
         }
     }
 
@@ -274,6 +306,10 @@ final class PhotoViewerViewController: UIViewController, UICollectionViewDelegat
 
     /// The shown picture as loaded (the flying copy in the transition).
     var shownImage: UIImage? {
+        // A video flies home as the frame on screen.
+        if let playback, items.indices.contains(index), playback.assetId == items[index].assetId, let frame = playback.currentFrame() {
+            return frame
+        }
         if let cell = pager.cellForItem(at: IndexPath(item: index, section: 0)) as? PhotoPageCell, let image = cell.image {
             return image
         }
@@ -316,6 +352,11 @@ final class PhotoViewerViewController: UIViewController, UICollectionViewDelegat
     /// taking touches.
     func setContentHidden(_ hidden: Bool) {
         pager.alpha = hidden ? 0 : 1
+        if hidden {
+            videoControls.alpha = 0
+        } else {
+            UIView.animate(withDuration: 0.2) { self.videoControls.alpha = self.chromeHidden ? 0 : 1 }
+        }
         view.backgroundColor = hidden ? .clear : (chromeHidden || zoomHidden ? .black : Self.backdrop)
     }
 
@@ -389,6 +430,12 @@ final class PhotoViewerViewController: UIViewController, UICollectionViewDelegat
         return cell.zoom.zoomScale <= 1.01
     }
 
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+        // Dragging the scrubber is not a pull to close.
+        guard gestureRecognizer === dismissPan, let touched = touch.view else { return true }
+        return !touched.isDescendant(of: videoControls)
+    }
+
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
         gestureRecognizer === dismissPan
     }
@@ -403,14 +450,20 @@ final class PhotoViewerViewController: UIViewController, UICollectionViewDelegat
         let bounds = view.window?.bounds ?? navigationController?.view.bounds ?? view.bounds
         let area = bounds.inset(by: pageInsets())
         guard items.indices.contains(index), area.width > 0, area.height > 0 else { return bounds }
-        var aspect = items[index].aspect ?? 0
-        if aspect <= 0, let cached = images.anyCached(items[index].assetId), cached.size.height > 0 {
-            aspect = cached.size.width / cached.size.height
-        }
+        var aspect = Self.aspect(of: items[index], images: images) ?? 0
         if aspect <= 0 { aspect = 4.0 / 5.0 }
         let width = min(area.width, area.height * aspect)
         let height = width / aspect
         return CGRect(x: area.midX - width / 2, y: area.midY - height / 2, width: width, height: height)
+    }
+
+    /// The shape a page fits: a video's own poster frame first (it is the right way up, the
+    /// stored size may not be), else the given aspect, else the cached picture's.
+    fileprivate static func aspect(of item: PhotoViewerItem, images: IOSImageStore) -> CGFloat? {
+        let cached = images.anyCached(item.assetId)
+        let cachedAspect = cached.flatMap { $0.size.height > 0 ? $0.size.width / $0.size.height : nil }
+        if item.isVideo, let cachedAspect { return cachedAspect }
+        return item.aspect ?? cachedAspect
     }
 
     /// The screen's safe area, read once and then kept. The zoom transition changes the view's
@@ -444,6 +497,7 @@ final class PhotoViewerViewController: UIViewController, UICollectionViewDelegat
         // The strip's first and last picture can sit in the middle.
         let stripWidth = Self.stripWidth(for: view.bounds.width)
         self.stripWidth?.constant = stripWidth
+        videoControlsBottom?.constant = -Self.videoControlsLift(screenSafeArea)
         let side = max(0, (stripWidth - Self.activeWidth) / 2)
         stripLayout.sectionInset = UIEdgeInsets(top: 0, left: side, bottom: 0, right: side)
         pagerLayout.itemSize = pager.bounds.size
@@ -529,6 +583,7 @@ final class PhotoViewerViewController: UIViewController, UICollectionViewDelegat
         UIView.animate(withDuration: 0.2) {
             // Zoomed in, only the picture strip steps aside; the other buttons stay.
             self.stripHolder.alpha = self.zoomHidden ? 0 : 1
+            self.videoControls.alpha = hidden ? 0 : 1
             self.view.backgroundColor = hidden || self.zoomHidden ? .black : Self.backdrop
             self.setNeedsStatusBarAppearanceUpdate()
         }
@@ -544,6 +599,7 @@ final class PhotoViewerViewController: UIViewController, UICollectionViewDelegat
         index = newIndex
         zoomChanged(1)
         refreshChrome()
+        updatePlayback()
         setStripPosition(CGFloat(newIndex), animated: true)
         centerStrip(animated: true)
         Haptics.selection()
@@ -552,12 +608,151 @@ final class PhotoViewerViewController: UIViewController, UICollectionViewDelegat
     private func share() {
         guard items.indices.contains(index) else { return }
         let assetId = items[index].assetId
+        if items[index].isVideo {
+            shareVideo(items[index])
+            return
+        }
         Task {
             guard let data = await images.data(assetId), let image = UIImage(data: data) else {
                 presentError("Görsel indirilemedi.")
                 return
             }
             FileSharing.share([image], from: self)
+        }
+    }
+
+    // MARK: Video
+
+    /// The capsule sits just above the toolbar (and its strip), clear of it by the same gap the
+    /// toolbar keeps from the picture.
+    private static func videoControlsLift(_ safe: UIEdgeInsets) -> CGFloat {
+        safe.bottom + 50 + 10
+    }
+
+    private func setUpVideoControls() {
+        videoControls.translatesAutoresizingMaskIntoConstraints = false
+        videoControls.isHidden = true
+        view.addSubview(videoControls)
+        let bottom = videoControls.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -Self.videoControlsLift(screenSafeArea))
+        videoControlsBottom = bottom
+        NSLayoutConstraint.activate([
+            bottom,
+            videoControls.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 20),
+            videoControls.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -20),
+        ])
+        videoControls.onPlay = { [weak self] in
+            self?.playback?.togglePlay()
+            self?.refreshVideoControls()
+        }
+        videoControls.onMute = { [weak self] in
+            guard let self else { return }
+            self.muted.toggle()
+            self.playback?.player.isMuted = self.muted
+            self.refreshVideoControls()
+        }
+        videoControls.onScrubBegan = { [weak self] in
+            guard let self, let playback = self.playback else { return }
+            self.playingBeforeScrub = playback.isPlaying
+            playback.pause()
+        }
+        videoControls.onScrub = { [weak self] fraction in self?.playback?.scrub(to: fraction) }
+        videoControls.onScrubEnded = { [weak self] in
+            guard let self else { return }
+            if self.playingBeforeScrub { self.playback?.play() }
+            self.playingBeforeScrub = false
+            self.refreshVideoControls()
+        }
+    }
+
+    private func refreshVideoControls() {
+        videoControls.set(playing: playback?.isPlaying ?? false, muted: muted, progress: playback?.progress ?? 0)
+    }
+
+    /// The shown page plays if it is a video (autoplay, as in Photos) and any other video stops.
+    /// Waits for the opening flight to land; `resume` plays on a video that was only paused.
+    private func updatePlayback(resume: Bool = true) {
+        let item = items.indices.contains(index) ? items[index] : nil
+        videoControls.isHidden = !(item?.isVideo ?? false)
+        guard let item, item.isVideo, view.window != nil, !isOpening, let app = images.app else {
+            stopPlayback()
+            return
+        }
+        if let playback, playback.assetId == item.assetId {
+            if resume { playback.play() }
+            refreshVideoControls()
+            return
+        }
+        stopPlayback()
+        let playback = VideoPlayback(assetId: item.assetId)
+        playback.player.isMuted = muted
+        playback.onChange = { [weak self] in self?.refreshVideoControls() }
+        self.playback = playback
+        attachPlayer()
+        refreshVideoControls()
+        Task { [weak self] in
+            do {
+                try await playback.start(app: app)
+            } catch {
+                guard let self, self.playback === playback else { return }
+                self.presentError(IOSAppModel.describe(error))
+                return
+            }
+            guard let self, self.playback === playback, self.view.window != nil else {
+                playback.stop()
+                return
+            }
+            playback.play()
+            self.refreshVideoControls()
+        }
+    }
+
+    private func stopPlayback() {
+        playback?.stop()
+        playback = nil
+        attachPlayer()
+        refreshVideoControls()
+    }
+
+    /// The player goes on the shown page only (the others show their poster).
+    private func attachPlayer() {
+        for case let cell as PhotoPageCell in pager.visibleCells {
+            let shown = pager.indexPath(for: cell)?.item == index
+            cell.attach(shown ? playback?.player : nil)
+        }
+    }
+
+    /// Makes a video's poster frame once (the Mac has no thumbnail of a video); a page that had
+    /// no shape yet takes the poster's.
+    private func askPoster(_ item: PhotoViewerItem) {
+        guard images.anyCached(item.assetId) == nil, postersAsked.insert(item.assetId).inserted else { return }
+        Task { [weak self] in
+            guard let images = self?.images, let poster = await VideoPosters.load(item.assetId, images: images),
+                  let self, poster.size.height > 0 else { return }
+            for case let cell as PhotoPageCell in self.pager.visibleCells {
+                guard let path = self.pager.indexPath(for: cell), self.items[path.item].assetId == item.assetId else { continue }
+                cell.zoom.aspect = poster.size.width / poster.size.height
+            }
+        }
+    }
+
+    /// A video is shared as its file (written to a temporary folder for the share sheet).
+    private func shareVideo(_ item: PhotoViewerItem) {
+        Task {
+            guard let data = await images.data(item.assetId) else {
+                presentError("Video indirilemedi.")
+                return
+            }
+            var name = item.title.replacingOccurrences(of: "/", with: "-")
+            if (name as NSString).pathExtension.isEmpty { name += ".mp4" }
+            do {
+                let folder = FileManager.default.temporaryDirectory.appendingPathComponent("studio-share-\(UUID().uuidString)", isDirectory: true)
+                try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+                let url = folder.appendingPathComponent(name)
+                try data.write(to: url, options: .atomic)
+                FileSharing.share([url], from: self)
+            } catch {
+                presentError(IOSAppModel.describe(error))
+            }
         }
     }
 
@@ -571,6 +766,10 @@ final class PhotoViewerViewController: UIViewController, UICollectionViewDelegat
             let cell = collectionView.dequeueReusableCell(withReuseIdentifier: "page", for: indexPath) as! PhotoPageCell
             singleTap.require(toFail: cell.zoom.doubleTapGesture)
             cell.configure(item, images: images, insets: pageInsets(), radius: chromeHidden ? 0 : Self.pictureRadius)
+            if item.isVideo {
+                askPoster(item)
+                if let playback, playback.assetId == item.assetId, indexPath.item == index { cell.attach(playback.player) }
+            }
             cell.zoom.onZoomChange = { [weak self, weak cell] scale in
                 guard let self, let cell, self.pager.indexPath(for: cell)?.item == self.index else { return }
                 self.zoomChanged(scale)
@@ -578,6 +777,7 @@ final class PhotoViewerViewController: UIViewController, UICollectionViewDelegat
             return cell
         }
         let cell = collectionView.dequeueReusableCell(withReuseIdentifier: "strip", for: indexPath) as! PhotoStripCell
+        if item.isVideo { askPoster(item) }
         cell.configure(item, images: images, selected: indexPath.item == index)
         return cell
     }
@@ -603,6 +803,7 @@ final class PhotoViewerViewController: UIViewController, UICollectionViewDelegat
         index = newIndex
         zoomChanged(1)
         refreshChrome()
+        updatePlayback()
         Haptics.selection()
     }
 
@@ -685,6 +886,8 @@ final class PhotoViewerViewController: UIViewController, UICollectionViewDelegat
 private final class PhotoPageCell: UICollectionViewCell {
     let zoom = ZoomableView()
     private var imageView: IOSAssetImageView?
+    /// A video page's picture: over the poster, clear until its first frame.
+    private let playerView = PlayerLayerView()
     override init(frame: CGRect) {
         super.init(frame: frame)
         zoom.translatesAutoresizingMaskIntoConstraints = false
@@ -697,6 +900,12 @@ private final class PhotoPageCell: UICollectionViewCell {
     override func prepareForReuse() {
         super.prepareForReuse()
         zoom.setZoomScale(1, animated: false)
+        playerView.player = nil
+    }
+
+    /// Shows `player` on this page (nil: only the poster).
+    func attach(_ player: AVPlayer?) {
+        playerView.player = player
     }
 
     var image: UIImage? { imageView?.image }
@@ -721,10 +930,14 @@ private final class PhotoPageCell: UICollectionViewCell {
         zoom.content.addSubview(view)
         view.pin(to: zoom.content)
         imageView = view
-        if let aspect = item.aspect {
+        playerView.player = nil
+        playerView.removeFromSuperview()
+        if item.isVideo {
+            zoom.content.addSubview(playerView)
+            playerView.pin(to: zoom.content)
+        }
+        if let aspect = PhotoViewerViewController.aspect(of: item, images: images) {
             zoom.aspect = aspect
-        } else if let cached, cached.size.height > 0 {
-            zoom.aspect = cached.size.width / cached.size.height
         }
     }
 }
