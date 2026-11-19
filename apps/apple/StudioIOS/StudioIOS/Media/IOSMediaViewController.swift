@@ -212,6 +212,8 @@ final class IOSMediaViewController: UIViewController, UICollectionViewDelegate, 
     private let uploadsStack = UIStackView.v([], spacing: 6)
     private let emptyView = EmptyStateView()
     private var collection: UICollectionView!
+    /// Draws the toolbar's soft edge over whatever page is showing (see viewDidLoad).
+    private let bottomEdge = UIScrollView()
     private var dataSource: UICollectionViewDiffableDataSource<Int, EntityID>!
     private var assetsById: [EntityID: Asset] = [:]
     private var lastBrandId: EntityID?
@@ -259,9 +261,19 @@ final class IOSMediaViewController: UIViewController, UICollectionViewDelegate, 
         collection.panGestureRecognizer.require(toFail: pagePan)
         // The same soft edge as the chat: pictures fade out under the navigation bar and the toolbar.
         collection.topEdgeEffect.style = .soft
-        collection.bottomEdgeEffect.style = .soft
         setContentScrollView(collection, for: .top)
-        setContentScrollView(collection, for: .bottom)
+        // The bottom edge stays put: the grid's own effect would slide sideways with the page and
+        // vanish on a page too short to scroll (Video with three videos), so a still, empty,
+        // never-touched scroll view in front draws it, always "scrolled" into the toolbar.
+        collection.bottomEdgeEffect.isHidden = true
+        bottomEdge.isUserInteractionEnabled = false
+        bottomEdge.backgroundColor = .clear
+        bottomEdge.contentInsetAdjustmentBehavior = .never
+        bottomEdge.showsVerticalScrollIndicator = false
+        bottomEdge.topEdgeEffect.isHidden = true
+        bottomEdge.bottomEdgeEffect.style = .soft
+        bottomEdge.translatesAutoresizingMaskIntoConstraints = false
+        setContentScrollView(bottomEdge, for: .bottom)
         let refresh = UIRefreshControl()
         refresh.addAction(UIAction { [weak self, weak refresh] _ in
             Task { await self?.model.load(); refresh?.endRefreshing() }
@@ -278,8 +290,10 @@ final class IOSMediaViewController: UIViewController, UICollectionViewDelegate, 
         emptyView.translatesAutoresizingMaskIntoConstraints = false
         let top = UIStackView.v([uploadsStack], spacing: 10)
         view.addSubview(collection)
+        view.addSubview(bottomEdge)
         view.addSubview(top)
         view.addSubview(emptyView)
+        bottomEdge.pin(to: view)
         NSLayoutConstraint.activate([
             top.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 8),
             top.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: IOSTheme.gutter),
@@ -299,6 +313,8 @@ final class IOSMediaViewController: UIViewController, UICollectionViewDelegate, 
 
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
+        // Taller than itself, resting at the top: there is always "more" below the toolbar.
+        bottomEdge.contentSize = CGSize(width: view.bounds.width, height: view.bounds.height + 200)
         // Upload rows sit over the top of the grid; the grid starts below them and scrolls under
         // the navigation bar.
         let rows = uploadsStack.arrangedSubviews.isEmpty ? 0 : uploadsStack.frame.height + 18
@@ -548,13 +564,13 @@ final class IOSMediaViewController: UIViewController, UICollectionViewDelegate, 
             completion(self?.filterMenuElements() ?? [])
         }])
 
-        // Toolbar: the tag filter at the left, search at the right. Search is the system's
-        // toolbar search: a round button that grows into a field above the keyboard.
+        // Toolbar: the tag filter at the left, the search field filling the middle. Search is
+        // the system's toolbar search: the field rises above the keyboard while typing.
         searchController.obscuresBackgroundDuringPresentation = false
         searchController.searchBar.placeholder = "Medyada ara"
         searchController.searchResultsUpdater = self
         navigationItem.searchController = searchController
-        navigationItem.preferredSearchBarPlacement = .integratedButton
+        navigationItem.preferredSearchBarPlacement = .integrated
         navigationItem.searchBarPlacementAllowsToolbarIntegration = true
         let searchItem = navigationItem.searchBarPlacementBarButtonItem
         setToolbarItems([filterItem, .flexibleSpace(), searchItem], animated: false)

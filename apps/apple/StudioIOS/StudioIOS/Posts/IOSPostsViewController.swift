@@ -447,12 +447,31 @@ final class IOSPostsViewController: UIViewController, UICollectionViewDelegate, 
         neighborSide = 0
     }
 
+    /// Stops a running slide where it is on screen and returns the page's offset. A slide caught
+    /// on its way to another tab hands over to that tab at once (its page becomes the current
+    /// one, at the same spot on screen), so a quick second swipe carries on from there: from
+    /// Hikâye through Reels to Gönderiler without stopping at Reels.
     private func interruptPaging() -> CGFloat {
         if let animator = pageAnimator {
             pageAnimator = nil
             animator.stopAnimation(false)
             animator.finishAnimation(at: .current)
             setPage(offset: pageTracker.transform.tx)
+            if let target = pageTarget, target != currentTab, neighborTab == target {
+                let onScreen = pageOffset - neighborSide * (collectionView.bounds.width + pageGap)
+                let previous = currentTab
+                pageTarget = nil
+                isPaging = true
+                currentTab = target
+                collectionView.collectionViewLayout.invalidateLayout()
+                render()
+                collectionView.layoutIfNeeded()
+                isPaging = false
+                dropNeighbor()
+                // The page it left stays beside it (also after a jump over two tabs).
+                if onScreen != 0 { showNeighbor(previous, side: onScreen < 0 ? -1 : 1) }
+                setPage(offset: onScreen)
+            }
         }
         tabs.select(currentTab, animated: true)
         return pageOffset
