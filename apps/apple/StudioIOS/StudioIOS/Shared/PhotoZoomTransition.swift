@@ -45,19 +45,19 @@ final class PhotoZoomTransition: NSObject, UIViewControllerAnimatedTransitioning
         switch operation {
         case .push:
             let target = viewer.pictureRect(in: transitionContext.containerView)
+            titleMorph?.animate(toPill: true)
             UIView.animate(springDuration: duration, bounce: 0.12) {
                 setup.flyer.frame = target
                 setup.flyer.layer.cornerRadius = viewer.restingRadius
                 setup.backdrop.alpha = 1
-                self.titleMorph?.apply(atPill: true)
             } completion: { _ in
                 self.finish(true)
             }
         case .pop:
+            titleMorph?.animate(toPill: false)
             UIView.animate(springDuration: duration, bounce: 0) {
                 self.flyHome(setup.flyer)
                 setup.backdrop.alpha = 0
-                self.titleMorph?.apply(atPill: false)
             } completion: { _ in
                 self.finish(true)
             }
@@ -73,7 +73,9 @@ final class PhotoZoomTransition: NSObject, UIViewControllerAnimatedTransitioning
             return
         }
         if let titleMorph {
-            let scrub = UIViewPropertyAnimator(duration: 1, curve: .linear) { titleMorph.apply(atPill: false) }
+            let scrub = UIViewPropertyAnimator(duration: 1, curve: .linear) {
+                UIView.animateKeyframes(withDuration: 0, delay: 0, options: [.calculationModeCubic]) { titleMorph.keyframes(toPill: false) }
+            }
             scrub.pausesOnCompletion = true
             scrub.pauseAnimation()
             titleScrub = scrub
@@ -182,7 +184,7 @@ final class PhotoZoomTransition: NSObject, UIViewControllerAnimatedTransitioning
         let page = operation == .push ? transitionContext.viewController(forKey: .from) : toController
         if let navigation = viewer.navigationController {
             titleMorph = TitleMorph(pageTitle: page?.navigationItem.titleView, pill: viewer.titlePill, navigation: navigation)
-            titleMorph?.apply(atPill: operation == .pop)
+            titleMorph?.setState(atPill: operation == .pop)
         }
         // The thumbnail's spot stays empty while its picture is away (Photos does the same).
         source?.alpha = 0
@@ -279,15 +281,26 @@ final class PhotoViewerNavigationDelegate: NSObject, UINavigationControllerDeleg
     }
 }
 
-/// A glass capsule laid over the navigation bar for the length of a transition: it starts as the
-/// page's title (a copy of Medya's segmented control) and stretches into the viewer's name pill,
-/// the two contents cross-fading, or the reverse. Without a page title it simply materialises
-/// into the pill. The real title views stay hidden meanwhile.
+/// A glass capsule laid over the navigation bar for the length of a transition, doing what the
+/// bar does to its own buttons (measured from a recording of a push in dark mode, 60 fps):
+/// - the glass stretches to the new width on a spring and swells by about 10 % on the way;
+/// - the old content blurs out (about 0.1 s) and the new one comes in blurred and sharpens
+///   (about 0.17 s), the two overlapping briefly in the middle;
+/// - about 0.33 s in all.
+/// It starts as the page's title (a copy of Medya's segmented control) and ends as the viewer's
+/// name pill, or the reverse. Without a page title it simply materialises into the pill. The real
+/// title views stay hidden meanwhile.
 @MainActor
 private final class TitleMorph {
+    static let duration: TimeInterval = 0.36
+    /// The page title as last seen on screen (a pop starts while it is off screen).
+    private static var lastTitleImage: (title: ObjectIdentifier, image: UIImage)?
+    private static let swell: CGFloat = 1.1
+    private static let blurRadius: CGFloat = 7
+
     private let overlay = UIVisualEffectView(effect: nil)
-    private let pageContent: UIView?
-    private let pillContent: UIView
+    private let page: (sharp: UIImageView, blurred: UIImageView)?
+    private let pillContent: (sharp: UIImageView, blurred: UIImageView)
     private let pageFrame: CGRect
     private let pillFrame: CGRect
     private weak var pageTitle: UIView?
@@ -303,49 +316,140 @@ private final class TitleMorph {
         if pillSize.width < 1 || pillSize.height < 1 { pillSize = CGSize(width: 180, height: 44) }
         pillFrame = CGRect(x: center.x - pillSize.width / 2, y: center.y - pillSize.height / 2, width: pillSize.width, height: pillSize.height)
 
-        if let pageTitle, let copy = Self.copy(of: pageTitle) {
+        if let pageTitle {
             var size = pageTitle.bounds.size
             if size.width < 1 { size = pageTitle.systemLayoutSizeFitting(UIView.layoutFittingCompressedSize) }
             pageFrame = CGRect(x: center.x - size.width / 2, y: center.y - size.height / 2, width: size.width, height: size.height)
-            copy.frame = CGRect(origin: .zero, size: size)
-            pageContent = copy
+            page = Self.images(from: Self.picture(of: pageTitle, size: size), size: size)
         } else {
             pageFrame = pillFrame
-            pageContent = nil
+            page = nil
         }
-        pillContent = pill.contentCopy()
-        pillContent.frame = CGRect(origin: .zero, size: pillSize)
+        let pillCopy = pill.contentCopy()
+        pillCopy.frame = CGRect(origin: .zero, size: pillSize)
+        pillCopy.layoutIfNeeded()
+        let pillPicture = UIGraphicsImageRenderer(size: pillSize).image { pillCopy.layer.render(in: $0.cgContext) }
+        pillContent = Self.images(from: pillPicture, size: pillSize)
         self.pageTitle = pageTitle
         self.pill = pill
 
         overlay.cornerConfiguration = .capsule()
-        // The wider content (the segmented copy) is cut to the capsule as it narrows.
         overlay.clipsToBounds = true
         overlay.contentView.clipsToBounds = true
         overlay.isUserInteractionEnabled = false
-        if let pageContent { overlay.contentView.addSubview(pageContent) }
-        overlay.contentView.addSubview(pillContent)
+        for view in [page?.sharp, page?.blurred, pillContent.blurred, pillContent.sharp].compactMap({ $0 }) {
+            overlay.contentView.addSubview(view)
+        }
         host.addSubview(overlay)
         pageTitle?.isHidden = true
         pill.isHidden = true
     }
 
-    /// Call inside an animation: the capsule at the pill (true) or at the page's title (false).
-    func apply(atPill: Bool) {
-        let frame = atPill ? pillFrame : pageFrame
-        overlay.frame = frame
-        let middle = CGPoint(x: frame.width / 2, y: frame.height / 2)
-        pageContent?.center = middle
-        pillContent.center = middle
-        pillContent.alpha = atPill ? 1 : 0
-        pageContent?.alpha = atPill ? 0 : 1
-        overlay.effect = atPill || pageContent != nil ? UIGlassEffect(style: .regular) : nil
+    /// Where the transition starts, without animation.
+    func setState(atPill: Bool) {
+        UIView.performWithoutAnimation {
+            place(atPill ? pillFrame : pageFrame)
+            overlay.transform = .identity
+            page?.sharp.alpha = atPill ? 0 : 1
+            page?.blurred.alpha = 0
+            pillContent.sharp.alpha = atPill ? 1 : 0
+            pillContent.blurred.alpha = 0
+            overlay.effect = atPill || page != nil ? UIGlassEffect(style: .regular) : nil
+        }
+    }
+
+    /// The bar's own change, run on its own clock (push, pop by the back button).
+    func animate(toPill: Bool) {
+        UIView.animateKeyframes(withDuration: Self.duration, delay: 0, options: [.calculationModeCubic]) {
+            self.keyframes(toPill: toPill)
+        }
+    }
+
+    /// The keyframes of the change; also scrubbed by the pull-down close.
+    func keyframes(toPill: Bool) {
+        let from = toPill ? page : pillContent
+        let to = toPill ? pillContent : page
+        let target = toPill ? pillFrame : pageFrame
+        // The glass: stretches to the new size, swelling on the way.
+        UIView.addKeyframe(withRelativeStartTime: 0, relativeDuration: 1) { self.place(target) }
+        UIView.addKeyframe(withRelativeStartTime: 0, relativeDuration: 0.45) {
+            self.overlay.transform = CGAffineTransform(scaleX: Self.swell, y: Self.swell)
+        }
+        UIView.addKeyframe(withRelativeStartTime: 0.45, relativeDuration: 0.55) { self.overlay.transform = .identity }
+        if page == nil {
+            UIView.addKeyframe(withRelativeStartTime: 0, relativeDuration: 0.6) {
+                self.overlay.effect = toPill ? UIGlassEffect(style: .regular) : nil
+            }
+        }
+        // The old content blurs out.
+        UIView.addKeyframe(withRelativeStartTime: 0, relativeDuration: 0.25) {
+            from?.sharp.alpha = 0
+            from?.blurred.alpha = 1
+        }
+        UIView.addKeyframe(withRelativeStartTime: 0.2, relativeDuration: 0.2) { from?.blurred.alpha = 0 }
+        // The new one comes in blurred and sharpens.
+        UIView.addKeyframe(withRelativeStartTime: 0.3, relativeDuration: 0.2) { to?.blurred.alpha = 1 }
+        UIView.addKeyframe(withRelativeStartTime: 0.45, relativeDuration: 0.4) {
+            to?.blurred.alpha = 0
+            to?.sharp.alpha = 1
+        }
     }
 
     func remove() {
         overlay.removeFromSuperview()
         pageTitle?.isHidden = false
         pill?.isHidden = false
+    }
+
+    /// The capsule at `frame` (bounds and centre, so the swell transform stays separate); the
+    /// content stays centred in it.
+    private func place(_ frame: CGRect) {
+        overlay.bounds = CGRect(origin: .zero, size: frame.size)
+        overlay.center = CGPoint(x: frame.midX, y: frame.midY)
+        let middle = CGPoint(x: frame.width / 2, y: frame.height / 2)
+        for view in [page?.sharp, page?.blurred, pillContent.sharp, pillContent.blurred].compactMap({ $0 }) {
+            view.center = middle
+        }
+    }
+
+    /// The page's title exactly as drawn on screen (Medya's segmented control in its real colours);
+    /// remembered for the pop, which starts while it is off screen. A rebuilt copy is the fallback.
+    private static func picture(of title: UIView, size: CGSize) -> UIImage {
+        let renderer = UIGraphicsImageRenderer(size: size)
+        if title.window != nil {
+            let image = renderer.image { _ in title.drawHierarchy(in: CGRect(origin: .zero, size: size), afterScreenUpdates: false) }
+            lastTitleImage = (ObjectIdentifier(title), image)
+            return image
+        }
+        if let last = lastTitleImage, last.title == ObjectIdentifier(title) { return last.image }
+        let copy = copy(of: title) ?? UIView()
+        copy.frame = CGRect(origin: .zero, size: size)
+        copy.layoutIfNeeded()
+        return renderer.image { copy.layer.render(in: $0.cgContext) }
+    }
+
+    /// A content as two still images: sharp, and blurred with room for the blur to spread.
+    private static func images(from sharp: UIImage, size: CGSize) -> (sharp: UIImageView, blurred: UIImageView) {
+        let sharpView = UIImageView(image: sharp)
+        sharpView.frame = CGRect(origin: .zero, size: size)
+        let pad = blurRadius * 3
+        let blurredView = UIImageView(image: blurred(sharp, pad: pad))
+        blurredView.frame = CGRect(x: 0, y: 0, width: size.width + pad * 2, height: size.height + pad * 2)
+        blurredView.alpha = 0
+        return (sharpView, blurredView)
+    }
+
+    private static func blurred(_ image: UIImage, pad: CGFloat) -> UIImage? {
+        let scale = image.scale
+        let padded = UIGraphicsImageRenderer(size: CGSize(width: image.size.width + pad * 2, height: image.size.height + pad * 2)).image { _ in
+            image.draw(at: CGPoint(x: pad, y: pad))
+        }
+        guard let input = CIImage(image: padded), let filter = CIFilter(name: "CIGaussianBlur") else { return nil }
+        filter.setValue(input, forKey: kCIInputImageKey)
+        filter.setValue(blurRadius * scale, forKey: kCIInputRadiusKey)
+        guard let output = filter.outputImage?.cropped(to: input.extent),
+              let cg = CIContext().createCGImage(output, from: input.extent) else { return nil }
+        return UIImage(cgImage: cg, scale: scale, orientation: .up)
     }
 
     /// A still copy of the page's title: its segmented control rebuilt (a snapshot of a view off
@@ -358,6 +462,7 @@ private final class TitleMorph {
             for state in [UIControl.State.normal, .selected] {
                 if let attributes = segmented.titleTextAttributes(for: state) { copy.setTitleTextAttributes(attributes, for: state) }
             }
+            copy.overrideUserInterfaceStyle = segmented.traitCollection.userInterfaceStyle
             copy.isUserInteractionEnabled = false
             return copy
         }

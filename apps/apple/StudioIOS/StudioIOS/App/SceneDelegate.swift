@@ -15,6 +15,14 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         guard let windowScene = scene as? UIWindowScene, let model else { return }
 
         let win = UIWindow(windowScene: windowScene)
+        #if DEBUG
+        if TransitionLab.isRequested {
+            win.rootViewController = TransitionLab.makeRoot()
+            win.makeKeyAndVisible()
+            window = win
+            return
+        }
+        #endif
         win.tintColor = IOSTheme.ink
         win.overrideUserInterfaceStyle = model.settings.appearance.interfaceStyle
         win.rootViewController = StudioRootViewController(app: model)
