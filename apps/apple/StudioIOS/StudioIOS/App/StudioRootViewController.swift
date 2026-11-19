@@ -5,6 +5,12 @@ import UIKit
 /// drawer slides in from the left, pushing the page aside (rounded, not dimmed). Postlar,
 /// Takvim, Medya, Ürünler, Markalar, Mac durumu and Ayarlar are sections beside the chat
 /// (each replaces the root and has the drawer button, no back button). Notifications and links arrive as `IOSRoute`s and land here.
+/// A page that uses the rightward swipe itself at times (Medya's Video page swipes back to Resim).
+@MainActor
+protocol DrawerSwipeBlocking: AnyObject {
+    var blocksDrawerSwipe: Bool { get }
+}
+
 final class StudioRootViewController: UIViewController, UINavigationControllerDelegate, UIGestureRecognizerDelegate {
     let app: IOSAppModel
     let mainNav: UINavigationController
@@ -300,6 +306,7 @@ final class StudioRootViewController: UIViewController, UINavigationControllerDe
     func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
         if gestureRecognizer === openPan {
             guard canOpenDrawer, !isDrawerOpen else { return false }
+            if let page = mainNav.topViewController as? DrawerSwipeBlocking, page.blocksDrawerSwipe { return false }
             let velocity = openPan.velocity(in: view)
             return velocity.x > 0 && velocity.x > abs(velocity.y) * 1.2
         }

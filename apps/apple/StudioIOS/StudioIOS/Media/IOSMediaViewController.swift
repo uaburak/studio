@@ -190,13 +190,14 @@ final class IOSMediaModel {
     }
 }
 
-final class IOSMediaViewController: UIViewController, UICollectionViewDelegate, UISearchResultsUpdating {
+final class IOSMediaViewController: UIViewController, UICollectionViewDelegate, UIGestureRecognizerDelegate, DrawerSwipeBlocking, UISearchResultsUpdating {
     private unowned let app: IOSAppModel
     private let model: IOSMediaModel
     private var observation: IOSObservationToken?
     /// Resim / Video only (no "Tümü"): pictures by default.
     private let segmented = UISegmentedControl(items: [IOSMediaModel.Filter.images.label, IOSMediaModel.Filter.videos.label])
     private let filterItem = UIBarButtonItem()
+    private lazy var pagePan = UIPanGestureRecognizer(target: self, action: #selector(paged(_:)))
     private let searchController = UISearchController(searchResultsController: nil)
     private let uploadsStack = UIStackView.v([], spacing: 6)
     private let emptyView = EmptyStateView()
@@ -228,8 +229,7 @@ final class IOSMediaViewController: UIViewController, UICollectionViewDelegate, 
         segmented.translatesAutoresizingMaskIntoConstraints = false
         segmented.addAction(UIAction { [weak self] _ in
             guard let self else { return }
-            let filter: IOSMediaModel.Filter = self.segmented.selectedSegmentIndex == 1 ? .videos : .images
-            self.model.filter = filter
+            self.slide(to: self.segmented.selectedSegmentIndex == 1 ? .videos : .images)
         }, for: .valueChanged)
 
         collection = UICollectionView(frame: .zero, collectionViewLayout: Self.layout())
@@ -237,6 +237,10 @@ final class IOSMediaViewController: UIViewController, UICollectionViewDelegate, 
         collection.backgroundColor = .clear
         collection.delegate = self
         collection.alwaysBounceVertical = true
+        // An invisible page control: swiping sideways moves between Resim and Video.
+        pagePan.delegate = self
+        view.addGestureRecognizer(pagePan)
+        collection.panGestureRecognizer.require(toFail: pagePan)
         // The same soft edge as the chat: pictures fade out under the navigation bar and the toolbar.
         collection.topEdgeEffect.style = .soft
         collection.bottomEdgeEffect.style = .soft
@@ -292,6 +296,66 @@ final class IOSMediaViewController: UIViewController, UICollectionViewDelegate, 
 
     func updateSearchResults(for searchController: UISearchController) {
         model.query = searchController.searchBar.text ?? ""
+    }
+
+    // MARK: Resim / Video pages
+
+    /// On the Video page a rightward swipe goes back to Resim, so the drawer stays shut there;
+    /// on the Resim page it opens the drawer as everywhere else.
+    var blocksDrawerSwipe: Bool { model.filter == .videos }
+
+    func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+        guard gestureRecognizer === pagePan else { return true }
+        let velocity = pagePan.velocity(in: view)
+        guard abs(velocity.x) > abs(velocity.y) * 1.2 else { return false }
+        // Leftward: Resim → Video. Rightward: Video → Resim (on Resim the drawer takes it).
+        return velocity.x < 0 ? model.filter == .images : model.filter == .videos
+    }
+
+    @objc private func paged(_ pan: UIPanGestureRecognizer) {
+        let width = max(collection.bounds.width, 1)
+        let dx = pan.translation(in: view).x
+        switch pan.state {
+        case .changed:
+            setPage(offset: dx)
+        case .ended:
+            let velocity = pan.velocity(in: view).x
+            let target: IOSMediaModel.Filter = dx < 0 ? .videos : .images
+            if target != model.filter, abs(dx) > width * 0.25 || abs(velocity) > 500 {
+                slide(to: target, from: dx)
+            } else {
+                UIView.animate(springDuration: 0.3, bounce: 0.15) { self.setPage(offset: 0) }
+            }
+        case .cancelled, .failed:
+            UIView.animate(springDuration: 0.3, bounce: 0.15) { self.setPage(offset: 0) }
+        default:
+            break
+        }
+    }
+
+    /// The page (the grid and its empty state) moved sideways by `offset`.
+    private func setPage(offset: CGFloat) {
+        let move = CGAffineTransform(translationX: offset, y: 0)
+        collection.transform = move
+        emptyView.transform = move
+    }
+
+    /// Slides the current page out and the other one in (from the side it lies on).
+    private func slide(to filter: IOSMediaModel.Filter, from offset: CGFloat = 0) {
+        guard filter != model.filter else { return }
+        let width = max(collection.bounds.width, 1)
+        let direction: CGFloat = filter == .videos ? -1 : 1
+        segmented.selectedSegmentIndex = filter == .videos ? 1 : 0
+        setPage(offset: offset)
+        UIView.animate(withDuration: 0.16, delay: 0, options: [.curveEaseIn]) {
+            self.setPage(offset: direction * width)
+        } completion: { _ in
+            self.model.filter = filter
+            self.render()
+            self.setPage(offset: -direction * width)
+            UIView.animate(springDuration: 0.3, bounce: 0) { self.setPage(offset: 0) }
+        }
+        Haptics.selection()
     }
 
     // MARK: Toolbar
