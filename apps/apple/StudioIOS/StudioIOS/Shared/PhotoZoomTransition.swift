@@ -295,6 +295,8 @@ private final class TitleMorph {
     static let duration: TimeInterval = 0.36
     /// The page title as last seen on screen (a pop starts while it is off screen).
     private static var lastTitleImage: (title: ObjectIdentifier, image: UIImage)?
+    /// The middle of the bar's title area as last measured.
+    private static var lastTitleCenter: CGPoint?
     private static let swell: CGFloat = 1.1
     private static let blurRadius: CGFloat = 7
 
@@ -311,16 +313,39 @@ private final class TitleMorph {
         let bar = navigation.navigationBar
         let barFrame = bar.convert(bar.bounds, to: host)
         guard barFrame.height > 0 else { return nil }
-        let center = CGPoint(x: host.bounds.midX, y: barFrame.midY)
+        let middle = CGPoint(x: host.bounds.midX, y: barFrame.midY)
+        // Where the bar really puts the two title views (not exactly the bar's middle). The one on
+        // screen is measured; the other one sits at the same height in the bar (both are its title
+        // view), so it takes that centre. A guessed spot made the real pill jump a few points.
+        bar.layoutIfNeeded()
+        let measured: (UIView) -> CGRect? = { view in
+            guard view.window != nil, view.bounds.width > 1 else { return nil }
+            return view.convert(view.bounds, to: host)
+        }
         var pillSize = pill.systemLayoutSizeFitting(UIView.layoutFittingCompressedSize)
         if pillSize.width < 1 || pillSize.height < 1 { pillSize = CGSize(width: 180, height: 44) }
-        pillFrame = CGRect(x: center.x - pillSize.width / 2, y: center.y - pillSize.height / 2, width: pillSize.width, height: pillSize.height)
+        var titleSize = CGSize.zero
+        if let pageTitle {
+            titleSize = pageTitle.bounds.size
+            if titleSize.width < 1 { titleSize = pageTitle.systemLayoutSizeFitting(UIView.layoutFittingCompressedSize) }
+        }
+        let pillOnScreen = measured(pill)
+        let titleOnScreen = pageTitle.flatMap(measured)
+        if let pillOnScreen { pillSize = pillOnScreen.size }
+        let center: CGPoint = {
+            if let frame = titleOnScreen ?? pillOnScreen { return CGPoint(x: frame.midX, y: frame.midY) }
+            if let last = Self.lastTitleCenter { return last }
+            return middle
+        }()
+        Self.lastTitleCenter = center
+        let around: (CGSize) -> CGRect = { size in
+            CGRect(x: center.x - size.width / 2, y: center.y - size.height / 2, width: size.width, height: size.height)
+        }
+        pillFrame = pillOnScreen ?? around(pillSize)
 
         if let pageTitle {
-            var size = pageTitle.bounds.size
-            if size.width < 1 { size = pageTitle.systemLayoutSizeFitting(UIView.layoutFittingCompressedSize) }
-            pageFrame = CGRect(x: center.x - size.width / 2, y: center.y - size.height / 2, width: size.width, height: size.height)
-            page = Self.images(from: Self.picture(of: pageTitle, size: size), size: size)
+            pageFrame = titleOnScreen ?? around(titleSize)
+            page = Self.images(from: Self.picture(of: pageTitle, size: titleSize), size: titleSize)
         } else {
             pageFrame = pillFrame
             page = nil
@@ -333,7 +358,12 @@ private final class TitleMorph {
         self.pageTitle = pageTitle
         self.pill = pill
 
-        overlay.cornerConfiguration = .capsule()
+        // Always fully round: half the (shared) height, fixed. `.capsule()` follows the bounds and
+        // lagged behind the resizing, so the corners went almost square for a moment.
+        let radius = min(pageFrame.height, pillFrame.height) / 2
+        overlay.cornerConfiguration = .corners(radius: .fixed(radius))
+        overlay.layer.cornerRadius = radius
+        overlay.layer.cornerCurve = .continuous
         overlay.clipsToBounds = true
         overlay.contentView.clipsToBounds = true
         overlay.isUserInteractionEnabled = false
