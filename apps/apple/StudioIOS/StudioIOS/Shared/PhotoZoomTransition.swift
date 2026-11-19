@@ -149,14 +149,8 @@ final class PhotoZoomTransition: NSObject, UIViewControllerAnimatedTransitioning
             fallback(transitionContext)
             return
         }
-        if let titleMorph {
-            let scrub = UIViewPropertyAnimator(duration: 1, curve: .linear) {
-                UIView.animateKeyframes(withDuration: 0, delay: 0, options: [.calculationModeCubic]) { titleMorph.keyframes(toPill: false) }
-            }
-            scrub.pausesOnCompletion = true
-            scrub.pauseAnimation()
-            titleScrub = scrub
-        }
+        // The title capsule stays as it is while pulling and changes on release, together with
+        // the corner buttons (UIKit changes those only then).
     }
 
     /// The pan moved: the picture follows the finger and shrinks, the backdrop clears.
@@ -181,19 +175,18 @@ final class PhotoZoomTransition: NSObject, UIViewControllerAnimatedTransitioning
         let close = velocity.y > 500 || (translation.y > 90 && velocity.y > -200)
         if close {
             context.finishInteractiveTransition()
-            titleScrub?.continueAnimation(withTimingParameters: UICubicTimingParameters(animationCurve: .easeOut), durationFactor: 0.26)
-            UIView.animate(springDuration: 0.26, bounce: 0) {
+            titleMorph?.animate(toPill: false)
+            // Lasts as long as the capsule's change, so it is not cut short when the picture lands.
+            let home = UIViewPropertyAnimator(duration: TitleMorph.duration, timingParameters: UICubicTimingParameters(
+                controlPoint1: CGPoint(x: 0.2, y: 0.9), controlPoint2: CGPoint(x: 0.3, y: 1)))
+            home.addAnimations {
                 self.flyHome(flyer)
                 self.backdrop?.alpha = 0
-            } completion: { _ in
-                self.finish(true)
             }
+            home.addCompletion { _ in self.finish(true) }
+            home.startAnimation()
         } else {
             context.cancelInteractiveTransition()
-            if let titleScrub {
-                titleScrub.isReversed = true
-                titleScrub.continueAnimation(withTimingParameters: UICubicTimingParameters(animationCurve: .easeOut), durationFactor: 0.24)
-            }
             UIView.animate(springDuration: 0.24, bounce: 0.12) {
                 flyer.frame = self.startFrame
                 self.backdrop?.alpha = 1
