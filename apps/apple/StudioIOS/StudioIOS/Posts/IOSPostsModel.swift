@@ -326,6 +326,22 @@ final class IOSPostsModel {
         }
     }
 
+    /// Takes an approval back (approved → draft). A scheduled post keeps it: its schedule is
+    /// cancelled first (the API refuses otherwise).
+    func revokeApproval(_ card: PostCard) async -> Bool {
+        guard let app else { return false }
+        do {
+            let updated = try await app.dataService.revokeApproval(contentId: card.id)
+            var contents = board.cards.map(\.content)
+            if let index = contents.firstIndex(where: { $0.id == updated.id }) { contents[index] = updated }
+            rebuild(contents: contents)
+            return true
+        } catch {
+            self.error = "\(card.title): \(IOSAppModel.describe(error))"
+            return false
+        }
+    }
+
     /// The slot a picture goes into: the first empty one, else the first slot.
     static func targetSlot(_ slots: [ImageSlot]) -> ImageSlot? {
         slots.first { $0.isEmpty && $0.layerId != nil } ?? slots.first { $0.layerId != nil }

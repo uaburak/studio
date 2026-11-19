@@ -903,6 +903,17 @@ public actor SampleBackend: ConversationService, StudioDataService {
         return updated
     }
 
+    public func revokeApproval(contentId: EntityID) async throws -> Content {
+        let content = try await self.content(contentId)
+        guard content.status == .approved else {
+            throw StudioAPIError.server(status: 409, code: .invalidTransition, message: "content is \(content.status.rawValue)", issues: [])
+        }
+        return try updateContent(contentId) { content in
+            content.status = .draft
+            content.approval = nil
+        }
+    }
+
     public func approve(contentId: EntityID, hash: String, acknowledgeChecks: Bool) async throws -> Content {
         let content = try await self.content(contentId)
         guard content.status.isApprovable else {

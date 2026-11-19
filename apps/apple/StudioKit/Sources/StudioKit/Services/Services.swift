@@ -91,6 +91,9 @@ public protocol StudioDataService: Sendable {
     /// Approve by the hash of the version the user looked at. `acknowledgeChecks`: the user
     /// confirmed approving although the checks hold it back (E7; never without that answer).
     func approve(contentId: EntityID, hash: String, acknowledgeChecks: Bool) async throws -> Content
+    /// Take an approval back (approved → draft; `POST /api/contents/{id}/transition`). A
+    /// scheduled post is not revoked this way: its schedule is cancelled first.
+    func revokeApproval(contentId: EntityID) async throws -> Content
     func createSchedule(_ input: ScheduleCreate) async throws -> Schedule
     /// Ask the generator for a new version with `instructions` (a `content.generate` job).
     func requestEdit(of content: Content, instructions: String) async throws -> Job
@@ -496,6 +499,10 @@ public struct RemoteStudioDataService: StudioDataService {
 
     public func approve(contentId: EntityID, hash: String, acknowledgeChecks: Bool) async throws -> Content {
         try await client.approveContent(contentId, hash: hash, acknowledgeChecks: acknowledgeChecks)
+    }
+
+    public func revokeApproval(contentId: EntityID) async throws -> Content {
+        try await client.transitionContent(contentId, to: .draft)
     }
 
     public func createSchedule(_ input: ScheduleCreate) async throws -> Schedule {

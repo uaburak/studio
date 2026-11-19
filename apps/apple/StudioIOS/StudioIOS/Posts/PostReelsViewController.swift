@@ -222,9 +222,10 @@ final class ReelPageCell: UICollectionViewCell {
     // Instagram's Reels column (see `InstaIcon` for what each does).
     private let approveButton = UIButton.insta(.like, label: "Onayla", size: 26, tint: .white).withIconShadow()
     private let editButton = UIButton.insta(.comment, label: "Düzenle", size: 26, tint: .white).withIconShadow()
-    private let repostButton = UIButton.insta(.repost, label: "Çoğalt", size: 26, tint: .white).withIconShadow()
     private let shareButton = UIButton.insta(.send, label: "Paylaş", size: 26, tint: .white).withIconShadow()
-    private let scheduleButton = UIButton.insta(.save, label: "Zamanla", size: 26, tint: .white).withIconShadow()
+    private let downloadButton = UIButton.insta(.download, label: "Fotoğraflar'a kaydet", size: 26, tint: .white).withIconShadow()
+    /// The heart that pops over the Reel on a double tap.
+    private let bigHeart = UIImageView(image: InstaIcon.liked.image(110))
     private let menuButton = UIButton.insta(.menu, label: "Diğer", size: 26, tint: .white).withIconShadow()
     private let progressTrack = UIView()
     private let progressFill = UIView()
@@ -260,18 +261,29 @@ final class ReelPageCell: UICollectionViewCell {
         shade.isUserInteractionEnabled = false
         contentView.addSubview(shade)
 
-        for (button, action) in [(approveButton, { (a: PostActions, c: PostCard, _: UIView) in a.approve(c) }),
+        for (button, action) in [(approveButton, { (a: PostActions, c: PostCard, _: UIView) in a.toggleApproval(c) }),
                                  (editButton, { a, c, _ in a.edit(c) }),
                                  (shareButton, { a, c, source in a.share(c, source: source) }),
-                                 (scheduleButton, { a, c, _ in a.schedule(c) }),
-                                 (repostButton, { a, c, _ in a.duplicate(c) })] {
+                                 (downloadButton, { a, c, _ in a.saveToPhotos(c) })] {
             button.addAction(UIAction { [weak self, weak button] _ in
                 guard let self, let card = self.card, let actions = self.actions, let button else { return }
                 action(actions, card, button)
             }, for: .touchUpInside)
         }
         menuButton.showsMenuAsPrimaryAction = true
-        let column = UIStackView.v([approveButton, editButton, repostButton, shareButton, scheduleButton, menuButton], spacing: 6, alignment: .center)
+        let column = UIStackView.v([approveButton, editButton, shareButton, downloadButton, menuButton], spacing: 6, alignment: .center)
+
+        // A double tap on the Reel approves it, as a double tap likes on Instagram.
+        let doubleTap = UITapGestureRecognizer(target: self, action: #selector(doubleTapped))
+        doubleTap.numberOfTapsRequired = 2
+        contentView.addGestureRecognizer(doubleTap)
+        bigHeart.tintColor = .white
+        bigHeart.alpha = 0
+        bigHeart.layer.shadowColor = UIColor.black.cgColor
+        bigHeart.layer.shadowOpacity = 0.25
+        bigHeart.layer.shadowRadius = 8
+        bigHeart.layer.shadowOffset = .zero
+        contentView.addSubview(bigHeart)
         column.translatesAutoresizingMaskIntoConstraints = false
         contentView.addSubview(column)
 
@@ -346,12 +358,11 @@ final class ReelPageCell: UICollectionViewCell {
 
         let approved = card.content.status.hasApproval
         approveButton.setInsta(approved ? .liked : .like, size: 26, tint: approved ? InstaIcon.likeRed : .white)
-        scheduleButton.setInsta(card.schedule != nil ? .saved : .save, size: 26, tint: .white)
-        approveButton.isUserInteractionEnabled = PostActions.canApprove(card)
-        approveButton.accessibilityLabel = approved ? "Onaylandı" : "Onayla"
-        for button in [editButton, repostButton, shareButton, menuButton] { button.configuration?.baseForegroundColor = .white }
+        approveButton.isUserInteractionEnabled = PostActions.canApprove(card) || approved
+        approveButton.accessibilityLabel = approved ? "Onayı geri al" : "Onayla"
+        for button in [editButton, shareButton, downloadButton, menuButton] { button.configuration?.baseForegroundColor = .white }
         shareButton.isEnabled = !card.renderedAssetIds.isEmpty
-        scheduleButton.isEnabled = PostActions.canSchedule(card)
+        downloadButton.isEnabled = !card.renderedAssetIds.isEmpty
         menuButton.menu = actions.menu(for: card, source: menuButton)
 
         // The Reel's video, when it has one (played muted and looping while on screen).
@@ -373,6 +384,21 @@ final class ReelPageCell: UICollectionViewCell {
                 self.player = player
             }
         }
+    }
+
+    @objc private func doubleTapped() {
+        guard let card, let actions else { return }
+        let side: CGFloat = 110
+        bigHeart.frame = CGRect(x: (contentView.bounds.width - side) / 2, y: (contentView.bounds.height - side) / 2, width: side, height: side)
+        bigHeart.transform = CGAffineTransform(scaleX: 0.2, y: 0.2)
+        bigHeart.alpha = 1
+        UIView.animate(springDuration: 0.35, bounce: 0.45) { self.bigHeart.transform = .identity } completion: { _ in
+            UIView.animate(withDuration: 0.2, delay: 0.35, options: []) {
+                self.bigHeart.alpha = 0
+                self.bigHeart.transform = CGAffineTransform(scaleX: 0.85, y: 0.85)
+            }
+        }
+        if !card.content.status.hasApproval, PostActions.canApprove(card) { actions.approve(card) }
     }
 
     func setMediaHidden(_ hidden: Bool) {

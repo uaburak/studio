@@ -255,12 +255,13 @@ final class PostFeedCell: UITableViewCell, UIScrollViewDelegate {
     private let placeholder = PostPlaceholderView()
     private let counter = UILabel.studio("", size: 12, weight: .semibold, color: .white, style: .caption1)
     private let dots = UIPageControl()
-    // Instagram's row: like, comment, repost, send … save (see `InstaIcon` for what each does).
-    private let approveButton = UIButton.insta(.like, label: "Onayla", size: 22)
-    private let editButton = UIButton.insta(.comment, label: "Düzenle", size: 22)
-    private let repostButton = UIButton.insta(.repost, label: "Çoğalt", size: 22)
-    private let shareButton = UIButton.insta(.send, label: "Paylaş", size: 22)
-    private let scheduleButton = UIButton.insta(.save, label: "Zamanla", size: 22)
+    // Instagram's row: like, comment, send … and download where the bookmark is (see `InstaIcon`).
+    private let approveButton = UIButton.insta(.like, label: "Onayla", size: 24)
+    private let editButton = UIButton.insta(.comment, label: "Düzenle", size: 24)
+    private let shareButton = UIButton.insta(.send, label: "Paylaş", size: 24)
+    private let downloadButton = UIButton.insta(.download, label: "Fotoğraflar'a kaydet", size: 24)
+    /// The heart that pops over the picture on a double tap.
+    private let bigHeart = UIImageView(image: InstaIcon.liked.image(96))
     private let captionLabel = UILabel.studio("", size: 14, lines: 0, style: .subheadline)
     private let metaLabel = UILabel.studio("", size: 12, color: IOSTheme.textSecondary, style: .caption1)
     private var card: PostCard?
@@ -321,7 +322,7 @@ final class PostFeedCell: UITableViewCell, UIScrollViewDelegate {
 
         approveButton.addAction(UIAction { [weak self] _ in
             guard let self, let card = self.card else { return }
-            self.actions?.approve(card)
+            self.actions?.toggleApproval(card)
         }, for: .touchUpInside)
         editButton.addAction(UIAction { [weak self] _ in
             guard let self, let card = self.card else { return }
@@ -331,27 +332,35 @@ final class PostFeedCell: UITableViewCell, UIScrollViewDelegate {
             guard let self, let card = self.card else { return }
             self.actions?.share(card, source: self.shareButton)
         }, for: .touchUpInside)
-        scheduleButton.addAction(UIAction { [weak self] _ in
+        downloadButton.addAction(UIAction { [weak self] _ in
             guard let self, let card = self.card else { return }
-            self.actions?.schedule(card)
+            self.actions?.saveToPhotos(card)
         }, for: .touchUpInside)
-        repostButton.addAction(UIAction { [weak self] _ in
-            guard let self, let card = self.card else { return }
-            self.actions?.duplicate(card)
-        }, for: .touchUpInside)
-        let left = UIStackView.h([approveButton, editButton, repostButton, shareButton], spacing: -6)
+        let left = UIStackView.h([approveButton, editButton, shareButton], spacing: -4)
         left.translatesAutoresizingMaskIntoConstraints = false
-        scheduleButton.translatesAutoresizingMaskIntoConstraints = false
+        downloadButton.translatesAutoresizingMaskIntoConstraints = false
         actionsRow.addSubview(left)
         actionsRow.addSubview(dots)
-        actionsRow.addSubview(scheduleButton)
+        actionsRow.addSubview(downloadButton)
+
+        // A double tap on the picture approves it, as a double tap likes on Instagram.
+        let doubleTap = UITapGestureRecognizer(target: self, action: #selector(doubleTapped))
+        doubleTap.numberOfTapsRequired = 2
+        mediaView.addGestureRecognizer(doubleTap)
+        bigHeart.tintColor = .white
+        bigHeart.alpha = 0
+        bigHeart.layer.shadowColor = UIColor.black.cgColor
+        bigHeart.layer.shadowOpacity = 0.25
+        bigHeart.layer.shadowRadius = 8
+        bigHeart.layer.shadowOffset = .zero
+        mediaView.addSubview(bigHeart)
         NSLayoutConstraint.activate([
             left.leadingAnchor.constraint(equalTo: actionsRow.leadingAnchor, constant: 4),
             left.centerYAnchor.constraint(equalTo: actionsRow.centerYAnchor),
             dots.centerXAnchor.constraint(equalTo: actionsRow.centerXAnchor),
             dots.centerYAnchor.constraint(equalTo: actionsRow.centerYAnchor),
-            scheduleButton.trailingAnchor.constraint(equalTo: actionsRow.trailingAnchor, constant: -4),
-            scheduleButton.centerYAnchor.constraint(equalTo: actionsRow.centerYAnchor),
+            downloadButton.trailingAnchor.constraint(equalTo: actionsRow.trailingAnchor, constant: -4),
+            downloadButton.centerYAnchor.constraint(equalTo: actionsRow.centerYAnchor),
         ])
 
         captionLabel.isUserInteractionEnabled = true
@@ -410,13 +419,11 @@ final class PostFeedCell: UITableViewCell, UIScrollViewDelegate {
         let canApprove = PostActions.canApprove(card)
         approveButton.isEnabled = canApprove || card.state == .approved || card.state == .scheduled
         let approved = card.content.status.hasApproval
-        approveButton.setInsta(approved ? .liked : .like, size: 22, tint: approved ? InstaIcon.likeRed : IOSTheme.textPrimary)
-        approveButton.accessibilityLabel = card.content.status.hasApproval ? "Onaylandı" : "Onayla"
-        approveButton.isUserInteractionEnabled = canApprove
+        approveButton.setInsta(approved ? .liked : .like, size: 24, tint: approved ? InstaIcon.likeRed : IOSTheme.textPrimary)
+        approveButton.accessibilityLabel = approved ? "Onayı geri al" : "Onayla"
+        approveButton.isUserInteractionEnabled = canApprove || approved
         shareButton.isEnabled = !card.renderedAssetIds.isEmpty
-        scheduleButton.isEnabled = PostActions.canSchedule(card)
-        scheduleButton.accessibilityLabel = card.schedule != nil ? "Zamanı değiştir" : "Zamanla"
-        scheduleButton.setInsta(card.schedule != nil ? .saved : .save, size: 22, tint: IOSTheme.textPrimary)
+        downloadButton.isEnabled = !card.renderedAssetIds.isEmpty
 
         let textWidth = max(width - 28, 1)
         let (caption, isTruncated) = Self.caption(brand: brand, text: card.content.caption, width: textWidth, expanded: expanded)
@@ -482,6 +489,23 @@ final class PostFeedCell: UITableViewCell, UIScrollViewDelegate {
         dots.currentPage = page
         counter.isHidden = count < 2
         counter.text = "\(page + 1)/\(count)"
+    }
+
+    @objc private func doubleTapped() {
+        guard let card, let actions else { return }
+        // The heart pops over the picture; an approved post stays approved (as a double tap
+        // never unlikes).
+        let side: CGFloat = 96
+        bigHeart.frame = CGRect(x: (mediaView.bounds.width - side) / 2, y: (mediaView.bounds.height - side) / 2, width: side, height: side)
+        bigHeart.transform = CGAffineTransform(scaleX: 0.2, y: 0.2)
+        bigHeart.alpha = 1
+        UIView.animate(springDuration: 0.35, bounce: 0.45) { self.bigHeart.transform = .identity } completion: { _ in
+            UIView.animate(withDuration: 0.2, delay: 0.35, options: []) {
+                self.bigHeart.alpha = 0
+                self.bigHeart.transform = CGAffineTransform(scaleX: 0.85, y: 0.85)
+            }
+        }
+        if !card.content.status.hasApproval, PostActions.canApprove(card) { actions.approve(card) }
     }
 
     @objc private func captionTapped() {

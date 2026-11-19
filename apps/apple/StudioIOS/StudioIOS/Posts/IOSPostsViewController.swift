@@ -6,6 +6,15 @@ import UIKit
 enum PostTab: Int, CaseIterable {
     case grid, reels, stories
 
+    /// The tab's Instagram icon (from the Wecra "instagram icons" frame).
+    var instaIcon: InstaIcon {
+        switch self {
+        case .grid: .grid
+        case .reels: .reels
+        case .stories: .stories
+        }
+    }
+
     var symbol: String {
         switch self {
         case .grid: "square.grid.3x3"
@@ -68,7 +77,7 @@ final class IOSPostsViewController: UIViewController, UICollectionViewDelegate, 
     init(app: IOSAppModel) {
         self.app = app
         super.init(nibName: nil, bundle: nil)
-        title = "Postlar"
+        title = "Profil"
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
@@ -214,11 +223,10 @@ final class IOSPostsViewController: UIViewController, UICollectionViewDelegate, 
             group.interItemSpacing = .fixed(spacing)
             let section = NSCollectionLayoutSection(group: group)
             section.interGroupSpacing = spacing
-            // The tabs stay under the bar while the grid scrolls (as on Instagram).
+            // The tabs scroll away with the header (not pinned under the bar).
             let tabs = NSCollectionLayoutBoundarySupplementaryItem(
                 layoutSize: NSCollectionLayoutSize(widthDimension: .fractionalWidth(1), heightDimension: .absolute(48)),
                 elementKind: PostsLayout.tabsKind, alignment: .top)
-            tabs.pinToVisibleBounds = true
             tabs.zIndex = 2
             section.boundarySupplementaryItems = [tabs]
             return section
@@ -763,7 +771,7 @@ final class PostsTabBar: UIView {
         row.translatesAutoresizingMaskIntoConstraints = false
         for tab in PostTab.allCases {
             let button = UIButton(type: .system)
-            button.setImage(UIImage(systemName: tab.symbol, withConfiguration: UIImage.SymbolConfiguration(pointSize: 21, weight: .regular)), for: .normal)
+            button.setImage(tab.instaIcon.image(24), for: .normal)
             button.accessibilityLabel = tab.label
             button.addAction(UIAction { [weak self] _ in self?.onSelect?(tab) }, for: .touchUpInside)
             buttons.append(button)

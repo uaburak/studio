@@ -148,7 +148,7 @@ final class PostStoryViewController: PostZoomPage, UIGestureRecognizerDelegate {
         editButton.heightAnchor.constraint(equalToConstant: 44).isActive = true
         approveButton.addAction(UIAction { [weak self] _ in
             guard let self, let card = self.currentCard else { return }
-            PostActions(app: self.app, host: self).approve(card)
+            PostActions(app: self.app, host: self).toggleApproval(card)
         }, for: .touchUpInside)
         shareButton.addAction(UIAction { [weak self] _ in
             guard let self, let card = self.currentCard else { return }
@@ -246,8 +246,8 @@ final class PostStoryViewController: PostZoomPage, UIGestureRecognizerDelegate {
         menuButton.menu = PostActions(app: app, host: self).menu(for: card, source: menuButton)
         let approved = card.content.status.hasApproval
         approveButton.setInsta(approved ? .liked : .like, size: 24, tint: approved ? InstaIcon.likeRed : .white)
-        approveButton.isUserInteractionEnabled = PostActions.canApprove(card)
-        approveButton.accessibilityLabel = approved ? "Onaylandı" : "Onayla"
+        approveButton.isUserInteractionEnabled = PostActions.canApprove(card) || approved
+        approveButton.accessibilityLabel = approved ? "Onayı geri al" : "Onayla"
         shareButton.configuration?.baseForegroundColor = .white
         shareButton.isEnabled = !card.renderedAssetIds.isEmpty
         view.accessibilityLabel = "\(card.title), \(PostPresentation.statusLine(card))"

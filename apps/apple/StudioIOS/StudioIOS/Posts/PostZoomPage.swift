@@ -186,63 +186,42 @@ class PostZoomPage: UIViewController, ZoomTransitionDestination {
 
 // MARK: - Actions
 
-/// Instagram's post icons, drawn the way Instagram draws them (its 24-unit grid, 2-unit lines,
-/// round joins), on the actions they stand for here: the heart approves (red and full once
-/// approved), the comment bubble edits, repost duplicates, the paper plane shares, the bookmark
-/// schedules (full once scheduled), the three dots open the menu.
+/// Instagram's icons from the Wecra "Studio" file (`InstaIconPaths`), on the actions they stand
+/// for here: the heart approves (red and full once approved), the comment bubble edits, the
+/// paper plane shares, download saves to Photos, the three dots open the menu; and the Postlar
+/// tabs (grid, Reels, stories).
 enum InstaIcon {
-    case like, liked, comment, repost, send, save, saved, menu, close, back
+    case like, liked, comment, send, download, menu, close, back, grid, reels, stories
 
     /// Instagram's like red.
     static let likeRed = UIColor(red: 1, green: 0.19, blue: 0.25, alpha: 1)
 
-    /// The icon in a `size` × `size` point box (Instagram's 24-unit grid scaled to it).
+    /// The icon in a `size` × `size` point box (its 24-point drawing scaled to it).
     func image(_ size: CGFloat) -> UIImage {
         UIGraphicsImageRenderer(size: CGSize(width: size, height: size)).image { context in
-            let cg = context.cgContext
-            cg.scaleBy(x: size / 24, y: size / 24)
-            UIColor.black.setStroke()
+            context.cgContext.scaleBy(x: size / 24, y: size / 24)
             UIColor.black.setFill()
-            let path = self.path
-            path.lineWidth = 2
-            path.lineCapStyle = .round
-            path.lineJoinStyle = .round
-            switch self {
-            case .liked, .saved:
+            for shape in shapes {
+                let path = SVGPath.parse(shape.d)
+                path.usesEvenOddFillRule = shape.evenOdd
                 path.fill()
-                path.stroke()
-            case .menu:
-                path.fill()
-            default:
-                path.stroke()
             }
         }.withRenderingMode(.alwaysTemplate)
     }
 
-    private var path: UIBezierPath {
+    private var shapes: [InstaIconPaths.Shape] {
         switch self {
-        case .like, .liked:
-            return SVGPath.parse("M16.792 3.904A4.989 4.989 0 0 1 21.5 9.122c0 3.072-2.652 4.959-5.197 7.222-2.512 2.243-3.865 3.469-4.303 3.752-.477-.309-2.143-1.823-4.303-3.752C5.141 14.072 2.5 12.167 2.5 9.122a4.989 4.989 0 0 1 4.708-5.218 4.21 4.21 0 0 1 3.675 1.941c.84 1.175.98 1.763 1.12 1.763s.278-.588 1.11-1.766a4.17 4.17 0 0 1 3.679-1.938Z")
-        case .comment:
-            return SVGPath.parse("M20.656 17.008a9.993 9.993 0 1 0-3.59 3.615L22 22Z")
-        case .send:
-            let path = SVGPath.parse("M22 3 9.218 10.083M11.698 20.334 22 3.001H2l7.218 7.083 2.48 10.25Z")
-            return path
-        case .save, .saved:
-            return SVGPath.parse("M20 21 12 13.44 4 21V3h16Z")
-        case .repost:
-            // Two arrows chasing each other round a rounded square.
-            return SVGPath.parse("M2.5 13.5V9.5A4.5 4.5 0 0 1 7 5h13M17 2l3 3-3 3M21.5 10.5v4A4.5 4.5 0 0 1 17 19H4M7 16l-3 3 3 3")
-        case .close:
-            return SVGPath.parse("M4 4 20 20M20 4 4 20")
-        case .back:
-            return SVGPath.parse("M16 3 7 12l9 9")
-        case .menu:
-            let path = UIBezierPath()
-            for x in [5.5, 12, 18.5] as [CGFloat] {
-                path.append(UIBezierPath(ovalIn: CGRect(x: x - 1.5, y: 10.5, width: 3, height: 3)))
-            }
-            return path
+        case .like: InstaIconPaths.like
+        case .liked: InstaIconPaths.liked
+        case .comment: InstaIconPaths.comment
+        case .send: InstaIconPaths.send
+        case .download: InstaIconPaths.download
+        case .menu: InstaIconPaths.menu
+        case .close: InstaIconPaths.close
+        case .back: InstaIconPaths.back
+        case .grid: InstaIconPaths.grid
+        case .reels: InstaIconPaths.reels
+        case .stories: InstaIconPaths.stories
         }
     }
 }
@@ -438,6 +417,48 @@ struct PostActions {
         }
     }
 
+    /// The heart: approves (asking first when the checks hold it back), or, on a post already
+    /// approved, takes the approval back at once, as unliking does. A scheduled post keeps its
+    /// approval until its schedule is cancelled.
+    func toggleApproval(_ card: PostCard) {
+        guard card.content.status.hasApproval else { return approve(card) }
+        guard let host else { return }
+        guard card.content.status == .approved else {
+            Toast.show("Zamanlanmış post: onayı geri almak için önce zamanlamayı iptal et.", in: host.view, isError: true)
+            return
+        }
+        let model = model
+        Task {
+            if await model.revokeApproval(card) {
+                Haptics.selection()
+            } else if let error = model.error {
+                host.presentError(error)
+            }
+        }
+    }
+
+    /// Download: the post's pictures into Photos.
+    func saveToPhotos(_ card: PostCard) {
+        guard let host else { return }
+        let images = app.images
+        Task {
+            var files: [ExportedFile] = []
+            for (index, id) in card.renderedAssetIds.enumerated() {
+                guard let data = await images.data(id) else { continue }
+                let png = data.starts(with: [0x89, 0x50, 0x4E, 0x47])
+                files.append(ExportedFile(filename: "\(card.title)-\(index + 1).\(png ? "png" : "jpg")", data: data))
+            }
+            guard !files.isEmpty else { return host.presentError("Görsel indirilemedi.") }
+            do {
+                let count = try await FileSharing.saveToPhotos(files)
+                Haptics.success()
+                Toast.show(count == 1 ? "Fotoğraflar'a kaydedildi" : "\(count) görsel Fotoğraflar'a kaydedildi", in: host.view)
+            } catch {
+                host.presentError(IOSAppModel.describe(error))
+            }
+        }
+    }
+
     /// The schedule sheet; a post not approved yet is approved there, so its checks are asked
     /// about first.
     func schedule(_ card: PostCard) {
@@ -535,7 +556,8 @@ enum PostPresentation {
     }
 
     static func relative(_ card: PostCard, now: Date = Date()) -> String {
-        let date = card.schedule?.scheduledAt ?? card.content.updatedAt
+        // A change just made can stamp a moment ahead of this clock: never "… sonra" for it.
+        let date = card.schedule?.scheduledAt ?? min(card.content.updatedAt, now)
         let formatter = RelativeDateTimeFormatter()
         formatter.locale = TurkishFormat.locale
         formatter.unitsStyle = .full

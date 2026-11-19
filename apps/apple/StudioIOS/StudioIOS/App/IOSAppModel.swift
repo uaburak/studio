@@ -195,7 +195,7 @@ enum IOSDestination: String, CaseIterable {
 
     var title: String {
         switch self {
-        case .posts: "Postlar"
+        case .posts: "Profil"
         case .calendar: "Takvim"
         case .media: "Medya"
         case .products: "Ürünler"
@@ -207,7 +207,7 @@ enum IOSDestination: String, CaseIterable {
 
     var symbol: String {
         switch self {
-        case .posts: "square.grid.2x2"
+        case .posts: "person.crop.circle"
         case .calendar: "calendar"
         case .media: "photo.on.rectangle"
         case .products: "shippingbox"
