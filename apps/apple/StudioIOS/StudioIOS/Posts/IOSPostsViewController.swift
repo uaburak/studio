@@ -349,28 +349,102 @@ final class IOSPostsViewController: UIViewController, UICollectionViewDelegate, 
         switch pan.state {
         case .began:
             panBase = interruptPaging()
+            pageTarget = nil
         case .changed:
             var offset = panBase + dx
             if (currentTab == .grid && offset > 0) || (currentTab == .stories && offset < 0) { offset *= 0.3 }
             setPage(offset: offset)
         case .ended, .cancelled, .failed:
-            let offset = panBase + dx
+            let offset = pageOffset
             let velocity = pan.state == .ended ? pan.velocity(in: view).x : 0
             var target = currentTab
-            if offset < -width * 0.25 || velocity < -500, let next = PostTab(rawValue: currentTab.rawValue + 1) { target = next }
-            if offset > width * 0.25 || velocity > 500, let previous = PostTab(rawValue: currentTab.rawValue - 1) { target = previous }
-            slide(to: target, from: pageOffset)
+            if offset < -width * 0.25 || velocity < -500 {
+                target = (neighborSide < 0 ? neighborTab : nil) ?? PostTab(rawValue: currentTab.rawValue + 1) ?? currentTab
+            }
+            if offset > width * 0.25 || velocity > 500 {
+                target = (neighborSide > 0 ? neighborTab : nil) ?? PostTab(rawValue: currentTab.rawValue - 1) ?? currentTab
+            }
+            slide(to: target, from: offset)
         default:
             break
         }
     }
 
-    /// The grid's tiles and the empty state moved sideways (the header and the tabs stay).
+    /// Space between the two pages while they slide: the same hairline as between the tiles.
+    private let pageGap: CGFloat = 1.5
+    /// The other tab's tiles, riding right beside the current page while it slides.
+    private var neighborPage: UIView?
+    private var neighborTab: PostTab?
+    /// -1: the neighbour is to the right (the next tab), 1: to the left, 0: none.
+    private var neighborSide: CGFloat = 0
+    /// Carries the page's offset through the animators, so a catch knows where the page is.
+    private lazy var pageTracker: UIView = {
+        let tracker = UIView()
+        tracker.isUserInteractionEnabled = false
+        view.insertSubview(tracker, at: 0)
+        return tracker
+    }()
+
+    /// The grid's tiles and the empty state moved sideways (the header and the tabs stay), with
+    /// the neighbouring tab's page glued to their side.
     private func setPage(offset: CGFloat) {
         pageOffset = offset
         let move = CGAffineTransform(translationX: offset, y: 0)
         for cell in collectionView.visibleCells { cell.transform = move }
         emptyView.transform = move
+        pageTracker.transform = move
+        let side: CGFloat = offset < 0 ? -1 : (offset > 0 ? 1 : 0)
+        // While a finger drags, the side it uncovers decides which tab shows there.
+        if pageTarget == nil, side != 0, side != neighborSide {
+            showNeighbor(PostTab(rawValue: currentTab.rawValue - Int(side)), side: side)
+        }
+        let span = collectionView.bounds.width + pageGap
+        neighborPage?.transform = CGAffineTransform(translationX: offset - neighborSide * span, y: 0)
+        // The underline under the tabs moves with the page (a jump over two tabs covers both).
+        let steps = neighborTab.map { CGFloat(abs($0.rawValue - currentTab.rawValue)) } ?? 1
+        tabs.follow(CGFloat(currentTab.rawValue) - offset / max(span, 1) * max(steps, 1))
+    }
+
+    /// Lays `tab`'s tiles out as its grid would show them at the current scroll, on `side`.
+    private func showNeighbor(_ tab: PostTab?, side: CGFloat) {
+        neighborPage?.removeFromSuperview()
+        neighborPage = nil
+        neighborTab = tab
+        neighborSide = side
+        guard let tab, collectionView.bounds.width > 0 else { return }
+        UIView.performWithoutAnimation {
+            let width = collectionView.bounds.width
+            let itemWidth = (width - 2 * pageGap) / 3
+            let rowHeight = (itemWidth * tab.tileRatio).rounded()
+            var top: CGFloat = 0
+            if collectionView.numberOfItems(inSection: 1) > 0, let first = collectionView.layoutAttributesForItem(at: IndexPath(item: 0, section: 1)) {
+                top = first.frame.minY
+            } else if let header = collectionView.layoutAttributesForSupplementaryElement(ofKind: PostsLayout.profileKind, at: IndexPath(item: 0, section: 0)) {
+                top = header.frame.maxY + 48
+            }
+            let visibleTop = collectionView.contentOffset.y
+            let visibleBottom = visibleTop + collectionView.bounds.height
+            let page = UIView(frame: CGRect(x: 0, y: top, width: width, height: max(visibleBottom - top, 0)))
+            page.isUserInteractionEnabled = false
+            for (index, card) in cards(on: tab).enumerated() {
+                let y = CGFloat(index / 3) * (rowHeight + pageGap)
+                if top + y > visibleBottom { break }
+                if top + y + rowHeight < visibleTop { continue }
+                let cell = PostGridCell(frame: CGRect(x: CGFloat(index % 3) * (itemWidth + pageGap), y: y, width: itemWidth, height: rowHeight))
+                cell.configure(card: card, images: app.images, job: model.activeJob(for: card.id), upload: model.slotUploads[card.id])
+                page.addSubview(cell)
+                cell.layoutIfNeeded()
+            }
+            collectionView.insertSubview(page, at: 0)
+            neighborPage = page
+        }
+    }
+
+    private func dropNeighbor() {
+        neighborPage?.removeFromSuperview()
+        neighborPage = nil
+        neighborTab = nil
+        neighborSide = 0
     }
 
     private func interruptPaging() -> CGFloat {
@@ -378,13 +452,14 @@ final class IOSPostsViewController: UIViewController, UICollectionViewDelegate, 
             pageAnimator = nil
             animator.stopAnimation(false)
             animator.finishAnimation(at: .current)
+            setPage(offset: pageTracker.transform.tx)
         }
         tabs.select(currentTab, animated: true)
         return pageOffset
     }
 
-    /// To `target`: the tiles slide out and the other tab's slide in from its side, or back into
-    /// place. Interruptible at any moment (a new swipe or tap takes over).
+    /// To `target`: both pages slide together, side by side, until the other tab's fills the
+    /// screen; or back into place. Interruptible at any moment (a new swipe or tap takes over).
     private func slide(to target: PostTab, from offset: CGFloat? = nil) {
         let start = offset ?? interruptPaging()
         if let animator = pageAnimator {
@@ -393,38 +468,41 @@ final class IOSPostsViewController: UIViewController, UICollectionViewDelegate, 
         }
         let width = max(collectionView.bounds.width, 1)
         tabs.select(target, animated: true)
-        setPage(offset: start)
         pageTarget = target
         guard target != currentTab else {
-            let back = UIViewPropertyAnimator(duration: 0.3, dampingRatio: 0.85) { self.setPage(offset: 0) }
+            setPage(offset: start)
+            let back = UIViewPropertyAnimator(duration: 0.32, dampingRatio: 1) { self.setPage(offset: 0) }
             back.addCompletion { [weak self] position in
-                if position == .end, self?.pageAnimator === back { self?.pageAnimator = nil }
+                guard let self, position == .end, self.pageAnimator === back else { return }
+                self.pageAnimator = nil
+                self.pageTarget = nil
+                self.dropNeighbor()
             }
             pageAnimator = back
             back.startAnimation()
             return
         }
-        let direction: CGFloat = target.rawValue > currentTab.rawValue ? -1 : 1
-        let remaining = min(max(abs(direction * width - start) / width, 0.15), 1)
-        let out = UIViewPropertyAnimator(duration: 0.16 * remaining, curve: .easeIn) { self.setPage(offset: direction * width) }
-        out.addCompletion { [weak self] position in
-            guard let self, position == .end, self.pageAnimator === out else { return }
+        let side: CGFloat = target.rawValue > currentTab.rawValue ? -1 : 1
+        if neighborTab != target || neighborSide != side || neighborPage == nil { showNeighbor(target, side: side) }
+        setPage(offset: start)
+        let end = side * (width + pageGap)
+        let remaining = min(max(abs(end - start) / width, 0.3), 1)
+        let across = UIViewPropertyAnimator(duration: 0.38 * remaining, dampingRatio: 1) { self.setPage(offset: end) }
+        across.addCompletion { [weak self] position in
+            guard let self, position == .end, self.pageAnimator === across else { return }
+            self.pageAnimator = nil
+            self.pageTarget = nil
             self.isPaging = true
             self.currentTab = target
             self.collectionView.collectionViewLayout.invalidateLayout()
             self.render()
             self.collectionView.layoutIfNeeded()
             self.isPaging = false
-            self.setPage(offset: -direction * width)
-            let into = UIViewPropertyAnimator(duration: 0.3, dampingRatio: 1) { self.setPage(offset: 0) }
-            into.addCompletion { [weak self] position in
-                if position == .end, self?.pageAnimator === into { self?.pageAnimator = nil }
-            }
-            self.pageAnimator = into
-            into.startAnimation()
+            self.dropNeighbor()
+            self.setPage(offset: 0)
         }
-        pageAnimator = out
-        out.startAnimation()
+        pageAnimator = across
+        across.startAnimation()
         Haptics.selection()
     }
 
@@ -680,23 +758,30 @@ final class PostsTabBar: UIView {
         placeUnderline()
     }
 
+    /// Where the underline stands, in tabs (1.5 = halfway between Reels and stories). The page
+    /// drives it, so it moves with the finger and with the page's animations.
+    private var position: CGFloat = 0
+
+    /// Lights `tab`'s icon (the underline follows the page, see `follow`).
     func select(_ tab: PostTab, animated: Bool) {
         selected = tab
         for (index, button) in buttons.enumerated() {
             button.tintColor = index == tab.rawValue ? IOSTheme.textPrimary : IOSTheme.textTertiary
             button.accessibilityTraits = index == tab.rawValue ? [.button, .selected] : .button
         }
-        if animated {
-            UIView.animate(springDuration: 0.3, bounce: 0) { self.placeUnderline() }
-        } else {
-            placeUnderline()
-        }
+    }
+
+    func follow(_ position: CGFloat) {
+        let last = CGFloat(PostTab.allCases.count - 1)
+        self.position = min(max(position, 0), last)
+        if let nearest = PostTab(rawValue: Int(self.position.rounded())), nearest != selected { select(nearest, animated: false) }
+        placeUnderline()
     }
 
     private func placeUnderline() {
         guard bounds.width > 0 else { return }
         let width = bounds.width / CGFloat(PostTab.allCases.count)
-        underline.frame = CGRect(x: width * CGFloat(selected.rawValue) + width * 0.18, y: bounds.height - 1.5, width: width * 0.64, height: 1.5)
+        underline.frame = CGRect(x: width * position + width * 0.18, y: bounds.height - 1.5, width: width * 0.64, height: 1.5)
     }
 }
 
