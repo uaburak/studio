@@ -21,7 +21,7 @@ final class PhotoZoomTransition: NSObject, UIViewControllerAnimatedTransitioning
     private var hiddenSource: UIView?
     /// One glass capsule between the page's title (Medya's segmented control) and the viewer's
     /// name pill; the navigation bar itself only swaps them.
-    private var titleMorph: TitleMorph?
+    private var titleMorph: PhotoTitleMorph?
     /// The capsule's progress, scrubbed by the pull.
     private var titleScrub: UIViewPropertyAnimator?
 
@@ -199,7 +199,7 @@ final class PhotoZoomTransition: NSObject, UIViewControllerAnimatedTransitioning
         // The title capsule: from the page's title to the name pill (or the reverse).
         let page = operation == .push ? transitionContext.viewController(forKey: .from) : toController
         if let navigation = viewer.navigationController {
-            titleMorph = TitleMorph(pageTitle: page?.navigationItem.titleView, pill: viewer.titlePill, navigation: navigation)
+            titleMorph = PhotoTitleMorph(pageTitle: page?.navigationItem.titleView, pill: viewer.titlePill, navigation: navigation)
             titleMorph?.setState(atPill: operation == .pop)
         }
         // The thumbnail's spot stays empty while its picture is away (Photos does the same).
@@ -283,6 +283,9 @@ final class PhotoViewerNavigationDelegate: NSObject, UINavigationControllerDeleg
     }
 
     static func animator(operation: UINavigationController.Operation, from fromVC: UIViewController, to toVC: UIViewController) -> UIViewControllerAnimatedTransitioning? {
+        // The viewer now uses iOS's own zoom (interruptible, as in OXTV); the custom flight below
+        // is kept but not used.
+        return nil
         if operation == .push, let viewer = toVC as? PhotoViewerViewController {
             return viewer.makeTransition(.push)
         }
@@ -309,7 +312,7 @@ final class PhotoViewerNavigationDelegate: NSObject, UINavigationControllerDeleg
 /// name pill, or the reverse. Without a page title it simply materialises into the pill. The real
 /// title views stay hidden meanwhile.
 @MainActor
-private final class TitleMorph {
+final class PhotoTitleMorph {
     static let duration: TimeInterval = 0.3
     /// The page title as last seen on screen (a pop starts while it is off screen).
     private static var lastTitleImage: (title: ObjectIdentifier, image: UIImage)?

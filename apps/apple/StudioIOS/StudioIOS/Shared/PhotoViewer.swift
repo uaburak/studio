@@ -124,6 +124,23 @@ final class PhotoViewerViewController: UIViewController, UICollectionViewDelegat
         self.sourceFor = sourceFor
         self.actionsFor = actionsFor
         super.init(nibName: nil, bundle: nil)
+        // iOS's own zoom, as in OXTV: UIKit runs it, so it can be interrupted (back or a pull right
+        // after opening works) and the pull-down close is the system's. Only the picture zooms:
+        // the thumbnail lines up with the picture's rect, and the backdrop is the transition's
+        // dimming, which fades instead of shrinking with the picture.
+        var options = UIViewController.Transition.ZoomOptions()
+        options.interactiveDismissShouldBegin = { [weak self] context in
+            // Only a downward, mostly vertical pull closes it: swiping sideways pages instead.
+            guard context.velocity.dy > 0, abs(context.velocity.dy) > abs(context.velocity.dx) * 1.5 else { return false }
+            guard let self, let cell = self.pager.cellForItem(at: IndexPath(item: self.index, section: 0)) as? PhotoPageCell else { return true }
+            return cell.zoom.zoomScale <= 1.01
+        }
+        options.alignmentRectProvider = { [weak self] _ in self?.pictureRect() ?? .zero }
+        options.dimmingColor = Self.backdrop
+        preferredTransition = .zoom(options: options) { [weak self] _ in
+            guard let self else { return nil }
+            return self.sourceFor(self.index)
+        }
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
@@ -141,7 +158,6 @@ final class PhotoViewerViewController: UIViewController, UICollectionViewDelegat
     /// during the zoom, as in OXTV), or presented in its own navigation controller.
     func open(from presenter: UIViewController) {
         if let navigation = presenter.navigationController {
-            if navigation.delegate == nil { navigation.delegate = PhotoViewerNavigationDelegate.shared }
             navigation.pushViewController(self, animated: true)
         } else {
             let navigation = UINavigationController(rootViewController: self)
@@ -167,8 +183,8 @@ final class PhotoViewerViewController: UIViewController, UICollectionViewDelegat
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        view.backgroundColor = Self.backdrop
-        view.addGestureRecognizer(dismissPan)
+        // Clear while the zoom runs (its dimming is the backdrop), drawn once shown.
+        view.backgroundColor = .clear
 
         pagerLayout.scrollDirection = .horizontal
         pagerLayout.minimumLineSpacing = 0
@@ -193,9 +209,7 @@ final class PhotoViewerViewController: UIViewController, UICollectionViewDelegat
         // navigation bar carries both through the push and pop itself, as it does the corner
         // buttons (nothing is moved or faded by hand).
         navigationItem.titleView = titlePill
-        let back = UIBarButtonItem(image: UIImage(systemName: "chevron.left"), primaryAction: UIAction { [weak self] _ in self?.close() })
-        back.accessibilityLabel = "Kapat"
-        navigationItem.leftBarButtonItem = back
+        // The system back button (as in OXTV): it works during the zoom too.
         moreItem.accessibilityLabel = "Diğer"
         navigationItem.rightBarButtonItem = moreItem
         // The picture is not softened under the bars.
@@ -232,11 +246,13 @@ final class PhotoViewerViewController: UIViewController, UICollectionViewDelegat
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
         navigationController?.setToolbarHidden(false, animated: animated)
+        morphTitle(toPill: true)
     }
 
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
-        openingDidFinish()
+        isShown = true
+        view.backgroundColor = chromeHidden || zoomHidden ? .black : Self.backdrop
 
         // Closing is only the downward drag: no edge or full-width swipe back.
         guard let navigation = navigationController, pausedPopGestures.isEmpty else { return }
@@ -248,6 +264,10 @@ final class PhotoViewerViewController: UIViewController, UICollectionViewDelegat
 
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
+        // Closing: only the picture shrinks; the backdrop fades with the zoom's dimming.
+        isShown = false
+        view.backgroundColor = .clear
+        morphTitle(toPill: false)
 
         for gesture in pausedPopGestures { gesture.isEnabled = true }
         pausedPopGestures = []
@@ -256,6 +276,25 @@ final class PhotoViewerViewController: UIViewController, UICollectionViewDelegat
         if navigationController?.topViewController?.toolbarItems?.isEmpty ?? true {
             navigationController?.setToolbarHidden(true, animated: animated)
         }
+    }
+
+    /// Between viewDidAppear and viewWillDisappear (the backdrop is drawn only then).
+    private var isShown = false
+
+    /// Runs the title capsule's change (page title ↔ name pill) alongside the system zoom, so it
+    /// follows the zoom's timing and, on the pull-down close, the finger.
+    private func morphTitle(toPill: Bool) {
+        guard let navigation = navigationController, let coordinator = transitionCoordinator else { return }
+        let page = navigation.viewControllers.last { $0 !== self }
+        guard let morph = PhotoTitleMorph(pageTitle: page?.navigationItem.titleView, pill: titlePill, navigation: navigation) else { return }
+        morph.setState(atPill: !toPill)
+        coordinator.animate(alongsideTransition: { _ in
+            UIView.animateKeyframes(withDuration: 0, delay: 0, options: [.calculationModeCubic]) {
+                morph.keyframes(toPill: toPill)
+            }
+        }, completion: { _ in
+            morph.remove()
+        })
     }
 
     /// The toolbar holds share, the strip and one button: the strip takes what is left with room
@@ -516,7 +555,7 @@ final class PhotoViewerViewController: UIViewController, UICollectionViewDelegat
         UIView.animate(withDuration: 0.2) {
             // Zoomed in, only the picture strip steps aside; the other buttons stay.
             self.stripHolder.alpha = self.zoomHidden ? 0 : 1
-            self.view.backgroundColor = hidden || self.zoomHidden ? .black : Self.backdrop
+            if self.isShown { self.view.backgroundColor = hidden || self.zoomHidden ? .black : Self.backdrop }
             self.setNeedsStatusBarAppearanceUpdate()
         }
     }
