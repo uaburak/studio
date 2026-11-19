@@ -11,6 +11,7 @@ import {
   IconExpand,
   IconImage,
   IconLayers,
+  IconPlay,
   IconTrash,
   IconType,
   IconVideo,
@@ -20,6 +21,7 @@ import { useImageZoom } from "../../components/ui/zoomable-image.tsx";
 import { assetUrl } from "../../lib/api.ts";
 import { assetDragPayload, requestComposerAttach, writeAssetDrag } from "../../lib/asset-drag.ts";
 import { tileUrl } from "../../lib/thumbnail.ts";
+import { formatClipDuration, useVideoCover } from "../../lib/video-cover.ts";
 import { useAppStore } from "../../state/app-store.ts";
 import { analysisTooltip, downloadName, isImageAsset, lightboxImages } from "./media-model.ts";
 
@@ -161,7 +163,33 @@ function KindGlyph({ asset }: { asset: Asset }) {
   return <IconImage size={size} strokeWidth={1.4} />;
 }
 
-/** A square tile: the picture (or a kind glyph), hover dim, "AI" for generated pictures. */
+/** A video's first frame filling the tile, "▶ 0:07" at the bottom right (like Photos). */
+function VideoCoverFill({ asset, name }: { asset: Asset; name: string }) {
+  const cover = useVideoCover(asset.id);
+  const durationMs = asset.durationMs ?? cover?.durationMs ?? null;
+  if (!cover) {
+    // Being made (undefined) or failed (null): the glyph, as before.
+    return (
+      <span className="flex size-full flex-col items-center justify-center gap-1.5 px-2 text-icon">
+        <KindGlyph asset={asset} />
+        <span className="max-w-full truncate text-caption text-fg-2">{name}</span>
+      </span>
+    );
+  }
+  return (
+    <>
+      <img src={cover.url} alt="" draggable={false} className="size-full object-cover" />
+      {durationMs !== null && (
+        <span className="pointer-events-none absolute right-1.5 bottom-1.5 flex items-center gap-0.5 rounded-full bg-black/55 py-px pr-1.5 pl-1 text-caption font-medium leading-4 text-white tabular-nums">
+          <IconPlay size={9} strokeWidth={0} fill="currentColor" aria-hidden />
+          {formatClipDuration(durationMs)}
+        </span>
+      )}
+    </>
+  );
+}
+
+/** A square tile: the picture (or a video's cover, or a kind glyph), hover dim, "AI" badge. */
 export function MediaTile({
   asset,
   tileRef,
@@ -178,6 +206,7 @@ export function MediaTile({
   className?: string;
 }) {
   const image = isImageAsset(asset);
+  const video = asset.kind === "video" && asset.mimeType.startsWith("video/");
   const name = asset.originalFilename ?? "";
   return (
     <button
@@ -195,7 +224,7 @@ export function MediaTile({
       data-asset={asset.id}
       className={cn(
         "group relative aspect-square w-full overflow-hidden bg-control",
-        !image && "flex items-center justify-center text-icon",
+        !image && !video && "flex items-center justify-center text-icon",
         className,
       )}
       style={{ borderRadius: radius }}
@@ -208,6 +237,8 @@ export function MediaTile({
           draggable={false}
           className="size-full object-cover"
         />
+      ) : video ? (
+        <VideoCoverFill asset={asset} name={name} />
       ) : (
         <span className="flex flex-col items-center gap-1.5 px-2">
           <KindGlyph asset={asset} />
