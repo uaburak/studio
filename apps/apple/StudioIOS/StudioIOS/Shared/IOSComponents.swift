@@ -494,7 +494,14 @@ enum FileSharing {
             throw StudioAPIError.invalidConfiguration("Fotoğraflar'a kaydetmek için izin gerekiyor (Ayarlar → Studio → Fotoğraflar).")
         }
         let images = files.filter { ["jpg", "jpeg", "png"].contains(($0.filename as NSString).pathExtension.lowercased()) }
-        try await PHPhotoLibrary.shared().performChanges {
+        try await addToLibrary(images)
+        return images.count
+    }
+
+    /// Photos runs the change block on its own queue: built outside the main actor, or the
+    /// block inherits main-actor isolation and the app traps when Photos calls it.
+    nonisolated private static func addToLibrary(_ images: [ExportedFile]) async throws {
+        try await PHPhotoLibrary.shared().performChanges { @Sendable in
             for file in images {
                 let request = PHAssetCreationRequest.forAsset()
                 let options = PHAssetResourceCreationOptions()
@@ -502,6 +509,5 @@ enum FileSharing {
                 request.addResource(with: .photo, data: file.data, options: options)
             }
         }
-        return images.count
     }
 }

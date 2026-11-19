@@ -193,7 +193,7 @@ private final class SlidePage: UIView {
                 slotBox.layer.cornerRadius = 14
                 slotBox.layer.borderWidth = 1.5
                 slotBox.layer.borderColor = IOSTheme.accent.cgColor
-                let hint = UILabel.studio("Görsel ekle\nDüzenle sekmesinden ya da aşağıdan", size: 13, weight: .medium, color: .lightGray, lines: 2, style: .footnote)
+                let hint = UILabel.studio("Görsel ekle\nAşağıdaki Görsel bölümünden", size: 13, weight: .medium, color: .lightGray, lines: 2, style: .footnote)
                 hint.textAlignment = .center
                 slotBox.addSubview(hint)
                 hint.pin(to: slotBox, insets: UIEdgeInsets(top: 16, left: 12, bottom: 16, right: 12))

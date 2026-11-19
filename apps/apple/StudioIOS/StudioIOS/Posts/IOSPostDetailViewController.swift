@@ -4,7 +4,7 @@ import UIKit
 /// An opened post: zoomable slides, Post | Sürümler, "Neyi değiştireyim?", Zamanla and Onayla.
 /// The design itself is edited on the Mac (no layer editing on the phone); a change asked for
 /// here becomes a new version there (PostEditSession).
-final class IOSPostDetailViewController: UIViewController {
+final class IOSPostDetailViewController: UIViewController, UITextViewDelegate {
     enum DetailTab: Int, CaseIterable {
         case post, versions
         var label: String {
@@ -25,7 +25,8 @@ final class IOSPostDetailViewController: UIViewController {
     private let segmented = UISegmentedControl(items: DetailTab.allCases.map(\.label))
     private let tabContent = UIStackView.v([], spacing: 12)
     private let bottomBar = UIView()
-    private let instructionField = UITextField()
+    private let instructionView = ComposerTextView()
+    private var instructionHeight: NSLayoutConstraint!
     private var instructionSend: UIButton!
     private var scheduleButton: UIButton!
     private var approveButton: UIButton!
@@ -126,54 +127,101 @@ final class IOSPostDetailViewController: UIViewController {
     // MARK: Bottom bar
 
     private func buildBottomBar() {
-        // Floats over the page (the page scrolls under it, with the soft bottom edge).
+        // The chat's composer: one glass pill floating over the page, the text growing with
+        // what is typed and the round ink send button appearing once there is something to send.
         bottomBar.translatesAutoresizingMaskIntoConstraints = false
         bottomBar.backgroundColor = .clear
 
-        instructionField.placeholder = "Neyi değiştireyim?"
-        instructionField.font = IOSTheme.font(15)
-        instructionField.adjustsFontForContentSizeCategory = true
-        instructionField.returnKeyType = .send
-        instructionField.translatesAutoresizingMaskIntoConstraints = false
-        instructionField.addAction(UIAction { [weak self] _ in
-            guard let self else { return }
-            self.session.instruction = self.instructionField.text ?? ""
-        }, for: .editingChanged)
-        instructionField.addAction(UIAction { [weak self] _ in self?.sendInstruction() }, for: .editingDidEndOnExit)
-        instructionSend = UIButton.studioIcon("arrow.up.circle.fill", label: "Değişikliği iste", size: 24, tint: IOSTheme.textTertiary) { [weak self] in
+        instructionView.font = IOSTheme.font(17)
+        instructionView.adjustsFontForContentSizeCategory = true
+        instructionView.textColor = IOSTheme.textPrimary
+        instructionView.backgroundColor = .clear
+        instructionView.textContainerInset = UIEdgeInsets(top: 10, left: 8, bottom: 10, right: 4)
+        instructionView.isScrollEnabled = false
+        instructionView.delegate = self
+        instructionView.translatesAutoresizingMaskIntoConstraints = false
+        instructionView.accessibilityLabel = "Neyi değiştireyim?"
+        instructionView.placeholderLabel.text = "Neyi değiştireyim?"
+        instructionHeight = instructionView.heightAnchor.constraint(equalToConstant: 40)
+        instructionHeight.isActive = true
+
+        instructionSend = UIButton(type: .system)
+        instructionSend.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            instructionSend.widthAnchor.constraint(equalToConstant: 40),
+            instructionSend.heightAnchor.constraint(equalToConstant: 40),
+        ])
+        instructionSend.addAction(UIAction { [weak self] _ in
             guard let self else { return }
             if self.session.revisionJobId != nil { Task { await self.session.cancelRevision() } } else { self.sendInstruction() }
-        }
-        // A Liquid Glass capsule, like the app's other fields over content.
-        let fieldBox = UIVisualEffectView(effect: UIGlassEffect())
-        fieldBox.translatesAutoresizingMaskIntoConstraints = false
-        fieldBox.cornerConfiguration = .capsule()
-        let fieldRow = UIStackView.h([instructionField, instructionSend], spacing: 4)
-        fieldRow.translatesAutoresizingMaskIntoConstraints = false
-        fieldBox.contentView.addSubview(fieldRow)
-        fieldRow.pin(to: fieldBox.contentView, insets: UIEdgeInsets(top: 2, left: 16, bottom: 2, right: 4))
-        fieldBox.heightAnchor.constraint(greaterThanOrEqualToConstant: 42).isActive = true
+        }, for: .touchUpInside)
 
+        let row = UIStackView.h([instructionView, instructionSend], spacing: 6, alignment: .bottom)
+        let glass = UIGlassEffect(style: .regular)
+        glass.isInteractive = false
+        let pill = UIVisualEffectView(effect: glass)
+        pill.translatesAutoresizingMaskIntoConstraints = false
+        pill.cornerConfiguration = .corners(radius: .fixed(26))
+        row.translatesAutoresizingMaskIntoConstraints = false
+        pill.contentView.addSubview(row)
+        row.pin(to: pill.contentView, insets: UIEdgeInsets(top: 6, left: 6, bottom: 6, right: 6))
+
+        // Zamanla and Onayla live in the page (at the end of the Post tab).
         scheduleButton = UIButton.studioPill(title: "Zamanla", kind: .secondary) { [weak self] in self?.presentSchedule() }
         approveButton = UIButton.studioPill(title: "Onayla", kind: .primary) { [weak self] in self?.approve() }
-        let buttons = UIStackView.h([UIView.spacer(), scheduleButton, approveButton], spacing: 8)
-        let barStack = UIStackView.v([fieldBox, buttons], spacing: 10)
-        bottomBar.addSubview(barStack)
+
+        bottomBar.addSubview(pill)
         view.addSubview(bottomBar)
-        // The page's soft bottom edge shapes itself around the floating field and buttons.
+        // The page's soft bottom edge shapes itself around the floating pill.
         let edge = UIScrollEdgeElementContainerInteraction()
         edge.scrollView = scroll
         edge.edge = .bottom
         bottomBar.addInteraction(edge)
+        // Where the bar sits if the keyboard guide is not tracking yet (as in the chat).
+        let resting = bottomBar.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor)
+        resting.priority = .defaultLow
         NSLayoutConstraint.activate([
-            barStack.leadingAnchor.constraint(equalTo: bottomBar.leadingAnchor, constant: IOSTheme.gutter),
-            barStack.trailingAnchor.constraint(equalTo: bottomBar.trailingAnchor, constant: -IOSTheme.gutter),
-            barStack.topAnchor.constraint(equalTo: bottomBar.topAnchor, constant: 10),
-            barStack.bottomAnchor.constraint(equalTo: bottomBar.bottomAnchor, constant: -8),
+            pill.leadingAnchor.constraint(equalTo: bottomBar.leadingAnchor, constant: 14),
+            pill.trailingAnchor.constraint(equalTo: bottomBar.trailingAnchor, constant: -14),
+            pill.topAnchor.constraint(equalTo: bottomBar.topAnchor, constant: 6),
+            pill.bottomAnchor.constraint(equalTo: bottomBar.bottomAnchor, constant: -8),
             bottomBar.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             bottomBar.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             bottomBar.bottomAnchor.constraint(equalTo: view.keyboardLayoutGuide.topAnchor),
+            resting,
         ])
+    }
+
+    func textViewDidChange(_ textView: UITextView) {
+        session.instruction = textView.text
+        instructionView.placeholderLabel.isHidden = !textView.text.isEmpty
+        updateInstructionHeight()
+        renderSend()
+    }
+
+    /// Grows with the text up to 140 pt, then scrolls (as the chat's composer does).
+    private func updateInstructionHeight() {
+        let width = instructionView.bounds.width > 0 ? instructionView.bounds.width : view.bounds.width - 80
+        let fitting = instructionView.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude)).height
+        let height = min(max(40, ceil(fitting)), 140)
+        instructionView.isScrollEnabled = fitting > 140
+        if instructionHeight.constant != height { instructionHeight.constant = height }
+    }
+
+    /// The round ink button: send while there is text, stop while a change runs, else hidden.
+    private func renderSend() {
+        let revising = session.revisionJobId != nil
+        let hasText = !session.instruction.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        var config = UIButton.Configuration.filled()
+        config.cornerStyle = .capsule
+        config.contentInsets = .zero
+        config.image = UIImage(systemName: revising ? "stop.fill" : "arrow.up", withConfiguration: UIImage.SymbolConfiguration(pointSize: 16, weight: .semibold))
+        config.baseBackgroundColor = IOSTheme.ink
+        config.baseForegroundColor = IOSTheme.onInk
+        instructionSend.configuration = config
+        instructionSend.accessibilityLabel = revising ? "AI düzenlemesini durdur" : "Değişikliği iste"
+        let visible = revising || hasText
+        if instructionSend.isHidden == visible { instructionSend.isHidden = !visible }
     }
 
     // MARK: Render
@@ -200,14 +248,13 @@ final class IOSPostDetailViewController: UIViewController {
         pager.setActivity(s.activity.isBusy ? s.activity.message : exporting)
 
         // Bottom bar
-        if !instructionField.isFirstResponder, instructionField.text != s.instruction { instructionField.text = s.instruction }
-        let revising = s.revisionJobId != nil
-        instructionField.isEnabled = !revising
-        var sendConfig = instructionSend.configuration
-        sendConfig?.image = UIImage(systemName: revising ? "stop.circle.fill" : "arrow.up.circle.fill", withConfiguration: UIImage.SymbolConfiguration(pointSize: 24))
-        sendConfig?.baseForegroundColor = revising ? IOSTheme.ink : (s.instruction.trimmingCharacters(in: .whitespaces).isEmpty ? IOSTheme.textTertiary : IOSTheme.accent)
-        instructionSend.configuration = sendConfig
-        instructionSend.accessibilityLabel = revising ? "AI düzenlemesini durdur" : "Değişikliği iste"
+        if !instructionView.isFirstResponder, instructionView.text != s.instruction {
+            instructionView.text = s.instruction
+            instructionView.placeholderLabel.isHidden = !s.instruction.isEmpty
+            updateInstructionHeight()
+        }
+        instructionView.isEditable = s.revisionJobId == nil
+        renderSend()
 
         let approved = s.content.status.hasApproval
         approveButton.setPill(title: approved ? "Onaylandı" : "Onayla", kind: approved ? .secondary : .primary, busy: s.isApproving, image: approved ? "checkmark" : nil)
@@ -385,6 +432,12 @@ final class IOSPostDetailViewController: UIViewController {
             // A canvas version's slots are filled on the Mac's canvas.
             tabContent.addArrangedSubview(s.isCanvasVersion || s.card.isCanvasVersion ? canvasNoteCard() : slotCard())
         }
+
+        // Zamanla and Onayla at the foot of the page, side by side, full width.
+        let actions = UIStackView.h([scheduleButton, approveButton], spacing: 10)
+        actions.distribution = .fillEqually
+        tabContent.setCustomSpacing(24, after: tabContent.arrangedSubviews.last ?? actions)
+        tabContent.addArrangedSubview(actions)
     }
 
     /// "Üretilemedi": the reason in plain words and "Yeniden dene" (`POST /api/jobs/{id}/retry`).
@@ -756,7 +809,7 @@ final class IOSPostDetailViewController: UIViewController {
     private func sendInstruction() {
         let text = session.instruction.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
-        instructionField.resignFirstResponder()
+        instructionView.resignFirstResponder()
         Task { await session.sendInstruction() }
     }
 
