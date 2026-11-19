@@ -6,7 +6,7 @@ import UIKit
 struct ChatCellContext {
     unowned let model: IOSConversationModel
     var onMention: (EntityID) -> Void
-    var onAttachment: (AttachmentPart) -> Void
+    var onAttachment: (AttachmentPart, UIView) -> Void
     var onOpenPost: (ContentRefPart) -> Void
     var onEditPlan: (Plan) -> Void
     var onAnswerText: (Message, QuestionPart) -> Void
@@ -541,7 +541,9 @@ enum ChatViews {
                 tag.trailingAnchor.constraint(lessThanOrEqualTo: control.trailingAnchor, constant: -5),
             ])
         }
-        control.addAction(UIAction { _ in context.onAttachment(attachment) }, for: .touchUpInside)
+        control.addAction(UIAction { [weak image] _ in
+            if let image { context.onAttachment(attachment, image) }
+        }, for: .touchUpInside)
         control.isAccessibilityElement = true
         control.accessibilityTraits = [.image, .button]
         control.accessibilityLabel = "Görsel \(name.map { "@\($0)" } ?? "")"

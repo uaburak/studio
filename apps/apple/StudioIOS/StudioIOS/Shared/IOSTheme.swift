@@ -7,8 +7,8 @@ import UIKit
 
 enum IOSTheme {
     static let canvas = UIColor(light: 0xFFFFFF, dark: 0x161617)
-    /// The drawer under the chat card: a step darker than the chat (lighter grey in light mode).
-    static let drawer = UIColor(light: 0xF2F2F3, dark: 0x0A0A0B)
+    /// The drawer under the page: darker than the page in both modes (a clear grey in light mode).
+    static let drawer = UIColor(light: 0xE9E9EC, dark: 0x0A0A0B)
     static let groupedBackground = UIColor(light: 0xF5F5F6, dark: 0x0E0E10)
     static let elevated = UIColor(light: 0xFFFFFF, dark: 0x1E1E20)
     static let fill = UIColor(light: 0xF2F2F3, dark: 0x262628)
@@ -33,11 +33,6 @@ enum IOSTheme {
 
     static let cardRadius: CGFloat = 20
     static let gutter: CGFloat = 16
-
-    /// Dims the chat while the drawer is open.
-    static let scrim = UIColor { traits in
-        UIColor.black.withAlphaComponent(traits.userInterfaceStyle == .dark ? 0.45 : 0.14)
-    }
 
     /// A system font that follows Dynamic Type (scaled from `size` at the default size).
     static func font(_ size: CGFloat, _ weight: UIFont.Weight = .regular, style: UIFont.TextStyle = .body) -> UIFont {
@@ -436,6 +431,15 @@ final class IOSImageStore {
         if let hit = cache.object(forKey: KeyBox(key)) { return hit }
         for other in AssetThumbnail.widths where other > key.width {
             if let larger = cache.object(forKey: KeyBox(IOSImageKey(assetId, width: other))) { return larger }
+        }
+        return seeded.object(forKey: assetId as NSString)
+    }
+
+    /// Any cached copy of the picture (the largest one), so a viewer opens on what is already
+    /// loaded instead of an empty frame while the full-size copy arrives.
+    func anyCached(_ assetId: EntityID) -> UIImage? {
+        for width in AssetThumbnail.widths.reversed() {
+            if let hit = cache.object(forKey: KeyBox(IOSImageKey(assetId, width: width))) { return hit }
         }
         return seeded.object(forKey: assetId as NSString)
     }

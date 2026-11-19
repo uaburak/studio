@@ -369,7 +369,7 @@ final class ProductEditorViewController: UIViewController, UITextFieldDelegate {
             button.addSubview(image)
             image.pin(to: button)
             button.widthAnchor.constraint(equalToConstant: 80).isActive = true
-            button.menu = photoMenu(id, index: index)
+            button.menu = photoMenu(id, index: index, source: image)
             button.showsMenuAsPrimaryAction = true
             button.accessibilityLabel = index == 0 ? "Kapak fotoğrafı" : "Fotoğraf \(index + 1)"
             photosStack.addArrangedSubview(button)
@@ -417,8 +417,15 @@ final class ProductEditorViewController: UIViewController, UITextFieldDelegate {
         }
     }
 
-    private func photoMenu(_ id: EntityID, index: Int) -> UIMenu {
-        var items: [UIMenuElement] = []
+    private func photoMenu(_ id: EntityID, index: Int, source: UIView) -> UIMenu {
+        var items: [UIMenuElement] = [
+            UIAction(title: "Göster", image: UIImage(systemName: "eye")) { [weak self, weak source] _ in
+                guard let self else { return }
+                let items = self.photoIds.enumerated().map { PhotoViewerItem(assetId: $1, title: $0 == 0 ? "Kapak fotoğrafı" : "Fotoğraf \($0 + 1)", aspect: nil) }
+                let start = self.photoIds.firstIndex(of: id) ?? 0
+                PhotoViewerViewController(images: self.app.images, items: items, index: start, sourceFor: { _ in source }).open(from: self)
+            },
+        ]
         if index > 0 {
             items.append(UIAction(title: "Kapak yap", image: UIImage(systemName: "star")) { [weak self] _ in
                 guard let self else { return }

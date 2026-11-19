@@ -59,13 +59,13 @@ type Size = { width: number; height: number };
 
 const OPEN: ValueAnimationTransition<number> = {
   type: "spring",
-  visualDuration: 0.42,
-  bounce: 0.16,
+  visualDuration: 0.28,
+  bounce: 0.08,
 };
 const CLOSE: ValueAnimationTransition<number> = {
   type: "spring",
-  visualDuration: 0.34,
-  bounce: 0.06,
+  visualDuration: 0.24,
+  bounce: 0.04,
 };
 /** Springing back after a drag, zooming in and out. */
 const SETTLE: ValueAnimationTransition<number> = {
@@ -73,7 +73,7 @@ const SETTLE: ValueAnimationTransition<number> = {
   visualDuration: 0.3,
   bounce: 0.2,
 };
-const FADE: ValueAnimationTransition<number> = { duration: 0.22, ease: [0.32, 0.72, 0, 1] };
+const FADE: ValueAnimationTransition<number> = { duration: 0.16, ease: [0.32, 0.72, 0, 1] };
 /** Where the picture starts (and ends) with no thumbnail: slightly smaller, faded. */
 const NO_SOURCE = { x: 0, y: 0, scale: 0.92 };
 const CLOSE_TIMEOUT_MS = 900;
@@ -213,7 +213,7 @@ function Viewer({ request }: { request: LightboxRequest }) {
   }, [isPresent, still, v, fitX, fitY, fitWidth, fitHeight, state.index]);
 
   useEffect(() => {
-    animate(v.scrim, 1, { duration: 0.3, ease: "easeOut" });
+    animate(v.scrim, 1, { duration: 0.2, ease: "easeOut" });
     animate(v.opacity, 1, FADE);
   }, [v]);
 

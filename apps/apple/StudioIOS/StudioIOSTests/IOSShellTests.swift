@@ -128,7 +128,7 @@ struct IOSShellTests {
         #expect(root.drawer.view.isHidden)
         #expect(root.mainNav.view.superview?.transform.tx == 0)
 
-        // The hamburger opens it: the chat slides right and is dimmed.
+        // The menu button opens it: the chat slides right (not dimmed).
         root.chat?.onOpenDrawer?()
         #expect(root.isDrawerOpen)
         #expect(root.drawerProgress == 1)
@@ -137,7 +137,7 @@ struct IOSShellTests {
         #expect(root.mainNav.view.accessibilityElementsHidden)
         #expect(!root.drawer.view.accessibilityElementsHidden)
 
-        // Tapping the dimmed chat closes it.
+        // Tapping the slid-aside chat closes it.
         let scrim = root.mainNav.view.superview?.subviews.last as? UIControl
         #expect(scrim != nil)
         scrim?.sendActions(for: .touchUpInside)
@@ -151,10 +151,18 @@ struct IOSShellTests {
         #expect(root.accessibilityPerformEscape())
         #expect(!root.isDrawerOpen)
 
-        // On a pushed page the edge swipe is the back gesture: the drawer stays shut.
+        // A section is a root like the chat: the drawer opens there and marks it as current.
         root.show(.posts)
         root.setDrawer(open: true, animated: false)
+        #expect(root.isDrawerOpen)
+        #expect(root.currentDestination == .posts)
+        root.setDrawer(open: false, animated: false)
+
+        // On a pushed inner page the edge swipe is the back gesture: the drawer stays shut.
+        root.mainNav.pushViewController(UIViewController(), animated: false)
+        root.setDrawer(open: true, animated: false)
         #expect(!root.isDrawerOpen)
+        root.mainNav.popToRootViewController(animated: false)
 
         // Dragging: progress follows the finger, a flick decides.
         #expect(DrawerMath.progress(start: 0, translation: width / 2, width: width) == 0.5)
@@ -180,13 +188,14 @@ struct IOSShellTests {
             #expect(!root.isDrawerOpen, "\(destination)")
             let top = try #require(root.mainNav.topViewController)
             #expect(destination.isShown(by: top), "\(destination) → \(type(of: top))")
-            #expect(root.mainNav.viewControllers.count == 2)
-            #expect(root.mainNav.viewControllers.first is IOSChatViewController)
+            // A section sits beside the chat: it is the root, with the drawer button.
+            #expect(root.mainNav.viewControllers.count == 1)
+            #expect(root.currentDestination == destination)
+            #expect(top.navigationItem.leftBarButtonItem != nil)
             top.loadViewIfNeeded()
             top.view.frame = root.view.bounds
             await settle(top.view, passes: 3)
             #expect(top.view.subviews.isEmpty == false)
-            root.mainNav.popToRootViewController(animated: false)
         }
 
         // Postlar → a post (back returns to the grid), Markalar → a profile.
@@ -194,16 +203,16 @@ struct IOSShellTests {
         await waitUntil { root.mainNav.topViewController is IOSPostsViewController }
         app.open(.post("post-02a"))
         await waitUntil { root.mainNav.topViewController is IOSPostDetailViewController }
-        #expect(root.mainNav.viewControllers.map { String(describing: type(of: $0)) } == ["IOSChatViewController", "IOSPostsViewController", "IOSPostDetailViewController"])
+        #expect(root.mainNav.viewControllers.map { String(describing: type(of: $0)) } == ["IOSPostsViewController", "IOSPostDetailViewController"])
 
         app.open(.brand(SampleData.mtm))
         await waitUntil { root.mainNav.topViewController is BrandProfileViewController }
         #expect((root.mainNav.topViewController as? BrandProfileViewController)?.brandId == SampleData.mtm)
-        #expect(root.mainNav.viewControllers.count == 3)
+        #expect(root.mainNav.viewControllers.count == 2)
 
         app.open(.calendar)
         await waitUntil { root.mainNav.topViewController is IOSCalendarViewController }
-        #expect(root.mainNav.viewControllers.count == 2)
+        #expect(root.mainNav.viewControllers.count == 1)
 
         // History rows open conversations at the root; "Yeni sohbet" returns home.
         drawer.select(.conversation("c-bayi"))
@@ -275,10 +284,11 @@ struct IOSShellTests {
         #expect(home.home.greetingLabel.text == StudioGreeting.text(at: Date(), name: "Deniz"))
         #expect(home.navigationItem.leftBarButtonItem === home.drawerItem)
         #expect(home.navigationItem.rightBarButtonItems?.count == 1)
-        #expect(home.navigationItem.rightBarButtonItems?.first === home.brandItem)
-        let homeMenu = titles(home.homeMenu())
-        for expected in ["Marka", "Model", "Düşünme", "Kullanım ve durum"] {
-            #expect(homeMenu.contains(expected), "\(expected) in \(homeMenu)")
+        #expect(home.navigationItem.rightBarButtonItems?.first === home.moreItem)
+        let homeMenu = titles(home.conversationMenu())
+        #expect(homeMenu.contains("Kullanım ve durum"), "\(homeMenu)")
+        for absent in ["Marka", "Model", "Düşünme"] {
+            #expect(!homeMenu.contains(absent), "\(absent) in \(homeMenu)")
         }
         #expect(home.composer.interactions.contains { $0 is UIScrollEdgeElementContainerInteraction })
         #expect(ambiguousViews(in: root.view).isEmpty, "\(ambiguousViews(in: root.view))")
@@ -288,11 +298,14 @@ struct IOSShellTests {
         await waitUntil { chat.model.state != nil }
         await settle(root.view)
         #expect(chat.home.isHidden)
-        #expect(chat.navigationItem.rightBarButtonItems?.count == 2)
-        #expect(chat.navigationItem.rightBarButtonItems?.contains { $0 === chat.newChatItem } == true)
+        #expect(chat.navigationItem.rightBarButtonItems?.count == 1)
+        #expect(chat.navigationItem.rightBarButtonItems?.first === chat.moreItem)
         let menu = titles(chat.conversationMenu())
-        for expected in ["Marka", "Model", "Düşünme", "Kullanım ve durum", "Kullanımı sor (/usage)", "Yeniden adlandır", "Sohbeti paylaş", "Arşivle"] {
+        for expected in ["Yeni sohbet", "Kullanım ve durum", "Kullanımı sor (/usage)", "Yeniden adlandır", "Sohbeti paylaş", "Arşivle"] {
             #expect(menu.contains(expected), "\(expected) in \(menu)")
+        }
+        for absent in ["Marka", "Model", "Düşünme"] {
+            #expect(!menu.contains(absent), "\(absent) in \(menu)")
         }
         #expect(chat.transcript().contains("Sen: "))
         #expect(ambiguousViews(in: root.view).isEmpty, "\(ambiguousViews(in: root.view))")
@@ -356,7 +369,7 @@ struct IOSShellTests {
         await settle(root.view, passes: 3)
         #expect(composer.primaryAction == (model.activeRun != nil ? .stop : .idle))
         #expect(!composer.textView.isFirstResponder)
-        #expect(chat.navigationItem.rightBarButtonItems?.count == 2)
+        #expect(chat.navigationItem.rightBarButtonItems?.count == 1)
 
         // Without a brand, + explains why and offers the brands page.
         app.currentBrandId = nil

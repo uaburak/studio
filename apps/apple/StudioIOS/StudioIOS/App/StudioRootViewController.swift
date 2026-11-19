@@ -2,9 +2,9 @@ import StudioKit
 import UIKit
 
 /// The app's root, like the Claude app: the chat fills the screen (no tab bar) and the
-/// drawer slides in from the left, pushing the chat aside (dimmed, rounded). Postlar,
-/// Takvim, Markalar, Mac durumu and Ayarlar are full pages pushed over the chat with a
-/// back button. Notifications and links arrive as `IOSRoute`s and land here.
+/// drawer slides in from the left, pushing the page aside (rounded, not dimmed). Postlar,
+/// Takvim, Medya, Ürünler, Markalar, Mac durumu and Ayarlar are sections beside the chat
+/// (each replaces the root and has the drawer button, no back button). Notifications and links arrive as `IOSRoute`s and land here.
 final class StudioRootViewController: UIViewController, UINavigationControllerDelegate, UIGestureRecognizerDelegate {
     let app: IOSAppModel
     let mainNav: UINavigationController
@@ -37,6 +37,12 @@ final class StudioRootViewController: UIViewController, UINavigationControllerDe
     /// The conversation at the root of the navigation stack.
     var chat: IOSChatViewController? { mainNav.viewControllers.first as? IOSChatViewController }
 
+    /// The section on screen when it is not a chat (Postlar, Takvim, Medya, …).
+    var currentDestination: IOSDestination? {
+        guard let first = mainNav.viewControllers.first else { return nil }
+        return IOSDestination.allCases.first { $0.isShown(by: first) }
+    }
+
     var drawerWidth: CGFloat { DrawerMath.width(for: view.bounds.width) }
 
     override func viewDidLoad() {
@@ -50,6 +56,7 @@ final class StudioRootViewController: UIViewController, UINavigationControllerDe
         drawer.onConversation = { [weak self] id in self?.follow(.conversation(id)) }
         drawer.onNewChat = { [weak self] in self?.follow(.newConversation) }
         drawer.currentConversationId = { [weak self] in self?.chat?.model.id }
+        drawer.currentDestination = { [weak self] in self?.currentDestination }
 
         mainContainer.backgroundColor = IOSTheme.canvas
         mainContainer.layer.cornerCurve = .continuous
@@ -61,7 +68,8 @@ final class StudioRootViewController: UIViewController, UINavigationControllerDe
         mainNav.delegate = self
         mainNav.navigationBar.prefersLargeTitles = true
 
-        scrim.backgroundColor = IOSTheme.scrim
+        // No dimming: the page slides aside as it is; the clear layer only takes the tap that closes.
+        scrim.backgroundColor = .clear
         scrim.alpha = 0
         scrim.isHidden = true
         scrim.isAccessibilityElement = true
@@ -305,6 +313,15 @@ final class StudioRootViewController: UIViewController, UINavigationControllerDe
 
     // MARK: Navigation
 
+    /// The picture viewer flies its picture in and out (see `PhotoZoomTransition`).
+    func navigationController(_ navigationController: UINavigationController, animationControllerFor operation: UINavigationController.Operation, from fromVC: UIViewController, to toVC: UIViewController) -> UIViewControllerAnimatedTransitioning? {
+        PhotoViewerNavigationDelegate.animator(operation: operation, from: fromVC, to: toVC)
+    }
+
+    func navigationController(_ navigationController: UINavigationController, interactionControllerFor animationController: UIViewControllerAnimatedTransitioning) -> UIViewControllerInteractiveTransitioning? {
+        PhotoViewerNavigationDelegate.interaction(for: animationController)
+    }
+
     func navigationController(_ navigationController: UINavigationController, didShow viewController: UIViewController, animated: Bool) {
         openPan.isEnabled = navigationController.viewControllers.count == 1
     }
@@ -354,9 +371,8 @@ final class StudioRootViewController: UIViewController, UINavigationControllerDe
         case .pair, .usage:
             break
         case .brand(let id):
-            guard let root = mainNav.viewControllers.first else { return }
             if let top = mainNav.topViewController as? BrandProfileViewController, top.brandId == id { return }
-            mainNav.setViewControllers([root, BrandsViewController(app: app), BrandProfileViewController(app: app, brandId: id)], animated: isOnScreen)
+            replaceRoot(with: [sectionRoot(BrandsViewController(app: app)), BrandProfileViewController(app: app, brandId: id)])
         }
     }
 
@@ -379,11 +395,36 @@ final class StudioRootViewController: UIViewController, UINavigationControllerDe
         }
     }
 
-    /// A page from the drawer, pushed over the chat (back returns to the chat).
+    /// A section from the drawer (Postlar, Takvim, Medya, …). It sits beside the chat, not inside
+    /// it: it replaces the root, has the menu button instead of a back button, and the drawer
+    /// swipe works on it.
     func show(_ destination: IOSDestination) {
-        guard let root = mainNav.viewControllers.first else { return }
-        if let top = mainNav.topViewController, destination.isShown(by: top), mainNav.viewControllers.count == 2 { return }
-        mainNav.setViewControllers([root, destination.makeController(app)], animated: isOnScreen)
+        if let first = mainNav.viewControllers.first, destination.isShown(by: first), mainNav.viewControllers.count == 1 { return }
+        replaceRoot(with: [sectionRoot(destination.makeController(app))])
+    }
+
+    /// A section's first page: the drawer button at the left.
+    private func sectionRoot(_ controller: UIViewController) -> UIViewController {
+        let item = UIBarButtonItem(image: UIImage(systemName: "text.alignleft"), primaryAction: UIAction { [weak self] _ in
+            controller.view.endEditing(true)
+            self?.setDrawer(open: true, animated: true)
+        })
+        item.accessibilityLabel = "Kenar çubuğu"
+        controller.navigationItem.leftBarButtonItem = item
+        controller.navigationItem.backButtonDisplayMode = .minimal
+        return controller
+    }
+
+    /// Replaces the navigation stack with a soft crossfade (no push or pop).
+    private func replaceRoot(with controllers: [UIViewController]) {
+        if isOnScreen {
+            let transition = CATransition()
+            transition.type = .fade
+            transition.duration = 0.2
+            mainNav.view.layer.add(transition, forKey: "root")
+        }
+        mainNav.setViewControllers(controllers, animated: false)
+        drawer.reload()
     }
 
     /// Animate navigation only when the user can see it (off screen in tests, at launch).
@@ -450,9 +491,10 @@ final class StudioRootViewController: UIViewController, UINavigationControllerDe
             if let postsIndex = stack.firstIndex(where: { $0 is IOSPostsViewController }) {
                 stack = Array(stack[...postsIndex])
             } else {
-                stack = Array(stack.prefix(1))
+                stack = [sectionRoot(IOSPostsViewController(app: app))]
             }
             mainNav.setViewControllers(stack + [IOSPostDetailViewController(app: app, card: card)], animated: isOnScreen)
+            drawer.reload()
         }
     }
 }

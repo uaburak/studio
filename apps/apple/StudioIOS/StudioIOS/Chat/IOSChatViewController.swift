@@ -18,7 +18,6 @@ final class IOSChatViewController: UIViewController, UITableViewDelegate {
     private(set) var drawerItem: UIBarButtonItem!
     private(set) var newChatItem: UIBarButtonItem!
     private(set) var moreItem: UIBarButtonItem!
-    private(set) var brandItem: UIBarButtonItem!
     private var dataSource: UITableViewDiffableDataSource<Int, String>!
     private var observation: IOSObservationToken?
     private var badgeObservation: IOSObservationToken?
@@ -163,7 +162,7 @@ final class IOSChatViewController: UIViewController, UITableViewDelegate {
     // MARK: Bar items
 
     private func buildBarItems() {
-        drawerItem = UIBarButtonItem(image: UIImage(systemName: "line.3.horizontal.decrease"), primaryAction: UIAction { [weak self] _ in
+        drawerItem = UIBarButtonItem(image: UIImage(systemName: "text.alignleft"), primaryAction: UIAction { [weak self] _ in
             self?.view.endEditing(true)
             self?.onOpenDrawer?()
         })
@@ -181,11 +180,6 @@ final class IOSChatViewController: UIViewController, UITableViewDelegate {
             completion(self?.conversationMenu() ?? [])
         }]))
         moreItem.accessibilityLabel = "Sohbet işlemleri"
-
-        brandItem = UIBarButtonItem(image: UIImage(systemName: "building.2"), menu: UIMenu(children: [UIDeferredMenuElement.uncached { [weak self] completion in
-            completion(self?.homeMenu() ?? [])
-        }]))
-        brandItem.accessibilityLabel = "Marka ve model"
     }
 
     /// Orange dot on the drawer button while something waits on the user (posts to
@@ -208,7 +202,7 @@ final class IOSChatViewController: UIViewController, UITableViewDelegate {
     private func render() {
         if shownAsNew != model.isNew {
             shownAsNew = model.isNew
-            navigationItem.rightBarButtonItems = model.isNew ? [brandItem] : [moreItem, newChatItem]
+            navigationItem.rightBarButtonItems = [moreItem]
         }
         if model.isNew { model.refreshComposerState() }
         if app.visibleConversationId == nil, view.window != nil { app.visibleConversationId = model.id }
@@ -296,7 +290,17 @@ final class IOSChatViewController: UIViewController, UITableViewDelegate {
         case .polling: "Yeniden bağlanıyor…"
         }
         statusChip.text = text
-        navigationItem.titleView = text == nil ? nil : statusChip
+        // The conversation's name in the middle of the bar; connection trouble as a line under it
+        // (an empty chat has no name, so the trouble line stands alone).
+        let title = model.isNew ? nil : model.title
+        if navigationItem.title != title { navigationItem.title = title }
+        if title == nil {
+            navigationItem.subtitle = nil
+            navigationItem.titleView = text == nil ? nil : statusChip
+        } else {
+            navigationItem.titleView = nil
+            if navigationItem.subtitle != text { navigationItem.subtitle = text }
+        }
     }
 
     /// The empty chat: Studio's mark, the serif greeting, the current brand and the Mac state.
@@ -350,7 +354,7 @@ final class IOSChatViewController: UIViewController, UITableViewDelegate {
         ChatCellContext(
             model: model,
             onMention: { [weak self] aliasId in self?.previewAlias(id: aliasId) },
-            onAttachment: { [weak self] attachment in self?.previewAttachment(attachment) },
+            onAttachment: { [weak self] attachment, source in self?.previewAttachment(attachment, source: source) },
             onOpenPost: { [weak self] ref in self?.app.open(.post(ref.contentId)) },
             onEditPlan: { [weak self] _ in
                 guard let self else { return }
@@ -418,38 +422,24 @@ final class IOSChatViewController: UIViewController, UITableViewDelegate {
         composer.textView.becomeFirstResponder()
     }
 
-    /// Brand, model, effort and usage before the first message (the home's right button).
-    func homeMenu() -> [UIMenuElement] {
-        let brand = StudioMenus.brandSection(app, onPick: { [weak self] in self?.app.selectBrand($0) }, onProfile: { [weak self] in self?.app.open(.brand($0)) })
-        return brand + [UIMenu(title: "", options: .displayInline, children: aiMenuElements())]
-    }
-
-    private func aiMenuElements() -> [UIMenuElement] {
-        let selection = model.selection
-        return [
-            StudioMenus.modelMenu(selection, presence: model.presence) { [weak self] in self?.model.selection.model = $0 },
-            StudioMenus.effortMenu(selection) { [weak self] in self?.model.selection.effort = $0 },
-            StudioMenus.usageAction(model.presence) { [weak self] in self?.showUsage() },
-        ]
-    }
-
-    /// "…": brand, model and effort, usage, images, rename, share, archive.
+    /// "…" (the only button at the top right, empty or not): new chat, usage, images, rename,
+    /// share, archive. Brand and model are not here (the drawer and the composer have them).
     func conversationMenu() -> [UIMenuElement] {
         var children: [UIMenuElement] = []
-        // A conversation keeps its brand; picking another one starts a new chat there.
-        let brandName = app.brand(model.brandId)?.name ?? "Markasız"
-        children.append(UIMenu(title: "Marka", subtitle: brandName, image: UIImage(systemName: "building.2"), children: StudioMenus.brandActions(app) { [weak self] brandId in
-            guard let self else { return }
-            let changes = brandId != self.model.brandId
-            self.app.selectBrand(brandId)
-            if changes { self.app.open(.newConversation) }
-        } + (model.brandId.map { brandId in [UIAction(title: "Marka profili", image: UIImage(systemName: "person.crop.square")) { [weak self] _ in self?.app.open(.brand(brandId)) }] } ?? [])))
-        children.append(UIMenu(title: "", options: .displayInline, children: aiMenuElements() + [
-            UIAction(title: "Kullanımı sor (/usage)", image: UIImage(systemName: "text.bubble")) { [weak self] _ in
+        var top: [UIMenuElement] = []
+        if !model.isNew {
+            top.append(UIAction(title: "Yeni sohbet", image: UIImage(systemName: "square.and.pencil")) { [weak self] _ in
+                self?.app.open(.newConversation)
+            })
+        }
+        top.append(StudioMenus.usageAction(model.presence) { [weak self] in self?.showUsage() })
+        if !model.isNew {
+            top.append(UIAction(title: "Kullanımı sor (/usage)", image: UIImage(systemName: "text.bubble")) { [weak self] _ in
                 guard let self else { return }
                 Task { await self.model.sendUsage() }
-            },
-        ]))
+            })
+        }
+        children.append(UIMenu(title: "", options: .displayInline, children: top))
         var conversation: [UIMenuElement] = []
         let aliases = model.state?.aliases ?? []
         if !aliases.isEmpty {
@@ -498,12 +488,52 @@ final class IOSChatViewController: UIViewController, UITableViewDelegate {
 
     private func previewAlias(id: EntityID) {
         guard let alias = model.state?.alias(id: id) else { return }
-        presentSheet(AliasPreviewViewController(model: model, assetId: alias.assetId, alias: alias), detents: [.large()])
+        presentPhoto(assetId: alias.assetId, alias: alias, source: nil)
     }
 
-    private func previewAttachment(_ attachment: AttachmentPart) {
+    private func presentPhoto(assetId: EntityID, alias: ConversationAlias?, source: UIView?) {
+        // Every picture attached to the conversation, so the viewer can page through them.
+        let aliases = (model.state?.aliases ?? []).filter { $0.kind != .video }
+        var byAsset: [EntityID: ConversationAlias] = [:]
+        for a in aliases where byAsset[a.assetId] == nil { byAsset[a.assetId] = a }
+        var items = aliases.map { a -> PhotoViewerItem in
+            let aspect: CGFloat? = (a.width ?? 0) > 0 && (a.height ?? 0) > 0 ? CGFloat(a.width ?? 1) / CGFloat(a.height ?? 1) : nil
+            return PhotoViewerItem(assetId: a.assetId, title: a.alias.isEmpty ? "Görsel" : "@\(a.alias)", subtitle: PhotoViewerItem.addedText(a.createdAt), aspect: aspect)
+        }
+        if !items.contains(where: { $0.assetId == assetId }) {
+            items.insert(PhotoViewerItem(assetId: assetId, title: "Görsel", aspect: nil), at: 0)
+        }
+        let start = items.firstIndex { $0.assetId == assetId } ?? 0
+        let viewer = PhotoViewerViewController(images: model.app.images, items: items, index: start, sourceFor: { _ in source }) { [weak self] item in
+            guard let alias = byAsset[item.assetId], !alias.alias.isEmpty else { return PhotoViewerBar() }
+            return PhotoViewerBar(
+                menu: [PhotoViewerAction(label: "Yeniden adlandır", symbol: "pencil") { viewer, item in
+                    guard let self, let current = byAsset[item.assetId] else { return }
+                    viewer.prompt("Takma ad", message: "Eski ad bu sohbette kullanılmaya devam eder.", text: current.alias) { name in
+                        Task {
+                            if let problem = await self.model.renameAlias(current, to: name) {
+                                viewer.presentError(problem)
+                            } else {
+                                let normalized = ImageAlias.normalize(name)
+                                byAsset[item.assetId]?.alias = normalized
+                                viewer.updateTitle("@\(normalized)")
+                                Haptics.success()
+                            }
+                        }
+                    }
+                }],
+                trailing: PhotoViewerAction(label: "Mesaja ekle", symbol: "at") { viewer, item in
+                    guard let self, let current = byAsset[item.assetId] else { return }
+                    self.model.composer.appendMention(current.alias)
+                    viewer.close()
+                })
+        }
+        viewer.open(from: self)
+    }
+
+    private func previewAttachment(_ attachment: AttachmentPart, source: UIView) {
         let alias = attachment.aliasId.flatMap { model.state?.alias(id: $0) } ?? model.state?.aliases.first { $0.assetId == attachment.assetId }
-        presentSheet(AliasPreviewViewController(model: model, assetId: attachment.assetId, alias: alias), detents: [.large()])
+        presentPhoto(assetId: attachment.assetId, alias: alias, source: source)
     }
 
     private func answerWithText(_ message: Message, _ question: QuestionPart) {

@@ -14,8 +14,8 @@ final class IOSMediaModel {
         var label: String {
             switch self {
             case .all: "Tümü"
-            case .images: "Fotoğraflar"
-            case .videos: "Videolar"
+            case .images: "Resim"
+            case .videos: "Video"
             }
         }
 
@@ -44,6 +44,10 @@ final class IOSMediaModel {
     weak var app: IOSAppModel?
     private(set) var assets: [Asset] = []
     var filter: Filter = .all
+    /// Search text: matches the file name and the labels the picture analysis found.
+    var query = ""
+    /// Labels from the picture analysis picked in the filter menu (a picture must have all).
+    var selectedTags: Set<String> = []
     private(set) var uploads: [Upload] = []
     private(set) var isLoading = false
     private(set) var hasLoaded = false
@@ -55,7 +59,29 @@ final class IOSMediaModel {
     }
 
     var brandId: EntityID? { app?.currentBrandId }
-    var visible: [Asset] { assets.filter { filter.matches($0) } }
+    /// The analysis labels of the library's pictures, most used first, with their counts.
+    var tagCounts: [(label: String, count: Int)] {
+        var counts: [String: Int] = [:]
+        for asset in assets where filter.matches(asset) {
+            for tag in asset.analysis?.tags ?? [] { counts[tag.label, default: 0] += 1 }
+        }
+        return counts.map { (label: $0.key, count: $0.value) }.sorted { $0.count != $1.count ? $0.count > $1.count : $0.label < $1.label }
+    }
+
+    var visible: [Asset] {
+        let words = query.lowercased(with: Locale(identifier: "tr_TR")).split(separator: " ").map(String.init)
+        return assets.filter { asset in
+            guard filter.matches(asset) else { return false }
+            if !selectedTags.isEmpty {
+                let labels = Set(asset.analysis?.tags.map(\.label) ?? [])
+                guard selectedTags.isSubset(of: labels) else { return false }
+            }
+            if words.isEmpty { return true }
+            let haystack = ([asset.originalFilename ?? ""] + (asset.analysis?.tags.map(\.label) ?? []))
+                .joined(separator: " ").lowercased(with: Locale(identifier: "tr_TR"))
+            return words.allSatisfy { haystack.contains($0) }
+        }
+    }
 
     func load() async {
         guard let app, let brandId else { return }
@@ -164,11 +190,13 @@ final class IOSMediaModel {
     }
 }
 
-final class IOSMediaViewController: UIViewController, UICollectionViewDelegate {
+final class IOSMediaViewController: UIViewController, UICollectionViewDelegate, UISearchResultsUpdating {
     private unowned let app: IOSAppModel
     private let model: IOSMediaModel
     private var observation: IOSObservationToken?
     private let segmented = UISegmentedControl(items: IOSMediaModel.Filter.allCases.map(\.label))
+    private let filterItem = UIBarButtonItem()
+    private let searchController = UISearchController(searchResultsController: nil)
     private let uploadsStack = UIStackView.v([], spacing: 6)
     private let emptyView = EmptyStateView()
     private var collection: UICollectionView!
@@ -206,6 +234,11 @@ final class IOSMediaViewController: UIViewController, UICollectionViewDelegate {
         collection.backgroundColor = .clear
         collection.delegate = self
         collection.alwaysBounceVertical = true
+        // The same soft edge as the chat: pictures fade out under the navigation bar and the toolbar.
+        collection.topEdgeEffect.style = .soft
+        collection.bottomEdgeEffect.style = .soft
+        setContentScrollView(collection, for: .top)
+        setContentScrollView(collection, for: .bottom)
         let refresh = UIRefreshControl()
         refresh.addAction(UIAction { [weak self, weak refresh] _ in
             Task { await self?.model.load(); refresh?.endRefreshing() }
@@ -220,15 +253,15 @@ final class IOSMediaViewController: UIViewController, UICollectionViewDelegate {
         }
 
         emptyView.translatesAutoresizingMaskIntoConstraints = false
-        let top = UIStackView.v([segmented, uploadsStack], spacing: 10)
-        view.addSubview(top)
+        let top = UIStackView.v([uploadsStack], spacing: 10)
         view.addSubview(collection)
+        view.addSubview(top)
         view.addSubview(emptyView)
         NSLayoutConstraint.activate([
             top.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 8),
             top.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: IOSTheme.gutter),
             top.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -IOSTheme.gutter),
-            collection.topAnchor.constraint(equalTo: top.bottomAnchor, constant: 10),
+            collection.topAnchor.constraint(equalTo: view.topAnchor),
             collection.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             collection.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             collection.bottomAnchor.constraint(equalTo: view.bottomAnchor),
@@ -237,7 +270,95 @@ final class IOSMediaViewController: UIViewController, UICollectionViewDelegate {
             emptyView.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -32),
         ])
 
+        buildToolbar()
         observation = observeIOS { [weak self] in self?.render() }
+    }
+
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        // Upload rows sit over the top of the grid; the grid starts below them and scrolls under
+        // the navigation bar.
+        let rows = uploadsStack.arrangedSubviews.isEmpty ? 0 : uploadsStack.frame.height + 18
+        if collection.contentInset.top != rows {
+            let atTop = collection.contentOffset.y <= -collection.adjustedContentInset.top + 1
+            collection.contentInset.top = rows
+            collection.verticalScrollIndicatorInsets.top = rows
+            if atTop { collection.contentOffset.y = -collection.adjustedContentInset.top }
+        }
+    }
+
+    func updateSearchResults(for searchController: UISearchController) {
+        model.query = searchController.searchBar.text ?? ""
+    }
+
+    // MARK: Toolbar
+
+    /// The system toolbar (Liquid Glass): the tag filter at the left, the segmented control in the
+    /// middle, the search button at the right.
+    private func buildToolbar() {
+        // The toolbar sizes a custom view by its own constraints: a 44 pt holder (the height of
+        // the other toolbar buttons) with the segmented control filling it, in larger type.
+        let holder = UIView()
+        holder.translatesAutoresizingMaskIntoConstraints = false
+        segmented.translatesAutoresizingMaskIntoConstraints = false
+        holder.addSubview(segmented)
+        segmented.pin(to: holder)
+        NSLayoutConstraint.activate([
+            holder.widthAnchor.constraint(equalToConstant: 204),
+            holder.heightAnchor.constraint(equalToConstant: 50),
+        ])
+        segmented.setTitleTextAttributes([.font: UIFont.systemFont(ofSize: 15, weight: .semibold)], for: .normal)
+        segmented.setTitleTextAttributes([.font: UIFont.systemFont(ofSize: 15, weight: .semibold)], for: .selected)
+        let segmentedItem = UIBarButtonItem(customView: holder)
+        segmentedItem.hidesSharedBackground = true
+        filterItem.image = UIImage(systemName: "tag")
+        filterItem.accessibilityLabel = "Etiketle filtrele"
+        filterItem.menu = UIMenu(children: [UIDeferredMenuElement.uncached { [weak self] completion in
+            completion(self?.filterMenuElements() ?? [])
+        }])
+
+        // Search is the system's toolbar search: a round button that, when tapped, grows into a
+        // field above the keyboard with the native animation (and folds back on Cancel).
+        searchController.obscuresBackgroundDuringPresentation = false
+        searchController.searchBar.placeholder = "Medyada ara"
+        searchController.searchResultsUpdater = self
+        navigationItem.searchController = searchController
+        navigationItem.preferredSearchBarPlacement = .integratedButton
+        navigationItem.searchBarPlacementAllowsToolbarIntegration = true
+        let searchItem = navigationItem.searchBarPlacementBarButtonItem
+        setToolbarItems([filterItem, .flexibleSpace(), segmentedItem, .flexibleSpace(), searchItem], animated: false)
+    }
+
+    private func filterMenuElements() -> [UIMenuElement] {
+        let tags = model.tagCounts
+        guard !tags.isEmpty else {
+            return [UIAction(title: "Henüz etiket yok", attributes: .disabled) { _ in }]
+        }
+        var items: [UIMenuElement] = tags.prefix(40).map { tag in
+            UIAction(title: "\(tag.label) (\(tag.count))", state: model.selectedTags.contains(tag.label) ? .on : .off) { [weak self] _ in
+                guard let self else { return }
+                if self.model.selectedTags.contains(tag.label) { self.model.selectedTags.remove(tag.label) } else { self.model.selectedTags.insert(tag.label) }
+            }
+        }
+        if !model.selectedTags.isEmpty {
+            items.insert(UIAction(title: "Filtreyi temizle", image: UIImage(systemName: "xmark.circle"), attributes: .destructive) { [weak self] _ in
+                self?.model.selectedTags = []
+            }, at: 0)
+        }
+        return items
+    }
+
+    override func viewWillAppear(_ animated: Bool) {
+        super.viewWillAppear(animated)
+        navigationController?.setToolbarHidden(false, animated: animated)
+    }
+
+    override func viewWillDisappear(_ animated: Bool) {
+        super.viewWillDisappear(animated)
+        // A pushed picture viewer has its own toolbar: keep the bar, it only changes items.
+        if navigationController?.topViewController?.toolbarItems?.isEmpty ?? true {
+            navigationController?.setToolbarHidden(true, animated: animated)
+        }
     }
 
     private static func layout() -> UICollectionViewLayout {
@@ -254,6 +375,7 @@ final class IOSMediaViewController: UIViewController, UICollectionViewDelegate {
             lastBrandId = app.currentBrandId
             Task { await model.load() }
         }
+        filterItem.image = UIImage(systemName: model.selectedTags.isEmpty ? "tag" : "tag.fill")
         let visible = model.visible
         assetsById = Dictionary(visible.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         var snapshot = NSDiffableDataSourceSnapshot<Int, EntityID>()
@@ -273,6 +395,8 @@ final class IOSMediaViewController: UIViewController, UICollectionViewDelegate {
         emptyView.isHidden = !visible.isEmpty || !model.hasLoaded
         if app.currentBrandId == nil {
             emptyView.configure(icon: "photo.on.rectangle", title: "Marka seçilmedi", message: "Medya markaya göre tutulur; önce bir marka seç.")
+        } else if !model.query.isEmpty {
+            emptyView.configure(icon: "magnifyingglass", title: "Sonuç yok", message: "“\(model.query)” için eşleşen bir fotoğraf ya da video bulunamadı.")
         } else {
             let what = switch model.filter {
             case .all: "Henüz fotoğraf ya da video yok"
@@ -347,8 +471,33 @@ final class IOSMediaViewController: UIViewController, UICollectionViewDelegate {
         if asset.kind == .video {
             ReelVideo.play(asset.id, app: app, from: self)
         } else {
-            presentSheet(AssetPreviewViewController(app: app, asset: asset), detents: [.large()])
+            showPhoto(asset, source: collectionView.cellForItem(at: indexPath)?.contentView)
         }
+    }
+
+    /// Opens the picture in the viewer with the library's other pictures to page through.
+    private func showPhoto(_ asset: Asset, source: UIView?) {
+        let photos = model.visible.filter { $0.kind != .video }
+        let items = photos.map { photo -> PhotoViewerItem in
+            var aspect: CGFloat?
+            if let w = photo.width, let h = photo.height, h > 0 { aspect = CGFloat(w) / CGFloat(h) }
+            return PhotoViewerItem(assetId: photo.id, title: photo.originalFilename ?? "Fotoğraf", subtitle: PhotoViewerItem.addedText(photo.createdAt), aspect: aspect)
+        }
+        let start = photos.firstIndex { $0.id == asset.id } ?? 0
+        let viewer = PhotoViewerViewController(images: app.images, items: items, index: start, sourceFor: { [weak self] index in
+            guard let self else { return source }
+            guard photos.indices.contains(index),
+                  let path = self.dataSource.indexPath(for: photos[index].id),
+                  let cell = self.collection.cellForItem(at: path) else { return source ?? self.collection }
+            return cell.contentView
+        }, actionsFor: { [weak self] item in
+            PhotoViewerBar(trailing: PhotoViewerAction(label: "Ürün olarak ekle", symbol: "shippingbox") { viewer, item in
+                guard let self else { return }
+                let editor = ProductEditorViewController(app: self.app, product: nil, photoAssetIds: [item.assetId], analyzeAssetId: item.assetId)
+                viewer.presentSheet(editor, detents: [.large()])
+            })
+        })
+        viewer.open(from: self)
     }
 
     func collectionView(_ collectionView: UICollectionView, contextMenuConfigurationForItemsAt indexPaths: [IndexPath], point: CGPoint) -> UIContextMenuConfiguration? {
@@ -363,7 +512,7 @@ final class IOSMediaViewController: UIViewController, UICollectionViewDelegate {
             }
             return UIMenu(children: [
                 UIAction(title: "Göster", image: UIImage(systemName: "eye")) { _ in
-                    self.presentSheet(AssetPreviewViewController(app: self.app, asset: asset), detents: [.large()])
+                    self.showPhoto(asset, source: nil)
                 },
                 UIAction(title: "Ürün olarak ekle", image: UIImage(systemName: "shippingbox")) { _ in
                     let editor = ProductEditorViewController(app: self.app, product: nil, photoAssetIds: [asset.id], analyzeAssetId: asset.id)
@@ -446,40 +595,5 @@ final class MediaCell: UICollectionViewCell {
         }
         accessibilityLabel = isVideo ? "Video, \(durationLabel.text ?? "")" : (asset.originalFilename ?? "Fotoğraf")
         accessibilityTraits = .button
-    }
-}
-
-/// A picture of the media library, full screen with zoom.
-final class AssetPreviewViewController: UIViewController {
-    private unowned let app: IOSAppModel
-    private let asset: Asset
-    private let zoom = ZoomableView()
-
-    init(app: IOSAppModel, asset: Asset) {
-        self.app = app
-        self.asset = asset
-        super.init(nibName: nil, bundle: nil)
-        title = asset.originalFilename ?? "Fotoğraf"
-    }
-
-    required init?(coder: NSCoder) { fatalError("not used") }
-
-    override func viewDidLoad() {
-        super.viewDidLoad()
-        view.backgroundColor = IOSTheme.canvas
-        navigationItem.rightBarButtonItem = UIBarButtonItem(systemItem: .close, primaryAction: UIAction { [weak self] _ in self?.dismiss(animated: true) })
-        let image = IOSAssetImageView(store: app.images, assetId: asset.id, contentMode: .scaleAspectFit)
-        image.backgroundColor = .clear
-        zoom.translatesAutoresizingMaskIntoConstraints = false
-        zoom.content.addSubview(image)
-        image.pin(to: zoom.content)
-        if let w = asset.width, let h = asset.height, h > 0 { zoom.aspect = CGFloat(w) / CGFloat(h) }
-        view.addSubview(zoom)
-        NSLayoutConstraint.activate([
-            zoom.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            zoom.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            zoom.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
-            zoom.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor),
-        ])
     }
 }

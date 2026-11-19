@@ -56,6 +56,8 @@ final class DrawerViewController: UIViewController, UITableViewDelegate, UITextF
     var onNewChat: (() -> Void)?
     /// The conversation on screen (highlighted in the list).
     var currentConversationId: (() -> EntityID?)?
+    /// The section on screen (Takvim, Medya, …); nil while a chat is shown.
+    var currentDestination: (() -> IOSDestination?)?
 
     private unowned let app: IOSAppModel
     let tableView = UITableView(frame: .zero, style: .plain)
@@ -263,10 +265,23 @@ final class DrawerViewController: UIViewController, UITableViewDelegate, UITextF
     private var pickedConversationId: EntityID?
 
     /// The row drawn as active: the tapped one while switching, else the chat on screen.
-    private var activeConversationId: EntityID? { pickedConversationId ?? currentConversationId?() }
+    private var activeConversationId: EntityID? {
+        if pickedDestination != nil { return nil }
+        return pickedConversationId ?? currentConversationId?()
+    }
+
+    /// A section just tapped, shown as active at once (the previous row goes back to default).
+    private var pickedDestination: IOSDestination?
+
+    /// The section drawn as active: the tapped one while switching, else the one on screen.
+    private var activeDestination: IOSDestination? {
+        if pickedConversationId != nil { return nil }
+        return pickedDestination ?? currentDestination?()
+    }
 
     func willOpen() {
         pickedConversationId = nil
+        pickedDestination = nil
         reload()
         if let id = currentConversationId?(), let indexPath = dataSource.indexPath(for: .conversation(id)) {
             tableView.scrollToRow(at: indexPath, at: .none, animated: false)
@@ -290,6 +305,10 @@ final class DrawerViewController: UIViewController, UITableViewDelegate, UITextF
     }
 
     private static let brandMenuButtonTag = 0xB4A2D
+
+    /// The active / pressed row: a step darker than the drawer in light mode (the usual fill
+    /// would not show on it); in dark mode the usual fill reads well.
+    private static let activeRow = UIColor(light: 0xD9D9DD, dark: 0x262628)
 
     private func afterBrandMenuCloses(_ action: @escaping () -> Void) {
         guard let indexPath = dataSource.indexPath(for: .brandPicker),
@@ -370,6 +389,7 @@ final class DrawerViewController: UIViewController, UITableViewDelegate, UITextF
             switch item {
             case .destination(let destination):
                 hasher.combine(destination)
+                hasher.combine(destination == activeDestination)
                 if destination == .posts { hasher.combine(app.posts.attentionCount) }
                 if destination == .jobs { hasher.combine(app.connection.title) }
             case .conversation(let id):
@@ -443,6 +463,8 @@ final class DrawerViewController: UIViewController, UITableViewDelegate, UITextF
         case .destination(let destination):
             content.text = destination.title
             content.image = Self.rowIcon(destination.symbol)
+            isCurrent = destination == activeDestination
+            if isCurrent { cell.accessibilityTraits.insert(.selected) }
             if destination == .posts, app.posts.attentionCount > 0 {
                 let count = app.posts.attentionCount
                 cell.accessoryView = Self.countBadge(count)
@@ -520,7 +542,7 @@ final class DrawerViewController: UIViewController, UITableViewDelegate, UITextF
         cell.configurationUpdateHandler = { cell, state in
             var background = UIBackgroundConfiguration.clear()
             let highlighted = selectable && (state.isHighlighted || state.isSelected)
-            background.backgroundColor = highlighted || isCurrent ? IOSTheme.fill : .clear
+            background.backgroundColor = highlighted || isCurrent ? Self.activeRow : .clear
             // Fully rounded (capsule) like every control in the drawer.
             background.cornerRadius = 23
             background.backgroundInsets = NSDirectionalEdgeInsets(top: 1, leading: 10, bottom: 1, trailing: 10)
@@ -591,12 +613,17 @@ final class DrawerViewController: UIViewController, UITableViewDelegate, UITextF
         switch item {
         case .destination(let destination):
             Haptics.selection()
+            // The tapped row turns active at once while the drawer closes and the page switches.
+            pickedConversationId = nil
+            pickedDestination = destination
+            reload()
             onDestination?(destination)
         case .conversation(let id):
             Haptics.selection()
             if isSearching { setSearching(false) }
             // The tapped row turns active at once (the old one goes back to default) while
             // the drawer closes, not only after the chat has switched.
+            pickedDestination = nil
             pickedConversationId = id
             reload()
             onConversation?(id)

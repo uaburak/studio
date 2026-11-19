@@ -216,6 +216,9 @@ final class ZoomableView: UIScrollView, UIScrollViewDelegate {
     let content = UIView()
     var aspect: CGFloat = 4.0 / 5.0 { didSet { setNeedsLayout() } }
     var onZoomChange: ((CGFloat) -> Void)?
+    /// Space the picture keeps clear of at rest (bars above and below it); zoomed in, it fills the view.
+    var fitInsets: UIEdgeInsets = .zero { didSet { setNeedsLayout() } }
+    private(set) var doubleTapGesture: UITapGestureRecognizer!
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -230,6 +233,7 @@ final class ZoomableView: UIScrollView, UIScrollViewDelegate {
         let doubleTap = UITapGestureRecognizer(target: self, action: #selector(doubleTapped(_:)))
         doubleTap.numberOfTapsRequired = 2
         addGestureRecognizer(doubleTap)
+        doubleTapGesture = doubleTap
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
@@ -238,12 +242,14 @@ final class ZoomableView: UIScrollView, UIScrollViewDelegate {
         super.layoutSubviews()
         guard zoomScale == 1, bounds.width > 0 else { return }
         let fit = fittedSize()
-        content.frame = CGRect(x: (bounds.width - fit.width) / 2, y: (bounds.height - fit.height) / 2, width: fit.width, height: fit.height)
+        let area = bounds.inset(by: fitInsets)
+        content.frame = CGRect(x: (bounds.width - fit.width) / 2, y: area.minY + (area.height - fit.height) / 2, width: fit.width, height: fit.height)
         contentSize = bounds.size
     }
 
     private func fittedSize() -> CGSize {
-        let width = min(bounds.width, bounds.height * aspect)
+        let area = bounds.inset(by: fitInsets)
+        let width = min(area.width, area.height * aspect)
         return CGSize(width: width, height: width / aspect)
     }
 
@@ -251,7 +257,14 @@ final class ZoomableView: UIScrollView, UIScrollViewDelegate {
 
     func scrollViewDidZoom(_ scrollView: UIScrollView) {
         let offsetX = max((bounds.width - contentSize.width) / 2, 0)
-        let offsetY = max((bounds.height - contentSize.height) / 2, 0)
+        // Centred in the clear area at rest, in the whole view once it has grown to fill it.
+        let fit = fittedSize()
+        let area = bounds.inset(by: fitInsets)
+        let atRest = area.minY + (area.height - contentSize.height) / 2
+        let filled = max((bounds.height - contentSize.height) / 2, 0)
+        let span = max(bounds.height - fit.height, 1)
+        let t = min(max((contentSize.height - fit.height) / span, 0), 1)
+        let offsetY = atRest * (1 - t) + filled * t
         content.center = CGPoint(x: contentSize.width / 2 + offsetX, y: contentSize.height / 2 + offsetY)
         onZoomChange?(zoomScale)
     }

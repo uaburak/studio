@@ -79,7 +79,8 @@ struct IOSViewSmokeTests {
         await exercise(IOSChatViewController(model: app.newConversationModel()))
         await exercise(UsageSheetViewController(app: app, presence: { app.presence }))
         if let alias = model.state?.aliases.first {
-            await exercise(AliasPreviewViewController(model: model, assetId: alias.assetId, alias: alias))
+            let items = (model.state?.aliases ?? []).map { PhotoViewerItem(assetId: $0.assetId, title: "@\($0.alias)", subtitle: $0.filename, aspect: nil) }
+            await exercise(PhotoViewerViewController(images: app.images, items: items, index: 0, sourceFor: { _ in nil }))
         }
     }
 
