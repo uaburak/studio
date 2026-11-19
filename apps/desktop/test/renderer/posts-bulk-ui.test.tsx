@@ -181,7 +181,7 @@ describe("multi-select and the bulk bar (N1)", () => {
     expect(usePostsStore.getState().picked).toEqual(["p1", "p3"]);
     await userEvent.click(screen.getByRole("button", { name: "Tümünü seç (3)" }));
     expect(usePostsStore.getState().picked).toHaveLength(3);
-    const region = screen.getByRole("region", { name: "Postlar" });
+    const region = screen.getByRole("region", { name: "Profil" });
     fireEvent.keyDown(region, { key: "Escape" });
     expect(usePostsStore.getState().picked).toEqual([]);
     expect(screen.queryByRole("toolbar", { name: "Seçili postlar" })).toBeNull();

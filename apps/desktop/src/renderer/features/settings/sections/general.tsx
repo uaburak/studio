@@ -84,7 +84,7 @@ export const SHORTCUTS: { title: string; rows: [string, string][] }[] = [
       ["⌘[  ·  ⌘]", "Geri  ·  İleri"],
       ["⌘\\", "Kenar çubuğu"],
       ["⌥⌘I", "Sağ panel: Ayrıntılar, işler, takvim, medya, marka, iPhone"],
-      ["⇧⌘P", "Postlar"],
+      ["⇧⌘P", "Profil"],
       ["⇧⌘K", "Takvim"],
       ["⇧⌘M", "Medya"],
     ],

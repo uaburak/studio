@@ -546,3 +546,91 @@ export async function approvableHash(
   const local = await versionHash(version);
   return local === ref.contentHash ? local : null;
 }
+
+// --- profile (Instagram-like grid) --------------------------------------------------------------
+
+/** The profile's tabs, like Instagram's: the grid (posts and carousels), Reels and stories. */
+export type ProfileTab = "grid" | "reels" | "stories";
+
+export const PROFILE_TABS: { id: ProfileTab; label: string; unit: string }[] = [
+  { id: "grid", label: "Gönderiler", unit: "gönderi" },
+  { id: "reels", label: "Reels", unit: "reels" },
+  { id: "stories", label: "Hikâyeler", unit: "hikâye" },
+];
+
+export function tabMatches(tab: ProfileTab, type: ContentType): boolean {
+  switch (tab) {
+    case "grid":
+      return type !== "reel" && type !== "story";
+    case "reels":
+      return type === "reel";
+    case "stories":
+      return type === "story";
+  }
+}
+
+/** Width / height of a tile: Instagram's 3:4 grid, tall Reels and stories (9:16). */
+export function tileAspect(tab: ProfileTab): string {
+  return tab === "grid" ? "3 / 4" : "9 / 16";
+}
+
+/** Cards per tab ("12 gönderi · 3 reels · 0 hikâye"). */
+export function tabCounts(cards: readonly PostCard[]): Record<ProfileTab, number> {
+  const counts: Record<ProfileTab, number> = { grid: 0, reels: 0, stories: 0 };
+  for (const card of cards)
+    for (const t of PROFILE_TABS) if (tabMatches(t.id, card.content.type)) counts[t.id] += 1;
+  return counts;
+}
+
+/** "12 gönderi · 3 reels · 0 hikâye" */
+export function tabCountsText(counts: Record<ProfileTab, number>): string {
+  return PROFILE_TABS.map((t) => `${counts[t.id]} ${t.unit}`).join(" · ");
+}
+
+/** Posts that wait for the owner: an approval or a picture. */
+export function waitingCount(cards: readonly PostCard[]): number {
+  return cards.filter((c) => {
+    const state = cardState(c);
+    return state === "ready" || state === "imageNeeded";
+  }).length;
+}
+
+/** "9 post seni bekliyor (onay ya da görsel)"; null when nothing waits. */
+export function waitingText(count: number): string | null {
+  return count > 0 ? `${count} post seni bekliyor (onay ya da görsel)` : null;
+}
+
+/** A tile's status dot colour (published posts carry none: they are simply on the profile). */
+export const STATE_DOT: Record<PostState, string | null> = {
+  generating: "var(--accent-default)",
+  draft: "var(--text-tertiary)",
+  generationFailed: "var(--status-danger)",
+  imageNeeded: "var(--accent-default)",
+  ready: "var(--status-warning)",
+  approved: "var(--status-success)",
+  scheduled: "var(--status-info)",
+  publishing: "var(--status-info)",
+  published: null,
+  failed: "var(--status-danger)",
+};
+
+// --- taking an approval back --------------------------------------------------------------------
+
+/** Why an approved-and-scheduled post's approval cannot be taken back. */
+export const REVOKE_SCHEDULED = "Önce zamanlamayı iptal et";
+
+/**
+ * "Onayı geri al" (approved → draft through `POST /contents/{id}/transition`): "ok" when it can
+ * be taken back, the reason when the post holds an approval that cannot (a pending schedule),
+ * null when there is no approval to take back.
+ */
+export function revokeState(content: Pick<Content, "status">): "ok" | string | null {
+  switch (content.status) {
+    case "approved":
+      return "ok";
+    case "scheduled":
+      return REVOKE_SCHEDULED;
+    default:
+      return null;
+  }
+}

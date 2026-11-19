@@ -94,7 +94,7 @@ function DemoShell({ editor }: { editor: PostEditor }) {
         <nav className="flex shrink-0 flex-col pt-0.5 pb-1">
           <SidebarRow icon={<IconPlus size={16} strokeWidth={1.5} />} label="Yeni sohbet" />
           <SidebarRow icon={<IconSearch size={16} strokeWidth={1.5} />} label="Ara" />
-          <SidebarRow icon={<IconGrid size={16} strokeWidth={1.5} />} label="Postlar" selected />
+          <SidebarRow icon={<IconGrid size={16} strokeWidth={1.5} />} label="Profil" selected />
           <SidebarRow icon={<IconCalendar size={16} strokeWidth={1.5} />} label="Takvim" />
           <SidebarRow icon={<IconImage size={16} strokeWidth={1.5} />} label="Medya" />
           <SidebarRow icon={<IconTag size={16} strokeWidth={1.5} />} label="Markalar" />
@@ -139,7 +139,7 @@ function DemoShell({ editor }: { editor: PostEditor }) {
               onClose={() =>
                 useAppStore
                   .getState()
-                  .showToast({ message: "Demo: geri dönülecek bir Postlar ekranı yok." })
+                  .showToast({ message: "Demo: geri dönülecek bir Profil ekranı yok." })
               }
               onPreview={() => undefined}
             />

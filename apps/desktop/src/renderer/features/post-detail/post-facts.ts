@@ -10,6 +10,7 @@ import {
   deletionBlocker,
   type PostCard,
   pickSchedule,
+  revokeState,
   STATE_LABEL,
   STATE_TONE,
 } from "../posts/board.ts";
@@ -95,8 +96,9 @@ export function usePostFacts(snapshot: EditorSnapshot) {
 export type PostFacts = ReturnType<typeof usePostFacts>;
 
 /**
- * The post's "…" menu: quick look, copy the caption, export and share, open in chat, cancel the
- * schedule (when it waits on one), duplicate, delete.
+ * The post's "…" menu: take the approval back (approved posts), quick look, copy the caption,
+ * download, export and share, open in chat, cancel the schedule (when it waits on one),
+ * duplicate, delete.
  */
 export function postMenu({
   content,
@@ -107,6 +109,8 @@ export function postMenu({
   cancelSchedule,
   exportEntries = [],
   conversionEntries = [],
+  download = null,
+  onRevoke = null,
 }: {
   content: Content;
   version: ContentVersion | null;
@@ -119,12 +123,18 @@ export function postMenu({
   exportEntries?: MenuEntry[];
   /** "Şablon olarak kaydet…", "Story'ye / Reels'e dönüştür" (posts/post-links.tsx). */
   conversionEntries?: MenuEntry[];
+  /** "İndir" (posts/export.ts downloadMenuEntry). */
+  download?: MenuEntry | null;
+  /** Asks "Onayı geri al" (shown for an approved post; a scheduled one says why it can't). */
+  onRevoke?: (() => void) | null;
 }): MenuEntry[] {
   const blocker = deletionBlocker(content);
   const cancel: MenuEntry[] = cancelSchedule
     ? [{ id: "cancel-schedule", label: "Zamanlamayı iptal et…", onSelect: cancelSchedule }]
     : [];
+  const revoke = revokeEntries(content, onRevoke);
   return [
+    ...(revoke.length ? [...revoke, { type: "separator" as const }] : []),
     {
       id: "quicklook",
       label: "Hızlı bakış",
@@ -138,6 +148,7 @@ export function postMenu({
       disabled: !content.caption.trim(),
       onSelect: () => void actions.copyCaption(content),
     },
+    ...(download ? [download] : []),
     ...exportEntries,
     { id: "chat", label: "Sohbette aç", onSelect: openInChat },
     ...cancel,
@@ -159,6 +170,27 @@ export function postMenu({
       disabled: !!blocker,
       ...(blocker ? { detail: blocker } : {}),
       onSelect: () => actions.askDelete(content),
+    },
+  ];
+}
+
+/**
+ * "Onayı geri al…" of a post's menus: enabled on an approved post, disabled with the reason on a
+ * scheduled one ("Önce zamanlamayı iptal et"), absent otherwise.
+ */
+export function revokeEntries(
+  content: Pick<Content, "status">,
+  onRevoke: (() => void) | null | undefined,
+): MenuEntry[] {
+  const state = revokeState(content);
+  if (state === null || !onRevoke) return [];
+  return [
+    {
+      id: "revoke-approval",
+      label: "Onayı geri al…",
+      disabled: state !== "ok",
+      ...(state !== "ok" ? { detail: state } : {}),
+      onSelect: onRevoke,
     },
   ];
 }

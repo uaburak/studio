@@ -306,7 +306,7 @@ export function Sidebar({ width = SIDEBAR_WIDTH }: { width?: number }) {
         />
         <SidebarRow
           icon={<IconGrid size={16} strokeWidth={1.5} />}
-          label="Postlar"
+          label="Profil"
           selected={route.kind === "posts"}
           onClick={() => navigate({ kind: "posts" })}
         />
