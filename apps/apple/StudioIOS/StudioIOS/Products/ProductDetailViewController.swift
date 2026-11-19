@@ -1,10 +1,12 @@
 import StudioKit
 import UIKit
 
-/// One product, opened from its Ürünler tile with the system's zoom: its photos full width at the
-/// top (a pager with dots when there are several), its name and category, then its details in
-/// grouped sections. Only the product's information; "Düzenle" opens the product editor.
-final class ProductDetailViewController: UIViewController, UITableViewDataSource, UITableViewDelegate {
+/// One product, opened from its Ürünler tile with the system's zoom, laid out like OXTV's content
+/// page: the photo from the very top of the screen (under the bar) fading into the page at its
+/// foot and stretching when pulled down; the name and the category centred under it, the name
+/// moving up into the bar as it scrolls away; the description and the tags as on a Postlar post.
+/// Only the product's information; the pencil opens the editor (which also deletes).
+final class ProductDetailViewController: UIViewController, UIScrollViewDelegate {
     private unowned let app: IOSAppModel
     private let model: IOSProductsModel
     private let productId: EntityID
@@ -12,25 +14,21 @@ final class ProductDetailViewController: UIViewController, UITableViewDataSource
     private var product: BrandProduct?
     private var observation: IOSObservationToken?
     private var isLeaving = false
+    private var expanded = false
 
-    private let tableView = UITableView(frame: .zero, style: .insetGrouped)
-    private let header = UIView()
+    private let scroll = UIScrollView()
+    private let content = UIView()
     private let pager = ProductPhotoPager()
-    private let nameLabel = UILabel.studio("", size: 24, weight: .bold, lines: 0, style: .title2)
+    /// The photo's foot fades into the page (OXTV's hero).
+    private let fade = ProductFadeView()
+    private let nameLabel = UILabel.studio("", size: 26, weight: .bold, lines: 0, style: .title1)
     private let categoryLabel = UILabel.studio("", size: 15, color: IOSTheme.textSecondary, lines: 0, style: .subheadline)
-    private var sections: [Section] = []
-
-    /// A grouped section of the page.
-    private enum Row {
-        case text(String)
-        case value(String, String)
-        case delete
-    }
-
-    private struct Section {
-        var title: String?
-        var rows: [Row]
-    }
+    private let captionLabel = UILabel.studio("", size: 14, lines: 0, style: .subheadline)
+    private let tagsLabel = UILabel.studio("", size: 14, lines: 0, style: .subheadline)
+    private let notesLabel = UILabel.studio("", size: 14, color: IOSTheme.textSecondary, lines: 0, style: .subheadline)
+    private let metaLabel = UILabel.studio("", size: 12, color: IOSTheme.textSecondary, style: .caption1)
+    private let navTitle = UILabel.studio("", size: 17, weight: .semibold, style: .headline)
+    private var truncated = false
 
     init(app: IOSAppModel, model: IOSProductsModel, productId: EntityID) {
         self.app = app
@@ -44,57 +42,81 @@ final class ProductDetailViewController: UIViewController, UITableViewDataSource
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        view.backgroundColor = IOSTheme.groupedBackground
+        view.backgroundColor = IOSTheme.canvas
         navigationItem.largeTitleDisplayMode = .never
-        navigationItem.rightBarButtonItem = UIBarButtonItem(title: "Düzenle", primaryAction: UIAction { [weak self] _ in self?.edit() })
+        let edit = UIBarButtonItem(image: UIImage(systemName: "pencil"), primaryAction: UIAction { [weak self] _ in self?.edit() })
+        edit.accessibilityLabel = "Düzenle"
+        navigationItem.rightBarButtonItem = edit
+        // The name comes into the bar once the one on the page has scrolled under it.
+        // Faded inside a holder: the bar sets its title view's own alpha back to 1 on a push.
+        navTitle.alpha = 0
+        navTitle.textAlignment = .center
+        navTitle.translatesAutoresizingMaskIntoConstraints = false
+        let holder = UIView()
+        holder.isUserInteractionEnabled = false
+        holder.addSubview(navTitle)
+        navTitle.pin(to: holder)
+        navigationItem.titleView = holder
 
-        tableView.translatesAutoresizingMaskIntoConstraints = false
-        tableView.backgroundColor = IOSTheme.groupedBackground
-        tableView.dataSource = self
-        tableView.delegate = self
-        tableView.contentInset.bottom = 40
-        tableView.topEdgeEffect.style = .soft
-        view.addSubview(tableView)
-        tableView.pin(to: view)
-        setContentScrollView(tableView, for: .top)
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+        scroll.contentInsetAdjustmentBehavior = .never
+        scroll.alwaysBounceVertical = true
+        scroll.showsVerticalScrollIndicator = false
+        scroll.delegate = self
+        view.addSubview(scroll)
+        scroll.pin(to: view)
+        setContentScrollView(scroll, for: .top)
 
-        // The header: the photos edge to edge, then the name and category in the table's margins.
+        content.translatesAutoresizingMaskIntoConstraints = false
+        scroll.addSubview(content)
+
         pager.images = app.images
         pager.onTap = { [weak self] index in self?.showPhoto(index) }
-        let titles = UIStackView.v([nameLabel, categoryLabel], spacing: 4)
-        titles.translatesAutoresizingMaskIntoConstraints = false
-        header.addSubview(pager)
-        header.addSubview(titles)
+        content.addSubview(pager)
+        fade.translatesAutoresizingMaskIntoConstraints = false
+        content.addSubview(fade)
+
+        nameLabel.textAlignment = .center
+        categoryLabel.textAlignment = .center
+        let titles = UIStackView.v([nameLabel, categoryLabel], spacing: 4, alignment: .fill)
+        captionLabel.isUserInteractionEnabled = true
+        captionLabel.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(captionTapped)))
+        let text = UIStackView.v([captionLabel, tagsLabel, notesLabel, metaLabel], spacing: 8, alignment: .fill)
+        text.setCustomSpacing(10, after: notesLabel)
+        let column = UIStackView.v([titles, text], spacing: 22, alignment: .fill)
+        column.translatesAutoresizingMaskIntoConstraints = false
+        content.addSubview(column)
+
         NSLayoutConstraint.activate([
-            pager.topAnchor.constraint(equalTo: header.topAnchor),
-            pager.leadingAnchor.constraint(equalTo: header.leadingAnchor),
-            pager.trailingAnchor.constraint(equalTo: header.trailingAnchor),
-            titles.topAnchor.constraint(equalTo: pager.bottomAnchor, constant: 14),
-            titles.leadingAnchor.constraint(equalTo: header.layoutMarginsGuide.leadingAnchor),
-            titles.trailingAnchor.constraint(equalTo: header.layoutMarginsGuide.trailingAnchor),
-            titles.bottomAnchor.constraint(equalTo: header.bottomAnchor, constant: -4),
+            content.topAnchor.constraint(equalTo: scroll.contentLayoutGuide.topAnchor),
+            content.leadingAnchor.constraint(equalTo: scroll.contentLayoutGuide.leadingAnchor),
+            content.trailingAnchor.constraint(equalTo: scroll.contentLayoutGuide.trailingAnchor),
+            content.bottomAnchor.constraint(equalTo: scroll.contentLayoutGuide.bottomAnchor),
+            content.widthAnchor.constraint(equalTo: scroll.frameLayoutGuide.widthAnchor),
+
+            pager.topAnchor.constraint(equalTo: content.topAnchor),
+            pager.leadingAnchor.constraint(equalTo: content.leadingAnchor),
+            pager.trailingAnchor.constraint(equalTo: content.trailingAnchor),
+            fade.leadingAnchor.constraint(equalTo: content.leadingAnchor),
+            fade.trailingAnchor.constraint(equalTo: content.trailingAnchor),
+            fade.bottomAnchor.constraint(equalTo: pager.bottomAnchor),
+            fade.heightAnchor.constraint(equalToConstant: 140),
+
+            // The titles sit on the fade, over the photo's foot.
+            column.topAnchor.constraint(equalTo: pager.bottomAnchor, constant: -34),
+            column.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16),
+            column.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16),
+            column.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -48),
         ])
-        header.preservesSuperviewLayoutMargins = true
-        tableView.tableHeaderView = header
 
         observation = observeIOS { [weak self] in self?.render() }
     }
 
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
-        sizeHeader()
-    }
-
-    /// The table header has no auto sizing: it is measured at the table's width.
-    private func sizeHeader() {
-        let width = tableView.bounds.width
-        guard width > 0 else { return }
-        let size = header.systemLayoutSizeFitting(CGSize(width: width, height: UIView.layoutFittingCompressedSize.height),
-                                                  withHorizontalFittingPriority: .required, verticalFittingPriority: .fittingSizeLevel)
-        if header.frame.size != CGSize(width: width, height: size.height) {
-            header.frame = CGRect(x: 0, y: 0, width: width, height: size.height)
-            tableView.tableHeaderView = header
-        }
+        // The caption is cut to its width (three lines and "… devamı").
+        renderCaption()
+        scrolled()
     }
 
     // MARK: Render
@@ -102,7 +124,7 @@ final class ProductDetailViewController: UIViewController, UITableViewDataSource
     private func render() {
         let current = model.products.first { $0.id == productId }
         guard let current else {
-            // Deleted (here, in the editor or on the Mac): the page goes back to the grid.
+            // Deleted (in the editor or on the Mac): the page goes back to the grid.
             if product != nil, !isLeaving, model.hasLoaded {
                 isLeaving = true
                 navigationController?.popViewController(animated: true)
@@ -111,34 +133,79 @@ final class ProductDetailViewController: UIViewController, UITableViewDataSource
         }
         product = current
         nameLabel.text = current.name
+        navTitle.text = current.name
         categoryLabel.text = current.category
         categoryLabel.isHidden = current.category.isEmpty
         pager.configure(current)
-
-        var sections: [Section] = []
-        if !current.description.isEmpty { sections.append(Section(title: "Açıklama", rows: [.text(current.description)])) }
-        if !current.tags.isEmpty { sections.append(Section(title: "Etiketler", rows: [.text(ProductTags.text(current.tags))])) }
-        if !current.notes.isEmpty { sections.append(Section(title: "Notlar", rows: [.text(current.notes)])) }
-        var info: [Row] = []
-        info.append(.value("Fotoğraf", current.imageAssetIds.isEmpty ? "Yok" : "\(current.imageAssetIds.count)"))
-        info.append(.value("Eklendi", Self.dateFormatter.string(from: current.createdAt)))
-        if current.updatedAt.timeIntervalSince(current.createdAt) > 60 {
-            info.append(.value("Güncellendi", Self.dateFormatter.string(from: current.updatedAt)))
-        }
-        sections.append(Section(title: "Bilgi", rows: info))
-        sections.append(Section(title: nil, rows: [.delete]))
-        self.sections = sections
-        tableView.reloadData()
-        view.setNeedsLayout()
+        // Tags as a post's hashtags.
+        tagsLabel.text = current.tags.map { "#" + $0.replacingOccurrences(of: " ", with: "") }.joined(separator: " ")
+        tagsLabel.isHidden = current.tags.isEmpty
+        notesLabel.text = current.notes
+        notesLabel.isHidden = current.notes.isEmpty
+        metaLabel.text = Self.metaLine(current)
+        renderCaption()
     }
 
-    private static let dateFormatter: DateFormatter = {
-        let formatter = DateFormatter()
+    /// "Name description…" cut to three lines with "… devamı", as on a Postlar post.
+    private func renderCaption() {
+        guard let product else { return }
+        let width = view.bounds.width - 32
+        guard width > 0 else { return }
+        captionLabel.isHidden = product.description.isEmpty
+        guard !product.description.isEmpty else { return }
+        let (caption, cut) = PostFeedCell.caption(brand: product.name, text: product.description, width: width, expanded: expanded)
+        if captionLabel.attributedText?.string != caption.string { captionLabel.attributedText = caption }
+        truncated = cut
+    }
+
+    @objc private func captionTapped() {
+        guard truncated else { return }
+        expanded = true
+        renderCaption()
+    }
+
+    /// "3 fotoğraf · 5 gün önce eklendi" (or updated), like a post's status line.
+    private static func metaLine(_ product: BrandProduct, now: Date = Date()) -> String {
+        let formatter = RelativeDateTimeFormatter()
         formatter.locale = TurkishFormat.locale
-        formatter.dateStyle = .medium
-        formatter.timeStyle = .none
-        return formatter
-    }()
+        formatter.unitsStyle = .full
+        let updated = product.updatedAt.timeIntervalSince(product.createdAt) > 60
+        let when = formatter.localizedString(for: updated ? product.updatedAt : product.createdAt, relativeTo: now)
+        let photos = product.imageAssetIds.isEmpty ? "Fotoğraf yok" : "\(product.imageAssetIds.count) fotoğraf"
+        return "\(photos) · \(when) \(updated ? "güncellendi" : "eklendi")"
+    }
+
+    // MARK: Scrolling (OXTV's hero)
+
+    func scrollViewDidScroll(_ scrollView: UIScrollView) { scrolled() }
+
+    private func scrolled() {
+        let offset = scroll.contentOffset.y
+        let height = pager.photoHeight
+        guard height > 0 else { return }
+        // Pulled down: the photo stretches upward from its foot.
+        if offset < 0 {
+            let scale = (height - offset) / height
+            pager.transform = CGAffineTransform(translationX: 0, y: offset / 2).scaledBy(x: scale, y: scale)
+        } else {
+            pager.transform = .identity
+        }
+        // The bar's soft edge only once the photo has gone under it.
+        let bar = view.safeAreaInsets.top
+        scroll.topEdgeEffect.isHidden = offset < height - bar - 20
+        // The name moves into the bar as the page's one passes under it.
+        guard offset > 0 else {
+            nameLabel.alpha = 1
+            navTitle.alpha = 0
+            return
+        }
+        let nameBottom = nameLabel.convert(nameLabel.bounds, to: view).maxY
+        let progress = min(max(1 - (nameBottom - bar) / 80, 0), 1)
+        let eased = progress * progress * (3 - 2 * progress)
+        nameLabel.alpha = 1 - eased
+        let staggered = min(max((progress - 0.3) / 0.7, 0), 1)
+        navTitle.alpha = staggered * staggered * (3 - 2 * staggered)
+    }
 
     // MARK: Zoom
 
@@ -158,16 +225,6 @@ final class ProductDetailViewController: UIViewController, UITableViewDataSource
         presentSheet(editor, detents: [.large()])
     }
 
-    private func delete(source: UIView?) {
-        guard let product else { return }
-        confirm("“\(product.name)” silinsin mi?", message: "Ürün kalıcı olarak silinir; fotoğrafları medyada kalır.", action: "Sil", source: source) { [weak self] in
-            guard let self else { return }
-            Task {
-                if let error = await self.model.delete(product) { self.presentError(error) } else { Haptics.success() }
-            }
-        }
-    }
-
     /// The photos uncropped, in the app's viewer (the pager's square crops them).
     private func showPhoto(_ index: Int) {
         guard let product, !product.imageAssetIds.isEmpty else { return }
@@ -178,60 +235,25 @@ final class ProductDetailViewController: UIViewController, UITableViewDataSource
             self?.pager.photoView(at: index)
         }).open(from: self)
     }
+}
 
-    // MARK: Table
+/// Clear at the top, the page's colour at the bottom.
+final class ProductFadeView: UIView {
+    override class var layerClass: AnyClass { CAGradientLayer.self }
 
-    func numberOfSections(in tableView: UITableView) -> Int { sections.count }
-
-    func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int { sections[section].rows.count }
-
-    func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? { sections[section].title }
-
-    func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
-        let cell = UITableViewCell(style: .default, reuseIdentifier: nil)
-        switch sections[indexPath.section].rows[indexPath.row] {
-        case .text(let text):
-            var content = UIListContentConfiguration.cell()
-            content.text = text
-            content.textProperties.numberOfLines = 0
-            content.textProperties.font = IOSTheme.font(16)
-            cell.contentConfiguration = content
-            cell.selectionStyle = .none
-        case .value(let title, let value):
-            var content = UIListContentConfiguration.valueCell()
-            content.text = title
-            content.secondaryText = value
-            cell.contentConfiguration = content
-            cell.selectionStyle = .none
-        case .delete:
-            var content = UIListContentConfiguration.cell()
-            content.text = "Ürünü sil"
-            content.textProperties.color = .systemRed
-            content.textProperties.alignment = .center
-            cell.contentConfiguration = content
-            cell.accessibilityTraits = .button
-        }
-        return cell
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        isUserInteractionEnabled = false
+        update()
+        registerForTraitChanges([UITraitUserInterfaceStyle.self]) { (self: Self, _) in self.update() }
     }
 
-    func tableView(_ tableView: UITableView, shouldHighlightRowAt indexPath: IndexPath) -> Bool {
-        if case .delete = sections[indexPath.section].rows[indexPath.row] { return true }
-        return false
-    }
+    required init?(coder: NSCoder) { fatalError("not used") }
 
-    func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
-        tableView.deselectRow(at: indexPath, animated: true)
-        if case .delete = sections[indexPath.section].rows[indexPath.row] {
-            delete(source: tableView.cellForRow(at: indexPath))
-        }
-    }
-
-    // Long texts (notes, descriptions) can be copied.
-    func tableView(_ tableView: UITableView, contextMenuConfigurationForRowAt indexPath: IndexPath, point: CGPoint) -> UIContextMenuConfiguration? {
-        guard case .text(let text) = sections[indexPath.section].rows[indexPath.row] else { return nil }
-        return UIContextMenuConfiguration(identifier: nil, previewProvider: nil) { _ in
-            UIMenu(children: [UIAction(title: "Kopyala", image: UIImage(systemName: "doc.on.doc")) { _ in UIPasteboard.general.string = text }])
-        }
+    private func update() {
+        let canvas = IOSTheme.canvas.resolvedColor(with: traitCollection)
+        (layer as? CAGradientLayer)?.colors = [canvas.withAlphaComponent(0).cgColor, canvas.withAlphaComponent(0.55).cgColor, canvas.cgColor]
+        (layer as? CAGradientLayer)?.locations = [0, 0.55, 1]
     }
 }
 
@@ -249,7 +271,6 @@ final class ProductPhotoPager: UIView, UIScrollViewDelegate {
     private let placeholderLabel = UILabel.studio("", size: 22, weight: .heavy, lines: 0, style: .title2)
     private var photoViews: [IOSAssetImageView] = []
     private var assetIds: [EntityID] = []
-    private var dotsHeight: NSLayoutConstraint!
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -270,11 +291,10 @@ final class ProductPhotoPager: UIView, UIScrollViewDelegate {
 
         dots.translatesAutoresizingMaskIntoConstraints = false
         dots.hidesForSinglePage = true
-        dots.pageIndicatorTintColor = IOSTheme.textTertiary
-        dots.currentPageIndicatorTintColor = IOSTheme.textPrimary
+        dots.pageIndicatorTintColor = UIColor.white.withAlphaComponent(0.45)
+        dots.currentPageIndicatorTintColor = .white
         dots.addAction(UIAction { [weak self] _ in self?.scroll(to: self?.dots.currentPage ?? 0, animated: true) }, for: .valueChanged)
         addSubview(dots)
-        dotsHeight = dots.heightAnchor.constraint(equalToConstant: 0)
 
         NSLayoutConstraint.activate([
             scrollView.topAnchor.constraint(equalTo: topAnchor),
@@ -285,10 +305,10 @@ final class ProductPhotoPager: UIView, UIScrollViewDelegate {
             placeholder.leadingAnchor.constraint(equalTo: scrollView.leadingAnchor),
             placeholder.trailingAnchor.constraint(equalTo: scrollView.trailingAnchor),
             placeholder.bottomAnchor.constraint(equalTo: scrollView.bottomAnchor),
-            dots.topAnchor.constraint(equalTo: scrollView.bottomAnchor),
+            // Over the photo, above the fade and the titles.
+            dots.bottomAnchor.constraint(equalTo: scrollView.bottomAnchor, constant: -64),
             dots.centerXAnchor.constraint(equalTo: centerXAnchor),
-            dots.bottomAnchor.constraint(equalTo: bottomAnchor),
-            dotsHeight,
+            scrollView.bottomAnchor.constraint(equalTo: bottomAnchor),
         ])
     }
 
@@ -315,8 +335,6 @@ final class ProductPhotoPager: UIView, UIScrollViewDelegate {
         }
         dots.numberOfPages = assetIds.count
         dots.currentPage = min(dots.currentPage, max(assetIds.count - 1, 0))
-        // Dots take room only with several photos.
-        dotsHeight.constant = assetIds.count > 1 ? 30 : 0
         setNeedsLayout()
     }
 
@@ -329,6 +347,8 @@ final class ProductPhotoPager: UIView, UIScrollViewDelegate {
         scrollView.contentSize = CGSize(width: side * CGFloat(photoViews.count), height: side)
         scrollView.contentOffset.x = CGFloat(dots.currentPage) * side
     }
+
+    var photoHeight: CGFloat { scrollView.bounds.height }
 
     /// The square picture's frame (the zoom's target), in `container`'s coordinates.
     func photoFrame(in container: UIView) -> CGRect {
