@@ -78,6 +78,21 @@ final class PhotoViewerViewController: UIViewController, UICollectionViewDelegat
     private var pausedPopGestures: [UIGestureRecognizer] = []
     /// The pull-down close in progress (its transition follows the finger).
     private var interactivePop: PhotoZoomTransition?
+    private lazy var backCatcher: UIView = {
+        let catcher = UIView()
+        catcher.backgroundColor = .clear
+        catcher.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(backCaught)))
+        return catcher
+    }()
+
+    @objc private func backCaught() { close() }
+
+    /// The opening is still running (a pop is not accepted yet).
+    private var isOpening = false
+    /// Back or a pull came during the opening: close as soon as it ends.
+    private var closeWhenOpen = false
+    /// Where the finger was when the pull-down close started (a pull begun during the opening).
+    private var pullOrigin: CGPoint = .zero
     private lazy var dismissPan: UIPanGestureRecognizer = {
         let pan = UIPanGestureRecognizer(target: self, action: #selector(pulled(_:)))
         pan.delegate = self
@@ -137,6 +152,12 @@ final class PhotoViewerViewController: UIViewController, UICollectionViewDelegat
 
     /// Closes the viewer the way it was opened.
     func close() {
+        // Still flying in: the navigation controller would ignore a pop now, so it waits for the
+        // end of the opening (going straight back out must work).
+        if isOpening {
+            closeWhenOpen = true
+            return
+        }
         if let navigation = navigationController, navigation.viewControllers.first !== self {
             navigation.popViewController(animated: true)
         } else {
@@ -215,6 +236,7 @@ final class PhotoViewerViewController: UIViewController, UICollectionViewDelegat
 
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
+        openingDidFinish()
 
         // Closing is only the downward drag: no edge or full-width swipe back.
         guard let navigation = navigationController, pausedPopGestures.isEmpty else { return }
@@ -267,27 +289,77 @@ final class PhotoViewerViewController: UIViewController, UICollectionViewDelegat
     }
 
     func makeTransition(_ operation: PhotoZoomTransition.Operation) -> PhotoZoomTransition {
+        if operation == .push { isOpening = true }
         if operation == .pop, let interactivePop { return interactivePop }
         return PhotoZoomTransition(operation: operation, viewer: self)
+    }
+
+    /// While opening, the navigation bar does not pass taps to its back button; a clear catcher over
+    /// the button takes them instead (the close then runs as soon as the opening has finished).
+    func catchBackTapsWhileOpening(_ on: Bool) {
+        backCatcher.removeFromSuperview()
+        guard on, let navigation = navigationController else { return }
+        let bar = navigation.navigationBar
+        let barFrame = bar.convert(bar.bounds, to: navigation.view)
+        backCatcher.frame = CGRect(x: 0, y: barFrame.minY, width: 80, height: barFrame.height)
+        navigation.view.addSubview(backCatcher)
+    }
+
+    /// The picture and the backdrop out of sight (the transition draws its own), the view still
+    /// taking touches.
+    func setContentHidden(_ hidden: Bool) {
+        pager.alpha = hidden ? 0 : 1
+        view.backgroundColor = hidden ? .clear : (chromeHidden || zoomHidden ? .black : Self.backdrop)
     }
 
     func transitionEnded() {
         interactivePop = nil
     }
 
+    /// The opening is over for the navigation controller too (a pop is accepted only from here;
+    /// one asked for at the end of the flight was ignored). A pull that started during the opening
+    /// takes over now; a back or a pull let go meanwhile closes.
+    private func openingDidFinish() {
+        catchBackTapsWhileOpening(false)
+        guard isOpening else { return }
+        isOpening = false
+        if dismissPan.state == .began || dismissPan.state == .changed {
+            startPull(at: dismissPan.translation(in: view))
+        } else if closeWhenOpen {
+            closeWhenOpen = false
+            // Next turn: viewDidAppear runs inside the navigation controller's own completion,
+            // where a pop is still ignored.
+            DispatchQueue.main.async { [weak self] in self?.close() }
+        }
+    }
+
+    /// Starts the pull-down close; `origin` is how far the finger has already moved (the picture
+    /// follows from there, no jump).
+    private func startPull(at origin: CGPoint) {
+        let transition = PhotoZoomTransition(operation: .pop, viewer: self, interactive: true)
+        interactivePop = transition
+        pullOrigin = origin
+        if navigationController?.popViewController(animated: true) == nil {
+            interactivePop = nil
+        }
+    }
+
     @objc private func pulled(_ pan: UIPanGestureRecognizer) {
-        let translation = pan.translation(in: view)
+        let raw = pan.translation(in: view)
+        let translation = CGPoint(x: raw.x - pullOrigin.x, y: raw.y - pullOrigin.y)
         switch pan.state {
         case .began:
-            let transition = PhotoZoomTransition(operation: .pop, viewer: self, interactive: true)
-            interactivePop = transition
-            if navigationController?.popViewController(animated: true) == nil {
-                interactivePop = nil
-            }
+            pullOrigin = .zero
+            if !isOpening { startPull(at: .zero) }
         case .changed:
             interactivePop?.update(translation: translation)
         case .ended:
-            interactivePop?.end(translation: translation, velocity: pan.velocity(in: view))
+            if let interactivePop {
+                interactivePop.end(translation: translation, velocity: pan.velocity(in: view))
+            } else if isOpening, raw.y > 60 || pan.velocity(in: view).y > 500 {
+                // Pulled and let go while still opening: close once it has opened.
+                closeWhenOpen = true
+            }
         case .cancelled, .failed:
             interactivePop?.end(translation: .zero, velocity: .zero)
         default:

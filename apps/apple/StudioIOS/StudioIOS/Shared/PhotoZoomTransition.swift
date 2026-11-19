@@ -31,7 +31,12 @@ final class PhotoZoomTransition: NSObject, UIViewControllerAnimatedTransitioning
         self.isInteractive = interactive
     }
 
-    func transitionDuration(using transitionContext: UIViewControllerContextTransitioning?) -> TimeInterval { 0.28 }
+    /// The push runs as an "interactive" transition that starts animating by itself: UIKit keeps
+    /// delivering touches during it (a plain animated transition swallows them), so back or a pull
+    /// right after opening is not lost.
+    var wantsInteractiveStart: Bool { operation == .pop }
+
+    func transitionDuration(using transitionContext: UIViewControllerContextTransitioning?) -> TimeInterval { 0.3 }
 
     // MARK: Animated (push, and pop from the back button)
 
@@ -46,13 +51,18 @@ final class PhotoZoomTransition: NSObject, UIViewControllerAnimatedTransitioning
         case .push:
             let target = viewer.pictureRect(in: transitionContext.containerView)
             titleMorph?.animate(toPill: true)
-            UIView.animate(springDuration: duration, bounce: 0.12) {
+            viewer.catchBackTapsWhileOpening(true)
+            // A curve that ends exactly on time (a spring's completion waited for it to settle,
+            // so the opening counted as running for twice as long and back taps were lost).
+            let flight = UIViewPropertyAnimator(duration: duration, timingParameters: UICubicTimingParameters(
+                controlPoint1: CGPoint(x: 0.2, y: 0.9), controlPoint2: CGPoint(x: 0.3, y: 1)))
+            flight.addAnimations {
                 setup.flyer.frame = target
                 setup.flyer.layer.cornerRadius = viewer.restingRadius
                 setup.backdrop.alpha = 1
-            } completion: { _ in
-                self.finish(true)
             }
+            flight.addCompletion { _ in self.finish(true) }
+            flight.startAnimation()
         case .pop:
             titleMorph?.animate(toPill: false)
             UIView.animate(springDuration: duration, bounce: 0) {
@@ -67,6 +77,10 @@ final class PhotoZoomTransition: NSObject, UIViewControllerAnimatedTransitioning
     // MARK: Interactive (pop by pulling down)
 
     func startInteractiveTransition(_ transitionContext: UIViewControllerContextTransitioning) {
+        if operation == .push {
+            animateTransition(using: transitionContext)
+            return
+        }
         context = transitionContext
         if prepare(in: transitionContext) == nil {
             fallback(transitionContext)
@@ -157,7 +171,9 @@ final class PhotoZoomTransition: NSObject, UIViewControllerAnimatedTransitioning
             let sourceFrame = source.map { $0.convert($0.bounds, to: container) }
             container.addSubview(toView)
             toView.layoutIfNeeded()
-            toView.alpha = 0
+            // Only the viewer's content is hidden while the picture flies in, not its view: a
+            // hidden view takes no touches, and a pull or back during the opening must count.
+            viewer.setContentHidden(true)
             backdrop.alpha = 0
             container.insertSubview(backdrop, belowSubview: toView)
             let start = sourceFrame ?? viewer.pictureRect(in: container).insetBy(dx: 40, dy: 40)
@@ -213,7 +229,7 @@ final class PhotoZoomTransition: NSObject, UIViewControllerAnimatedTransitioning
         let toView = context.view(forKey: .to)
         switch operation {
         case .push:
-            toView?.alpha = 1
+            viewer?.setContentHidden(false)
         case .pop:
             fromView?.alpha = 1
             if cancelled { toView?.removeFromSuperview() }
@@ -228,6 +244,7 @@ final class PhotoZoomTransition: NSObject, UIViewControllerAnimatedTransitioning
         flyer = nil
         backdrop = nil
         self.context = nil
+        if operation == .push, context.isInteractive { context.finishInteractiveTransition() }
         context.completeTransition(!cancelled)
         viewer?.transitionEnded()
     }
@@ -276,7 +293,8 @@ final class PhotoViewerNavigationDelegate: NSObject, UINavigationControllerDeleg
     }
 
     static func interaction(for animator: UIViewControllerAnimatedTransitioning) -> UIViewControllerInteractiveTransitioning? {
-        guard let transition = animator as? PhotoZoomTransition, transition.isInteractive else { return nil }
+        guard let transition = animator as? PhotoZoomTransition,
+              transition.isInteractive || transition.operation == .push else { return nil }
         return transition
     }
 }
@@ -292,7 +310,7 @@ final class PhotoViewerNavigationDelegate: NSObject, UINavigationControllerDeleg
 /// title views stay hidden meanwhile.
 @MainActor
 private final class TitleMorph {
-    static let duration: TimeInterval = 0.36
+    static let duration: TimeInterval = 0.3
     /// The page title as last seen on screen (a pop starts while it is off screen).
     private static var lastTitleImage: (title: ObjectIdentifier, image: UIImage)?
     /// The middle of the bar's title area as last measured.
