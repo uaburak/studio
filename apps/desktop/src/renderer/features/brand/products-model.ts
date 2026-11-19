@@ -131,6 +131,53 @@ export function makeCover(ids: readonly string[], assetId: string): string[] {
   return ids.includes(assetId) ? [assetId, ...ids.filter((id) => id !== assetId)] : [...ids];
 }
 
+/** The tone a product without a photo stands on (Postlar's dark, light or muted tile), stable
+ *  per product. */
+export type ProductTone = "dark" | "light" | "muted";
+
+export function productTone(productId: string): ProductTone {
+  let hash = 0;
+  for (const ch of productId) hash = (hash * 31 + (ch.codePointAt(0) ?? 0)) >>> 0;
+  return (["dark", "light", "muted"] as const)[hash % 3] as ProductTone;
+}
+
+/** Tags as a caption's hashtags: "Yaprak gübresi" → "#yaprakgübresi". */
+export function productHashtags(tags: readonly string[]): string {
+  return tags
+    .map((tag) => tag.replace(/^#/, "").replace(/\s+/g, "").toLocaleLowerCase("tr-TR"))
+    .filter(Boolean)
+    .map((tag) => `#${tag}`)
+    .join(" ");
+}
+
+/** "şimdi", "12 dakika önce", "3 saat önce", "dün", "5 gün önce", "2 hafta önce", "4 ay önce". */
+export function agoText(iso: string, now: Date = new Date()): string {
+  const diff = Math.max(0, now.getTime() - new Date(iso).getTime());
+  const minutes = Math.floor(diff / 60_000);
+  if (minutes < 1) return "şimdi";
+  if (minutes < 60) return `${minutes} dakika önce`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours} saat önce`;
+  const days = Math.floor(hours / 24);
+  if (days === 1) return "dün";
+  if (days < 7) return `${days} gün önce`;
+  if (days < 30) return `${Math.floor(days / 7)} hafta önce`;
+  if (days < 365) return `${Math.floor(days / 30)} ay önce`;
+  return `${Math.floor(days / 365)} yıl önce`;
+}
+
+/** "2 fotoğraf · 5 gün önce eklendi" ("güncellendi" once it was edited), like a post's status. */
+export function productMetaLine(product: BrandProduct, now: Date = new Date()): string {
+  const updated =
+    new Date(product.updatedAt).getTime() - new Date(product.createdAt).getTime() > 60_000;
+  const photos =
+    product.imageAssetIds.length === 0
+      ? "Fotoğraf yok"
+      : `${product.imageAssetIds.length} fotoğraf`;
+  const when = agoText(updated ? product.updatedAt : product.createdAt, now);
+  return `${photos} · ${when} ${updated ? "güncellendi" : "eklendi"}`;
+}
+
 /** "3 ürün", "Ürün yok". */
 export function productCountText(count: number): string {
   return count === 0 ? "Ürün yok" : `${count} ürün`;
