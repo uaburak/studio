@@ -21,6 +21,10 @@ final class PhotoZoomTransition: NSObject, UIViewControllerAnimatedTransitioning
     private var hiddenSource: UIView?
     /// The name pill's fade-out, scrubbed by the pull.
     private var pillFade: UIViewPropertyAnimator?
+    /// The page's title view (Medya's segmented control): the name pill grows out of it and
+    /// folds back into it, the glass morphing while the two contents cross-fade.
+    private var morphTitle: UIView?
+    private var morph: CGAffineTransform?
 
     init(operation: Operation, viewer: PhotoViewerViewController, interactive: Bool = false) {
         self.operation = operation
@@ -46,8 +50,7 @@ final class PhotoZoomTransition: NSObject, UIViewControllerAnimatedTransitioning
                 setup.flyer.frame = target
                 setup.flyer.layer.cornerRadius = viewer.restingRadius
                 setup.backdrop.alpha = 1
-                viewer.titlePill.setVisible(true)
-                viewer.titlePill.alpha = 1
+                self.pillShown()
             } completion: { _ in
                 self.finish(true)
             }
@@ -55,8 +58,7 @@ final class PhotoZoomTransition: NSObject, UIViewControllerAnimatedTransitioning
             UIView.animate(springDuration: duration, bounce: 0) {
                 self.flyHome(setup.flyer)
                 setup.backdrop.alpha = 0
-                self.viewer?.titlePill.setVisible(false)
-                self.viewer?.titlePill.alpha = 0
+                self.pillHidden()
             } completion: { _ in
                 self.finish(true)
             }
@@ -73,10 +75,9 @@ final class PhotoZoomTransition: NSObject, UIViewControllerAnimatedTransitioning
         }
         // The name pill fades with the finger, exactly like the backdrop: its fade-out is an
         // animation held at the pull's progress (glass cannot simply take an alpha).
-        if let pill = viewer?.titlePill {
-            let animator = UIViewPropertyAnimator(duration: 1, curve: .linear) {
-                pill.setVisible(false)
-                pill.alpha = 0
+        if viewer?.titlePill != nil {
+            let animator = UIViewPropertyAnimator(duration: 1, curve: .linear) { [weak self] in
+                self?.pillHidden()
             }
             animator.pausesOnCompletion = true
             animator.pauseAnimation()
@@ -161,9 +162,9 @@ final class PhotoZoomTransition: NSObject, UIViewControllerAnimatedTransitioning
             toView.layoutIfNeeded()
             toView.alpha = 0
             backdrop.alpha = 0
-            // The name pill fades in and out with the backdrop (it is not part of the bar's crossfade).
-            viewer.titlePill.setVisible(false)
-            viewer.titlePill.alpha = 0
+            // The name pill fades in with the backdrop, or grows out of the page's title view.
+            prepareMorph(page: transitionContext.viewController(forKey: .from), in: container)
+            pillHidden()
             container.insertSubview(backdrop, belowSubview: toView)
             let start = sourceFrame ?? viewer.pictureRect(in: container).insetBy(dx: 40, dy: 40)
             flyer.frame = start
@@ -184,6 +185,8 @@ final class PhotoZoomTransition: NSObject, UIViewControllerAnimatedTransitioning
             flyer.layer.cornerRadius = viewer.restingRadius
             container.addSubview(flyer)
             fromView.alpha = 0
+            prepareMorph(page: toController, in: container)
+            pillShown()
         }
         // The thumbnail's spot stays empty while its picture is away (Photos does the same).
         source?.alpha = 0
@@ -191,6 +194,47 @@ final class PhotoZoomTransition: NSObject, UIViewControllerAnimatedTransitioning
         self.flyer = flyer
         self.backdrop = backdrop
         return Setup(flyer: flyer, backdrop: backdrop)
+    }
+
+    // MARK: Name pill
+
+    /// Measures how the pill maps onto the page's title view (same centre in the bar; only the
+    /// size differs), when the page has one.
+    private func prepareMorph(page: UIViewController?, in container: UIView) {
+        guard let pill = viewer?.titlePill, let title = page?.navigationItem.titleView else { return }
+        pill.transform = .identity
+        pill.superview?.layoutIfNeeded()
+        let pillSize = pill.bounds.size
+        var titleSize = title.bounds.size
+        if titleSize.width < 1 { titleSize = title.systemLayoutSizeFitting(UIView.layoutFittingCompressedSize) }
+        guard pillSize.width > 1, pillSize.height > 1, titleSize.width > 1, titleSize.height > 1 else { return }
+        morphTitle = title
+        morph = CGAffineTransform(scaleX: titleSize.width / pillSize.width, y: titleSize.height / pillSize.height)
+    }
+
+    /// The pill as the viewer shows it (the page's title view hidden under it).
+    private func pillShown() {
+        guard let pill = viewer?.titlePill else { return }
+        pill.transform = .identity
+        pill.setVisible(true)
+        pill.alpha = 1
+        morphTitle?.alpha = 0
+    }
+
+    /// The pill gone: shrunk into the page's title view (its glass stays, its text fades), or
+    /// faded out with the backdrop when the page has no title view.
+    private func pillHidden() {
+        guard let pill = viewer?.titlePill else { return }
+        if let morph {
+            pill.transform = morph
+            pill.setVisible(true)
+            pill.setContentVisible(false)
+            pill.alpha = 0
+            morphTitle?.alpha = 1
+        } else {
+            pill.setVisible(false)
+            pill.alpha = 0
+        }
     }
 
     /// Into the thumbnail of the picture on screen; with none (scrolled away) it fades out.
@@ -222,10 +266,10 @@ final class PhotoZoomTransition: NSObject, UIViewControllerAnimatedTransitioning
             pillFade.stopAnimation(true)
             self.pillFade = nil
         }
-        if let pill = viewer?.titlePill, cancelled || operation == .push {
-            pill.setVisible(true)
-            pill.alpha = 1
-        }
+        if cancelled || operation == .push { pillShown() }
+        // The page's own title is back for when the page shows again.
+        morphTitle?.alpha = 1
+        if operation == .pop, !cancelled { viewer?.titlePill.transform = .identity }
         flyer?.removeFromSuperview()
         backdrop?.removeFromSuperview()
         flyer = nil

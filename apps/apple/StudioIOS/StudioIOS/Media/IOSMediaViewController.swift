@@ -293,32 +293,31 @@ final class IOSMediaViewController: UIViewController, UICollectionViewDelegate, 
 
     // MARK: Toolbar
 
-    /// The system toolbar (Liquid Glass): the tag filter at the left, the segmented control in the
-    /// middle, the search button at the right.
+    /// The segmented control in the navigation bar's middle; the system toolbar (Liquid Glass)
+    /// with the tag filter at the left and the search button at the right.
     private func buildToolbar() {
-        // The toolbar sizes a custom view by its own constraints: a 44 pt holder (the height of
-        // the other toolbar buttons) with the segmented control filling it, in larger type.
+        // The segmented control sits where the title would be (no "Medya" title shown): the
+        // picture viewer's name pill grows out of it and folds back into it.
         let holder = UIView()
         holder.translatesAutoresizingMaskIntoConstraints = false
         segmented.translatesAutoresizingMaskIntoConstraints = false
         holder.addSubview(segmented)
         segmented.pin(to: holder)
         NSLayoutConstraint.activate([
-            holder.widthAnchor.constraint(equalToConstant: 204),
-            holder.heightAnchor.constraint(equalToConstant: 50),
+            holder.widthAnchor.constraint(equalToConstant: 220),
+            holder.heightAnchor.constraint(equalToConstant: 40),
         ])
         segmented.setTitleTextAttributes([.font: UIFont.systemFont(ofSize: 15, weight: .semibold)], for: .normal)
         segmented.setTitleTextAttributes([.font: UIFont.systemFont(ofSize: 15, weight: .semibold)], for: .selected)
-        let segmentedItem = UIBarButtonItem(customView: holder)
-        segmentedItem.hidesSharedBackground = true
+        navigationItem.titleView = holder
         filterItem.image = UIImage(systemName: "tag")
         filterItem.accessibilityLabel = "Etiketle filtrele"
         filterItem.menu = UIMenu(children: [UIDeferredMenuElement.uncached { [weak self] completion in
             completion(self?.filterMenuElements() ?? [])
         }])
 
-        // Search is the system's toolbar search: a round button that, when tapped, grows into a
-        // field above the keyboard with the native animation (and folds back on Cancel).
+        // Toolbar: the tag filter at the left, search at the right. Search is the system's
+        // toolbar search: a round button that grows into a field above the keyboard.
         searchController.obscuresBackgroundDuringPresentation = false
         searchController.searchBar.placeholder = "Medyada ara"
         searchController.searchResultsUpdater = self
@@ -326,7 +325,7 @@ final class IOSMediaViewController: UIViewController, UICollectionViewDelegate, 
         navigationItem.preferredSearchBarPlacement = .integratedButton
         navigationItem.searchBarPlacementAllowsToolbarIntegration = true
         let searchItem = navigationItem.searchBarPlacementBarButtonItem
-        setToolbarItems([filterItem, .flexibleSpace(), segmentedItem, .flexibleSpace(), searchItem], animated: false)
+        setToolbarItems([filterItem, .flexibleSpace(), searchItem], animated: false)
     }
 
     private func filterMenuElements() -> [UIMenuElement] {

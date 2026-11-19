@@ -769,6 +769,11 @@ final class GlassTitlePill: UIView {
         invalidateIntrinsicContentSize()
     }
 
+    /// The name and date only (the glass stays): used while the pill morphs.
+    func setContentVisible(_ visible: Bool) {
+        glass.contentView.alpha = visible ? 1 : 0
+    }
+
     /// Call inside an animation block to fade it in or out like the backdrop.
     func setVisible(_ visible: Bool) {
         isShown = visible
