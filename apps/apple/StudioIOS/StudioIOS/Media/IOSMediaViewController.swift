@@ -68,7 +68,10 @@ final class IOSMediaModel {
         return counts.map { (label: $0.key, count: $0.value) }.sorted { $0.count != $1.count ? $0.count > $1.count : $0.label < $1.label }
     }
 
-    var visible: [Asset] {
+    var visible: [Asset] { visible(in: filter) }
+
+    /// What `filter`'s page shows with the current search and tags.
+    func visible(in filter: Filter) -> [Asset] {
         let words = query.lowercased(with: Locale(identifier: "tr_TR")).split(separator: " ").map(String.init)
         return assets.filter { asset in
             guard filter.matches(asset) else { return false }
@@ -236,6 +239,10 @@ final class IOSMediaViewController: UIViewController, UICollectionViewDelegate, 
         segmented.translatesAutoresizingMaskIntoConstraints = false
         segmented.addAction(UIAction { [weak self] _ in
             guard let self else { return }
+            // A tap moves the pill with the system's own animation; only a finger dragging the
+            // page carries it by hand.
+            self.segmentLens?.transform = .identity
+            self.pillByTap = true
             self.slide(to: self.segmented.selectedSegmentIndex == 1 ? .videos : .images)
         }, for: .valueChanged)
 
@@ -244,6 +251,8 @@ final class IOSMediaViewController: UIViewController, UICollectionViewDelegate, 
         collection.backgroundColor = .clear
         collection.delegate = self
         collection.alwaysBounceVertical = true
+        // The other page rides beside the grid (inside it, past its side) while it slides.
+        collection.clipsToBounds = false
         // An invisible page control: swiping sideways moves between Resim and Video.
         pagePan.delegate = self
         view.addGestureRecognizer(pagePan)
@@ -332,18 +341,19 @@ final class IOSMediaViewController: UIViewController, UICollectionViewDelegate, 
         case .began:
             // Catch the page wherever it is (the slide stops there, no waiting for it to end).
             panBase = interruptPaging()
+            pillByTap = false
         case .changed:
             var offset = panBase + dx
             // Nothing beyond the two pages: resist past the ends.
             if (model.filter == .images && offset > 0) || (model.filter == .videos && offset < 0) { offset *= 0.3 }
             setPage(offset: offset)
         case .ended, .cancelled, .failed:
-            let offset = panBase + dx
+            let offset = pageOffset
             let velocity = pan.state == .ended ? pan.velocity(in: view).x : 0
             var target = model.filter
             if offset < -width * 0.25 || velocity < -500 { target = .videos }
             if offset > width * 0.25 || velocity > 500 { target = .images }
-            slide(to: target, from: pageOffset)
+            slide(to: target, from: offset)
         default:
             break
         }
@@ -352,11 +362,103 @@ final class IOSMediaViewController: UIViewController, UICollectionViewDelegate, 
     /// Where the page is now (the grid and its empty state move together).
     private var pageOffset: CGFloat { collection.transform.tx }
 
-    /// The page (the grid and its empty state) moved sideways by `offset`.
+    /// From one page to the other: a screen width less the hairline the pages would otherwise
+    /// double, so between the two the gap is the same 2pt as between the tiles.
+    private var pageSpan: CGFloat { max(collection.bounds.width - 2, 1) }
+
+    /// The other page's tiles, inside the grid past its side (they move with it).
+    private var neighborPage: UIView?
+    /// -1: the other page is to the right (Video), 1: to the left (Resim), 0: none.
+    private var neighborSide: CGFloat = 0
+
+    /// The page (the grid and its empty state) moved sideways by `offset`, the other page glued
+    /// to its side and the segmented control's pill following along.
     private func setPage(offset: CGFloat) {
         let move = CGAffineTransform(translationX: offset, y: 0)
         collection.transform = move
         emptyView.transform = move
+        let side: CGFloat = offset < 0 ? -1 : (offset > 0 ? 1 : 0)
+        if pageTarget == nil, side != 0, side != neighborSide {
+            showNeighbor(side == -1 && model.filter == .images ? .videos : (side == 1 && model.filter == .videos ? .images : nil), side: side)
+        }
+        let index: CGFloat = model.filter == .videos ? 1 : 0
+        followSegment(index - offset / pageSpan)
+    }
+
+    /// Lays `filter`'s tiles out as its grid would show them at the current scroll, on `side`.
+    private func showNeighbor(_ filter: IOSMediaModel.Filter?, side: CGFloat) {
+        neighborPage?.removeFromSuperview()
+        neighborPage = nil
+        neighborSide = side
+        guard let filter, collection.bounds.width > 0 else { return }
+        UIView.performWithoutAnimation {
+            // The grid's geometry (see `layout()`): thirds of the width less the 1pt side
+            // insets, each tile inset by 1pt.
+            let width = collection.bounds.width
+            let third = (width - 2) / 3
+            let top = collection.contentOffset.y
+            let bottom = top + collection.bounds.height
+            let page = UIView(frame: CGRect(x: -side * pageSpan, y: 0, width: width, height: max(bottom, 0)))
+            page.isUserInteractionEnabled = false
+            for (index, asset) in model.visible(in: filter).enumerated() {
+                let y = CGFloat(index / 3) * third
+                if y > bottom { break }
+                if y + third < top { continue }
+                let cell = MediaCell(frame: CGRect(x: 1 + CGFloat(index % 3) * third + 1, y: y + 1, width: third - 2, height: third - 2))
+                cell.configure(asset, store: app.images)
+                page.addSubview(cell)
+                cell.layoutIfNeeded()
+            }
+            collection.insertSubview(page, at: 0)
+            neighborPage = page
+        }
+    }
+
+    private func dropNeighbor() {
+        neighborPage?.removeFromSuperview()
+        neighborPage = nil
+        neighborSide = 0
+    }
+
+    // MARK: Segmented pill
+
+    /// The system segmented control's selection pill (the Liquid Glass lens). There is no API to
+    /// put it between two segments, so it is moved by hand while the page slides; if a later
+    /// iOS names it differently, the pill just jumps as before.
+    private var segmentLens: UIView? {
+        func find(in view: UIView) -> UIView? {
+            for subview in view.subviews {
+                if NSStringFromClass(type(of: subview)) == "_UILiquidLensView" { return subview }
+                if let found = find(in: subview) { return found }
+            }
+            return nil
+        }
+        return find(in: segmented)
+    }
+
+    /// The running slide came from a tap on the segmented control (the system moves the pill).
+    private var pillByTap = false
+
+    /// The pill at `position` (0 on Resim, 1 on Video, fractions between them).
+    private func followSegment(_ position: CGFloat) {
+        guard !pillByTap else { return }
+        let clamped = min(max(position, 0), 1)
+        let segment = segmented.bounds.width / 2
+        segmentLens?.transform = CGAffineTransform(translationX: (clamped - CGFloat(segmented.selectedSegmentIndex)) * segment, y: 0)
+    }
+
+    /// The segmented control selects `filter` at once, without its own animation (the next
+    /// `setPage` puts the pill where the page has it).
+    private func settleSegment(on filter: IOSMediaModel.Filter) {
+        let index = filter == .videos ? 1 : 0
+        guard segmented.selectedSegmentIndex != index else { return }
+        let lens = segmentLens
+        UIView.performWithoutAnimation {
+            lens?.transform = .identity
+            segmented.selectedSegmentIndex = index
+            segmented.layoutIfNeeded()
+        }
+        lens?.layer.removeAllAnimations()
     }
 
     /// Stops a running slide where it is on screen and returns that offset.
@@ -366,12 +468,13 @@ final class IOSMediaViewController: UIViewController, UICollectionViewDelegate, 
             animator.stopAnimation(false)
             animator.finishAnimation(at: .current)
         }
-        segmented.selectedSegmentIndex = model.filter == .videos ? 1 : 0
+        pageTarget = nil
         return pageOffset
     }
 
-    /// Slides the page to `filter`: the current one out and the other in from its side, or back
-    /// into place when it stays. Interruptible at any moment (a new swipe or tap takes over).
+    /// Slides to `filter`: both pages move together, side by side, until the other fills the
+    /// screen; or back into place when it stays. Interruptible at any moment (a new swipe or tap
+    /// takes over).
     private func slide(to filter: IOSMediaModel.Filter, from offset: CGFloat? = nil) {
         let start = offset ?? interruptPaging()
         if let animator = pageAnimator {
@@ -379,38 +482,44 @@ final class IOSMediaViewController: UIViewController, UICollectionViewDelegate, 
             animator.stopAnimation(true)
         }
         let width = max(collection.bounds.width, 1)
-        segmented.selectedSegmentIndex = filter == .videos ? 1 : 0
-        setPage(offset: start)
         pageTarget = filter
         guard filter != model.filter else {
-            let back = UIViewPropertyAnimator(duration: 0.3, dampingRatio: 0.85) { self.setPage(offset: 0) }
+            setPage(offset: start)
+            let back = UIViewPropertyAnimator(duration: 0.32, dampingRatio: 1) { self.setPage(offset: 0) }
             back.addCompletion { [weak self] position in
-                if position == .end, self?.pageAnimator === back { self?.pageAnimator = nil }
+                guard let self, position == .end, self.pageAnimator === back else { return }
+                self.pageAnimator = nil
+                self.pageTarget = nil
+                self.pillByTap = false
+                self.dropNeighbor()
             }
             pageAnimator = back
             back.startAnimation()
             return
         }
-        let direction: CGFloat = filter == .videos ? -1 : 1
-        let remaining = min(max(abs(direction * width - start) / width, 0.15), 1)
-        let out = UIViewPropertyAnimator(duration: 0.16 * remaining, curve: .easeIn) { self.setPage(offset: direction * width) }
-        out.addCompletion { [weak self] position in
-            // Stopped midway (caught by a swipe): the page stays where it is, nothing switches.
-            guard let self, position == .end, self.pageAnimator === out else { return }
+        let side: CGFloat = filter == .videos ? -1 : 1
+        if neighborSide != side || neighborPage == nil { showNeighbor(filter, side: side) }
+        setPage(offset: start)
+        let end = side * pageSpan
+        let remaining = min(max(abs(end - start) / width, 0.3), 1)
+        let across = UIViewPropertyAnimator(duration: 0.38 * remaining, dampingRatio: 1) { self.setPage(offset: end) }
+        across.addCompletion { [weak self] position in
+            // Stopped midway (caught by a swipe): the pages stay where they are, nothing switches.
+            guard let self, position == .end, self.pageAnimator === across else { return }
+            self.pageAnimator = nil
+            self.pageTarget = nil
             self.isPaging = true
             self.model.filter = filter
             self.render()
+            self.collection.layoutIfNeeded()
             self.isPaging = false
-            self.setPage(offset: -direction * width)
-            let into = UIViewPropertyAnimator(duration: 0.3, dampingRatio: 1) { self.setPage(offset: 0) }
-            into.addCompletion { [weak self] position in
-                if position == .end, self?.pageAnimator === into { self?.pageAnimator = nil }
-            }
-            self.pageAnimator = into
-            into.startAnimation()
+            self.dropNeighbor()
+            self.settleSegment(on: filter)
+            self.pillByTap = false
+            self.setPage(offset: 0)
         }
-        pageAnimator = out
-        out.startAnimation()
+        pageAnimator = across
+        across.startAnimation()
         Haptics.selection()
     }
 
