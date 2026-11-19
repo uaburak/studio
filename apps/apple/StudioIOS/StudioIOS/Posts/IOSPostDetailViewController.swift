@@ -1,15 +1,15 @@
 import StudioKit
 import UIKit
 
-/// An opened post: zoomable slides, Post | Düzenle | Sürümler, "Neyi değiştireyim?",
-/// Zamanla and Onayla. Every design change becomes a new version on the Mac (PostEditSession).
+/// An opened post: zoomable slides, Post | Sürümler, "Neyi değiştireyim?", Zamanla and Onayla.
+/// The design itself is edited on the Mac (no layer editing on the phone); a change asked for
+/// here becomes a new version there (PostEditSession).
 final class IOSPostDetailViewController: UIViewController {
     enum DetailTab: Int, CaseIterable {
-        case post, edit, versions
+        case post, versions
         var label: String {
             switch self {
             case .post: "Post"
-            case .edit: "Düzenle"
             case .versions: "Sürümler"
             }
         }
@@ -18,7 +18,6 @@ final class IOSPostDetailViewController: UIViewController {
     private unowned let app: IOSAppModel
     let session: PostEditSession
     private var detailTab: DetailTab = .post
-    private var nudgeStep: CGFloat = 10
 
     private let scroll = UIScrollView()
     private let stack = UIStackView.v([], spacing: 14)
@@ -55,15 +54,14 @@ final class IOSPostDetailViewController: UIViewController {
         scroll.translatesAutoresizingMaskIntoConstraints = false
         scroll.keyboardDismissMode = .interactive
         scroll.alwaysBounceVertical = true
+        scroll.topEdgeEffect.style = .soft
+        // Hard: the field and the buttons float over the page and must stay readable.
+        scroll.bottomEdgeEffect.style = .hard
+        setContentScrollView(scroll, for: .top)
         view.addSubview(scroll)
         scroll.addSubview(stack)
 
         pager.onPageChange = { [weak self] index in self?.session.selectSlide(index) }
-        pager.onSelectLayer = { [weak self] id in
-            guard let self else { return }
-            self.session.selectedLayerId = id
-            if id != nil, self.detailTab != .edit { self.setTab(.edit) }
-        }
         pager.onPlayVideo = { [weak self] id in
             guard let self else { return }
             ReelVideo.play(id, app: self.app, from: self)
@@ -90,16 +88,26 @@ final class IOSPostDetailViewController: UIViewController {
             scroll.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             scroll.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             scroll.topAnchor.constraint(equalTo: view.topAnchor),
-            scroll.bottomAnchor.constraint(equalTo: bottomBar.topAnchor),
+            scroll.bottomAnchor.constraint(equalTo: view.bottomAnchor),
             stack.leadingAnchor.constraint(equalTo: scroll.contentLayoutGuide.leadingAnchor),
             stack.trailingAnchor.constraint(equalTo: scroll.contentLayoutGuide.trailingAnchor),
-            stack.topAnchor.constraint(equalTo: scroll.contentLayoutGuide.topAnchor, constant: 8),
+            stack.topAnchor.constraint(equalTo: scroll.contentLayoutGuide.topAnchor),
             stack.bottomAnchor.constraint(equalTo: scroll.contentLayoutGuide.bottomAnchor),
             stack.widthAnchor.constraint(equalTo: scroll.frameLayoutGuide.widthAnchor),
         ])
 
         observation = observeIOS { [weak self] in self?.render() }
         Task { await session.load() }
+    }
+
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        // The page scrolls under the floating bar; its last line stops above it.
+        let bottom = max(view.bounds.maxY - bottomBar.frame.minY - view.safeAreaInsets.bottom, 0) + 12
+        if scroll.contentInset.bottom != bottom {
+            scroll.contentInset.bottom = bottom
+            scroll.verticalScrollIndicatorInsets.bottom = bottom
+        }
     }
 
     override func viewWillDisappear(_ animated: Bool) {
@@ -118,12 +126,9 @@ final class IOSPostDetailViewController: UIViewController {
     // MARK: Bottom bar
 
     private func buildBottomBar() {
+        // Floats over the page (the page scrolls under it, with the soft bottom edge).
         bottomBar.translatesAutoresizingMaskIntoConstraints = false
-        bottomBar.backgroundColor = IOSTheme.canvas
-        let hairline = UIView()
-        hairline.translatesAutoresizingMaskIntoConstraints = false
-        hairline.backgroundColor = IOSTheme.hairline
-        bottomBar.addSubview(hairline)
+        bottomBar.backgroundColor = .clear
 
         instructionField.placeholder = "Neyi değiştireyim?"
         instructionField.font = IOSTheme.font(15)
@@ -139,14 +144,14 @@ final class IOSPostDetailViewController: UIViewController {
             guard let self else { return }
             if self.session.revisionJobId != nil { Task { await self.session.cancelRevision() } } else { self.sendInstruction() }
         }
-        let fieldBox = UIView()
+        // A Liquid Glass capsule, like the app's other fields over content.
+        let fieldBox = UIVisualEffectView(effect: UIGlassEffect())
         fieldBox.translatesAutoresizingMaskIntoConstraints = false
-        fieldBox.backgroundColor = IOSTheme.fill
-        fieldBox.layer.cornerRadius = 21
-        fieldBox.layer.cornerCurve = .continuous
+        fieldBox.cornerConfiguration = .capsule()
         let fieldRow = UIStackView.h([instructionField, instructionSend], spacing: 4)
-        fieldBox.addSubview(fieldRow)
-        fieldRow.pin(to: fieldBox, insets: UIEdgeInsets(top: 2, left: 16, bottom: 2, right: 4))
+        fieldRow.translatesAutoresizingMaskIntoConstraints = false
+        fieldBox.contentView.addSubview(fieldRow)
+        fieldRow.pin(to: fieldBox.contentView, insets: UIEdgeInsets(top: 2, left: 16, bottom: 2, right: 4))
         fieldBox.heightAnchor.constraint(greaterThanOrEqualToConstant: 42).isActive = true
 
         scheduleButton = UIButton.studioPill(title: "Zamanla", kind: .secondary) { [weak self] in self?.presentSchedule() }
@@ -155,11 +160,12 @@ final class IOSPostDetailViewController: UIViewController {
         let barStack = UIStackView.v([fieldBox, buttons], spacing: 10)
         bottomBar.addSubview(barStack)
         view.addSubview(bottomBar)
+        // The page's soft bottom edge shapes itself around the floating field and buttons.
+        let edge = UIScrollEdgeElementContainerInteraction()
+        edge.scrollView = scroll
+        edge.edge = .bottom
+        bottomBar.addInteraction(edge)
         NSLayoutConstraint.activate([
-            hairline.leadingAnchor.constraint(equalTo: bottomBar.leadingAnchor),
-            hairline.trailingAnchor.constraint(equalTo: bottomBar.trailingAnchor),
-            hairline.topAnchor.constraint(equalTo: bottomBar.topAnchor),
-            hairline.heightAnchor.constraint(equalToConstant: 1),
             barStack.leadingAnchor.constraint(equalTo: bottomBar.leadingAnchor, constant: IOSTheme.gutter),
             barStack.trailingAnchor.constraint(equalTo: bottomBar.trailingAnchor, constant: -IOSTheme.gutter),
             barStack.topAnchor.constraint(equalTo: bottomBar.topAnchor, constant: 10),
@@ -188,7 +194,7 @@ final class IOSPostDetailViewController: UIViewController {
 
         let placeholder = (title: s.content.title, eyebrow: s.card.eyebrow, needsImage: s.card.needsImage)
         pager.configure(
-            slides: s.slides, placeholder: placeholder, images: app.images, editing: detailTab == .edit && !s.isCanvasVersion,
+            slides: s.slides, placeholder: placeholder, images: app.images, editing: false,
             selectedLayer: s.selectedLayerId, previewBoxes: s.previewBoxes, selectedSlide: s.selectedSlideIndex)
         let exporting = s.isExporting ? (s.exportMessage ?? "Hazırlanıyor") : nil
         pager.setActivity(s.activity.isBusy ? s.activity.message : exporting)
@@ -220,7 +226,6 @@ final class IOSPostDetailViewController: UIViewController {
         hasher.combine(s.activity)
         hasher.combine(s.canUndo)
         hasher.combine(s.canRedo)
-        hasher.combine(nudgeStep)
         hasher.combine(app.posts.slotUploads[s.content.id])
         hasher.combine(s.checkRun)
         hasher.combine(s.checkRunVersion)
@@ -236,7 +241,6 @@ final class IOSPostDetailViewController: UIViewController {
             tabContent.removeAllArranged()
             switch detailTab {
             case .post: buildPostTab()
-            case .edit: buildEditTab()
             case .versions: buildVersionsTab()
             }
         }
@@ -322,25 +326,35 @@ final class IOSPostDetailViewController: UIViewController {
         }
 
         // Caption
-        let captionCard = IOSCardView(padding: 16, spacing: 8)
+        // As on a Postlar post: the brand in bold, the caption, its hashtags.
+        let captionCard = Self.section(spacing: 8)
         let parts = CaptionParts(caption: s.content.caption)
-        let body = UILabel.studio(parts.body.isEmpty ? "Açıklama yok" : parts.body, size: 16, color: parts.body.isEmpty ? IOSTheme.textTertiary : IOSTheme.textPrimary, lines: 0)
+        let body = UILabel.studio("", size: 15, lines: 0, style: .subheadline)
+        if parts.body.isEmpty {
+            body.text = "Açıklama yok"
+            body.textColor = IOSTheme.textTertiary
+        } else {
+            let text = NSMutableAttributedString(string: PostPresentation.brandName(app) + " ", attributes: [.font: IOSTheme.font(15, .semibold, style: .subheadline), .foregroundColor: IOSTheme.textPrimary])
+            text.append(NSAttributedString(string: parts.body, attributes: [.font: IOSTheme.font(15, style: .subheadline), .foregroundColor: IOSTheme.textPrimary]))
+            body.attributedText = text
+        }
         captionCard.stack.addArrangedSubview(body)
         if !parts.hashtags.isEmpty {
-            captionCard.stack.addArrangedSubview(UILabel.studio(parts.hashtags.joined(separator: " "), size: 15, color: IOSTheme.textSecondary, lines: 0, style: .subheadline))
+            captionCard.stack.addArrangedSubview(UILabel.studio(parts.hashtags.joined(separator: " "), size: 15, lines: 0, style: .subheadline))
         }
         let usage = CaptionLimits.usage(caption: s.content.caption, platforms: s.content.targetPlatforms)
         let counters = usage.map { "\($0.platform.displayName) \($0.label)" }.joined(separator: " · ")
         let over = usage.contains(where: \.isOverLimit)
         let counterLabel = UILabel.studio(counters, size: 12, color: over ? IOSTheme.accent : IOSTheme.textTertiary, lines: 2, style: .caption1)
         counterLabel.font = IOSTheme.monoDigits(12)
-        let edit = UIButton.studioPill(title: "Düzenle", kind: .secondary, image: "pencil") { [weak self] in self?.presentCaptionEditor() }
+        let edit = UIButton.studioIcon("pencil", label: "Açıklamayı düzenle", size: 15, tint: IOSTheme.textSecondary) { [weak self] in self?.presentCaptionEditor() }
         edit.isEnabled = !s.content.status.isLocked
         captionCard.stack.addArrangedSubview(UIStackView.h([counterLabel, UIView.spacer(), edit], spacing: 8))
         tabContent.addArrangedSubview(captionCard)
 
         // Details
-        let info = IOSCardView(padding: 16, spacing: 10)
+        tabContent.addArrangedSubview(Self.hairline())
+        let info = Self.section(spacing: 10)
         let dateText: String = {
             if let schedule = card.schedule { return TurkishFormat.dayAndTime(schedule.scheduledAt) }
             if let day = card.planItem?.date { return TurkishFormat.longDay(day) + ", 09:00" }
@@ -360,6 +374,7 @@ final class IOSPostDetailViewController: UIViewController {
         tabContent.addArrangedSubview(info)
 
         if s.content.type != .reel || s.checkRun != nil {
+            tabContent.addArrangedSubview(Self.hairline())
             tabContent.addArrangedSubview(checksCard())
         }
 
@@ -402,7 +417,7 @@ final class IOSPostDetailViewController: UIViewController {
 
     private func checksCard() -> UIView {
         let s = session
-        let card = IOSCardView(padding: 14, spacing: 10)
+        let card = Self.section(spacing: 10)
         let shown = s.activeVersion?.version
         let run = s.checkRunVersion == shown ? s.checkRun : nil
         let running = s.checksRunning
@@ -523,6 +538,22 @@ final class IOSPostDetailViewController: UIViewController {
         return control
     }
 
+    /// A section of the page: no card, no border (sections are parted by a hairline).
+    private static func section(spacing: CGFloat) -> IOSCardView {
+        let card = IOSCardView(padding: 0, spacing: spacing, background: .clear)
+        card.layer.borderWidth = 0
+        card.layer.cornerRadius = 0
+        return card
+    }
+
+    private static func hairline() -> UIView {
+        let line = UIView()
+        line.translatesAutoresizingMaskIntoConstraints = false
+        line.backgroundColor = IOSTheme.hairline
+        line.heightAnchor.constraint(equalToConstant: 1 / UITraitCollection.current.displayScale).isActive = true
+        return line
+    }
+
     private static func footnote(_ text: String) -> UILabel {
         UILabel.studio(text, size: 13, color: IOSTheme.textSecondary, lines: 0, style: .footnote)
     }
@@ -604,41 +635,7 @@ final class IOSPostDetailViewController: UIViewController {
         return card
     }
 
-    // MARK: Edit tab
-
-    private func buildEditTab() {
-        let s = session
-        if s.isCanvasVersion, s.content.type != .reel, !s.content.status.isLocked {
-            tabContent.addArrangedSubview(canvasNoteCard())
-            if !s.isViewingCurrentVersion, let shown = s.activeVersion?.version { tabContent.addArrangedSubview(oldVersionBanner(shown)) }
-            return
-        }
-        if let blocker = s.editBlocker {
-            tabContent.addArrangedSubview(UILabel.studio(blocker, size: 14, color: IOSTheme.textSecondary, lines: 0, style: .subheadline))
-            if !s.isViewingCurrentVersion, let shown = s.activeVersion?.version { tabContent.addArrangedSubview(oldVersionBanner(shown)) }
-            return
-        }
-        if !s.slots.isEmpty { tabContent.addArrangedSubview(slotCard()) }
-
-        if let layer = s.selectedLayer {
-            tabContent.addArrangedSubview(selectedLayerCard(layer))
-        } else if s.layerBoxes != nil {
-            tabContent.addArrangedSubview(UILabel.studio("Görselde bir katmana dokun ya da listeden seç.", size: 13, color: IOSTheme.textSecondary, lines: 0, style: .footnote))
-        }
-
-        let list = IOSCardView(padding: 8, spacing: 0)
-        let header = UILabel.studio("Katmanlar · Slayt \(s.selectedSlideIndex + 1)", size: 13, weight: .semibold, color: IOSTheme.textSecondary, style: .footnote)
-        let headerRow = UIStackView.h([header, UIView.spacer()], spacing: 0)
-        headerRow.isLayoutMarginsRelativeArrangement = true
-        headerRow.directionalLayoutMargins = NSDirectionalEdgeInsets(top: 6, leading: 8, bottom: 6, trailing: 8)
-        list.stack.addArrangedSubview(headerRow)
-        let layers = s.editableLayers
-        if layers.isEmpty {
-            list.stack.addArrangedSubview(UILabel.studio("Bu slaytta düzenlenebilir katman yok.", size: 14, color: IOSTheme.textTertiary, lines: 0))
-        }
-        for layer in layers { list.stack.addArrangedSubview(layerRow(layer)) }
-        tabContent.addArrangedSubview(list)
-    }
+    // MARK: Missing picture
 
     /// The design was edited on the Mac's canvas: read only here (texts, pictures, slots).
     private func canvasNoteCard() -> UIView {
@@ -653,135 +650,6 @@ final class IOSPostDetailViewController: UIViewController {
         }
         card.stack.addArrangedSubview(Self.footnote(ai))
         return card
-    }
-
-    private static func icon(for kind: SlideLayer.Kind) -> String {
-        switch kind {
-        case .text: "textformat"
-        case .image: "photo"
-        case .slot: "photo.badge.plus"
-        case .logo: "seal"
-        case .shape: "square.on.circle"
-        case .group: "square.stack"
-        case .other: "square.dashed"
-        }
-    }
-
-    private func layerRow(_ layer: SlideLayer) -> UIView {
-        let selected = layer.layerId == session.selectedLayerId
-        let icon = ChatViews.icon(Self.icon(for: layer.kind), selected ? IOSTheme.accent : IOSTheme.textSecondary, size: 13)
-        let name = UILabel.studio(layer.kind == .text && !layer.text.isEmpty ? layer.text.replacingOccurrences(of: "\n", with: " ") : (layer.slotLabel ?? layer.layerId), size: 15, weight: selected ? .semibold : .regular, color: layer.isHidden ? IOSTheme.textTertiary : IOSTheme.textPrimary, lines: 1)
-        let kind = UILabel.studio(layer.kind.label, size: 12, color: IOSTheme.textTertiary, style: .caption1)
-        let texts = UIStackView.v([name, kind], spacing: 1)
-        let eye = UIButton.studioIcon(layer.isHidden ? "eye.slash" : "eye", label: layer.isHidden ? "Göster" : "Gizle", size: 14, tint: IOSTheme.textSecondary) { [weak self] in
-            self?.session.setHidden(layer.layerId, !layer.isHidden)
-        }
-        let row = UIStackView.h([icon, texts, UIView.spacer(), eye], spacing: 10)
-        row.isLayoutMarginsRelativeArrangement = true
-        row.directionalLayoutMargins = NSDirectionalEdgeInsets(top: 6, leading: 8, bottom: 6, trailing: 2)
-        let control = UIControl()
-        control.translatesAutoresizingMaskIntoConstraints = false
-        control.addSubview(row)
-        row.pin(to: control)
-        row.isUserInteractionEnabled = true
-        control.backgroundColor = selected ? IOSTheme.fill : .clear
-        control.layer.cornerRadius = 12
-        control.addAction(UIAction { [weak self] _ in
-            guard let self else { return }
-            self.session.selectedLayerId = selected ? nil : layer.layerId
-            Haptics.selection()
-        }, for: .touchUpInside)
-        control.isAccessibilityElement = true
-        control.accessibilityLabel = "\(layer.kind.label): \(name.text ?? layer.layerId)\(layer.isHidden ? ", gizli" : "")"
-        control.accessibilityTraits = selected ? [.button, .selected] : .button
-        control.accessibilityCustomActions = [UIAccessibilityCustomAction(name: layer.isHidden ? "Göster" : "Gizle") { [weak self] _ in
-            self?.session.setHidden(layer.layerId, !layer.isHidden)
-            return true
-        }]
-        return control
-    }
-
-    private func selectedLayerCard(_ layer: SlideLayer) -> UIView {
-        let s = session
-        let card = IOSCardView(padding: 14, spacing: 12)
-        card.layer.borderColor = IOSTheme.accent.withAlphaComponent(0.5).cgColor
-        let title = UILabel.studio(layer.kind == .text ? "Metin katmanı" : layer.kind.label, size: 15, weight: .semibold, style: .subheadline)
-        let close = UIButton.studioIcon("xmark", label: "Seçimi kaldır", size: 12, tint: IOSTheme.textSecondary) { [weak self] in
-            self?.session.flushNudge(layer.layerId)
-            self?.session.selectedLayerId = nil
-        }
-        card.stack.addArrangedSubview(UIStackView.h([title, UIView.spacer(), close], spacing: 8))
-
-        var actions: [UIView] = []
-        if layer.kind == .text {
-            actions.append(UIButton.studioPill(title: "Metni düzenle", kind: .ink, image: "character.cursor.ibeam") { [weak self] in self?.presentTextEditor(layer) })
-        }
-        if layer.kind == .slot || layer.kind == .image {
-            actions.append(UIButton.studioPill(title: "Fotoğraf", kind: .ink, image: "photo") { [weak self] in self?.pickImage(for: layer.layerId, camera: false) })
-            if ImagePicking.cameraAvailable {
-                actions.append(UIButton.studioPill(title: "Kamera", kind: .secondary, image: "camera") { [weak self] in self?.pickImage(for: layer.layerId, camera: true) })
-            }
-        }
-        actions.append(UIButton.studioPill(title: layer.isHidden ? "Göster" : "Gizle", kind: .secondary, image: layer.isHidden ? "eye" : "eye.slash") { [weak self] in
-            self?.session.setHidden(layer.layerId, !layer.isHidden)
-        })
-        let actionsScroll = horizontalScroll(actions)
-        card.stack.addArrangedSubview(actionsScroll)
-
-        if s.box(for: layer.layerId) != nil {
-            let pad = nudgePad(layer.layerId)
-            let stepControl = UISegmentedControl(items: ["1 px", "10 px", "40 px"])
-            stepControl.selectedSegmentIndex = nudgeStep == 1 ? 0 : (nudgeStep == 10 ? 1 : 2)
-            stepControl.addAction(UIAction { [weak self, weak stepControl] _ in
-                guard let self, let stepControl else { return }
-                self.nudgeStep = [1, 10, 40][stepControl.selectedSegmentIndex]
-            }, for: .valueChanged)
-            let smaller = UIButton.studioPill(title: "Küçült", kind: .secondary, image: "minus.magnifyingglass") { [weak self] in self?.session.resize(layer.layerId, factor: 0.95) }
-            let bigger = UIButton.studioPill(title: "Büyüt", kind: .secondary, image: "plus.magnifyingglass") { [weak self] in self?.session.resize(layer.layerId, factor: 1.05) }
-            let reset = UIButton.studioPill(title: "Konumu sıfırla", kind: .plain) { [weak self] in self?.session.resetTransform(layer.layerId) }
-            reset.isEnabled = s.transform(of: layer.layerId) != .identity
-            let side = UIStackView.v([stepControl, UIStackView.h([smaller, bigger], spacing: 6), reset], spacing: 8, alignment: .leading)
-            card.stack.addArrangedSubview(UIStackView.h([pad, side], spacing: 16, alignment: .center))
-        } else {
-            card.stack.addArrangedSubview(UILabel.studio("Taşımak için katman kutuları ölçülmeli; Mac'te render bitince açılır.", size: 12, color: IOSTheme.textTertiary, lines: 0, style: .caption1))
-        }
-        return card
-    }
-
-    private func nudgePad(_ layerId: String) -> UIView {
-        func arrow(_ symbol: String, _ label: String, dx: CGFloat, dy: CGFloat) -> UIButton {
-            let button = UIButton.studioIcon(symbol, label: label, size: 15) { [weak self] in
-                guard let self else { return }
-                self.session.nudge(layerId, dx: dx * self.nudgeStep, dy: dy * self.nudgeStep)
-                Haptics.tap()
-            }
-            button.backgroundColor = IOSTheme.fill
-            button.layer.cornerRadius = 18
-            return button
-        }
-        let up = arrow("arrow.up", "Yukarı taşı", dx: 0, dy: -1)
-        let down = arrow("arrow.down", "Aşağı taşı", dx: 0, dy: 1)
-        let left = arrow("arrow.left", "Sola taşı", dx: -1, dy: 0)
-        let right = arrow("arrow.right", "Sağa taşı", dx: 1, dy: 0)
-        let middle = UIStackView.h([left, UIView(), right], spacing: 36)
-        return UIStackView.v([up, middle, down], spacing: 2, alignment: .center)
-    }
-
-    private func horizontalScroll(_ views: [UIView]) -> UIView {
-        let scroll = UIScrollView()
-        scroll.translatesAutoresizingMaskIntoConstraints = false
-        scroll.showsHorizontalScrollIndicator = false
-        let row = UIStackView.h(views, spacing: 8)
-        scroll.addSubview(row)
-        NSLayoutConstraint.activate([
-            row.leadingAnchor.constraint(equalTo: scroll.contentLayoutGuide.leadingAnchor),
-            row.trailingAnchor.constraint(equalTo: scroll.contentLayoutGuide.trailingAnchor),
-            row.topAnchor.constraint(equalTo: scroll.contentLayoutGuide.topAnchor),
-            row.bottomAnchor.constraint(equalTo: scroll.contentLayoutGuide.bottomAnchor),
-            row.heightAnchor.constraint(equalTo: scroll.frameLayoutGuide.heightAnchor),
-            scroll.heightAnchor.constraint(equalToConstant: 40),
-        ])
-        return scroll
     }
 
     private func slotCard() -> UIView {
@@ -813,6 +681,23 @@ final class IOSPostDetailViewController: UIViewController {
         for view in actions { (view as? UIButton)?.isEnabled = s.canEdit && !s.activity.changesVersion }
         card.stack.addArrangedSubview(horizontalScroll(actions))
         return card
+    }
+
+    private func horizontalScroll(_ views: [UIView]) -> UIView {
+        let scroll = UIScrollView()
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+        scroll.showsHorizontalScrollIndicator = false
+        let row = UIStackView.h(views, spacing: 8)
+        scroll.addSubview(row)
+        NSLayoutConstraint.activate([
+            row.leadingAnchor.constraint(equalTo: scroll.contentLayoutGuide.leadingAnchor),
+            row.trailingAnchor.constraint(equalTo: scroll.contentLayoutGuide.trailingAnchor),
+            row.topAnchor.constraint(equalTo: scroll.contentLayoutGuide.topAnchor),
+            row.bottomAnchor.constraint(equalTo: scroll.contentLayoutGuide.bottomAnchor),
+            row.heightAnchor.constraint(equalTo: scroll.frameLayoutGuide.heightAnchor),
+            scroll.heightAnchor.constraint(equalToConstant: 40),
+        ])
+        return scroll
     }
 
     // MARK: Versions tab

@@ -58,7 +58,7 @@ final class SlidePagerView: UIView, UIScrollViewDelegate {
             scroll.leadingAnchor.constraint(equalTo: leadingAnchor),
             scroll.trailingAnchor.constraint(equalTo: trailingAnchor),
             scroll.topAnchor.constraint(equalTo: topAnchor),
-            scroll.heightAnchor.constraint(equalTo: scroll.widthAnchor, multiplier: 5.0 / 4.0),
+            heightRatio,
             row.leadingAnchor.constraint(equalTo: scroll.contentLayoutGuide.leadingAnchor),
             row.trailingAnchor.constraint(equalTo: scroll.contentLayoutGuide.trailingAnchor),
             row.topAnchor.constraint(equalTo: scroll.contentLayoutGuide.topAnchor),
@@ -76,6 +76,9 @@ final class SlidePagerView: UIView, UIScrollViewDelegate {
     required init?(coder: NSCoder) { fatalError("not used") }
 
     /// Rebuild pages when the slides changed; then update overlays.
+    /// The pager is as tall as the first slide (edge to edge, no bands beside a 3:4 post).
+    private lazy var heightRatio = scroll.heightAnchor.constraint(equalTo: scroll.widthAnchor, multiplier: 5.0 / 4.0)
+
     func configure(slides: [Slide], placeholder: (title: String, eyebrow: String?, needsImage: Bool), images: IOSImageStore, editing: Bool, selectedLayer: String?, previewBoxes: [String: CGRect], selectedSlide: Int) {
         let key = slides.map { "\($0.renderedAssetId ?? "-")|\($0.html.hashValue)|\($0.width)x\($0.height)" }
         if key != renderedKey {
@@ -97,6 +100,14 @@ final class SlidePagerView: UIView, UIScrollViewDelegate {
                 page.widthAnchor.constraint(equalTo: scroll.frameLayoutGuide.widthAnchor).isActive = true
             }
             pageControl.numberOfPages = slides.count
+            if let first = slides.first, first.width > 0, first.height > 0 {
+                let ratio = CGFloat(first.height) / CGFloat(first.width)
+                if abs(heightRatio.multiplier - ratio) > 0.001 {
+                    heightRatio.isActive = false
+                    heightRatio = scroll.heightAnchor.constraint(equalTo: scroll.widthAnchor, multiplier: ratio)
+                    heightRatio.isActive = true
+                }
+            }
             layoutIfNeeded()
             scrollTo(min(selectedSlide, max(0, pages.count - 1)), animated: false)
         } else if selectedSlide != currentPage {
@@ -154,14 +165,15 @@ private final class SlidePage: UIView {
         translatesAutoresizingMaskIntoConstraints = false
         zoom.translatesAutoresizingMaskIntoConstraints = false
         addSubview(zoom)
-        zoom.pin(to: self, insets: UIEdgeInsets(top: 0, left: IOSTheme.gutter, bottom: 0, right: IOSTheme.gutter))
+        // Edge to edge, square corners, like a post in the Postlar feed.
+        zoom.pin(to: self)
         if let slide, slide.width > 0, slide.height > 0 { zoom.aspect = CGFloat(slide.width) / CGFloat(slide.height) }
-        zoom.content.layer.cornerRadius = 18
+        zoom.content.layer.cornerRadius = 0
         zoom.content.layer.cornerCurve = .continuous
         zoom.content.clipsToBounds = true
 
         if let rendered = slide?.renderedAssetId {
-            let image = IOSAssetImageView(store: images, assetId: rendered, contentMode: .scaleAspectFit)
+            let image = IOSAssetImageView(store: images, assetId: rendered, contentMode: .scaleAspectFill)
             zoom.content.addSubview(image)
             image.pin(to: zoom.content)
             image.isAccessibilityElement = true
