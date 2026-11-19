@@ -38,6 +38,8 @@ final class PostFeedViewController: PostZoomPage, UITableViewDataSource, UITable
         tableView.dataSource = self
         tableView.delegate = self
         tableView.allowsSelection = false
+        // Exact heights (see heightForRowAt): no estimates to fall back on mid-scroll.
+        tableView.estimatedRowHeight = 0
         // Insets set by hand from the bar: the safe area is not known yet when the opening
         // measures where the tapped post lands, and following it later would make it jump.
         tableView.contentInsetAdjustmentBehavior = .never
@@ -61,12 +63,35 @@ final class PostFeedViewController: PostZoomPage, UITableViewDataSource, UITable
         signature = next
         navigationItem.subtitle = PostPresentation.brandName(app)
         if !first, ids.isEmpty { return close() }
-        if !first { reloadKeepingPosition() }
+        guard !first else { return }
+        // Same posts: the rows on screen take the new state in place (a full reload mid-scroll
+        // remeasured rows from estimates and squeezed pictures and captions).
+        if ids == shownIds {
+            reconfigureVisibleRows()
+        } else {
+            reloadKeepingPosition()
+        }
+    }
+
+    /// The posts the table shows (a reload brings it up to `ids`).
+    private var shownIds: [EntityID] = []
+
+    private func reconfigureVisibleRows() {
+        let rows = tableView.indexPathsForVisibleRows ?? []
+        UIView.performWithoutAnimation {
+            tableView.beginUpdates()
+            for path in rows {
+                guard let cell = tableView.cellForRow(at: path) as? PostFeedCell else { continue }
+                configure(cell, row: path.row)
+            }
+            tableView.endUpdates()
+        }
     }
 
     /// Reloads without the list jumping: the topmost post stays where it is.
     private func reloadKeepingPosition() {
         let anchor = topmostRow()
+        shownIds = ids
         let anchorId = anchor.flatMap { ids.indices.contains($0) ? ids[$0] : nil }
         let offsetInRow = anchor.map { tableView.contentOffset.y - tableView.rectForRow(at: IndexPath(row: $0, section: 0)).minY } ?? 0
         tableView.reloadData()
@@ -83,6 +108,7 @@ final class PostFeedViewController: PostZoomPage, UITableViewDataSource, UITable
         guard !placedStart, view.bounds.width > 0 else { return }
         placedStart = true
         view.layoutIfNeeded()
+        shownIds = ids
         tableView.reloadData()
         guard let startId, let row = ids.firstIndex(of: startId) else { return }
         let path = IndexPath(row: row, section: 0)
@@ -180,7 +206,14 @@ final class PostFeedViewController: PostZoomPage, UITableViewDataSource, UITable
 
     func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
         let cell = tableView.dequeueReusableCell(withIdentifier: "post", for: indexPath) as! PostFeedCell
-        guard ids.indices.contains(indexPath.row), let card = app.posts.card(ids[indexPath.row]) else { return cell }
+        configure(cell, row: indexPath.row)
+        // The cell being reused may still be hidden from a flight.
+        if cell.mediaView !== hiddenMedia { cell.mediaView.alpha = 1 }
+        return cell
+    }
+
+    private func configure(_ cell: PostFeedCell, row: Int) {
+        guard ids.indices.contains(row), let card = app.posts.card(ids[row]) else { return }
         let actions = PostActions(app: app, host: self)
         let id = card.id
         cell.configure(card: card, brand: PostPresentation.brandName(app), images: app.images,
@@ -192,15 +225,13 @@ final class PostFeedViewController: PostZoomPage, UITableViewDataSource, UITable
                 self.tableView.reloadRows(at: [IndexPath(row: row, section: 0)], with: .none)
             }
         }
-        // The cell being reused may still be hidden from a flight.
-        if cell.mediaView !== hiddenMedia { cell.mediaView.alpha = 1 }
-        return cell
     }
 
-    func tableView(_ tableView: UITableView, estimatedHeightForRowAt indexPath: IndexPath) -> CGFloat {
-        guard ids.indices.contains(indexPath.row), let card = app.posts.card(ids[indexPath.row]) else { return 600 }
-        let width = max(tableView.bounds.width, 1)
-        return PostFeedCell.estimatedHeight(card: card, width: width)
+    /// The row's height comes from the same metrics the cell lays itself out by.
+    func tableView(_ tableView: UITableView, heightForRowAt indexPath: IndexPath) -> CGFloat {
+        guard ids.indices.contains(indexPath.row), let card = app.posts.card(ids[indexPath.row]) else { return 0 }
+        return PostFeedCell.metrics(card: card, brand: PostPresentation.brandName(app), width: max(tableView.bounds.width, 1),
+                                    expanded: expanded.contains(card.id)).height
     }
 }
 
@@ -214,24 +245,33 @@ final class PostFeedCell: UITableViewCell, UIScrollViewDelegate {
     private let avatar = PostAvatarView(side: 32)
     private let nameLabel = UILabel.studio("", size: 14, weight: .semibold, style: .subheadline)
     private let titleLabel = UILabel.studio("", size: 12, color: IOSTheme.textSecondary, style: .caption1)
-    private let menuButton = UIButton.studioIcon("ellipsis", label: "Diğer", size: 16)
-    /// The picture (all slides, paging sideways); the flight lands on it.
-    let mediaView = UIView()
+    private let menuButton = UIButton.insta(.menu, label: "Diğer", size: 17)
+    /// The picture (all slides, paging sideways); the flight lands on it. It lays its pages out
+    /// itself: the cell's own layout runs before the picture takes a reused cell's new height,
+    /// which left pages stretched or cut to the previous post's size.
+    let mediaView = LayoutReportingView()
     private let pager = UIScrollView()
     private var pages: [IOSAssetImageView] = []
     private let placeholder = PostPlaceholderView()
     private let counter = UILabel.studio("", size: 12, weight: .semibold, color: .white, style: .caption1)
     private let dots = UIPageControl()
-    private var mediaHeight: NSLayoutConstraint!
-    private let approveButton = UIButton.studioIcon("checkmark.circle", label: "Onayla", size: 22)
-    private let editButton = UIButton.studioIcon("pencil", label: "Düzenle", size: 22)
-    private let shareButton = UIButton.studioIcon("paperplane", label: "Paylaş", size: 22)
-    private let scheduleButton = UIButton.studioIcon("calendar.badge.clock", label: "Zamanla", size: 22)
+    // Instagram's row: like, comment, repost, send … save (see `InstaIcon` for what each does).
+    private let approveButton = UIButton.insta(.like, label: "Onayla")
+    private let editButton = UIButton.insta(.comment, label: "Düzenle")
+    private let repostButton = UIButton.insta(.repost, label: "Çoğalt")
+    private let shareButton = UIButton.insta(.send, label: "Paylaş")
+    private let scheduleButton = UIButton.insta(.save, label: "Zamanla")
     private let captionLabel = UILabel.studio("", size: 14, lines: 0, style: .subheadline)
     private let metaLabel = UILabel.studio("", size: 12, color: IOSTheme.textSecondary, style: .caption1)
     private var card: PostCard?
     private var actions: PostActions?
     private var truncated = false
+    /// Laid out by hand from `Metrics` (the row's height is worked out the same way, so the
+    /// two always agree: Auto Layout here once stretched the brand row and squeezed the
+    /// caption and the status line to nothing).
+    private var header: UIStackView!
+    private let actionsRow = UIView()
+    private var metrics = Metrics(media: 400, caption: 0, meta: 0)
 
     /// The picture on screen (the flying copy).
     var currentImage: UIImage? {
@@ -249,11 +289,11 @@ final class PostFeedCell: UITableViewCell, UIScrollViewDelegate {
 
         menuButton.showsMenuAsPrimaryAction = true
         let names = UIStackView.v([nameLabel, titleLabel], spacing: 0)
-        let header = UIStackView.h([avatar, names, UIView.spacer(), menuButton], spacing: 10)
+        header = UIStackView.h([avatar, names, UIView.spacer(), menuButton], spacing: 10)
+        header.alignment = .center
         header.isLayoutMarginsRelativeArrangement = true
         header.directionalLayoutMargins = NSDirectionalEdgeInsets(top: 8, leading: 12, bottom: 8, trailing: 4)
 
-        mediaView.translatesAutoresizingMaskIntoConstraints = false
         mediaView.clipsToBounds = true
         mediaView.backgroundColor = IOSTheme.fill
         pager.translatesAutoresizingMaskIntoConstraints = false
@@ -262,6 +302,7 @@ final class PostFeedCell: UITableViewCell, UIScrollViewDelegate {
         pager.delegate = self
         mediaView.addSubview(pager)
         pager.pin(to: mediaView)
+        mediaView.onLayout = { [weak self] in self?.layoutPages() }
         placeholder.translatesAutoresizingMaskIntoConstraints = false
         mediaView.addSubview(placeholder)
         placeholder.pin(to: mediaView)
@@ -270,8 +311,6 @@ final class PostFeedCell: UITableViewCell, UIScrollViewDelegate {
         counter.layer.cornerRadius = 12
         counter.clipsToBounds = true
         mediaView.addSubview(counter)
-        mediaHeight = mediaView.heightAnchor.constraint(equalToConstant: 400)
-        mediaHeight.priority = .init(999)
 
         dots.translatesAutoresizingMaskIntoConstraints = false
         dots.hidesForSinglePage = true
@@ -296,9 +335,11 @@ final class PostFeedCell: UITableViewCell, UIScrollViewDelegate {
             guard let self, let card = self.card else { return }
             self.actions?.schedule(card)
         }, for: .touchUpInside)
-        let actionsRow = UIView()
-        actionsRow.translatesAutoresizingMaskIntoConstraints = false
-        let left = UIStackView.h([approveButton, editButton, shareButton], spacing: 2)
+        repostButton.addAction(UIAction { [weak self] _ in
+            guard let self, let card = self.card else { return }
+            self.actions?.duplicate(card)
+        }, for: .touchUpInside)
+        let left = UIStackView.h([approveButton, editButton, repostButton, shareButton], spacing: 0)
         left.translatesAutoresizingMaskIntoConstraints = false
         scheduleButton.translatesAutoresizingMaskIntoConstraints = false
         actionsRow.addSubview(left)
@@ -311,21 +352,15 @@ final class PostFeedCell: UITableViewCell, UIScrollViewDelegate {
             dots.centerYAnchor.constraint(equalTo: actionsRow.centerYAnchor),
             scheduleButton.trailingAnchor.constraint(equalTo: actionsRow.trailingAnchor, constant: -4),
             scheduleButton.centerYAnchor.constraint(equalTo: actionsRow.centerYAnchor),
-            actionsRow.heightAnchor.constraint(equalToConstant: 46),
         ])
 
         captionLabel.isUserInteractionEnabled = true
         captionLabel.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(captionTapped)))
-        let text = UIStackView.v([captionLabel, metaLabel], spacing: 6)
-        text.isLayoutMarginsRelativeArrangement = true
-        text.directionalLayoutMargins = NSDirectionalEdgeInsets(top: 0, leading: 14, bottom: 18, trailing: 14)
-
-        let stack = UIStackView.v([header, mediaView, actionsRow, text], spacing: 0)
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        contentView.addSubview(stack)
-        stack.pin(to: contentView)
+        for view: UIView in [header, mediaView, actionsRow, captionLabel, metaLabel] {
+            view.translatesAutoresizingMaskIntoConstraints = true
+            contentView.addSubview(view)
+        }
         NSLayoutConstraint.activate([
-            mediaHeight,
             counter.topAnchor.constraint(equalTo: mediaView.topAnchor, constant: 12),
             counter.trailingAnchor.constraint(equalTo: mediaView.trailingAnchor, constant: -12),
             counter.heightAnchor.constraint(equalToConstant: 24),
@@ -343,13 +378,6 @@ final class PostFeedCell: UITableViewCell, UIScrollViewDelegate {
 
     static let fallbackAspect: CGFloat = 4.0 / 5.0
 
-    /// Close to the real height (the scroll to the tapped post lands right on it).
-    static func estimatedHeight(card: PostCard, width: CGFloat) -> CGFloat {
-        let aspect = PostPresentation.aspect(card) ?? fallbackAspect
-        let captionLines = min(3, max(1, card.content.caption.count / 45 + 1))
-        return 48 + width / aspect + 46 + CGFloat(captionLines) * 18 + 6 + 15 + 18
-    }
-
     func configure(card: PostCard, brand: String, images: IOSImageStore, width: CGFloat, expanded: Bool, actions: PostActions) {
         let sameMedia = self.card?.id == card.id && self.card?.renderedAssetIds == card.renderedAssetIds
         self.card = card
@@ -359,8 +387,8 @@ final class PostFeedCell: UITableViewCell, UIScrollViewDelegate {
         titleLabel.text = card.title
         menuButton.menu = actions.menu(for: card, source: menuButton)
 
-        let aspect = PostPresentation.aspect(card) ?? Self.fallbackAspect
-        mediaHeight.constant = (width / aspect).rounded()
+        metrics = Self.metrics(card: card, brand: brand, width: width, expanded: expanded)
+        setNeedsLayout()
         let assets = card.needsImage ? [] : card.renderedAssetIds
         if !sameMedia {
             pages.forEach { $0.removeFromSuperview() }
@@ -372,7 +400,7 @@ final class PostFeedCell: UITableViewCell, UIScrollViewDelegate {
                 return page
             }
             pager.contentOffset = .zero
-            setNeedsLayout()
+            mediaView.setNeedsLayout()
         }
         placeholder.isHidden = !assets.isEmpty
         if assets.isEmpty { placeholder.configure(card) }
@@ -381,14 +409,14 @@ final class PostFeedCell: UITableViewCell, UIScrollViewDelegate {
 
         let canApprove = PostActions.canApprove(card)
         approveButton.isEnabled = canApprove || card.state == .approved || card.state == .scheduled
-        approveButton.configuration?.image = UIImage(systemName: card.content.status.hasApproval ? "checkmark.circle.fill" : "checkmark.circle",
-                                                     withConfiguration: UIImage.SymbolConfiguration(pointSize: 22, weight: .medium))
-        approveButton.configuration?.baseForegroundColor = card.content.status.hasApproval ? IOSTheme.accent : IOSTheme.textPrimary
+        let approved = card.content.status.hasApproval
+        approveButton.setInsta(approved ? .liked : .like, size: 24, tint: approved ? InstaIcon.likeRed : IOSTheme.textPrimary)
         approveButton.accessibilityLabel = card.content.status.hasApproval ? "Onaylandı" : "Onayla"
         approveButton.isUserInteractionEnabled = canApprove
         shareButton.isEnabled = !card.renderedAssetIds.isEmpty
         scheduleButton.isEnabled = PostActions.canSchedule(card)
         scheduleButton.accessibilityLabel = card.schedule != nil ? "Zamanı değiştir" : "Zamanla"
+        scheduleButton.setInsta(card.schedule != nil ? .saved : .save, size: 24, tint: IOSTheme.textPrimary)
 
         let textWidth = max(width - 28, 1)
         let (caption, isTruncated) = Self.caption(brand: brand, text: card.content.caption, width: textWidth, expanded: expanded)
@@ -398,8 +426,46 @@ final class PostFeedCell: UITableViewCell, UIScrollViewDelegate {
         metaLabel.text = PostPresentation.statusLine(card)
     }
 
+    // MARK: Layout
+
+    struct Metrics {
+        var media: CGFloat
+        var caption: CGFloat
+        var meta: CGFloat
+
+        /// Brand row 48, the picture, actions 46, the caption and 6 (when there is one), the
+        /// status line, 18 below.
+        var height: CGFloat { 48 + media + 46 + (caption > 0 ? caption + 6 : 0) + meta + 18 }
+    }
+
+    static func metrics(card: PostCard, brand: String, width: CGFloat, expanded: Bool) -> Metrics {
+        let aspect = PostPresentation.aspect(card) ?? fallbackAspect
+        let textWidth = max(width - 28, 1)
+        var caption: CGFloat = 0
+        if !card.content.caption.isEmpty {
+            let (text, _) = Self.caption(brand: brand, text: card.content.caption, width: textWidth, expanded: expanded)
+            caption = text.boundingRect(with: CGSize(width: textWidth, height: .greatestFiniteMagnitude),
+                                        options: [.usesLineFragmentOrigin, .usesFontLeading], context: nil).height.rounded(.up)
+        }
+        let meta = IOSTheme.font(12, style: .caption1).lineHeight.rounded(.up)
+        return Metrics(media: (width / aspect).rounded(), caption: caption, meta: meta)
+    }
+
     override func layoutSubviews() {
         super.layoutSubviews()
+        let width = contentView.bounds.width
+        header.frame = CGRect(x: 0, y: 0, width: width, height: 48)
+        mediaView.frame = CGRect(x: 0, y: 48, width: width, height: metrics.media)
+        actionsRow.frame = CGRect(x: 0, y: mediaView.frame.maxY, width: width, height: 46)
+        var y = actionsRow.frame.maxY
+        if metrics.caption > 0 {
+            captionLabel.frame = CGRect(x: 14, y: y, width: width - 28, height: metrics.caption)
+            y += metrics.caption + 6
+        }
+        metaLabel.frame = CGRect(x: 14, y: y, width: width - 28, height: metrics.meta)
+    }
+
+    private func layoutPages() {
         let size = mediaView.bounds.size
         guard size.width > 0 else { return }
         for (index, page) in pages.enumerated() {
@@ -460,5 +526,15 @@ final class PostFeedCell: UITableViewCell, UIScrollViewDelegate {
             cut = String(cut[..<space])
         }
         return (build(cut.trimmingCharacters(in: .whitespacesAndNewlines), true), true)
+    }
+}
+
+/// A view that says when it has been laid out (its size is final then).
+final class LayoutReportingView: UIView {
+    var onLayout: (() -> Void)?
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        onLayout?()
     }
 }

@@ -181,6 +181,79 @@ class PostZoomPage: UIViewController, ZoomTransitionDestination {
 
 // MARK: - Actions
 
+/// Instagram's post icons, on the actions they stand for here: the heart approves (red and
+/// full once approved), the comment bubble edits, repost duplicates, the paper plane shares,
+/// the bookmark schedules (full once scheduled), the two lines open the menu.
+enum InstaIcon {
+    case like, liked, comment, repost, send, save, saved, menu, close, back
+
+    /// Instagram's like red.
+    static let likeRed = UIColor(red: 1, green: 0.19, blue: 0.25, alpha: 1)
+
+    func image(_ size: CGFloat) -> UIImage? {
+        let name: String
+        switch self {
+        case .like: name = "heart"
+        case .liked: name = "heart.fill"
+        case .comment: name = "message"
+        case .repost: name = "arrow.2.squarepath"
+        case .send: name = "paperplane"
+        case .save: name = "bookmark"
+        case .saved: name = "bookmark.fill"
+        case .back: name = "chevron.left"
+        case .close: return UIImage(systemName: "xmark", withConfiguration: UIImage.SymbolConfiguration(pointSize: size, weight: .light))
+        case .menu: return Self.menuImage(size)
+        }
+        return UIImage(systemName: name, withConfiguration: UIImage.SymbolConfiguration(pointSize: size, weight: .regular))
+    }
+
+    /// Instagram's menu mark: two lines, the lower one shorter and flush right.
+    private static func menuImage(_ size: CGFloat) -> UIImage {
+        let width = (size * 1.15).rounded()
+        let height = (size * 0.62).rounded()
+        let line = max(size / 11, 1.6)
+        return UIGraphicsImageRenderer(size: CGSize(width: width, height: height)).image { _ in
+            let path = UIBezierPath()
+            path.lineWidth = line
+            path.lineCapStyle = .round
+            path.move(to: CGPoint(x: line / 2, y: line / 2 + 1))
+            path.addLine(to: CGPoint(x: width - line / 2, y: line / 2 + 1))
+            path.move(to: CGPoint(x: width * 0.42, y: height - line / 2 - 1))
+            path.addLine(to: CGPoint(x: width - line / 2, y: height - line / 2 - 1))
+            UIColor.black.setStroke()
+            path.stroke()
+        }.withRenderingMode(.alwaysTemplate)
+    }
+}
+
+extension UIButton {
+    /// A bare icon button with one of Instagram's icons (no capsule or glass behind it).
+    static func insta(_ icon: InstaIcon, label: String, size: CGFloat = 24, tint: UIColor = IOSTheme.textPrimary) -> UIButton {
+        var config = UIButton.Configuration.plain()
+        config.image = icon.image(size)
+        config.baseForegroundColor = tint
+        config.contentInsets = NSDirectionalEdgeInsets(top: 8, leading: 8, bottom: 8, trailing: 8)
+        let button = UIButton(configuration: config)
+        button.translatesAutoresizingMaskIntoConstraints = false
+        button.accessibilityLabel = label
+        return button
+    }
+
+    func setInsta(_ icon: InstaIcon, size: CGFloat, tint: UIColor) {
+        configuration?.image = icon.image(size)
+        configuration?.baseForegroundColor = tint
+    }
+
+    /// A soft shadow so a white icon reads over a bright picture (Reels, stories).
+    func withIconShadow() -> UIButton {
+        layer.shadowColor = UIColor.black.cgColor
+        layer.shadowOpacity = 0.35
+        layer.shadowRadius = 4
+        layer.shadowOffset = .zero
+        return self
+    }
+}
+
 /// A post's actions on the feed, Reels and stories (the grid's tile menu does the same): edit,
 /// approve (asking first when its checks hold it back), schedule, share, copy, duplicate, delete.
 @MainActor
@@ -250,6 +323,14 @@ struct PostActions {
             }
             guard !pictures.isEmpty else { return host.presentError("Görsel indirilemedi.") }
             FileSharing.share(pictures + [card.content.caption], from: host, source: source)
+        }
+    }
+
+    /// A copy of the post (Instagram's repost button).
+    func duplicate(_ card: PostCard) {
+        let model = model
+        Task { [weak host] in
+            if let copy = await model.duplicate(card) { Toast.show("“\(copy.title)” oluşturuldu", in: host?.view) } else if let error = model.error { host?.presentError(error) }
         }
     }
 

@@ -24,6 +24,10 @@ final class StudioRootViewController: UIViewController, UINavigationControllerDe
     private lazy var closePan = UIPanGestureRecognizer(target: self, action: #selector(closePanned(_:)))
     /// A leftward swipe on the drawer itself slides it shut (back to the page).
     private lazy var drawerClosePan = UIPanGestureRecognizer(target: self, action: #selector(closePanned(_:)))
+    /// A rightward swipe anywhere on a pushed page goes back, following the finger (the
+    /// navigation controller's own swipe never starts inside this container).
+    private lazy var backPan = UIPanGestureRecognizer(target: self, action: #selector(backPanned(_:)))
+    private var backInteraction: UIPercentDrivenInteractiveTransition?
     private var routeObservation: IOSObservationToken?
     private var staleObservation: IOSObservationToken?
     private(set) var isDrawerOpen = false
@@ -92,6 +96,8 @@ final class StudioRootViewController: UIViewController, UINavigationControllerDe
 
         openPan.delegate = self
         mainContainer.addGestureRecognizer(openPan)
+        backPan.delegate = self
+        mainContainer.addGestureRecognizer(backPan)
 
         registerForTraitChanges([UITraitUserInterfaceStyle.self]) { (self: Self, _) in
             self.mainContainer.layer.borderColor = IOSTheme.border.cgColor
@@ -319,8 +325,8 @@ final class StudioRootViewController: UIViewController, UINavigationControllerDe
 
     /// Touches in a strip that scrolls sideways (starters, attachments, slides) belong to it.
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
-        guard gestureRecognizer === openPan else { return true }
-        simultaneousScrolls.removeAll()
+        guard gestureRecognizer === openPan || gestureRecognizer === backPan else { return true }
+        if gestureRecognizer === openPan { simultaneousScrolls.removeAll() }
         var view = touch.view
         while let current = view, current !== mainContainer {
             if let scroll = current as? UIScrollView, Self.scrollsHorizontally(scroll) { return false }
@@ -346,6 +352,11 @@ final class StudioRootViewController: UIViewController, UINavigationControllerDe
             let velocity = openPan.velocity(in: view)
             return velocity.x > 0 && velocity.x > abs(velocity.y) * 1.2
         }
+        if gestureRecognizer === backPan {
+            guard canSwipeBack, !isDrawerOpen, mainNav.transitionCoordinator == nil else { return false }
+            let velocity = backPan.velocity(in: view)
+            return velocity.x > 0 && velocity.x > abs(velocity.y) * 1.2
+        }
         if gestureRecognizer === drawerClosePan {
             guard isDrawerOpen, !drawer.isSearching else { return false }
             let velocity = drawerClosePan.velocity(in: view)
@@ -363,11 +374,44 @@ final class StudioRootViewController: UIViewController, UINavigationControllerDe
 
     /// The picture viewer flies its picture in and out (see `PhotoZoomTransition`).
     func navigationController(_ navigationController: UINavigationController, animationControllerFor operation: UINavigationController.Operation, from fromVC: UIViewController, to toVC: UIViewController) -> UIViewControllerAnimatedTransitioning? {
-        PhotoViewerNavigationDelegate.animator(operation: operation, from: fromVC, to: toVC)
+        if operation == .pop, backInteraction != nil { return SwipeBackAnimator() }
+        return PhotoViewerNavigationDelegate.animator(operation: operation, from: fromVC, to: toVC)
     }
 
     func navigationController(_ navigationController: UINavigationController, interactionControllerFor animationController: UIViewControllerAnimatedTransitioning) -> UIViewControllerInteractiveTransitioning? {
-        PhotoViewerNavigationDelegate.interaction(for: animationController)
+        if animationController is SwipeBackAnimator { return backInteraction }
+        return PhotoViewerNavigationDelegate.interaction(for: animationController)
+    }
+
+    // MARK: Swipe back
+
+    /// Pages that close through their picture's flight (the picture viewer, Reels, stories)
+    /// keep their own pull-down instead; the Postlar feed, a list like any page, swipes back.
+    private var canSwipeBack: Bool {
+        guard mainNav.viewControllers.count > 1, let top = mainNav.topViewController else { return false }
+        return top is PostFeedViewController || !(top is any ZoomTransitionDestination)
+    }
+
+    @objc private func backPanned(_ pan: UIPanGestureRecognizer) {
+        let width = max(mainContainer.bounds.width, 1)
+        let progress = min(max(pan.translation(in: mainContainer).x / width, 0), 1)
+        switch pan.state {
+        case .began:
+            backInteraction = UIPercentDrivenInteractiveTransition()
+            backInteraction?.completionCurve = .easeOut
+            mainNav.popViewController(animated: true)
+        case .changed:
+            backInteraction?.update(progress)
+        case .ended, .cancelled, .failed:
+            let velocity = pan.velocity(in: mainContainer).x
+            let finish = pan.state == .ended && (velocity > 400 || (progress > 0.4 && velocity > -200))
+            // The rest runs at the finger's pace, not the full duration.
+            backInteraction?.completionSpeed = max(0.6, min(abs(velocity) / 900, 2.5))
+            if finish { backInteraction?.finish() } else { backInteraction?.cancel() }
+            backInteraction = nil
+        default:
+            break
+        }
     }
 
     func navigationController(_ navigationController: UINavigationController, didShow viewController: UIViewController, animated: Bool) {
@@ -543,6 +587,43 @@ final class StudioRootViewController: UIViewController, UINavigationControllerDe
             }
             mainNav.setViewControllers(stack + [IOSPostDetailViewController(app: app, card: card)], animated: isOnScreen)
             drawer.reload()
+        }
+    }
+}
+
+/// The pop of the swipe back, like the system's: the page slides off to the right while the one
+/// below comes in from a little to the left, darkened, brightening as it arrives.
+final class SwipeBackAnimator: NSObject, UIViewControllerAnimatedTransitioning {
+    func transitionDuration(using transitionContext: UIViewControllerContextTransitioning?) -> TimeInterval { 0.35 }
+
+    func animateTransition(using context: UIViewControllerContextTransitioning) {
+        guard let from = context.view(forKey: .from), let to = context.view(forKey: .to) else {
+            context.completeTransition(!context.transitionWasCancelled)
+            return
+        }
+        let container = context.containerView
+        let width = container.bounds.width
+        to.frame = context.finalFrame(for: context.viewController(forKey: .to)!)
+        container.insertSubview(to, belowSubview: from)
+        let shade = UIView(frame: container.bounds)
+        shade.backgroundColor = UIColor.black.withAlphaComponent(0.12)
+        container.insertSubview(shade, belowSubview: from)
+        to.transform = CGAffineTransform(translationX: -width * 0.3, y: 0)
+        from.layer.shadowColor = UIColor.black.cgColor
+        from.layer.shadowOpacity = 0.15
+        from.layer.shadowRadius = 10
+        UIView.animate(withDuration: transitionDuration(using: context), delay: 0, options: [.curveLinear]) {
+            from.transform = CGAffineTransform(translationX: width, y: 0)
+            to.transform = .identity
+            shade.alpha = 0
+        } completion: { _ in
+            let cancelled = context.transitionWasCancelled
+            from.transform = .identity
+            to.transform = .identity
+            from.layer.shadowOpacity = 0
+            shade.removeFromSuperview()
+            if cancelled { to.removeFromSuperview() }
+            context.completeTransition(!cancelled)
         }
     }
 }

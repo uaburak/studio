@@ -10,7 +10,7 @@ final class PostReelsViewController: PostZoomPage, UICollectionViewDataSource, U
     private let layout = UICollectionViewFlowLayout()
     private lazy var pager = UICollectionView(frame: .zero, collectionViewLayout: layout)
     private var index: Int
-    private let backButton = UIButton.glassCircle("chevron.left", label: "Geri", side: 44, pointSize: 17)
+    private let backButton = UIButton.insta(.back, label: "Geri", size: 22, tint: .white).withIconShadow()
     private lazy var pullPan: UIPanGestureRecognizer = {
         let pan = UIPanGestureRecognizer(target: self, action: #selector(pulled(_:)))
         pan.delegate = self
@@ -218,11 +218,13 @@ final class ReelPageCell: UICollectionViewCell {
     private let nameLabel = UILabel.studio("", size: 14, weight: .semibold, color: .white, style: .subheadline)
     private let captionLabel = UILabel.studio("", size: 14, color: .white, style: .subheadline)
     private let statusLabel = UILabel.studio("", size: 12, color: UIColor.white.withAlphaComponent(0.7), style: .caption1)
-    private let approveButton = UIButton.glassCircle("checkmark", label: "Onayla", side: 46, pointSize: 19)
-    private let editButton = UIButton.glassCircle("pencil", label: "Düzenle", side: 46, pointSize: 19)
-    private let shareButton = UIButton.glassCircle("paperplane", label: "Paylaş", side: 46, pointSize: 19)
-    private let scheduleButton = UIButton.glassCircle("calendar.badge.clock", label: "Zamanla", side: 46, pointSize: 19)
-    private let menuButton = UIButton.glassCircle("ellipsis", label: "Diğer", side: 46, pointSize: 19)
+    // Instagram's Reels column (see `InstaIcon` for what each does).
+    private let approveButton = UIButton.insta(.like, label: "Onayla", size: 27, tint: .white).withIconShadow()
+    private let editButton = UIButton.insta(.comment, label: "Düzenle", size: 26, tint: .white).withIconShadow()
+    private let repostButton = UIButton.insta(.repost, label: "Çoğalt", size: 26, tint: .white).withIconShadow()
+    private let shareButton = UIButton.insta(.send, label: "Paylaş", size: 26, tint: .white).withIconShadow()
+    private let scheduleButton = UIButton.insta(.save, label: "Zamanla", size: 26, tint: .white).withIconShadow()
+    private let menuButton = UIButton.insta(.menu, label: "Diğer", size: 22, tint: .white).withIconShadow()
     private let progressTrack = UIView()
     private let progressFill = UIView()
     private var progressWidth: NSLayoutConstraint!
@@ -260,14 +262,15 @@ final class ReelPageCell: UICollectionViewCell {
         for (button, action) in [(approveButton, { (a: PostActions, c: PostCard, _: UIView) in a.approve(c) }),
                                  (editButton, { a, c, _ in a.edit(c) }),
                                  (shareButton, { a, c, source in a.share(c, source: source) }),
-                                 (scheduleButton, { a, c, _ in a.schedule(c) })] {
+                                 (scheduleButton, { a, c, _ in a.schedule(c) }),
+                                 (repostButton, { a, c, _ in a.duplicate(c) })] {
             button.addAction(UIAction { [weak self, weak button] _ in
                 guard let self, let card = self.card, let actions = self.actions, let button else { return }
                 action(actions, card, button)
             }, for: .touchUpInside)
         }
         menuButton.showsMenuAsPrimaryAction = true
-        let column = UIStackView.v([approveButton, editButton, shareButton, scheduleButton, menuButton], spacing: 14, alignment: .center)
+        let column = UIStackView.v([approveButton, editButton, repostButton, shareButton, scheduleButton, menuButton], spacing: 10, alignment: .center)
         column.translatesAutoresizingMaskIntoConstraints = false
         contentView.addSubview(column)
 
@@ -292,7 +295,7 @@ final class ReelPageCell: UICollectionViewCell {
             shade.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
             shade.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
             shade.heightAnchor.constraint(equalTo: contentView.heightAnchor, multiplier: 0.4),
-            column.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -14),
+            column.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -8),
             bottomInset,
             text.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 16),
             text.trailingAnchor.constraint(equalTo: column.leadingAnchor, constant: -18),
@@ -338,13 +341,11 @@ final class ReelPageCell: UICollectionViewCell {
         bottomInset.constant = -(insets.bottom + 28)
 
         let approved = card.content.status.hasApproval
-        var approve = approveButton.configuration
-        approve?.image = UIImage(systemName: approved ? "checkmark.circle.fill" : "checkmark", withConfiguration: UIImage.SymbolConfiguration(pointSize: 19, weight: .regular))
-        approve?.baseForegroundColor = approved ? IOSTheme.accent : .white
-        approveButton.configuration = approve
+        approveButton.setInsta(approved ? .liked : .like, size: 27, tint: approved ? InstaIcon.likeRed : .white)
+        scheduleButton.setInsta(card.schedule != nil ? .saved : .save, size: 26, tint: .white)
         approveButton.isUserInteractionEnabled = PostActions.canApprove(card)
         approveButton.accessibilityLabel = approved ? "Onaylandı" : "Onayla"
-        for button in [editButton, shareButton, scheduleButton, menuButton] { button.configuration?.baseForegroundColor = .white }
+        for button in [editButton, repostButton, shareButton, menuButton] { button.configuration?.baseForegroundColor = .white }
         shareButton.isEnabled = !card.renderedAssetIds.isEmpty
         scheduleButton.isEnabled = PostActions.canSchedule(card)
         menuButton.menu = actions.menu(for: card, source: menuButton)

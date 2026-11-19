@@ -23,11 +23,11 @@ final class PostStoryViewController: PostZoomPage, UIGestureRecognizerDelegate {
     private let nameLabel = UILabel.studio("", size: 14, weight: .semibold, color: .white, style: .subheadline)
     private let ageLabel = UILabel.studio("", size: 14, color: UIColor.white.withAlphaComponent(0.7), style: .subheadline)
     private let menuButton = StoryMenuButton(type: .system)
-    private let closeButton = UIButton.studioIcon("xmark", label: "Kapat", size: 20, tint: .white)
+    private let closeButton = UIButton.insta(.close, label: "Kapat", size: 24, tint: .white).withIconShadow()
     private let bottomBar = UIView()
     private var editButton: UIButton!
-    private let approveButton = UIButton.glassCircle("checkmark", label: "Onayla", side: 44, pointSize: 18)
-    private let shareButton = UIButton.glassCircle("paperplane", label: "Paylaş", side: 44, pointSize: 18)
+    private let approveButton = UIButton.insta(.like, label: "Onayla", size: 26, tint: .white)
+    private let shareButton = UIButton.insta(.send, label: "Paylaş", size: 25, tint: .white)
     private lazy var pullPan: UIPanGestureRecognizer = {
         let pan = UIPanGestureRecognizer(target: self, action: #selector(pulled(_:)))
         pan.delegate = self
@@ -88,7 +88,7 @@ final class PostStoryViewController: PostZoomPage, UIGestureRecognizerDelegate {
         chrome.addSubview(segments)
 
         var menuConfig = UIButton.Configuration.plain()
-        menuConfig.image = UIImage(systemName: "ellipsis", withConfiguration: UIImage.SymbolConfiguration(pointSize: 18, weight: .semibold))
+        menuConfig.image = InstaIcon.menu.image(20)
         menuConfig.baseForegroundColor = .white
         menuButton.configuration = menuConfig
         menuButton.showsMenuAsPrimaryAction = true
@@ -127,18 +127,22 @@ final class PostStoryViewController: PostZoomPage, UIGestureRecognizerDelegate {
         }
         view.addGestureRecognizer(pullPan)
 
-        // Instead of Instagram's message field: Düzenle, approve and share.
-        var edit = UIButton.Configuration.glass()
-        edit.title = "Düzenle"
-        edit.image = UIImage(systemName: "pencil", withConfiguration: UIImage.SymbolConfiguration(pointSize: 15, weight: .medium))
-        edit.imagePadding = 8
-        edit.cornerStyle = .capsule
+        // Where Instagram has its message field: an outlined field that opens the editor, then
+        // the heart (approve) and the paper plane (share).
+        var edit = UIButton.Configuration.plain()
+        edit.title = "Düzenle…"
         edit.baseForegroundColor = .white
-        edit.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { var a = $0; a.font = IOSTheme.font(15, .semibold, style: .callout); return a }
+        edit.contentInsets = NSDirectionalEdgeInsets(top: 0, leading: 20, bottom: 0, trailing: 20)
+        edit.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { var a = $0; a.font = IOSTheme.font(16, .regular, style: .body); return a }
+        edit.background.strokeColor = UIColor.white.withAlphaComponent(0.55)
+        edit.background.strokeWidth = 1
+        edit.background.cornerRadius = 22
+        edit.background.backgroundColor = .clear
         editButton = UIButton(configuration: edit, primaryAction: UIAction { [weak self] _ in
             guard let self, let card = self.currentCard else { return }
             PostActions(app: self.app, host: self).edit(card)
         })
+        editButton.contentHorizontalAlignment = .leading
         editButton.translatesAutoresizingMaskIntoConstraints = false
         editButton.heightAnchor.constraint(equalToConstant: 44).isActive = true
         approveButton.addAction(UIAction { [weak self] _ in
@@ -149,7 +153,7 @@ final class PostStoryViewController: PostZoomPage, UIGestureRecognizerDelegate {
             guard let self, let card = self.currentCard else { return }
             PostActions(app: self.app, host: self).share(card, source: self.shareButton)
         }, for: .touchUpInside)
-        let row = UIStackView.h([editButton, approveButton, shareButton], spacing: 10)
+        let row = UIStackView.h([editButton, approveButton, shareButton], spacing: 4)
         row.translatesAutoresizingMaskIntoConstraints = false
         bottomBar.addSubview(row)
         view.addSubview(bottomBar)
@@ -240,10 +244,7 @@ final class PostStoryViewController: PostZoomPage, UIGestureRecognizerDelegate {
         ageLabel.text = PostPresentation.age(card)
         menuButton.menu = PostActions(app: app, host: self).menu(for: card, source: menuButton)
         let approved = card.content.status.hasApproval
-        var approve = approveButton.configuration
-        approve?.image = UIImage(systemName: approved ? "checkmark.circle.fill" : "checkmark", withConfiguration: UIImage.SymbolConfiguration(pointSize: 18, weight: .regular))
-        approve?.baseForegroundColor = approved ? IOSTheme.accent : .white
-        approveButton.configuration = approve
+        approveButton.setInsta(approved ? .liked : .like, size: 26, tint: approved ? InstaIcon.likeRed : .white)
         approveButton.isUserInteractionEnabled = PostActions.canApprove(card)
         approveButton.accessibilityLabel = approved ? "Onaylandı" : "Onayla"
         shareButton.configuration?.baseForegroundColor = .white
