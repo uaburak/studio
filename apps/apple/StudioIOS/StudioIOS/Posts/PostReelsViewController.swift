@@ -297,6 +297,9 @@ final class ReelPageCell: UICollectionViewCell {
             shade.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
             shade.heightAnchor.constraint(equalTo: contentView.heightAnchor, multiplier: 0.4),
             column.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -8),
+            // Fixed: otherwise a short caption lets the text block shrink and the column widen,
+            // its icons drifting left with its centre.
+            column.widthAnchor.constraint(equalToConstant: 44),
             bottomInset,
             text.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 16),
             text.trailingAnchor.constraint(equalTo: column.leadingAnchor, constant: -18),
