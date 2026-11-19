@@ -66,6 +66,18 @@ final class IOSProductsViewController: UIViewController, UICollectionViewDelegat
     private var observation: IOSObservationToken?
     private var lastBrandId: EntityID?
     private let emptyView = EmptyStateView()
+    /// Centres the empty state in the grid's background (a background view is sized by frame).
+    private lazy var emptyHolder: UIView = {
+        let holder = UIView()
+        emptyView.translatesAutoresizingMaskIntoConstraints = false
+        holder.addSubview(emptyView)
+        NSLayoutConstraint.activate([
+            emptyView.centerYAnchor.constraint(equalTo: holder.centerYAnchor),
+            emptyView.leadingAnchor.constraint(equalTo: holder.leadingAnchor, constant: 32),
+            emptyView.trailingAnchor.constraint(equalTo: holder.trailingAnchor, constant: -32),
+        ])
+        return holder
+    }()
     private var collectionView: UICollectionView!
     private var dataSource: UICollectionViewDiffableDataSource<Int, EntityID>!
     private var signatures: [EntityID: Int] = [:]
@@ -159,7 +171,7 @@ final class IOSProductsViewController: UIViewController, UICollectionViewDelegat
         if products.isEmpty, let error {
             emptyView.configure(icon: "exclamationmark.triangle", title: "Ürünler yüklenemedi", message: error,
                                 actions: [UIButton.studioPill(title: "Yeniden dene", kind: .secondary) { [weak self] in Task { await self?.model.load() } }])
-            collectionView.backgroundView = emptyView
+            collectionView.backgroundView = emptyHolder
         } else if products.isEmpty, model.hasLoaded {
             emptyView.configure(
                 icon: "shippingbox", title: app.currentBrandId == nil ? "Marka seçilmedi" : "Henüz ürün yok",
@@ -167,7 +179,7 @@ final class IOSProductsViewController: UIViewController, UICollectionViewDelegat
                     ? "Ürünler markaya göre tutulur; önce bir marka seç."
                     : "Ürünün fotoğrafını çek; Mac etiketteki yazıyı okuyup adını önerir. Postlar ürünleri doğru adıyla gösterir.",
                 actions: app.currentBrandId == nil ? [] : [UIButton.studioPill(title: "Fotoğrafla ekle", kind: .primary, image: "camera") { [weak self] in self?.quickAdd(camera: ImagePicking.cameraAvailable) }])
-            collectionView.backgroundView = emptyView
+            collectionView.backgroundView = emptyHolder
         } else {
             collectionView.backgroundView = nil
             if let error {
