@@ -43,8 +43,8 @@ final class PhotoZoomTransition: NSObject, UIViewControllerAnimatedTransitioning
     // MARK: Animated (push, and pop from the back button)
 
     func animateTransition(using transitionContext: UIViewControllerContextTransitioning) {
-        if operation == .push, let flight {
-            viewer?.catchBackTapsWhileOpening(true)
+        if let flight {
+            if operation == .push { viewer?.catchBackTapsWhileOpening(true) }
             if flight.state == .inactive { flight.startAnimation() }
             return
         }
@@ -59,16 +59,7 @@ final class PhotoZoomTransition: NSObject, UIViewControllerAnimatedTransitioning
             viewer.catchBackTapsWhileOpening(true)
             pushAnimator(viewer: viewer, setup: setup, context: transitionContext).startAnimation()
         case .pop:
-            titleMorph?.animate(toPill: false)
-            // Ends exactly on time too, so the bars change together with the picture landing.
-            let back = UIViewPropertyAnimator(duration: duration, timingParameters: UICubicTimingParameters(
-                controlPoint1: CGPoint(x: 0.2, y: 0.9), controlPoint2: CGPoint(x: 0.3, y: 1)))
-            back.addAnimations {
-                self.flyHome(setup.flyer)
-                setup.backdrop.alpha = 0
-            }
-            back.addCompletion { _ in self.finish(true) }
-            back.startAnimation()
+            popAnimator(setup: setup).startAnimation()
         }
     }
 
@@ -79,13 +70,45 @@ final class PhotoZoomTransition: NSObject, UIViewControllerAnimatedTransitioning
     /// pull can turn the whole thing around at any moment, without waiting for it to end.
     func interruptibleAnimator(using transitionContext: UIViewControllerContextTransitioning) -> UIViewImplicitlyAnimating {
         if let flight { return flight }
-        if operation == .push, let viewer, context == nil {
+        if isInteractive {
+            // The pull-down close moves the picture by hand; this animator only carries the bars'
+            // change, scrubbed by UIKit with the pull's progress.
+            let bars = UIViewPropertyAnimator(duration: transitionDuration(using: transitionContext), curve: .easeOut)
+            bars.addAnimations {}
+            flight = bars
+            return bars
+        }
+        if let viewer, context == nil {
             context = transitionContext
             if let setup = prepare(in: transitionContext) {
-                return pushAnimator(viewer: viewer, setup: setup, context: transitionContext)
+                return operation == .push
+                    ? pushAnimator(viewer: viewer, setup: setup, context: transitionContext)
+                    : popAnimator(setup: setup)
             }
         }
         return UIViewPropertyAnimator(duration: transitionDuration(using: transitionContext), curve: .easeOut)
+    }
+
+    /// The close by the back button: the picture flies home, the backdrop and the title capsule
+    /// go with it, and UIKit runs the bars' change on the same animator (so the corner buttons
+    /// change together with the picture, as they do natively).
+    private func popAnimator(setup: Setup) -> UIViewPropertyAnimator {
+        if let flight { return flight }
+        let back = UIViewPropertyAnimator(duration: transitionDuration(using: context), timingParameters: UICubicTimingParameters(
+            controlPoint1: CGPoint(x: 0.2, y: 0.9), controlPoint2: CGPoint(x: 0.3, y: 1)))
+        back.addAnimations {
+            self.flyHome(setup.flyer)
+            setup.backdrop.alpha = 0
+            if let morph = self.titleMorph {
+                UIView.animateKeyframes(withDuration: 0, delay: 0, options: [.calculationModeCubic]) { morph.keyframes(toPill: false) }
+            }
+        }
+        back.addCompletion { _ in
+            self.flight = nil
+            self.finish(true)
+        }
+        flight = back
+        return back
     }
 
     private func pushAnimator(viewer: PhotoViewerViewController, setup: Setup, context: UIViewControllerContextTransitioning) -> UIViewPropertyAnimator {
@@ -284,6 +307,7 @@ final class PhotoZoomTransition: NSObject, UIViewControllerAnimatedTransitioning
             if cancelled { toView?.removeFromSuperview() }
         }
         hiddenSource?.alpha = 1
+        flight = nil
         titleScrub?.stopAnimation(true)
         titleScrub = nil
         titleMorph?.remove()
