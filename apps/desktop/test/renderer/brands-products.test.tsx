@@ -16,11 +16,15 @@ import BrandsPage, { brandsShown } from "../../src/renderer/features/brand/brand
 import { productKeys } from "../../src/renderer/features/brand/products-data.ts";
 import {
   addTags,
+  agoText,
   makeCover,
   productDraft,
+  productHashtags,
   productMatches,
+  productMetaLine,
   productPatch,
   productProblem,
+  productTone,
 } from "../../src/renderer/features/brand/products-model.ts";
 import { ProductsTab } from "../../src/renderer/features/brand/products-tab.tsx";
 import { ApiContext } from "../../src/renderer/lib/api.ts";
@@ -277,6 +281,26 @@ describe("products model", () => {
     expect(productMatches(p, "tohum")).toBe(false);
     expect(productMatches(p, "  ")).toBe(true);
   });
+
+  it("writes tags as hashtags, the status line and a stable tone", () => {
+    expect(productHashtags(["Mangan", "Yaprak gübresi", "#İz"])).toBe("#mangan #yaprakgübresi #iz");
+    expect(productHashtags([])).toBe("");
+    const now = new Date("2026-11-22T10:00:00.000Z");
+    expect(agoText("2026-11-22T09:59:30.000Z", now)).toBe("şimdi");
+    expect(agoText("2026-11-22T09:48:00.000Z", now)).toBe("12 dakika önce");
+    expect(agoText("2026-11-22T07:00:00.000Z", now)).toBe("3 saat önce");
+    expect(agoText("2026-11-21T09:00:00.000Z", now)).toBe("dün");
+    expect(agoText("2026-11-17T10:00:00.000Z", now)).toBe("5 gün önce");
+    expect(agoText("2026-11-01T10:00:00.000Z", now)).toBe("3 hafta önce");
+    expect(productMetaLine(product("p1", { imageAssetIds: ["a", "b"] }), now)).toBe(
+      "2 fotoğraf · 5 gün önce eklendi",
+    );
+    expect(productMetaLine(product("p1", { updatedAt: "2026-11-21T09:00:00.000Z" }), now)).toBe(
+      "Fotoğraf yok · dün güncellendi",
+    );
+    expect(productTone("p1")).toBe(productTone("p1"));
+    expect(["dark", "light", "muted"]).toContain(productTone("p2"));
+  });
 });
 
 describe("Ürünler tab", () => {
@@ -352,9 +376,19 @@ describe("Ürünler tab", () => {
       imageAssetIds: ["asset-1"],
     });
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
-    const card = screen.getByRole("article", { name: "Yaprak gübresi" });
-    expect(within(card).getByText("Gübre")).toBeInTheDocument();
-    expect(within(card).getByText("organik")).toBeInTheDocument();
+    // A square tile; it opens the product's page in place.
+    await user.click(screen.getByRole("button", { name: "Yaprak gübresi, Gübre" }));
+    const page = screen.getByRole("article", { name: "Yaprak gübresi" });
+    expect(within(page).getByRole("heading", { name: "Yaprak gübresi" })).toBeInTheDocument();
+    expect(within(page).getByText("Gübre")).toBeInTheDocument();
+    expect(within(page).getByText("Sıvı, 1 L")).toBeInTheDocument();
+    expect(within(page).getByText("#organik #sıvı")).toBeInTheDocument();
+    expect(within(page).getByText(/^1 fotoğraf · .* eklendi$/)).toBeInTheDocument();
+    expect(within(page).getByRole("button", { name: "Fotoğrafı aç" })).toBeInTheDocument();
+    expect(screen.queryByRole("list", { name: "Ürünler" })).toBeNull();
+    // Back returns to the grid.
+    await user.click(within(page).getByRole("button", { name: "Ürünler" }));
+    expect(screen.getByRole("list", { name: "Ürünler" })).toBeInTheDocument();
   });
 
   it("edits only what changed, searches and deletes after confirming", async () => {
@@ -375,7 +409,8 @@ describe("Ürünler tab", () => {
     ]);
     await user.clear(screen.getByRole("searchbox", { name: "Ürünlerde ara" }));
 
-    await user.click(screen.getByRole("button", { name: "Yaprak gübresi: düzenle" }));
+    await user.click(screen.getByRole("button", { name: "Yaprak gübresi, Gübre" }));
+    await user.click(screen.getByRole("button", { name: "Düzenle" }));
     const sheet = screen.getByRole("dialog", { name: "Yaprak gübresi" });
     expect(within(sheet).getByRole("textbox", { name: "Kategori" })).toHaveValue("Gübre");
     // The sheet focuses its first field once it is shown.
@@ -388,6 +423,10 @@ describe("Ürünler tab", () => {
       expect(api.brandProducts.update).toHaveBeenCalledWith("b1", "p1", { notes: "Hasat öncesi" }),
     );
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    // The page shows the saved notes; Esc returns to the grid.
+    expect(screen.getByText("Hasat öncesi")).toBeInTheDocument();
+    await user.keyboard("{Escape}");
+    expect(screen.getAllByRole("article")).toHaveLength(2);
 
     await user.click(screen.getByRole("button", { name: "Buğday tohumu: seçenekler" }));
     await user.click(await screen.findByRole("menuitem", { name: "Sil" }));
