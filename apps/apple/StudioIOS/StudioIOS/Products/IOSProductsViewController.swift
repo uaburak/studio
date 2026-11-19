@@ -57,17 +57,23 @@ final class IOSProductsModel {
     }
 }
 
-final class IOSProductsViewController: UITableViewController {
+/// Ürünler, like the Postlar grid: three square columns edge to edge with hairline gaps, each
+/// tile the product's cover photo (its name on a tone when it has none). A tile zooms open into
+/// the product's page (the system's zoom, as in Postlar), which shows only the product's details.
+final class IOSProductsViewController: UIViewController, UICollectionViewDelegate {
     private unowned let app: IOSAppModel
-    private let model: IOSProductsModel
+    let model: IOSProductsModel
     private var observation: IOSObservationToken?
     private var lastBrandId: EntityID?
     private let emptyView = EmptyStateView()
+    private var collectionView: UICollectionView!
+    private var dataSource: UICollectionViewDiffableDataSource<Int, EntityID>!
+    private var signatures: [EntityID: Int] = [:]
 
     init(app: IOSAppModel) {
         self.app = app
         self.model = IOSProductsModel(app: app)
-        super.init(style: .insetGrouped)
+        super.init(nibName: nil, bundle: nil)
         title = "Ürünler"
     }
 
@@ -75,40 +81,106 @@ final class IOSProductsViewController: UITableViewController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
+        view.backgroundColor = IOSTheme.canvas
         navigationItem.largeTitleDisplayMode = .never
-        tableView.backgroundColor = IOSTheme.groupedBackground
         let add = UIBarButtonItem(systemItem: .add)
         add.menu = addMenu()
         add.accessibilityLabel = "Ürün ekle"
         navigationItem.rightBarButtonItem = add
+
+        collectionView = UICollectionView(frame: .zero, collectionViewLayout: Self.makeLayout())
+        collectionView.translatesAutoresizingMaskIntoConstraints = false
+        collectionView.backgroundColor = IOSTheme.canvas
+        collectionView.delegate = self
+        collectionView.alwaysBounceVertical = true
+        collectionView.contentInset.bottom = 90
+        collectionView.topEdgeEffect.style = .soft
+        setContentScrollView(collectionView, for: .top)
+        view.addSubview(collectionView)
+        collectionView.pin(to: view)
+
+        let registration = UICollectionView.CellRegistration<ProductGridCell, EntityID> { [weak self] cell, _, id in
+            guard let self, let product = self.product(id) else { return }
+            cell.configure(product, images: self.app.images)
+        }
+        dataSource = UICollectionViewDiffableDataSource(collectionView: collectionView) { collectionView, indexPath, id in
+            collectionView.dequeueConfiguredReusableCell(using: registration, for: indexPath, item: id)
+        }
+
         let refresh = UIRefreshControl()
         refresh.addAction(UIAction { [weak self, weak refresh] _ in
             Task { await self?.model.load(); refresh?.endRefreshing() }
         }, for: .valueChanged)
-        refreshControl = refresh
+        collectionView.refreshControl = refresh
         observation = observeIOS { [weak self] in self?.render() }
     }
+
+    /// Postlar's grid, but square: three columns, 1.5 pt gaps, no margins.
+    private static func makeLayout() -> UICollectionViewLayout {
+        UICollectionViewCompositionalLayout { _, environment in
+            let width = environment.container.effectiveContentSize.width
+            let spacing: CGFloat = 1.5
+            let side = ((width - 2 * spacing) / 3).rounded()
+            let item = NSCollectionLayoutItem(layoutSize: NSCollectionLayoutSize(widthDimension: .fractionalWidth(1 / 3), heightDimension: .fractionalHeight(1)))
+            let group = NSCollectionLayoutGroup.horizontal(
+                layoutSize: NSCollectionLayoutSize(widthDimension: .fractionalWidth(1), heightDimension: .absolute(side)),
+                repeatingSubitem: item, count: 3)
+            group.interItemSpacing = .fixed(spacing)
+            let section = NSCollectionLayoutSection(group: group)
+            section.interGroupSpacing = spacing
+            return section
+        }
+    }
+
+    private func product(_ id: EntityID) -> BrandProduct? { model.products.first { $0.id == id } }
 
     private func render() {
         if app.currentBrandId != lastBrandId {
             lastBrandId = app.currentBrandId
             Task { await model.load() }
         }
-        _ = model.products
-        _ = model.error
-        if model.products.isEmpty, model.hasLoaded {
+        let products = model.products
+        let error = model.error
+        // Tiles whose product changed are redrawn in place (an edit, a new cover).
+        var newSignatures: [EntityID: Int] = [:]
+        var ids: [EntityID] = []
+        for product in products where newSignatures[product.id] == nil {
+            newSignatures[product.id] = product.hashValue
+            ids.append(product.id)
+        }
+        let changed = ids.filter { signatures[$0] != nil && signatures[$0] != newSignatures[$0] }
+        signatures = newSignatures
+        var snapshot = NSDiffableDataSourceSnapshot<Int, EntityID>()
+        snapshot.appendSections([0])
+        snapshot.appendItems(ids)
+        snapshot.reconfigureItems(changed)
+        dataSource.apply(snapshot, animatingDifferences: view.window != nil)
+
+        if products.isEmpty, let error {
+            emptyView.configure(icon: "exclamationmark.triangle", title: "Ürünler yüklenemedi", message: error,
+                                actions: [UIButton.studioPill(title: "Yeniden dene", kind: .secondary) { [weak self] in Task { await self?.model.load() } }])
+            collectionView.backgroundView = emptyView
+        } else if products.isEmpty, model.hasLoaded {
             emptyView.configure(
                 icon: "shippingbox", title: app.currentBrandId == nil ? "Marka seçilmedi" : "Henüz ürün yok",
                 message: app.currentBrandId == nil
                     ? "Ürünler markaya göre tutulur; önce bir marka seç."
                     : "Ürünün fotoğrafını çek; Mac etiketteki yazıyı okuyup adını önerir. Postlar ürünleri doğru adıyla gösterir.",
                 actions: app.currentBrandId == nil ? [] : [UIButton.studioPill(title: "Fotoğrafla ekle", kind: .primary, image: "camera") { [weak self] in self?.quickAdd(camera: ImagePicking.cameraAvailable) }])
-            tableView.backgroundView = emptyView
+            collectionView.backgroundView = emptyView
         } else {
-            tableView.backgroundView = nil
+            collectionView.backgroundView = nil
+            if let error {
+                // Products are on screen: a failed refresh only says so, once.
+                Task { @MainActor in
+                    self.model.error = nil
+                    Toast.show(error, in: self.view, isError: true)
+                }
+            }
         }
-        tableView.reloadData()
     }
+
+    // MARK: Adding
 
     private func addMenu() -> UIMenu {
         var quick: [UIMenuElement] = []
@@ -141,69 +213,128 @@ final class IOSProductsViewController: UITableViewController {
         presentSheet(editor, detents: [.large()])
     }
 
-    // MARK: Table
-
-    override func numberOfSections(in tableView: UITableView) -> Int { 1 }
-
-    override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int { model.products.count }
-
-    override func tableView(_ tableView: UITableView, titleForFooterInSection section: Int) -> String? {
-        if let error = model.error { return error }
-        guard !model.products.isEmpty else { return nil }
-        return "Ürünler Mac'teki marka profilinde de görünür; yapay zekâ postlarda onları adıyla anar."
-    }
-
-    override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
-        let product = model.products[indexPath.row]
-        let cell = UITableViewCell(style: .subtitle, reuseIdentifier: nil)
-        var content = UIListContentConfiguration.subtitleCell()
-        content.text = product.name
-        let details = [product.category, product.description].filter { !$0.isEmpty }.joined(separator: " · ")
-        content.secondaryText = details.isEmpty ? (product.tags.isEmpty ? nil : ProductTags.text(product.tags)) : details
-        content.secondaryTextProperties.color = IOSTheme.textSecondary
-        content.secondaryTextProperties.numberOfLines = 2
-        content.textProperties.font = IOSTheme.font(16, .medium)
-        content.directionalLayoutMargins.leading = 72
-        cell.contentConfiguration = content
-        cell.accessoryType = .disclosureIndicator
-        let cover = IOSAssetImageView(store: app.images, assetId: product.coverAssetId, cornerRadius: 8, displayWidth: 48)
-        cover.backgroundColor = IOSTheme.fill
-        cell.contentView.addSubview(cover)
-        NSLayoutConstraint.activate([
-            cover.leadingAnchor.constraint(equalTo: cell.contentView.leadingAnchor, constant: 14),
-            cover.centerYAnchor.constraint(equalTo: cell.contentView.centerYAnchor),
-            cover.widthAnchor.constraint(equalToConstant: 48),
-            cover.heightAnchor.constraint(equalToConstant: 48),
-        ])
-        if product.coverAssetId == nil {
-            let icon = UIImageView(image: UIImage(systemName: "shippingbox"))
-            icon.tintColor = IOSTheme.textTertiary
-            icon.translatesAutoresizingMaskIntoConstraints = false
-            cover.addSubview(icon)
-            NSLayoutConstraint.activate([icon.centerXAnchor.constraint(equalTo: cover.centerXAnchor), icon.centerYAnchor.constraint(equalTo: cover.centerYAnchor)])
-        }
-        return cell
-    }
-
-    override func tableView(_ tableView: UITableView, heightForRowAt indexPath: IndexPath) -> CGFloat { 72 }
-
-    override func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
-        tableView.deselectRow(at: indexPath, animated: true)
-        openEditor(model.products[indexPath.row])
-    }
-
-    override func tableView(_ tableView: UITableView, trailingSwipeActionsConfigurationForRowAt indexPath: IndexPath) -> UISwipeActionsConfiguration? {
-        let product = model.products[indexPath.row]
-        let delete = UIContextualAction(style: .destructive, title: "Sil") { [weak self] _, _, done in
-            guard let self else { return done(false) }
-            self.confirm("“\(product.name)” silinsin mi?", message: "Ürün kalıcı olarak silinir; fotoğrafları medyada kalır.", action: "Sil") {
-                Task {
-                    if let error = await self.model.delete(product) { self.presentError(error) }
-                }
+    private func confirmDelete(_ product: BrandProduct, source: UIView?) {
+        confirm("“\(product.name)” silinsin mi?", message: "Ürün kalıcı olarak silinir; fotoğrafları medyada kalır.", action: "Sil", source: source) { [weak self] in
+            guard let self else { return }
+            Task {
+                if let error = await self.model.delete(product) { self.presentError(error) } else { Haptics.success() }
             }
-            done(true)
         }
-        return UISwipeActionsConfiguration(actions: [delete])
+    }
+
+    // MARK: Opening a product
+
+    func collectionView(_ collectionView: UICollectionView, didSelectItemAt indexPath: IndexPath) {
+        guard let id = dataSource.itemIdentifier(for: indexPath), let product = product(id) else { return }
+        open(product)
+    }
+
+    /// The product's page zooms out of its tile with the system's zoom (as Postlar's posts do),
+    /// and shrinks back into it by the back button, the edge swipe or a drag down. The root's
+    /// own back pan leaves pages with a `preferredTransition` to the system.
+    private func open(_ product: BrandProduct) {
+        let id = product.id
+        let page = ProductDetailViewController(app: app, model: model, productId: id)
+        // Only the chevron on the page's back button, as in Postlar.
+        navigationItem.backButtonDisplayMode = .minimal
+        let options = UIViewController.Transition.ZoomOptions()
+        options.alignmentRectProvider = { context in
+            guard let page = context.zoomedViewController as? ProductDetailViewController else { return .zero }
+            return page.pictureRect(in: page.view)
+        }
+        page.preferredTransition = .zoom(options: options) { [weak self] _ in
+            self?.tile(for: id)
+        }
+        navigationController?.pushViewController(page, animated: true)
+    }
+
+    /// The tile a product flies out of and back into, scrolled into view when it is off screen.
+    private func tile(for id: EntityID) -> UIView? {
+        guard let path = dataSource.indexPath(for: id) else { return nil }
+        if collectionView.cellForItem(at: path) == nil || !collectionView.bounds.intersects(collectionView.layoutAttributesForItem(at: path)?.frame ?? .zero) {
+            collectionView.scrollToItem(at: path, at: .centeredVertically, animated: false)
+            collectionView.layoutIfNeeded()
+        }
+        return (collectionView.cellForItem(at: path) as? ProductGridCell)?.artworkView
+    }
+
+    func collectionView(_ collectionView: UICollectionView, contextMenuConfigurationForItemsAt indexPaths: [IndexPath], point: CGPoint) -> UIContextMenuConfiguration? {
+        guard let indexPath = indexPaths.first, let id = dataSource.itemIdentifier(for: indexPath), let product = product(id) else { return nil }
+        let source = collectionView.cellForItem(at: indexPath)
+        return UIContextMenuConfiguration(identifier: id as NSString, previewProvider: nil) { [weak self] _ in
+            guard let self else { return nil }
+            return UIMenu(children: [
+                UIMenu(options: .displayInline, children: [
+                    UIAction(title: "Aç", image: UIImage(systemName: "arrow.up.left.and.arrow.down.right")) { _ in self.open(product) },
+                    UIAction(title: "Düzenle", image: UIImage(systemName: "pencil")) { _ in self.openEditor(product) },
+                ]),
+                UIAction(title: "Sil…", image: UIImage(systemName: "trash"), attributes: .destructive) { _ in self.confirmDelete(product, source: source) },
+            ])
+        }
+    }
+}
+
+// MARK: - Tile
+
+/// One square tile: the product's cover photo, or its name small at the bottom on a tone (the
+/// tones of Postlar's tiles without a picture).
+final class ProductGridCell: UICollectionViewCell {
+    private let imageView = IOSAssetImageView(store: nil, cornerRadius: 0, displayWidth: PostGridCell.displayWidth)
+    private let nameLabel = UILabel.studio("", size: 12, weight: .heavy, lines: 3, style: .caption1)
+
+    /// What the product's page zooms out of and back into (photo or tone alike).
+    var artworkView: UIView { contentView }
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        contentView.clipsToBounds = true
+        contentView.addSubview(imageView)
+        imageView.pin(to: contentView)
+        nameLabel.translatesAutoresizingMaskIntoConstraints = false
+        contentView.addSubview(nameLabel)
+        NSLayoutConstraint.activate([
+            nameLabel.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 8),
+            nameLabel.trailingAnchor.constraint(lessThanOrEqualTo: contentView.trailingAnchor, constant: -8),
+            nameLabel.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -8),
+        ])
+        isAccessibilityElement = true
+        accessibilityTraits = .button
+    }
+
+    required init?(coder: NSCoder) { fatalError("not used") }
+
+    func configure(_ product: BrandProduct, images: IOSImageStore) {
+        imageView.store = images
+        let cover = product.coverAssetId
+        if let cover { imageView.assetId = cover }
+        imageView.isHidden = cover == nil
+        nameLabel.isHidden = cover != nil
+        let tone = ProductTone(product)
+        contentView.backgroundColor = cover == nil ? tone.background : IOSTheme.fill
+        nameLabel.text = TurkishFormat.upper(product.name)
+        nameLabel.textColor = tone.text
+        accessibilityLabel = [product.name, product.category].filter { !$0.isEmpty }.joined(separator: ", ")
+        accessibilityHint = "Ürünü açar. Düzenlemek ya da silmek için basılı tut."
+    }
+}
+
+/// The tone a product without a photo stands on: Postlar's light or dark tile, stable per product.
+struct ProductTone {
+    let background: UIColor
+    let text: UIColor
+
+    init(_ product: BrandProduct) {
+        switch PlaceholderTone.stable(for: product.id) {
+        case .dark:
+            background = IOSTheme.postDark
+            text = .white
+        case .light:
+            background = IOSTheme.postLight
+            text = .black
+        case .muted:
+            background = IOSTheme.postMuted
+            text = IOSTheme.textPrimary
+        }
     }
 }
 
