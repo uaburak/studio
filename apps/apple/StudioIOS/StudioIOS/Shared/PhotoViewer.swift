@@ -168,7 +168,10 @@ final class PhotoViewerViewController: UIViewController, UICollectionViewDelegat
 
         // Top bar: back at the left, the picture's name in a glass pill, "…" at the right.
         navigationItem.largeTitleDisplayMode = .never
-        navigationItem.titleView = titlePill
+        // The name pill is not the bar's title view: during a push or pop the bar runs its own
+        // crossfade on its items and the pill popped in and out. It sits over the bar instead
+        // (see `installPill`), where the transition fades it step by step with the backdrop.
+        navigationItem.titleView = nil
         let back = UIBarButtonItem(image: UIImage(systemName: "chevron.left"), primaryAction: UIAction { [weak self] _ in self?.close() })
         back.accessibilityLabel = "Kapat"
         navigationItem.leftBarButtonItem = back
@@ -208,6 +211,24 @@ final class PhotoViewerViewController: UIViewController, UICollectionViewDelegat
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
         navigationController?.setToolbarHidden(false, animated: animated)
+        installPill()
+    }
+
+    override func viewDidDisappear(_ animated: Bool) {
+        super.viewDidDisappear(animated)
+        titlePill.removeFromSuperview()
+    }
+
+    /// Puts the name pill over the navigation bar, centred on it (above the transition too).
+    private func installPill() {
+        guard let navigation = navigationController, titlePill.superview !== navigation.view else { return }
+        titlePill.removeFromSuperview()
+        titlePill.translatesAutoresizingMaskIntoConstraints = false
+        navigation.view.addSubview(titlePill)
+        NSLayoutConstraint.activate([
+            titlePill.centerXAnchor.constraint(equalTo: navigation.view.centerXAnchor),
+            titlePill.centerYAnchor.constraint(equalTo: navigation.navigationBar.centerYAnchor),
+        ])
     }
 
     override func viewDidAppear(_ animated: Bool) {
@@ -442,6 +463,8 @@ final class PhotoViewerViewController: UIViewController, UICollectionViewDelegat
             // Zoomed in, only the picture strip steps aside; the other buttons stay.
             self.stripHolder.alpha = self.zoomHidden ? 0 : 1
             self.view.backgroundColor = hidden || self.zoomHidden ? .black : Self.backdrop
+            self.titlePill.setVisible(!hidden)
+            self.titlePill.alpha = hidden ? 0 : 1
             self.setNeedsStatusBarAppearanceUpdate()
         }
     }
