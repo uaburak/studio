@@ -97,6 +97,40 @@ struct IOSViewSmokeTests {
             await exercise(ScheduleSheetViewController(app: app, session: detail.session))
         }
         await exercise(LayerTextEditorViewController(text: "Başlık") { _ in })
+
+        // A tile opens its tab like Instagram: the feed, Reels, stories (starting mid-list).
+        let cards = app.posts.board.cards
+        for type in [ContentType.post, .reel, .story] {
+            let ids = cards.filter { type == .post ? ($0.content.type != .reel && $0.content.type != .story) : $0.content.type == type }.map(\.id)
+            guard let start = ids.dropFirst().first ?? ids.first else { continue }
+            let page: PostZoomPage = switch type {
+            case .reel: PostReelsViewController(app: app, ids: ids, start: start, sourceFor: { _ in nil })
+            case .story: PostStoryViewController(app: app, ids: ids, start: start, sourceFor: { _ in nil })
+            default: PostFeedViewController(app: app, ids: ids, start: start, sourceFor: { _ in nil })
+            }
+            await exercise(page)
+            let container = UIView(frame: CGRect(x: 0, y: 0, width: 402, height: 874))
+            #expect(page.pictureRect(in: container).width > 0)
+            page.setContentHidden(true)
+            page.setZoomProgress(0)
+            page.setContentHidden(false)
+            page.setZoomProgress(1)
+            #expect(page.currentSource() == nil)
+        }
+    }
+
+    @Test func feedCaptionCutsToThreeLines() {
+        let long = String(repeating: "Toprağın verimi tohumla başlar. ", count: 20)
+        let (cut, truncated) = PostFeedCell.caption(brand: "MTM Agro", text: long, width: 360, expanded: false)
+        #expect(truncated)
+        #expect(cut.string.hasPrefix("MTM Agro "))
+        #expect(cut.string.hasSuffix("… devamı"))
+        let (open, openTruncated) = PostFeedCell.caption(brand: "MTM Agro", text: long, width: 360, expanded: true)
+        #expect(!openTruncated)
+        #expect(open.string == "MTM Agro " + long)
+        let (short, shortTruncated) = PostFeedCell.caption(brand: "MTM Agro", text: "Kısa.", width: 360, expanded: false)
+        #expect(!shortTruncated)
+        #expect(short.string == "MTM Agro Kısa.")
     }
 
     @Test func calendarBrandsAndSettings() async throws {
