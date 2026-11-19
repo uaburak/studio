@@ -212,7 +212,7 @@ final class ReelPageCell: UICollectionViewCell {
     private let media = UIView()
     private let poster = IOSAssetImageView(store: nil, contentMode: .scaleAspectFill)
     private let placeholder = PostPlaceholderView()
-    private let videoView = PlayerLayerView()
+    private let videoView = ReelPlayerLayerView()
     private let shade = GradientView()
     private let avatar = PostAvatarView(side: 32)
     private let nameLabel = UILabel.studio("", size: 14, weight: .semibold, color: .white, style: .subheadline)
@@ -385,7 +385,7 @@ final class ReelPageCell: UICollectionViewCell {
 }
 
 /// A view whose layer is an AVPlayerLayer (fills, keeps the video's shape by cropping).
-final class PlayerLayerView: UIView {
+final class ReelPlayerLayerView: UIView {
     override class var layerClass: AnyClass { AVPlayerLayer.self }
     var playerLayer: AVPlayerLayer { layer as! AVPlayerLayer }
 
