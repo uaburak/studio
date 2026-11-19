@@ -36,9 +36,9 @@ enum PostTab: Int, CaseIterable {
 
 /// Postlar, like an Instagram profile (no tab bar): the drawer button, the brand picker in the
 /// middle and "+" at the right; under the brand's header, Gönderiler / Reels / Hikâyeler tabs that
-/// stay pinned and also change with a sideways swipe; a three-column grid. A post opens on its
-/// own in the picture viewer (zooming out of its tile, as in Medya), where "Düzenle" opens the
-/// editor.
+/// stay pinned and also change with a sideways swipe; a three-column grid. A post opens like
+/// Instagram (zooming out of its tile): posts as a feed, Reels full screen, stories in the story
+/// player; "Düzenle" there opens the editor.
 final class IOSPostsViewController: UIViewController, UICollectionViewDelegate, UIGestureRecognizerDelegate, DrawerSwipeBlocking {
     private unowned let app: IOSAppModel
     private var model: IOSPostsModel { app.posts }
@@ -513,40 +513,35 @@ final class IOSPostsViewController: UIViewController, UICollectionViewDelegate, 
         open(card)
     }
 
-    /// The post on its own: in the picture viewer with the tab's other posts (zooming out of
-    /// its tile, as in Medya); a post with no picture yet opens the editor.
+    /// The tab's posts open like Instagram, the picture zooming out of its tile: the grid as a
+    /// feed of posts, Reels one per screen, stories in the story player. A post with no picture
+    /// yet opens the editor.
     private func open(_ card: PostCard) {
-        let shown = cards(on: currentTab).filter { $0.renderedAssetIds.first != nil && !$0.needsImage }
-        guard let start = shown.firstIndex(where: { $0.id == card.id }) else {
+        guard card.renderedAssetIds.first != nil, !card.needsImage else {
             navigationController?.pushViewController(IOSPostDetailViewController(app: app, card: card), animated: true)
             return
         }
-        let items = shown.map { card -> PhotoViewerItem in
-            var aspect: CGFloat?
-            if let slide = card.version?.slides.first, slide.width > 0, slide.height > 0 { aspect = CGFloat(slide.width) / CGFloat(slide.height) }
-            let day = card.day.map(TurkishFormat.longDay) ?? "Tarih yok"
-            return PhotoViewerItem(assetId: card.renderedAssetIds[0], title: card.title, subtitle: "\(day) · \(card.state.label)", aspect: aspect)
-        }
-        let viewer = PhotoViewerViewController(images: app.images, items: items, index: start, sourceFor: { [weak self] index in
-            guard let self, shown.indices.contains(index),
-                  let path = self.dataSource.indexPath(for: shown[index].id),
-                  let cell = self.collectionView.cellForItem(at: path) as? PostGridCell else { return nil }
-            return cell.artworkView
-        }, actionsFor: { [weak self] item in
-            guard let self, let card = shown.first(where: { $0.renderedAssetIds.first == item.assetId }) else { return PhotoViewerBar() }
-            var menu: [PhotoViewerAction] = []
-            if card.state == .ready, card.approvableHash != nil {
-                menu.append(PhotoViewerAction(label: "Onayla", symbol: "checkmark.circle") { _, _ in self.approveGuarded(card) })
+        let tab = currentTab
+        let ids = cards(on: tab).map(\.id)
+        // The tile a post flies out of and back into; scrolled into view when it is off screen
+        // (the feed may close on another post than the one opened).
+        let sourceFor: (EntityID) -> UIView? = { [weak self] id in
+            guard let self, self.currentTab == tab, let path = self.dataSource.indexPath(for: id) else { return nil }
+            if self.collectionView.cellForItem(at: path) == nil || !self.collectionView.bounds.intersects(self.collectionView.layoutAttributesForItem(at: path)?.frame ?? .zero) {
+                self.collectionView.scrollToItem(at: path, at: .centeredVertically, animated: false)
+                self.collectionView.layoutIfNeeded()
             }
-            menu.append(PhotoViewerAction(label: "Açıklamayı kopyala", symbol: "doc.on.doc") { viewer, _ in
-                UIPasteboard.general.string = card.content.caption
-                Toast.show("Açıklama kopyalandı", in: viewer.view)
-            })
-            return PhotoViewerBar(menu: menu, trailing: PhotoViewerAction(label: "Düzenle", symbol: "pencil") { viewer, _ in
-                viewer.navigationController?.pushViewController(IOSPostDetailViewController(app: self.app, card: card), animated: true)
-            })
-        })
-        viewer.open(from: self)
+            return (self.collectionView.cellForItem(at: path) as? PostGridCell)?.artworkView
+        }
+        if navigationController?.delegate == nil { navigationController?.delegate = PhotoViewerNavigationDelegate.shared }
+        // Only the chevron on the opened page's back button, as on Instagram.
+        navigationItem.backButtonDisplayMode = .minimal
+        let page: UIViewController = switch tab {
+        case .grid: PostFeedViewController(app: app, ids: ids, start: card.id, sourceFor: sourceFor)
+        case .reels: PostReelsViewController(app: app, ids: ids, start: card.id, sourceFor: sourceFor)
+        case .stories: PostStoryViewController(app: app, ids: ids, start: card.id, sourceFor: sourceFor)
+        }
+        navigationController?.pushViewController(page, animated: true)
     }
 
     func collectionView(_ collectionView: UICollectionView, contextMenuConfigurationForItemsAt indexPaths: [IndexPath], point: CGPoint) -> UIContextMenuConfiguration? {

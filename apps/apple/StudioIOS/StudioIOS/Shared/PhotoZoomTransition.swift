@@ -1,5 +1,40 @@
 import UIKit
 
+/// A screen a picture flies into from its thumbnail and back (the picture viewer, the Postlar
+/// feed, Reels and stories). The transition asks it where the picture sits and has it hide its own
+/// copy while the flying one is on screen.
+@MainActor
+protocol ZoomTransitionDestination: UIViewController {
+    /// The picture as loaded (the flying copy).
+    var shownImage: UIImage? { get }
+    /// The picture's corner radius at rest.
+    var restingRadius: CGFloat { get }
+    /// The thumbnail the shown picture flies to (nil: gone or scrolled away, it fades instead).
+    func currentSource() -> UIView?
+    /// Where the shown picture sits on screen, in `container`'s coordinates.
+    func pictureRect(in container: UIView) -> CGRect
+    /// Its own copy of the picture (and its backdrop) out of sight, the view still taking touches.
+    func setContentHidden(_ hidden: Bool)
+    /// Back taps while the picture is still flying in (the bar does not pass them on then).
+    func catchBackTapsWhileOpening(_ on: Bool)
+    func transitionEnded()
+    func makeTransition(_ operation: PhotoZoomTransition.Operation) -> PhotoZoomTransition
+    /// The name pill the page's title turns into (the viewer's); nil: no capsule.
+    var zoomTitlePill: GlassTitlePill? { get }
+    /// True: the whole screen goes the moment it closes (only the picture is on it). False: the
+    /// rest of the screen (captions, buttons) stays and fades with `setZoomProgress`.
+    var hidesViewWhileClosing: Bool { get }
+    /// How far the screen is open (0: the picture is on its thumbnail, 1: at rest); called inside
+    /// the flight's animations and while pulling.
+    func setZoomProgress(_ progress: CGFloat)
+}
+
+extension PhotoViewerViewController: ZoomTransitionDestination {
+    var zoomTitlePill: GlassTitlePill? { titlePill }
+    var hidesViewWhileClosing: Bool { true }
+    func setZoomProgress(_ progress: CGFloat) {}
+}
+
 /// The picture viewer's push and pop, like Photos: only the picture flies between its thumbnail
 /// and its place on screen, the backdrop fades on its own layer, and the navigation bar and the
 /// toolbar (their buttons and title views: Medya's segmented control, the viewer's name pill)
@@ -12,7 +47,7 @@ final class PhotoZoomTransition: NSObject, UIViewControllerAnimatedTransitioning
     let operation: Operation
     /// Driven by the viewer's downward pan (pop only).
     let isInteractive: Bool
-    private weak var viewer: PhotoViewerViewController?
+    private weak var viewer: (any ZoomTransitionDestination)?
 
     private var context: UIViewControllerContextTransitioning?
     private var flyer: UIImageView?
@@ -27,7 +62,7 @@ final class PhotoZoomTransition: NSObject, UIViewControllerAnimatedTransitioning
     /// The capsule's progress, scrubbed by the pull.
     private var titleScrub: UIViewPropertyAnimator?
 
-    init(operation: Operation, viewer: PhotoViewerViewController, interactive: Bool = false) {
+    init(operation: Operation, viewer: any ZoomTransitionDestination, interactive: Bool = false) {
         self.operation = operation
         self.viewer = viewer
         self.isInteractive = interactive
@@ -91,6 +126,7 @@ final class PhotoZoomTransition: NSObject, UIViewControllerAnimatedTransitioning
         back.addAnimations {
             self.flyHome(setup.flyer)
             setup.backdrop.alpha = 0
+            self.viewer?.setZoomProgress(0)
             if let morph = self.titleMorph {
                 UIView.animateKeyframes(withDuration: 0, delay: 0, options: [.calculationModeCubic]) { morph.keyframes(toPill: false) }
             }
@@ -103,7 +139,7 @@ final class PhotoZoomTransition: NSObject, UIViewControllerAnimatedTransitioning
         return back
     }
 
-    private func pushAnimator(viewer: PhotoViewerViewController, setup: Setup, context: UIViewControllerContextTransitioning) -> UIViewPropertyAnimator {
+    private func pushAnimator(viewer: any ZoomTransitionDestination, setup: Setup, context: UIViewControllerContextTransitioning) -> UIViewPropertyAnimator {
         if let flight { return flight }
         let target = viewer.pictureRect(in: context.containerView)
         // A curve that ends exactly on time (a spring's completion waited for it to settle).
@@ -113,6 +149,7 @@ final class PhotoZoomTransition: NSObject, UIViewControllerAnimatedTransitioning
             setup.flyer.frame = target
             setup.flyer.layer.cornerRadius = viewer.restingRadius
             setup.backdrop.alpha = 1
+            viewer.setZoomProgress(1)
             if let morph = self.titleMorph {
                 UIView.animateKeyframes(withDuration: 0, delay: 0, options: [.calculationModeCubic]) { morph.keyframes(toPill: true) }
             }
@@ -165,6 +202,7 @@ final class PhotoZoomTransition: NSObject, UIViewControllerAnimatedTransitioning
                              y: startFrame.midY + (translation.y >= 0 ? translation.y : translation.y * 0.3) - tall / 2,
                              width: width, height: tall)
         backdrop?.alpha = 1 - progress
+        viewer?.setZoomProgress(1 - progress)
         titleScrub?.fractionComplete = progress
         context.updateInteractiveTransition(progress)
     }
@@ -182,6 +220,7 @@ final class PhotoZoomTransition: NSObject, UIViewControllerAnimatedTransitioning
             home.addAnimations {
                 self.flyHome(flyer)
                 self.backdrop?.alpha = 0
+                self.viewer?.setZoomProgress(0)
             }
             home.addCompletion { _ in self.finish(true) }
             home.startAnimation()
@@ -190,6 +229,7 @@ final class PhotoZoomTransition: NSObject, UIViewControllerAnimatedTransitioning
             UIView.animate(springDuration: 0.24, bounce: 0.12) {
                 flyer.frame = self.startFrame
                 self.backdrop?.alpha = 1
+                self.viewer?.setZoomProgress(1)
             } completion: { _ in
                 self.finish(false)
             }
@@ -230,6 +270,7 @@ final class PhotoZoomTransition: NSObject, UIViewControllerAnimatedTransitioning
             // Only the viewer's content is hidden while the picture flies in, not its view: a
             // hidden view takes no touches, and a pull or back during the opening must count.
             viewer.setContentHidden(true)
+            viewer.setZoomProgress(0)
             backdrop.alpha = 0
             container.insertSubview(backdrop, belowSubview: toView)
             let start = sourceFrame ?? viewer.pictureRect(in: container).insetBy(dx: 40, dy: 40)
@@ -250,12 +291,17 @@ final class PhotoZoomTransition: NSObject, UIViewControllerAnimatedTransitioning
             flyer.frame = startFrame
             flyer.layer.cornerRadius = viewer.restingRadius
             container.addSubview(flyer)
-            fromView.alpha = 0
+            if viewer.hidesViewWhileClosing {
+                fromView.alpha = 0
+            } else {
+                // The rest of the screen stays and fades out; only its picture leaves at once.
+                viewer.setContentHidden(true)
+            }
         }
         // The title capsule: from the page's title to the name pill (or the reverse).
         let page = operation == .push ? transitionContext.viewController(forKey: .from) : toController
-        if let navigation = viewer.navigationController {
-            titleMorph = TitleMorph(pageTitle: page?.navigationItem.titleView, pill: viewer.titlePill, navigation: navigation)
+        if let navigation = viewer.navigationController, let pill = viewer.zoomTitlePill {
+            titleMorph = TitleMorph(pageTitle: page?.navigationItem.titleView, pill: pill, navigation: navigation)
             titleMorph?.setState(atPill: operation == .pop)
         }
         // The thumbnail's spot stays empty while its picture is away (Photos does the same).
@@ -286,9 +332,14 @@ final class PhotoZoomTransition: NSObject, UIViewControllerAnimatedTransitioning
         switch operation {
         case .push:
             viewer?.setContentHidden(false)
+            viewer?.setZoomProgress(1)
             if cancelled { toView?.removeFromSuperview() }
         case .pop:
             fromView?.alpha = 1
+            if viewer?.hidesViewWhileClosing == false {
+                viewer?.setContentHidden(false)
+                viewer?.setZoomProgress(1)
+            }
             if cancelled { toView?.removeFromSuperview() }
         }
         hiddenSource?.alpha = 1
@@ -364,10 +415,16 @@ final class PhotoViewerNavigationDelegate: NSObject, UINavigationControllerDeleg
     }
 
     static func animator(operation: UINavigationController.Operation, from fromVC: UIViewController, to toVC: UIViewController) -> UIViewControllerAnimatedTransitioning? {
-        if operation == .push, let viewer = toVC as? PhotoViewerViewController {
+        if operation == .push, let viewer = toVC as? any ZoomTransitionDestination {
             return viewer.makeTransition(.push)
         }
-        if operation == .pop, let viewer = fromVC as? PhotoViewerViewController {
+        if operation == .pop, let viewer = fromVC as? any ZoomTransitionDestination {
+            // The system's swipe back (a screen that keeps it, like the Postlar feed) slides the
+            // page as usual; the picture viewer switches those gestures off.
+            if let navigation = fromVC.navigationController,
+               [navigation.interactivePopGestureRecognizer, navigation.interactiveContentPopGestureRecognizer].contains(where: { $0?.state == .began || $0?.state == .changed }) {
+                return nil
+            }
             let transition = viewer.makeTransition(.pop)
             return transition.isInteractive ? PhotoPullTransition(transition) : transition
         }
