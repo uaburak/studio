@@ -389,6 +389,8 @@ final class StudioRootViewController: UIViewController, UINavigationControllerDe
     /// keep their own pull-down instead; the Postlar feed, a list like any page, swipes back.
     private var canSwipeBack: Bool {
         guard mainNav.viewControllers.count > 1, let top = mainNav.topViewController else { return false }
+        // The system's zoom brings its own swipe and drag back.
+        if top.preferredTransition != nil { return false }
         return top is PostFeedViewController || !(top is any ZoomTransitionDestination)
     }
 

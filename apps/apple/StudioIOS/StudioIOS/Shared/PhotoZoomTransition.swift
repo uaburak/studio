@@ -415,6 +415,9 @@ final class PhotoViewerNavigationDelegate: NSObject, UINavigationControllerDeleg
     }
 
     static func animator(operation: UINavigationController.Operation, from fromVC: UIViewController, to toVC: UIViewController) -> UIViewControllerAnimatedTransitioning? {
+        // Pages given the system's own zoom (`preferredTransition`) open and close with it.
+        if operation == .push, toVC.preferredTransition != nil { return nil }
+        if operation == .pop, fromVC.preferredTransition != nil { return nil }
         if operation == .push, let viewer = toVC as? any ZoomTransitionDestination {
             return viewer.makeTransition(.push)
         }

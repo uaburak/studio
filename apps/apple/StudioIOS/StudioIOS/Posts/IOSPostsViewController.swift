@@ -560,6 +560,17 @@ final class IOSPostsViewController: UIViewController, UICollectionViewDelegate, 
         case .reels: PostReelsViewController(app: app, ids: ids, start: card.id, sourceFor: sourceFor)
         case .stories: PostStoryViewController(app: app, ids: ids, start: card.id, sourceFor: sourceFor)
         }
+        // The system's zoom (as in Photos): the tile grows into the page, and the page shrinks
+        // back into the tile of the post it shows by then, by the back button, a drag down or
+        // the swipe from the edge.
+        let options = UIViewController.Transition.ZoomOptions()
+        options.alignmentRectProvider = { context in
+            guard let page = context.zoomedViewController as? PostZoomPage else { return .zero }
+            return page.pictureRect(in: page.view)
+        }
+        page.preferredTransition = .zoom(options: options) { context in
+            (context.zoomedViewController as? PostZoomPage)?.currentSource()
+        }
         navigationController?.pushViewController(page, animated: true)
     }
 

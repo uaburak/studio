@@ -23,11 +23,11 @@ final class PostStoryViewController: PostZoomPage, UIGestureRecognizerDelegate {
     private let nameLabel = UILabel.studio("", size: 14, weight: .semibold, color: .white, style: .subheadline)
     private let ageLabel = UILabel.studio("", size: 14, color: UIColor.white.withAlphaComponent(0.7), style: .subheadline)
     private let menuButton = StoryMenuButton(type: .system)
-    private let closeButton = UIButton.insta(.close, label: "Kapat", size: 24, tint: .white).withIconShadow()
+    private let closeButton = UIButton.insta(.close, label: "Kapat", size: 20, tint: .white).withIconShadow()
     private let bottomBar = UIView()
     private var editButton: UIButton!
-    private let approveButton = UIButton.insta(.like, label: "Onayla", size: 26, tint: .white)
-    private let shareButton = UIButton.insta(.send, label: "Paylaş", size: 25, tint: .white)
+    private let approveButton = UIButton.insta(.like, label: "Onayla", size: 22, tint: .white)
+    private let shareButton = UIButton.insta(.send, label: "Paylaş", size: 21, tint: .white)
     private lazy var pullPan: UIPanGestureRecognizer = {
         let pan = UIPanGestureRecognizer(target: self, action: #selector(pulled(_:)))
         pan.delegate = self
@@ -88,7 +88,7 @@ final class PostStoryViewController: PostZoomPage, UIGestureRecognizerDelegate {
         chrome.addSubview(segments)
 
         var menuConfig = UIButton.Configuration.plain()
-        menuConfig.image = InstaIcon.menu.image(20)
+        menuConfig.image = InstaIcon.menu.image(16)
         menuConfig.baseForegroundColor = .white
         menuButton.configuration = menuConfig
         menuButton.showsMenuAsPrimaryAction = true
@@ -126,6 +126,7 @@ final class PostStoryViewController: PostZoomPage, UIGestureRecognizerDelegate {
             card.addGestureRecognizer(gesture)
         }
         view.addGestureRecognizer(pullPan)
+        pullPan.isEnabled = !usesNativeZoom
 
         // Where Instagram has its message field: an outlined field that opens the editor, then
         // the heart (approve) and the paper plane (share).
@@ -244,7 +245,7 @@ final class PostStoryViewController: PostZoomPage, UIGestureRecognizerDelegate {
         ageLabel.text = PostPresentation.age(card)
         menuButton.menu = PostActions(app: app, host: self).menu(for: card, source: menuButton)
         let approved = card.content.status.hasApproval
-        approveButton.setInsta(approved ? .liked : .like, size: 26, tint: approved ? InstaIcon.likeRed : .white)
+        approveButton.setInsta(approved ? .liked : .like, size: 22, tint: approved ? InstaIcon.likeRed : .white)
         approveButton.isUserInteractionEnabled = PostActions.canApprove(card)
         approveButton.accessibilityLabel = approved ? "Onaylandı" : "Onayla"
         shareButton.configuration?.baseForegroundColor = .white

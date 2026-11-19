@@ -52,10 +52,14 @@ class PostZoomPage: UIViewController, ZoomTransitionDestination {
     /// Full-screen pages (Reels, stories) take the edge swipe away; the feed keeps it.
     var keepsSystemSwipeBack: Bool { true }
 
+    /// Opened with the system's zoom (`preferredTransition`): it flies the tile in and out and
+    /// brings its own drag to close and swipe back, so this page's flight and pull stay unused.
+    var usesNativeZoom: Bool { preferredTransition != nil }
+
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
         openingDidFinish()
-        guard !keepsSystemSwipeBack, let navigation = navigationController, pausedPopGestures.isEmpty else { return }
+        guard !usesNativeZoom, !keepsSystemSwipeBack, let navigation = navigationController, pausedPopGestures.isEmpty else { return }
         for gesture in [navigation.interactivePopGestureRecognizer, navigation.interactiveContentPopGestureRecognizer].compactMap({ $0 }) where gesture.isEnabled {
             gesture.isEnabled = false
             pausedPopGestures.append(gesture)
@@ -153,6 +157,7 @@ class PostZoomPage: UIViewController, ZoomTransitionDestination {
 
     /// Drives the close from a downward pan (the subclass decides when such a pan may begin).
     func handlePull(_ pan: UIPanGestureRecognizer) {
+        guard !usesNativeZoom else { return }
         activePull = pan
         let raw = pan.translation(in: view)
         let translation = CGPoint(x: raw.x - pullOrigin.x, y: raw.y - pullOrigin.y)
