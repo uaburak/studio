@@ -2,8 +2,8 @@ import StudioKit
 import UIKit
 
 /// One product, opened from its Ürünler tile with the system's zoom, laid out like OXTV's content
-/// page: the photo from the very top of the screen (under the bar) fading into the page at its
-/// foot and stretching when pulled down; the name and the category centred under it, the name
+/// page: the photo from the very top of the screen (under the bar), stretching when pulled down;
+/// the name and the category under it on the page, left-aligned, the name
 /// moving up into the bar as it scrolls away; the description and the tags as on a Postlar post.
 /// Only the product's information; the pencil opens the editor (which also deletes).
 final class ProductDetailViewController: UIViewController, UIScrollViewDelegate {
@@ -19,8 +19,6 @@ final class ProductDetailViewController: UIViewController, UIScrollViewDelegate 
     private let scroll = UIScrollView()
     private let content = UIView()
     private let pager = ProductPhotoPager()
-    /// The photo's foot fades into the page (OXTV's hero).
-    private let fade = ProductFadeView()
     private let nameLabel = UILabel.studio("", size: 26, weight: .bold, lines: 0, style: .title1)
     private let categoryLabel = UILabel.studio("", size: 15, color: IOSTheme.textSecondary, lines: 0, style: .subheadline)
     private let captionLabel = UILabel.studio("", size: 14, lines: 0, style: .subheadline)
@@ -73,17 +71,13 @@ final class ProductDetailViewController: UIViewController, UIScrollViewDelegate 
         pager.images = app.images
         pager.onTap = { [weak self] index in self?.showPhoto(index) }
         content.addSubview(pager)
-        fade.translatesAutoresizingMaskIntoConstraints = false
-        content.addSubview(fade)
 
-        nameLabel.textAlignment = .center
-        categoryLabel.textAlignment = .center
         let titles = UIStackView.v([nameLabel, categoryLabel], spacing: 4, alignment: .fill)
         captionLabel.isUserInteractionEnabled = true
         captionLabel.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(captionTapped)))
         let text = UIStackView.v([captionLabel, tagsLabel, notesLabel, metaLabel], spacing: 8, alignment: .fill)
         text.setCustomSpacing(10, after: notesLabel)
-        let column = UIStackView.v([titles, text], spacing: 22, alignment: .fill)
+        let column = UIStackView.v([titles, text], spacing: 18, alignment: .fill)
         column.translatesAutoresizingMaskIntoConstraints = false
         content.addSubview(column)
 
@@ -97,13 +91,8 @@ final class ProductDetailViewController: UIViewController, UIScrollViewDelegate 
             pager.topAnchor.constraint(equalTo: content.topAnchor),
             pager.leadingAnchor.constraint(equalTo: content.leadingAnchor),
             pager.trailingAnchor.constraint(equalTo: content.trailingAnchor),
-            fade.leadingAnchor.constraint(equalTo: content.leadingAnchor),
-            fade.trailingAnchor.constraint(equalTo: content.trailingAnchor),
-            fade.bottomAnchor.constraint(equalTo: pager.bottomAnchor),
-            fade.heightAnchor.constraint(equalToConstant: 140),
-
-            // The titles sit on the fade, over the photo's foot.
-            column.topAnchor.constraint(equalTo: pager.bottomAnchor, constant: -34),
+            // The titles under the photo, on the page.
+            column.topAnchor.constraint(equalTo: pager.bottomAnchor, constant: 18),
             column.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16),
             column.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16),
             column.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -48),
@@ -237,26 +226,6 @@ final class ProductDetailViewController: UIViewController, UIScrollViewDelegate 
     }
 }
 
-/// Clear at the top, the page's colour at the bottom.
-final class ProductFadeView: UIView {
-    override class var layerClass: AnyClass { CAGradientLayer.self }
-
-    override init(frame: CGRect) {
-        super.init(frame: frame)
-        isUserInteractionEnabled = false
-        update()
-        registerForTraitChanges([UITraitUserInterfaceStyle.self]) { (self: Self, _) in self.update() }
-    }
-
-    required init?(coder: NSCoder) { fatalError("not used") }
-
-    private func update() {
-        let canvas = IOSTheme.canvas.resolvedColor(with: traitCollection)
-        (layer as? CAGradientLayer)?.colors = [canvas.withAlphaComponent(0).cgColor, canvas.withAlphaComponent(0.55).cgColor, canvas.cgColor]
-        (layer as? CAGradientLayer)?.locations = [0, 0.55, 1]
-    }
-}
-
 // MARK: - Photos
 
 /// The product's photos as a square, full-width horizontal pager with dots under it when there
@@ -306,7 +275,7 @@ final class ProductPhotoPager: UIView, UIScrollViewDelegate {
             placeholder.trailingAnchor.constraint(equalTo: scrollView.trailingAnchor),
             placeholder.bottomAnchor.constraint(equalTo: scrollView.bottomAnchor),
             // Over the photo, above the fade and the titles.
-            dots.bottomAnchor.constraint(equalTo: scrollView.bottomAnchor, constant: -64),
+            dots.bottomAnchor.constraint(equalTo: scrollView.bottomAnchor, constant: -8),
             dots.centerXAnchor.constraint(equalTo: centerXAnchor),
             scrollView.bottomAnchor.constraint(equalTo: bottomAnchor),
         ])
