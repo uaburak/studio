@@ -740,35 +740,6 @@ final class GlassTitlePill: UIView {
 
     required init?(coder: NSCoder) { fatalError("not used") }
 
-    /// The name and date as a still copy (the transition's capsule carries it).
-    func contentCopy() -> UIView {
-        let title = UILabel()
-        title.font = titleLabel.font
-        title.textColor = titleLabel.textColor
-        title.text = titleLabel.text
-        title.textAlignment = .center
-        title.lineBreakMode = .byTruncatingMiddle
-        let subtitle = UILabel()
-        subtitle.font = subtitleLabel.font
-        subtitle.textColor = subtitleLabel.textColor
-        subtitle.text = subtitleLabel.text
-        subtitle.textAlignment = .center
-        subtitle.isHidden = subtitleLabel.isHidden
-        let stack = UIStackView(arrangedSubviews: [title, subtitle])
-        stack.axis = .vertical
-        stack.alignment = .center
-        let holder = UIView()
-        holder.isUserInteractionEnabled = false
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        holder.addSubview(stack)
-        NSLayoutConstraint.activate([
-            stack.centerXAnchor.constraint(equalTo: holder.centerXAnchor),
-            stack.centerYAnchor.constraint(equalTo: holder.centerYAnchor),
-            stack.widthAnchor.constraint(lessThanOrEqualTo: holder.widthAnchor, constant: -44),
-        ])
-        return holder
-    }
-
     func set(title: String, subtitle: String?) {
         titleLabel.text = title
         subtitleLabel.text = subtitle

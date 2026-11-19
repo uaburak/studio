@@ -194,7 +194,8 @@ final class IOSMediaViewController: UIViewController, UICollectionViewDelegate, 
     private unowned let app: IOSAppModel
     private let model: IOSMediaModel
     private var observation: IOSObservationToken?
-    private let segmented = UISegmentedControl(items: IOSMediaModel.Filter.allCases.map(\.label))
+    /// Resim / Video only (no "Tümü"): pictures by default.
+    private let segmented = UISegmentedControl(items: [IOSMediaModel.Filter.images.label, IOSMediaModel.Filter.videos.label])
     private let filterItem = UIBarButtonItem()
     private let searchController = UISearchController(searchResultsController: nil)
     private let uploadsStack = UIStackView.v([], spacing: 6)
@@ -222,10 +223,12 @@ final class IOSMediaViewController: UIViewController, UICollectionViewDelegate, 
         add.accessibilityLabel = "Fotoğraf ya da video yükle"
         navigationItem.rightBarButtonItem = add
 
-        segmented.selectedSegmentIndex = model.filter.rawValue
+        model.filter = .images
+        segmented.selectedSegmentIndex = 0
         segmented.translatesAutoresizingMaskIntoConstraints = false
         segmented.addAction(UIAction { [weak self] _ in
-            guard let self, let filter = IOSMediaModel.Filter(rawValue: self.segmented.selectedSegmentIndex) else { return }
+            guard let self else { return }
+            let filter: IOSMediaModel.Filter = self.segmented.selectedSegmentIndex == 1 ? .videos : .images
             self.model.filter = filter
         }, for: .valueChanged)
 
@@ -304,7 +307,7 @@ final class IOSMediaViewController: UIViewController, UICollectionViewDelegate, 
         holder.addSubview(segmented)
         segmented.pin(to: holder)
         NSLayoutConstraint.activate([
-            holder.widthAnchor.constraint(equalToConstant: 220),
+            holder.widthAnchor.constraint(equalToConstant: 180),
             holder.heightAnchor.constraint(equalToConstant: 40),
         ])
         segmented.setTitleTextAttributes([.font: UIFont.systemFont(ofSize: 15, weight: .semibold)], for: .normal)
