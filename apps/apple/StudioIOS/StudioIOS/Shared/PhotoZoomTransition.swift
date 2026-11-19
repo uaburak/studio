@@ -19,9 +19,11 @@ final class PhotoZoomTransition: NSObject, UIViewControllerAnimatedTransitioning
     private var backdrop: UIView?
     private var startFrame: CGRect = .zero
     private var hiddenSource: UIView?
+    /// The opening as one interruptible animator (UIKit runs the bars' change on it too).
+    private var flight: UIViewPropertyAnimator?
     /// One glass capsule between the page's title (Medya's segmented control) and the viewer's
     /// name pill; the navigation bar itself only swaps them.
-    private var titleMorph: PhotoTitleMorph?
+    private var titleMorph: TitleMorph?
     /// The capsule's progress, scrubbed by the pull.
     private var titleScrub: UIViewPropertyAnimator?
 
@@ -41,6 +43,11 @@ final class PhotoZoomTransition: NSObject, UIViewControllerAnimatedTransitioning
     // MARK: Animated (push, and pop from the back button)
 
     func animateTransition(using transitionContext: UIViewControllerContextTransitioning) {
+        if operation == .push, let flight {
+            viewer?.catchBackTapsWhileOpening(true)
+            if flight.state == .inactive { flight.startAnimation() }
+            return
+        }
         context = transitionContext
         guard let viewer, let setup = prepare(in: transitionContext) else {
             fallback(transitionContext)
@@ -49,29 +56,70 @@ final class PhotoZoomTransition: NSObject, UIViewControllerAnimatedTransitioning
         let duration = transitionDuration(using: transitionContext)
         switch operation {
         case .push:
-            let target = viewer.pictureRect(in: transitionContext.containerView)
-            titleMorph?.animate(toPill: true)
             viewer.catchBackTapsWhileOpening(true)
-            // A curve that ends exactly on time (a spring's completion waited for it to settle,
-            // so the opening counted as running for twice as long and back taps were lost).
-            let flight = UIViewPropertyAnimator(duration: duration, timingParameters: UICubicTimingParameters(
-                controlPoint1: CGPoint(x: 0.2, y: 0.9), controlPoint2: CGPoint(x: 0.3, y: 1)))
-            flight.addAnimations {
-                setup.flyer.frame = target
-                setup.flyer.layer.cornerRadius = viewer.restingRadius
-                setup.backdrop.alpha = 1
-            }
-            flight.addCompletion { _ in self.finish(true) }
-            flight.startAnimation()
+            pushAnimator(viewer: viewer, setup: setup, context: transitionContext).startAnimation()
         case .pop:
             titleMorph?.animate(toPill: false)
-            UIView.animate(springDuration: duration, bounce: 0) {
+            // Ends exactly on time too, so the bars change together with the picture landing.
+            let back = UIViewPropertyAnimator(duration: duration, timingParameters: UICubicTimingParameters(
+                controlPoint1: CGPoint(x: 0.2, y: 0.9), controlPoint2: CGPoint(x: 0.3, y: 1)))
+            back.addAnimations {
                 self.flyHome(setup.flyer)
                 setup.backdrop.alpha = 0
-            } completion: { _ in
-                self.finish(true)
+            }
+            back.addCompletion { _ in self.finish(true) }
+            back.startAnimation()
+        }
+    }
+
+    // MARK: Interruptible opening
+
+    /// UIKit's interruptible transition: the opening is one property animator (the picture, the
+    /// backdrop and the title capsule) that UIKit also runs the bars' change on, so a back or a
+    /// pull can turn the whole thing around at any moment, without waiting for it to end.
+    func interruptibleAnimator(using transitionContext: UIViewControllerContextTransitioning) -> UIViewImplicitlyAnimating {
+        if let flight { return flight }
+        if operation == .push, let viewer, context == nil {
+            context = transitionContext
+            if let setup = prepare(in: transitionContext) {
+                return pushAnimator(viewer: viewer, setup: setup, context: transitionContext)
             }
         }
+        return UIViewPropertyAnimator(duration: transitionDuration(using: transitionContext), curve: .easeOut)
+    }
+
+    private func pushAnimator(viewer: PhotoViewerViewController, setup: Setup, context: UIViewControllerContextTransitioning) -> UIViewPropertyAnimator {
+        if let flight { return flight }
+        let target = viewer.pictureRect(in: context.containerView)
+        // A curve that ends exactly on time (a spring's completion waited for it to settle).
+        let flight = UIViewPropertyAnimator(duration: transitionDuration(using: context), timingParameters: UICubicTimingParameters(
+            controlPoint1: CGPoint(x: 0.2, y: 0.9), controlPoint2: CGPoint(x: 0.3, y: 1)))
+        flight.addAnimations {
+            setup.flyer.frame = target
+            setup.flyer.layer.cornerRadius = viewer.restingRadius
+            setup.backdrop.alpha = 1
+            if let morph = self.titleMorph {
+                UIView.animateKeyframes(withDuration: 0, delay: 0, options: [.calculationModeCubic]) { morph.keyframes(toPill: true) }
+            }
+        }
+        flight.addCompletion { position in
+            self.flight = nil
+            self.finish(position == .end)
+        }
+        self.flight = flight
+        return flight
+    }
+
+    /// Back or a pull while the picture is still flying in: the opening turns around from where
+    /// it is (UIKit cancels the push), the bars and the title capsule going back with it.
+    func reverseOpening() {
+        guard operation == .push, let context, let flight else { return }
+        viewer?.catchBackTapsWhileOpening(false)
+        context.pauseInteractiveTransition()
+        flight.pauseAnimation()
+        flight.isReversed = true
+        context.cancelInteractiveTransition()
+        flight.continueAnimation(withTimingParameters: UICubicTimingParameters(animationCurve: .easeOut), durationFactor: 0.6)
     }
 
     // MARK: Interactive (pop by pulling down)
@@ -199,7 +247,7 @@ final class PhotoZoomTransition: NSObject, UIViewControllerAnimatedTransitioning
         // The title capsule: from the page's title to the name pill (or the reverse).
         let page = operation == .push ? transitionContext.viewController(forKey: .from) : toController
         if let navigation = viewer.navigationController {
-            titleMorph = PhotoTitleMorph(pageTitle: page?.navigationItem.titleView, pill: viewer.titlePill, navigation: navigation)
+            titleMorph = TitleMorph(pageTitle: page?.navigationItem.titleView, pill: viewer.titlePill, navigation: navigation)
             titleMorph?.setState(atPill: operation == .pop)
         }
         // The thumbnail's spot stays empty while its picture is away (Photos does the same).
@@ -230,6 +278,7 @@ final class PhotoZoomTransition: NSObject, UIViewControllerAnimatedTransitioning
         switch operation {
         case .push:
             viewer?.setContentHidden(false)
+            if cancelled { toView?.removeFromSuperview() }
         case .pop:
             fromView?.alpha = 1
             if cancelled { toView?.removeFromSuperview() }
@@ -244,7 +293,7 @@ final class PhotoZoomTransition: NSObject, UIViewControllerAnimatedTransitioning
         flyer = nil
         backdrop = nil
         self.context = nil
-        if operation == .push, context.isInteractive { context.finishInteractiveTransition() }
+        if operation == .push, context.isInteractive, !cancelled { context.finishInteractiveTransition() }
         context.completeTransition(!cancelled)
         viewer?.transitionEnded()
     }
@@ -283,9 +332,6 @@ final class PhotoViewerNavigationDelegate: NSObject, UINavigationControllerDeleg
     }
 
     static func animator(operation: UINavigationController.Operation, from fromVC: UIViewController, to toVC: UIViewController) -> UIViewControllerAnimatedTransitioning? {
-        // The viewer now uses iOS's own zoom (interruptible, as in OXTV); the custom flight below
-        // is kept but not used.
-        return nil
         if operation == .push, let viewer = toVC as? PhotoViewerViewController {
             return viewer.makeTransition(.push)
         }
@@ -312,7 +358,7 @@ final class PhotoViewerNavigationDelegate: NSObject, UINavigationControllerDeleg
 /// name pill, or the reverse. Without a page title it simply materialises into the pill. The real
 /// title views stay hidden meanwhile.
 @MainActor
-final class PhotoTitleMorph {
+private final class TitleMorph {
     static let duration: TimeInterval = 0.3
     /// The page title as last seen on screen (a pop starts while it is off screen).
     private static var lastTitleImage: (title: ObjectIdentifier, image: UIImage)?
