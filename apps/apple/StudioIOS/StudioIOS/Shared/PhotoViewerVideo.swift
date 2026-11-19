@@ -87,11 +87,12 @@ extension PhotoViewerViewController {
         let assetId = items[index].assetId
         let images = images
         var opened = false
-        let openOnce = { [weak self, weak presenter] in
+        // Holds the viewer strongly: nothing else keeps it alive while the poster is made.
+        let openOnce = { [self, weak presenter] in
             guard !opened else { return }
             opened = true
             Self.waitingForPoster = false
-            guard let self, let presenter, presenter.view.window != nil else { return }
+            guard let presenter, presenter.view.window != nil else { return }
             self.open(from: presenter)
         }
         Task {
