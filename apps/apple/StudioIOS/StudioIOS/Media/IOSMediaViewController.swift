@@ -197,6 +197,8 @@ final class IOSMediaViewController: UIViewController, UICollectionViewDelegate, 
     /// Resim / Video only (no "Tümü"): pictures by default.
     private let segmented = UISegmentedControl(items: [IOSMediaModel.Filter.images.label, IOSMediaModel.Filter.videos.label])
     private let filterItem = UIBarButtonItem()
+    /// While the page slides, the grid changes at once (no fade of the old pictures).
+    private var isPaging = false
     private lazy var pagePan = UIPanGestureRecognizer(target: self, action: #selector(paged(_:)))
     private let searchController = UISearchController(searchResultsController: nil)
     private let uploadsStack = UIStackView.v([], spacing: 6)
@@ -350,8 +352,10 @@ final class IOSMediaViewController: UIViewController, UICollectionViewDelegate, 
         UIView.animate(withDuration: 0.16, delay: 0, options: [.curveEaseIn]) {
             self.setPage(offset: direction * width)
         } completion: { _ in
+            self.isPaging = true
             self.model.filter = filter
             self.render()
+            self.isPaging = false
             self.setPage(offset: -direction * width)
             UIView.animate(springDuration: 0.3, bounce: 0) { self.setPage(offset: 0) }
         }
@@ -372,7 +376,7 @@ final class IOSMediaViewController: UIViewController, UICollectionViewDelegate, 
         segmented.pin(to: holder)
         NSLayoutConstraint.activate([
             holder.widthAnchor.constraint(equalToConstant: 180),
-            holder.heightAnchor.constraint(equalToConstant: 40),
+            holder.heightAnchor.constraint(equalToConstant: 44),
         ])
         segmented.setTitleTextAttributes([.font: UIFont.systemFont(ofSize: 15, weight: .semibold)], for: .normal)
         segmented.setTitleTextAttributes([.font: UIFont.systemFont(ofSize: 15, weight: .semibold)], for: .selected)
@@ -448,7 +452,7 @@ final class IOSMediaViewController: UIViewController, UICollectionViewDelegate, 
         snapshot.appendSections([0])
         snapshot.appendItems(visible.map(\.id))
         snapshot.reconfigureItems(visible.map(\.id).filter { dataSource.snapshot().itemIdentifiers.contains($0) })
-        dataSource.apply(snapshot, animatingDifferences: view.window != nil)
+        dataSource.apply(snapshot, animatingDifferences: view.window != nil && !isPaging)
 
         uploadsStack.removeAllArranged()
         for upload in model.uploads { uploadsStack.addArrangedSubview(uploadRow(upload)) }
