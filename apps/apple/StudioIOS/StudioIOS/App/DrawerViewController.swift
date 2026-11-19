@@ -183,7 +183,7 @@ final class DrawerViewController: UIViewController, UITableViewDelegate, UITextF
             bottomBar.bottomAnchor.constraint(equalTo: view.keyboardLayoutGuide.topAnchor, constant: 4),
         ])
 
-        dataSource = UITableViewDiffableDataSource(tableView: tableView) { [weak self] table, indexPath, item in
+        dataSource = NonEditableDataSource(tableView: tableView) { [weak self] table, indexPath, item in
             let cell = table.dequeueReusableCell(withIdentifier: "row", for: indexPath)
             self?.configure(cell, item: item)
             return cell
@@ -635,22 +635,6 @@ final class DrawerViewController: UIViewController, UITableViewDelegate, UITextF
         }
     }
 
-    func tableView(_ tableView: UITableView, trailingSwipeActionsConfigurationForRowAt indexPath: IndexPath) -> UISwipeActionsConfiguration? {
-        guard case .conversation(let id) = dataSource.itemIdentifier(for: indexPath) else { return nil }
-        let archive = UIContextualAction(style: .destructive, title: "Arşivle") { [weak self] _, _, done in
-            guard let self else { return done(false) }
-            self.archive(id, done: done)
-        }
-        archive.image = UIImage(systemName: "archivebox")
-        let rename = UIContextualAction(style: .normal, title: "Adlandır") { [weak self] _, _, done in
-            self?.rename(id)
-            done(true)
-        }
-        rename.backgroundColor = IOSTheme.textSecondary
-        rename.image = UIImage(systemName: "pencil")
-        return UISwipeActionsConfiguration(actions: [archive, rename])
-    }
-
     func tableView(_ tableView: UITableView, contextMenuConfigurationForRowAt indexPath: IndexPath, point: CGPoint) -> UIContextMenuConfiguration? {
         guard case .conversation(let id) = dataSource.itemIdentifier(for: indexPath) else { return nil }
         return UIContextMenuConfiguration(identifier: id as NSString, previewProvider: nil) { [weak self] _ in
@@ -737,4 +721,10 @@ final class MenuSourceButton: UIButton {
         }
         if let animator { animator.addCompletion(run) } else { run() }
     }
+}
+
+/// The drawer's rows are not editable: no swipe actions, so the table's own swipe recognizer
+/// stays out of the way and a leftward swipe on a row closes the drawer.
+private final class NonEditableDataSource<Section: Hashable & Sendable, Row: Hashable & Sendable>: UITableViewDiffableDataSource<Section, Row> {
+    override func tableView(_ tableView: UITableView, canEditRowAt indexPath: IndexPath) -> Bool { false }
 }

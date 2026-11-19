@@ -22,6 +22,8 @@ final class StudioRootViewController: UIViewController, UINavigationControllerDe
     /// Vertical scrolls that started with the same touch; cancelled once the drawer takes it.
     private var simultaneousScrolls: [UIGestureRecognizer] = []
     private lazy var closePan = UIPanGestureRecognizer(target: self, action: #selector(closePanned(_:)))
+    /// A leftward swipe on the drawer itself slides it shut (back to the page).
+    private lazy var drawerClosePan = UIPanGestureRecognizer(target: self, action: #selector(closePanned(_:)))
     private var routeObservation: IOSObservationToken?
     private var staleObservation: IOSObservationToken?
     private(set) var isDrawerOpen = false
@@ -85,6 +87,8 @@ final class StudioRootViewController: UIViewController, UINavigationControllerDe
         mainContainer.addSubview(scrim)
         scrim.addGestureRecognizer(closePan)
         closePan.delegate = self
+        drawer.view.addGestureRecognizer(drawerClosePan)
+        drawerClosePan.delegate = self
 
         openPan.delegate = self
         mainContainer.addGestureRecognizer(openPan)
@@ -280,6 +284,8 @@ final class StudioRootViewController: UIViewController, UINavigationControllerDe
 
     /// The open swipe runs alongside vertical scrolling until it decides it is horizontal.
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
+        // The drawer's list keeps scrolling vertically; a sideways swipe closes the drawer.
+        if gestureRecognizer === drawerClosePan { return otherGestureRecognizer.view is UITableView }
         guard gestureRecognizer === openPan, let scroll = otherGestureRecognizer.view as? UIScrollView,
               otherGestureRecognizer === scroll.panGestureRecognizer, !Self.scrollsHorizontally(scroll) else { return false }
         if !simultaneousScrolls.contains(where: { $0 === otherGestureRecognizer }) { simultaneousScrolls.append(otherGestureRecognizer) }
@@ -309,6 +315,11 @@ final class StudioRootViewController: UIViewController, UINavigationControllerDe
             if let page = mainNav.topViewController as? DrawerSwipeBlocking, page.blocksDrawerSwipe { return false }
             let velocity = openPan.velocity(in: view)
             return velocity.x > 0 && velocity.x > abs(velocity.y) * 1.2
+        }
+        if gestureRecognizer === drawerClosePan {
+            guard isDrawerOpen, !drawer.isSearching else { return false }
+            let velocity = drawerClosePan.velocity(in: view)
+            return velocity.x < 0 && abs(velocity.x) > abs(velocity.y) * 1.2
         }
         if gestureRecognizer === closePan {
             guard isDrawerOpen else { return false }
