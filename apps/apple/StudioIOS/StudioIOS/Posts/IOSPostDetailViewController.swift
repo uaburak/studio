@@ -56,8 +56,8 @@ final class IOSPostDetailViewController: UIViewController, UITextViewDelegate {
         scroll.keyboardDismissMode = .interactive
         scroll.alwaysBounceVertical = true
         scroll.topEdgeEffect.style = .soft
-        // Hard: the field and the buttons float over the page and must stay readable.
-        scroll.bottomEdgeEffect.style = .hard
+        // Soft, as under the navigation bar: the page fades out under the floating field.
+        scroll.bottomEdgeEffect.style = .soft
         setContentScrollView(scroll, for: .top)
         view.addSubview(scroll)
         scroll.addSubview(stack)
