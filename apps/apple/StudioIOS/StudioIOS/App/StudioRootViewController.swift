@@ -139,6 +139,22 @@ final class StudioRootViewController: UIViewController, UINavigationControllerDe
         return 55
     }()
     private var slideGeneration = 0
+    /// The running open / close slide (stopped where it is when caught).
+    private var drawerAnimator: UIViewPropertyAnimator?
+
+    /// Stops a running slide at what is on screen and returns that progress (0 closed … 1 open).
+    private func interruptDrawerSlide() -> CGFloat {
+        guard let slide = drawerAnimator else { return drawerProgress }
+        drawerAnimator = nil
+        slide.stopAnimation(false)
+        slide.finishAnimation(at: .current)
+        let progress = min(max(mainContainer.transform.tx / max(drawerWidth, 1), 0), 1)
+        drawerProgress = progress
+        return progress
+    }
+
+    /// True while the drawer is still sliding (a swipe either way may catch it).
+    private var isDrawerSliding: Bool { drawerAnimator?.isRunning == true }
 
     override var childForStatusBarStyle: UIViewController? { isDrawerOpen ? drawer : mainNav }
 
@@ -205,19 +221,28 @@ final class StudioRootViewController: UIViewController, UINavigationControllerDe
         isDrawerOpen = open
         let target: CGFloat = open ? 1 : 0
         if animated && isOnScreen {
+            // Catch a slide still running where it is, then go on from there: open and close can
+            // turn around at any moment (a tap or a swipe midway does not wait for the end).
+            let from = interruptDrawerSlide()
             isSliding = true
             slideGeneration += 1
             let generation = slideGeneration
-            applyDrawer(progress: drawerProgress, settled: false)
-            UIView.animate(springDuration: 0.3, bounce: 0, initialSpringVelocity: 0, delay: 0, options: [.allowUserInteraction, .beginFromCurrentState]) {
+            applyDrawer(progress: from, settled: false)
+            let slide = UIViewPropertyAnimator(duration: 0.3, dampingRatio: 1) {
                 self.applyDrawer(progress: target, settled: false)
-            } completion: { _ in
+            }
+            slide.isUserInteractionEnabled = true
+            slide.addCompletion { position in
                 // A newer slide (reopened mid-close, a new drag) owns the state now.
-                guard generation == self.slideGeneration else { return }
+                guard position == .end, generation == self.slideGeneration else { return }
+                self.drawerAnimator = nil
                 self.isSliding = false
                 self.applyDrawer(progress: self.isDrawerOpen ? 1 : 0)
             }
+            drawerAnimator = slide
+            slide.startAnimation()
         } else {
+            _ = interruptDrawerSlide()
             isSliding = false
             applyDrawer(progress: target)
         }
@@ -264,9 +289,9 @@ final class StudioRootViewController: UIViewController, UINavigationControllerDe
     private func handlePan(translation: CGFloat, velocity: CGFloat, state: UIGestureRecognizer.State) {
         switch state {
         case .began:
+            panStart = interruptDrawerSlide()
             isSliding = true
             slideGeneration += 1
-            panStart = drawerProgress
             if !isDrawerOpen {
                 mainNav.view.endEditing(true)
                 drawer.willOpen()
@@ -310,6 +335,11 @@ final class StudioRootViewController: UIViewController, UINavigationControllerDe
     }
 
     func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+        // A slide still running can be caught by a sideways swipe in either direction.
+        if isDrawerSliding, gestureRecognizer === openPan || gestureRecognizer === closePan || gestureRecognizer === drawerClosePan {
+            let velocity = (gestureRecognizer as? UIPanGestureRecognizer)?.velocity(in: view) ?? .zero
+            return abs(velocity.x) > abs(velocity.y)
+        }
         if gestureRecognizer === openPan {
             guard canOpenDrawer, !isDrawerOpen else { return false }
             if let page = mainNav.topViewController as? DrawerSwipeBlocking, page.blocksDrawerSwipe { return false }
