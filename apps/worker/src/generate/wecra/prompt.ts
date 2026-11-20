@@ -6,6 +6,7 @@
  * skills), with its logos and pictures named by asset id (Wecra places them by id).
  */
 import type { CanvasOutlineSlide } from "@studio/design-kit/canvas";
+import { CONTRACT_LIMITS } from "@studio/design-kit/contract";
 import { asData } from "../../prompt-data.ts";
 import type { BrandContext } from "../brand.ts";
 
@@ -103,6 +104,7 @@ How to design:
   the content.
 - Compute geometry before answering: text boxes from font size × line count × line height, so nothing
   overflows, overlaps or leaves the safe area (keep texts ≥ 64 px from the edges${brief.contentType === "story" ? "; a story keeps texts and logos clear of the top 250 px and the bottom 340 px" : ""}).
+- No text smaller than ${CONTRACT_LIMITS.minFontSize} px, labels, tags and footers included (the checks fail anything smaller).
 - Turkish typography: correct İ/ı, no hyphenation, balanced headline breaks, no widows.
 - Give every layer a short meaningful name (Başlık, Alt metin, Logo, Arka plan …): the owner edits it later.
 - When it clearly helps (a seasonal theme, a style the brief names, a current trend) you may look at
@@ -203,10 +205,28 @@ export function wecraCritiquePrompt(input: {
     ...(input.problems.length
       ? ["", "Not applied in the last round:", ...input.problems.map((p) => `- ${asData(p)}`)]
       : []),
+    ...tooSmall(input.outline),
     "",
     `Brief: ${asData(input.brief.title)} — ${asData(input.brief.brief).slice(0, 1_500)}`,
     "",
     "Judge it as the art director: hierarchy, focal point, alignment and margins, spacing rhythm, type sizes and line breaks, contrast and legibility, overflow / clipping / overlaps, brand colours and fonts, the logo, copy errors (Turkish spelling, İ/ı), the brief.",
     'If it is publishable as it is, answer verdict "ok" with no operations. Otherwise verdict "fix", the issues (short, concrete), and the operations that fix them — on the real layer ids of the outline (update_nodes, create_nodes with parentId = a frameId, delete_nodes, set_properties …). Fix what is wrong; keep what works. Never change a slide frame\'s size or delete a slide frame.',
   ].join("\n");
+}
+
+/** Texts under the checks' minimum size, named for the critique (they fail the checks). */
+function tooSmall(outline: readonly CanvasOutlineSlide[]): string[] {
+  const min = CONTRACT_LIMITS.minFontSize;
+  const found = outline.flatMap((slide) =>
+    slide.layers
+      .filter((l) => !l.hidden && l.text && l.text.size < min)
+      .map((l) => `- slide ${slide.slide}, ${l.id} (${asData(l.name)}): ${l.text?.size} px`),
+  );
+  return found.length
+    ? [
+        "",
+        `Texts under ${min} px (the checks fail them; make them at least ${min} px and re-fit their boxes):`,
+        ...found,
+      ]
+    : [];
 }

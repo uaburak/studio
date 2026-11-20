@@ -100,9 +100,24 @@ function textOf(node: ParentNode): string {
   let out = "";
   for (const c of node.childNodes) {
     if ("value" in c && c.nodeName === "#text") out += (c as { value: string }).value;
-    else if (isElement(c)) out += textOf(c);
+    else if (isElement(c)) {
+      // A <tspan> placed on its own line (x, y or dy) starts a new line: the line break is a
+      // word break ("bağlama" + "döneminde" read as "bağlamadöneminde" failed the spelling check).
+      if (startsSvgLine(c) && out && !/\s$/.test(out)) out += " ";
+      out += textOf(c);
+    }
   }
   return out;
+}
+
+function startsSvgLine(el: Element): boolean {
+  if (el.tagName.toLowerCase() !== "tspan") return false;
+  const dy = attrOf(el, "dy");
+  return (
+    attrOf(el, "x") !== null ||
+    attrOf(el, "y") !== null ||
+    (dy !== null && Number.parseFloat(dy) !== 0)
+  );
 }
 
 function detach(el: Element): void {

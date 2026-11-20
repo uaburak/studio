@@ -95,7 +95,26 @@ export function studioSvgInspect(): SvgInspection {
   const all = svg ? Array.from(svg.querySelectorAll("text")) : [];
   all.forEach((el, i) => {
     if (!shown(el)) return;
-    const text = (el.textContent ?? "").replace(/\s+/g, " ").trim();
+    // A <tspan> on its own line (x, y or dy) is a word break, like in the stored copy.
+    let joined = "";
+    const read = (node: Node): void => {
+      for (const c of Array.from(node.childNodes)) {
+        if (c.nodeType === 3) joined += c.textContent ?? "";
+        else if (c.nodeType === 1) {
+          const e = c as Element;
+          const dy = e.getAttribute("dy");
+          const newLine =
+            e.tagName.toLowerCase() === "tspan" &&
+            (e.hasAttribute("x") ||
+              e.hasAttribute("y") ||
+              (dy !== null && Number.parseFloat(dy) !== 0));
+          if (newLine && joined && !/\s$/.test(joined)) joined += " ";
+          read(e);
+        }
+      }
+    };
+    read(el);
+    const text = joined.replace(/\s+/g, " ").trim();
     if (!text) return;
     const cs = getComputedStyle(el);
     const scale = scaleOf(el);
