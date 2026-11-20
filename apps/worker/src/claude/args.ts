@@ -36,6 +36,12 @@ export function searchPath(home = homedir(), path = process.env.PATH ?? ""): str
   return [...new Set([...path.split(delimiter).filter(Boolean), ...extra])];
 }
 
+/**
+ * Claude Code's read-only internet tools: web search and page fetch. They write nothing on the
+ * Mac (no file, no shell), so a generation may research current design trends and references.
+ */
+export const WEB_TOOLS = ["WebSearch", "WebFetch"] as const;
+
 export interface ClaudeEnvOptions {
   /** Separate login for the worker (`CLAUDE_CONFIG_DIR=<dir> claude auth login`). */
   configDir?: string | undefined;
@@ -82,6 +88,8 @@ export interface ClaudeArgsOptions {
   mcpConfigFile?: string | undefined;
   /** MCP tools allowed without interactive prompts (`--allowedTools a,b`). */
   allowedTools?: readonly string[] | undefined;
+  /** Allow `WEB_TOOLS` (search and fetch, read-only); no other built-in tool. */
+  webAccess?: boolean;
 }
 
 /** Locked-down flags for unattended calls. Never `--bare` (it ignores the subscription login). */
@@ -95,9 +103,10 @@ export function buildClaudeArgs(options: ClaudeArgsOptions): string[] {
     "--verbose",
     "--system-prompt-file",
     options.systemPromptFile,
-    // No built-in tools at all: the A3 probe showed Read could leave the working directory.
+    // No file or shell tools: the A3 probe showed Read could leave the working directory.
+    // Only the read-only internet tools when asked for.
     "--tools",
-    "",
+    options.webAccess ? WEB_TOOLS.join(",") : "",
     "--setting-sources",
     "",
     "--strict-mcp-config",
@@ -113,8 +122,9 @@ export function buildClaudeArgs(options: ClaudeArgsOptions): string[] {
   if (options.mcpConfigFile) {
     args.push("--mcp-config", options.mcpConfigFile);
   }
-  if (options.allowedTools && options.allowedTools.length > 0) {
-    args.push("--allowedTools", options.allowedTools.join(","));
+  const allowed = [...(options.allowedTools ?? []), ...(options.webAccess ? WEB_TOOLS : [])];
+  if (allowed.length > 0) {
+    args.push("--allowedTools", allowed.join(","));
   }
   if (options.partialMessages) args.push("--include-partial-messages");
   if (options.schema) args.push("--json-schema", JSON.stringify(options.schema));
@@ -136,6 +146,8 @@ export interface AgentArgsOptions {
   resumeSessionId?: string | undefined;
   /** …or start a new one with this id (`--session-id`). */
   sessionId?: string | undefined;
+  /** Allow `WEB_TOOLS` (search and fetch, read-only) besides the MCP server. */
+  webAccess?: boolean;
 }
 
 /**
@@ -158,9 +170,9 @@ export function buildAgentArgs(options: AgentArgsOptions): string[] {
     options.mcpConfigFile,
     "--strict-mcp-config",
     "--tools",
-    "",
+    options.webAccess ? WEB_TOOLS.join(",") : "",
     "--allowedTools",
-    `mcp__${server}`,
+    [`mcp__${server}`, ...(options.webAccess ? WEB_TOOLS : [])].join(","),
     "--permission-mode",
     "dontAsk",
     "--append-system-prompt",

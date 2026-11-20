@@ -446,6 +446,8 @@ export interface CallStructuredAiOptions {
   onGeminiUsage?: ((sample: GeminiUsageSample) => void) | undefined;
   /** Claude was meant but Gemini takes over now (show it on the job). */
   onFallback?: (fallback: StructuredFallback) => void | Promise<void>;
+  /** Claude may search the web and fetch pages (read-only, see `WEB_TOOLS`). */
+  webAccess?: boolean;
 }
 
 export async function callStructuredAi(
@@ -486,6 +488,7 @@ export async function callStructuredAi(
         effort: route.effort,
         timeoutMs: options.timeoutMs,
         signal: options.signal,
+        ...(options.webAccess ? { webAccess: true } : {}),
       },
       // At the limit the gate parks (progress via the hooks) or, when the owner's choice is
       // "gemini", hands the call back at once for the switch below (S7, U3).

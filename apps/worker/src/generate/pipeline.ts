@@ -120,6 +120,8 @@ export interface PipelineInput {
   extraResolver?: AssetResolver;
   /** Asset path prefixes the sanitiser keeps (default `/brand/`, `/media/`). */
   assetPrefixes?: readonly string[];
+  /** Claude may search the web and fetch pages (design trends, references; read-only). */
+  webAccess?: boolean;
 }
 
 export interface DesignRevision {
@@ -281,6 +283,7 @@ export async function runDesignPipeline(input: PipelineInput): Promise<PipelineR
               ...(input.effort ? { effort: input.effort } : {}),
               timeoutMs: input.timeoutMs,
               signal,
+              ...(input.webAccess ? { webAccess: true } : {}),
             },
             input.hooks ?? {},
           );

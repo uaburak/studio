@@ -1128,6 +1128,8 @@ async function runChatTurn(
               firstOutput();
               writer.appendText(text);
             },
+            // Research on the web when useful (trends, references); read-only (WEB_TOOLS).
+            webAccess: true,
             agent: {
               cwd,
               mcpConfigFile,

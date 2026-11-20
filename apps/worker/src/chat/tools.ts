@@ -21,6 +21,7 @@ import {
   type Asset,
   AssetOrientation,
   aiCallCostUsd,
+  type BrandProduct,
   type Content,
   type ContentGeneratePayload,
   ContentStatus,
@@ -28,14 +29,18 @@ import {
   checkPlanPeriod,
   computeContentHash,
   ESTIMATE_CONFIRM_THRESHOLD,
+  engineNotReadyError,
+  GenerationEngine,
   isTerminalJobStatus,
   type Job,
+  MAX_GENERATION_VARIANTS,
   type Plan,
   type PlanningContext,
   type PlanProposalPut,
   Platform,
   ProductPosition,
   planItemSimilarities,
+  productPhotoAngle,
   slugify,
 } from "@studio/contract";
 import { readCanvas } from "@studio/design-kit/canvas";
@@ -353,7 +358,7 @@ export const STUDIO_TOOLS: readonly StudioToolDefinition[] = [
   {
     name: "generate_post",
     description:
-      "Post tasarım üretimini başlatır (`content.generate` işi kuyruğa alınır; tasarım burada yapılmaz). Ya kabul edilmiş bir plan kalemi (`planItemId`) ya da yeni bir brief ver. Sonuç iş kimliklerini döner; bitmesini `wait_jobs` ile bekle.",
+      "Post tasarım üretimini başlatır (`content.generate` işi kuyruğa alınır; tasarım burada yapılmaz). Ya kabul edilmiş bir plan kalemi (`planItemId`) ya da yeni bir brief ver. Çağırmadan önce kullanıcıya hangi motorla (`engine`) ve kaç varyant (`variants`, en çok 4) üretileceğini sor; kullanıcı söylediyse ya da markanın varsayılan motoru varsa sorma. Şimdilik yalnızca `html` motoru çalışır. Her varyant ayrı bir post ve ayrı bir iştir. Sonuç iş kimliklerini döner; bitmesini `wait_jobs` ile bekle.",
     inputSchema: {
       type: "object",
       properties: {
@@ -371,6 +376,50 @@ export const STUDIO_TOOLS: readonly StudioToolDefinition[] = [
           description: "Görsel tarifi; kullanıcı görseli için başına @takma-ad yaz.",
         },
         instructions: { type: "string", description: "Bu üretim için ek talimat." },
+        engine: {
+          type: "string",
+          enum: ["wecra", "html", "svg", "code"],
+          description:
+            "Tasarım motoru: kullanıcının seçtiği (Wecra, HTML, SVG, Kod); boşsa markanın varsayılanı, o da yoksa html. Şimdilik yalnızca html hazır; diğerleri 'Bu motor henüz hazır değil' hatası verir.",
+        },
+        variants: {
+          type: "integer",
+          description:
+            "Kaç varyant üretilsin (1-4, varsayılan 1). Her varyant ayrı bir post olur; yapay zekâ görseli üretilecekse her görsel ücretlidir.",
+        },
+        products: {
+          type: "array",
+          items: { type: "string" },
+          description:
+            "Postun konusu olan ürünler: @ad (ör. 'boro', '@venta-boro') ya da ürün id'si. Ürünlerin bilgileri tasarıma gider.",
+        },
+      },
+    },
+  },
+  {
+    name: "list_products",
+    description:
+      "Markanın ürünlerini @adlarıyla (ör. @boro) listeler: ad, kategori, kısa açıklama, fotoğraf sayısı.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        brandId: { type: "string", description: "Marka id'si (boşsa konuşmanın markası)." },
+      },
+    },
+  },
+  {
+    name: "get_product",
+    description:
+      "Bir ürünün bütün bilgilerini ve fotoğraflarını (ön, arka, yan etiket… açı ipuçlarıyla) getirir. `withPhotos: true` ile fotoğrafların kendisini de gösterir. İstenen açıya (ör. 'sola bakan') uygun fotoğrafı seçmek için kullan.",
+    inputSchema: {
+      type: "object",
+      required: ["product"],
+      properties: {
+        product: { type: "string", description: "Ürünün @adı (ör. 'boro') ya da id'si." },
+        withPhotos: {
+          type: "boolean",
+          description: "Fotoğraflar da gösterilsin mi (en fazla 8).",
+        },
       },
     },
   },
@@ -609,6 +658,12 @@ export const STUDIO_TOOLS: readonly StudioToolDefinition[] = [
           items: { type: "string" },
           description: "Doğrudan referans varlık (asset) id'leri.",
         },
+        referenceProducts: {
+          type: "array",
+          items: { type: "string" },
+          description:
+            "Referans ürünler: @ad ya da id. Uygun açıdaki fotoğrafı kendin seçtiysen referenceAssetIds kullan; yoksa ürünün ilk fotoğrafları (en fazla 3) gider.",
+        },
         preserveProductLabel: {
           type: "boolean",
           description:
@@ -834,8 +889,20 @@ const GeneratePostInput = z
     imageSlot: z.enum(["none", "user_upload", "ai_generate"]).optional(),
     imageBrief: trimmed(4_000).optional(),
     instructions: z.string().max(4_000).optional(),
+    engine: GenerationEngine.optional(),
+    variants: z.coerce.number().int().min(1).max(MAX_GENERATION_VARIANTS).default(1),
+    products: z.array(z.string().trim().min(1)).max(8).default([]),
   })
   .refine((v) => Boolean(v.planItemId || v.brief), "planItemId ya da brief gerekli");
+
+const ListProductsInput = z.object({ brandId: z.string().trim().min(1).optional() });
+const GetProductInput = z.object({
+  product: z.string().trim().min(1),
+  withPhotos: z.boolean().default(false),
+});
+
+/** Product photos sent as references when the agent did not pick them itself. */
+const MAX_PRODUCT_REFERENCES = 3;
 
 const GenerateReelInput = z
   .object({
@@ -923,6 +990,7 @@ const GenerateAiImageInput = z.object({
   imageSize: z.enum(["1K", "2K"]).default("2K"),
   referenceAliases: z.array(z.string()).default([]),
   referenceAssetIds: z.array(z.string().trim().min(1)).default([]),
+  referenceProducts: z.array(z.string().trim().min(1)).max(4).default([]),
   preserveProductLabel: z.boolean().default(false),
   targetContentId: z.string().trim().min(1).optional(),
   targetSlotId: z.string().trim().min(1).max(128).optional(),
@@ -1194,6 +1262,14 @@ export class StudioToolExecutor {
           "Post üretimi başlatılıyor…",
           "Post üretimi kuyruğa alındı",
           () => this.generatePost(args, rawCallId),
+        );
+      case "list_products":
+        return this.runSafe(stepId, name, "Ürünler listeleniyor…", "Ürünler listelendi", () =>
+          this.listProducts(args),
+        );
+      case "get_product":
+        return this.runSafe(stepId, name, "Ürün okunuyor…", "Ürün okundu", () =>
+          this.getProduct(args),
         );
       case "generate_reel":
         return this.runSafe(
@@ -1739,6 +1815,7 @@ export class StudioToolExecutor {
 
   private async getContent(args: Record<string, unknown>) {
     const parsed = GetContentInput.parse(args);
+    parsed.contentId = await this.contentRef(parsed.contentId);
     const content = await this.options.api.client.contents.get(parsed.contentId, {
       signal: this.options.signal,
     });
@@ -2035,6 +2112,7 @@ export class StudioToolExecutor {
 
   private async viewPost(args: Record<string, unknown>) {
     const parsed = ViewPostInput.parse(args);
+    parsed.contentId = await this.contentRef(parsed.contentId);
     const content = await this.options.api.client.contents.get(parsed.contentId, {
       signal: this.options.signal,
     });
@@ -2110,6 +2188,7 @@ export class StudioToolExecutor {
           itemIds: [input.planItemId],
           ...(input.instructions ? { instructions: input.instructions } : {}),
           ...this.generationPayloadExtras(),
+          ...(input.engine ? { engine: await this.engineFor(plan.brandId, input.engine) } : {}),
         },
         { signal: this.options.signal },
       );
@@ -2128,6 +2207,12 @@ export class StudioToolExecutor {
     }
     const brandId = this.brandId;
     if (!brandId) throw new Error("Konuşmanın markası yok; önce set_conversation_brand kullan.");
+    const engine = await this.engineFor(brandId, input.engine);
+    const productIds: string[] = [];
+    for (const ref of input.products) {
+      const product = await this.productRef(ref, brandId);
+      if (!productIds.includes(product.id)) productIds.push(product.id);
+    }
     const title = input.title || (input.brief ?? "").split("\n")[0]?.slice(0, 80) || "Yeni post";
     const platforms = input.platforms ?? ["instagram"];
     // The same brief again (a continued turn, a repeated call) does not make a second post (U7).
@@ -2140,6 +2225,9 @@ export class StudioToolExecutor {
       imageSlot: input.imageSlot,
       imageBrief: input.imageBrief,
       instructions: input.instructions,
+      ...(engine ? { engine } : {}),
+      ...(input.variants > 1 ? { variants: input.variants } : {}),
+      ...(productIds.length ? { productIds } : {}),
     });
     const earlier = await this.earlierCall("generate_post", key, input.repeat);
     if (earlier) {
@@ -2152,37 +2240,205 @@ export class StudioToolExecutor {
         summary: `${title} · zaten üretimde`,
       };
     }
-    const content = await this.options.api.client.contents.create(
-      { brandId, type: input.type, title, brief: input.brief ?? "", targetPlatforms: platforms },
-      { signal: this.options.signal },
-    );
-    const payload: ContentGeneratePayload = {
-      brandId,
-      contentId: content.id,
-      title,
-      brief: input.brief ?? "",
-      type: input.type,
-      targetPlatforms: platforms,
-      ...(input.imageSlot ? { imageSlot: input.imageSlot } : {}),
-      ...(input.imageBrief ? { imageBrief: input.imageBrief } : {}),
-      conversationId: this.options.conversationId,
-      ...(input.instructions ? { instructions: input.instructions } : {}),
-      ...this.generationPayloadExtras(),
+    // Each variant is its own post and job; they arrive in the chat one by one.
+    const contentIds: string[] = [];
+    const jobIds: string[] = [];
+    for (let index = 1; index <= input.variants; index++) {
+      const variantTitle =
+        input.variants > 1 ? `${title} · Varyant ${index}/${input.variants}`.slice(0, 200) : title;
+      const content = await this.options.api.client.contents.create(
+        {
+          brandId,
+          type: input.type,
+          title: variantTitle,
+          brief: input.brief ?? "",
+          targetPlatforms: platforms,
+        },
+        { signal: this.options.signal },
+      );
+      const payload: ContentGeneratePayload = {
+        brandId,
+        contentId: content.id,
+        title: variantTitle,
+        brief: input.brief ?? "",
+        type: input.type,
+        targetPlatforms: platforms,
+        ...(input.imageSlot ? { imageSlot: input.imageSlot } : {}),
+        ...(input.imageBrief ? { imageBrief: input.imageBrief } : {}),
+        conversationId: this.options.conversationId,
+        ...(input.instructions ? { instructions: input.instructions } : {}),
+        ...this.generationPayloadExtras(),
+        ...(engine ? { engine } : {}),
+        ...(input.variants > 1 ? { variants: input.variants, variantIndex: index } : {}),
+        ...(productIds.length ? { productIds } : {}),
+      };
+      const job = await this.options.api.client.jobs.create(
+        { type: "content.generate", brandId, contentId: content.id, payload },
+        { signal: this.options.signal },
+      );
+      contentIds.push(content.id);
+      jobIds.push(job.id);
+      await this.options.writer
+        .setPart({ type: "content_ref", contentId: content.id, version: null, note: "Üretiliyor" })
+        .catch((error: unknown) => {
+          if (error instanceof RunClosedError) throw error;
+        });
+    }
+    const data = {
+      ok: true,
+      contentId: contentIds[0],
+      jobIds,
+      ...(input.variants > 1 ? { contentIds, variants: input.variants } : {}),
     };
-    const job = await this.options.api.client.jobs.create(
-      { type: "content.generate", brandId, contentId: content.id, payload },
-      { signal: this.options.signal },
-    );
-    const data = { ok: true, contentId: content.id, jobIds: [job.id] };
     await this.ledger.put({ key, tool: "generate_post", callId: callId ?? null, data });
-    await this.options.writer
-      .setPart({ type: "content_ref", contentId: content.id, version: null, note: "Üretiliyor" })
-      .catch((error: unknown) => {
-        if (error instanceof RunClosedError) throw error;
-      });
     return {
       data,
-      summary: `${title} · 1 iş`,
+      summary: `${title} · ${jobIds.length} iş`,
+    };
+  }
+
+  /**
+   * The engine of a generation: the owner's choice, else the brand's default; undefined = HTML
+   * (left out of the payload). A not-ready engine fails here, never falls back to HTML.
+   */
+  private async engineFor(
+    brandId: string,
+    requested: GenerationEngine | undefined,
+  ): Promise<GenerationEngine | undefined> {
+    let engine = requested;
+    if (!engine) {
+      try {
+        const brand = await this.options.api.client.brands.get(brandId, {
+          signal: this.options.signal,
+        });
+        engine = brand.defaultEngine ?? undefined;
+      } catch (error) {
+        this.options.signal.throwIfAborted();
+        this.logger.warn(`brand ${brandId}: default engine unknown (${(error as Error).message})`);
+      }
+    }
+    if (!engine) return undefined;
+    const notReady = engineNotReadyError(engine);
+    if (notReady) {
+      throw new Error(
+        `${notReady}. Kullanıcıya söyle ve şimdilik HTML motoruyla üretmeyi öner (engine: "html").`,
+      );
+    }
+    return engine;
+  }
+
+  /** The brand's products with their @names (oldest first). */
+  private async productsOf(brandId: string): Promise<BrandProduct[]> {
+    const out: BrandProduct[] = [];
+    let cursor: string | undefined;
+    for (let page = 0; page < 10; page++) {
+      const res = await this.options.api.client.brandProducts.list(
+        brandId,
+        { limit: 100, ...(cursor ? { cursor } : {}) },
+        { signal: this.options.signal },
+      );
+      out.push(...res.items);
+      if (!res.nextCursor) break;
+      cursor = res.nextCursor;
+    }
+    return out;
+  }
+
+  /** A product by `@name`, name or id. */
+  private async productRef(raw: string, brandId: string): Promise<BrandProduct> {
+    const cleaned = raw.trim().replace(/^@/, "");
+    const lower = cleaned.toLocaleLowerCase("tr-TR");
+    const products = await this.productsOf(brandId);
+    const hit =
+      products.find((p) => p.id === cleaned) ??
+      products.find((p) => p.slug === lower) ??
+      products.find((p) => p.name.toLocaleLowerCase("tr-TR") === lower);
+    if (!hit) throw new Error(`Ürün bulunamadı: @${cleaned} (list_products ile bak).`);
+    return hit;
+  }
+
+  /** A post by `@name` (its mention name) or id; anything else is passed on as an id. */
+  private async contentRef(raw: string): Promise<string> {
+    const cleaned = raw.trim().replace(/^@/, "");
+    if (!this.brandId || !/^[a-z][a-z0-9-]*$/.test(cleaned)) return cleaned;
+    try {
+      const { items } = await this.options.api.client.brands.mentionCandidates(this.brandId, {
+        signal: this.options.signal,
+      });
+      return items.find((c) => c.kind === "content" && c.slug === cleaned)?.id ?? cleaned;
+    } catch (error) {
+      this.options.signal.throwIfAborted();
+      if (error instanceof ApiError) return cleaned;
+      throw error;
+    }
+  }
+
+  private async listProducts(args: Record<string, unknown>) {
+    const parsed = ListProductsInput.parse(args);
+    const brandId = parsed.brandId ? (await this.resolveBrand(parsed.brandId)).id : this.brandId;
+    if (!brandId) throw new Error("Konuşmanın markası yok; önce set_conversation_brand kullan.");
+    const products = await this.productsOf(brandId);
+    return {
+      data: {
+        ok: true,
+        products: products.map((p) => ({
+          id: p.id,
+          mention: p.slug ? `@${p.slug}` : null,
+          name: p.name,
+          category: p.category,
+          description: p.description,
+          photos: p.imageAssetIds.length,
+        })),
+      },
+      summary: `${products.length} ürün`,
+    };
+  }
+
+  private async getProduct(args: Record<string, unknown>) {
+    const parsed = GetProductInput.parse(args);
+    const brandId = this.brandId;
+    if (!brandId) throw new Error("Konuşmanın markası yok; önce set_conversation_brand kullan.");
+    const product = await this.productRef(parsed.product, brandId);
+    const photos = [];
+    const images: StudioToolImage[] = [];
+    for (const [position, assetId] of product.imageAssetIds.entries()) {
+      const asset = await this.options.api.client.assets
+        .get(assetId, { signal: this.options.signal })
+        .catch((error: unknown) => {
+          this.options.signal.throwIfAborted();
+          if (error instanceof ApiError && error.status === 404) return null;
+          throw error;
+        });
+      if (!asset || asset.deletedAt) continue;
+      photos.push({
+        assetId,
+        position,
+        filename: asset.originalFilename ?? null,
+        width: asset.width,
+        height: asset.height,
+        angleHint: productPhotoAngle(asset.originalFilename ?? null),
+      });
+      if (parsed.withPhotos && images.length < 8) {
+        const picture = await this.pictureOf(assetId, 768);
+        if (picture) images.push(picture);
+      }
+    }
+    return {
+      data: {
+        ok: true,
+        product: {
+          id: product.id,
+          mention: product.slug ? `@${product.slug}` : null,
+          name: product.name,
+          description: product.description,
+          category: product.category,
+          tags: product.tags,
+          notes: product.notes,
+        },
+        photos,
+      },
+      summary: `${product.name} · ${photos.length} fotoğraf`,
+      ...(images.length ? { images } : {}),
     };
   }
 
@@ -2338,6 +2594,7 @@ export class StudioToolExecutor {
 
   private async revisePost(args: Record<string, unknown>) {
     const parsed = RevisePostInput.parse(args);
+    parsed.contentId = await this.contentRef(parsed.contentId);
     const content = await this.options.api.client.contents.get(parsed.contentId, {
       signal: this.options.signal,
     });
@@ -2830,6 +3087,14 @@ export class StudioToolExecutor {
         const assetId = await this.resolveAliasToAssetId(aliasName);
         if (!referenceAssetIds.includes(assetId)) referenceAssetIds.push(assetId);
       }
+      // `@ürün` references: the product's own photos (the first few unless chosen above).
+      for (const ref of parsed.referenceProducts) {
+        const product = await this.productRef(ref, brandId);
+        const photos = product.imageAssetIds.slice(0, MAX_PRODUCT_REFERENCES);
+        if (photos.length === 0) throw new Error(`"${product.name}" ürününün fotoğrafı yok.`);
+        if (product.imageAssetIds.some((id) => referenceAssetIds.includes(id))) continue;
+        for (const id of photos) if (referenceAssetIds.length < 10) referenceAssetIds.push(id);
+      }
       const payload = {
         prompt: parsed.prompt,
         aspectRatio: parsed.aspectRatio,
@@ -2922,6 +3187,7 @@ export class StudioToolExecutor {
 
   private async fillPostSlot(args: Record<string, unknown>) {
     const parsed = FillPostSlotInput.parse(args);
+    parsed.contentId = await this.contentRef(parsed.contentId);
     const content = await this.options.api.client.contents.get(parsed.contentId, {
       signal: this.options.signal,
     });
