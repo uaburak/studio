@@ -6,15 +6,10 @@
  */
 import { CONTRACT_LIMITS } from "../contract/constants.ts";
 import type { InPageText } from "./inpage.ts";
+import type { Raster } from "./raster.ts";
 import { issue, type LintIssue } from "./report.ts";
 
-export interface Raster {
-  width: number;
-  height: number;
-  /** 3 (RGB) or 4 (RGBA) */
-  channels: number;
-  data: Uint8Array | Uint8ClampedArray;
-}
+export type { Raster } from "./raster.ts";
 
 export interface ContrastResult {
   median: number;

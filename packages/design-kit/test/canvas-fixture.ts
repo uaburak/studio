@@ -2,8 +2,8 @@
 // text, an empty image slot, the brand logo and a picture added on the canvas), and a render of
 // it: the background with the texts' "ink" (glyph-like bars in the text colour), the logo and the
 // picture — what Wecra's engine would export for those facts.
-import type { CanvasFacts, CanvasNode, CanvasText } from "../src/canvas/index.ts";
-import type { Raster } from "../src/lint/index.ts";
+import type { CanvasFacts, CanvasNode, CanvasText } from "../src/canvas/facts.ts";
+import type { Raster } from "../src/lint/raster.ts";
 
 export const W = 1080;
 export const H = 1350;
