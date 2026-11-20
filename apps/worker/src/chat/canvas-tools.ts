@@ -32,6 +32,7 @@ import {
 } from "@studio/design-kit/canvas";
 import { z } from "zod";
 import type { StudioApi } from "../api.ts";
+import { fileAssetMap } from "../generate/brand.ts";
 import { asData } from "../prompt-data.ts";
 import type { StudioToolDefinition, StudioToolImage, ToolJsonSchema } from "./tools.ts";
 
@@ -151,7 +152,7 @@ export const CANVAS_TOOLS: readonly StudioToolDefinition[] = [
     description:
       "Tuvalde (Wecra) kaydedilmiş bir postu Wecra'nın kendi tasarım işlemleriyle düzenler ve yeni bir sürüm oluşturur; tuvalde elle yapılan değişiklikler korunur. Her işlem Wecra'nın bir yazma aracıdır, argümanları Wecra'nın (Figma Plugin API adlarıyla) aldığı gibidir:\n" +
       '- update_nodes {updates: [{nodeId, characters?, fontFamily?, fontStyle? ("Regular", "Bold", "Semi Bold"…), fontSize?, fills? ("#RRGGBB" ya da boya listesi), visible?, opacity?, x?, y?, width?, height?, rotation?, textAlignHorizontal?, lineHeight?, letterSpacing?, textAutoResize?, name?}]} — metin, renk, font, boyut, taşıma (x/y üst katmana göre; üstü kare olan katmanda kare px), gizle/göster.\n' +
-      '- create_nodes {parentId: kare (frame) id, nodes: [{type: "TEXT", characters, x, y, width?, fontFamily, fontStyle, fontSize, fills, textAutoResize}]} — yeni metin ya da şekil (RECTANGLE, ELLIPSE, FRAME).\n' +
+      '- create_nodes {parentId: kare (frame) id, nodes: [{type: "TEXT", characters, x, y, width?, fontFamily, fontStyle, fontSize, fills, textAutoResize}]} — yeni metin ya da şekil (RECTANGLE, ELLIPSE, FRAME); bir FRAME `children` ile iç içe katmanlar alır (yarım ya da boş bir tasarımı tamamlarken bir bölümü tek seferde kur). Görsel: {type: "RECTANGLE", x, y, width, height, image: {assetId ya da alias, scaleMode: "FILL"}}; markanın logosu (canvas_outline `brandAssets`): {name: "Logo", image: {assetId}, x, y, width} (SVG logo vektör katman olur).\n' +
       "- delete_nodes {nodeIds}, duplicate_nodes {nodeIds, x?, y?, parentId?}, reparent_nodes {nodeIds, parentId, index} (sıra: 0 en alt).\n" +
       '- place_image {nodeId, assetId ya da alias (sohbetteki @görsel), scaleMode?: "FILL"|"FIT"|"CROP"} — bir katmanı/yuvayı markanın medyasındaki görselle doldurur.\n' +
       "- set_properties {nodeIds, properties} (Wecra belge alanları: effects, textCase, paragraphSpacing…), set_auto_layout {nodeId, layoutMode, itemSpacing, padding…}.\n" +
@@ -368,6 +369,7 @@ export async function canvasOutlineTool(
   );
   const layers = picked.reduce((n, s) => n + s.layers.length, 0);
   const current = content.currentVersion?.version ?? null;
+  const brandAssets = await brandCanvasAssets(env, content.brandId);
   return {
     data: {
       ok: true,
@@ -385,11 +387,51 @@ export async function canvasOutlineTool(
       coordinates:
         "box: karede px ([x, y, genişlik, yükseklik], karenin sol üstü 0,0). update_nodes x/y katmanın üstüne göredir; üstü kare olan (parent null) katmanlarda aynıdır.",
       slides: picked.map(framed),
+      ...(brandAssets.length ? { brandAssets } : {}),
       ...(design !== undefined ? { design: asData(design) } : {}),
     },
     summary: `${content.title} · v${version.version} · ${picked.length} kare, ${layers} katman`,
     label: "Tuval belgesi okundu",
   };
+}
+
+/**
+ * The brand's logos and pictures a canvas edit may place (`image: {assetId}` in create_nodes,
+ * `place_image`): from the brand's current profile. Empty when it has none or can't be read.
+ */
+export async function brandCanvasAssets(
+  env: Pick<CanvasToolEnv, "api" | "signal">,
+  brandId: string,
+): Promise<{ kind: "logo" | "image"; name: string; assetId: string; svg?: true }[]> {
+  let tokens: Record<string, unknown>;
+  try {
+    tokens = (await env.api.client.brandProfiles.current(brandId, { signal: env.signal })).tokens;
+  } catch {
+    env.signal.throwIfAborted();
+    return [];
+  }
+  const files = fileAssetMap(tokens);
+  const out: { kind: "logo" | "image"; name: string; assetId: string; svg?: true }[] = [];
+  for (const [kind, key] of [
+    ["logo", "logos"],
+    ["image", "assets"],
+  ] as const) {
+    const group = tokens[key];
+    if (!group || typeof group !== "object") continue;
+    for (const [name, entry] of Object.entries(group as Record<string, unknown>)) {
+      const p = (entry as { path?: unknown } | null)?.path;
+      const assetId = typeof p === "string" ? files[p] : undefined;
+      if (!assetId || typeof p !== "string") continue;
+      out.push({
+        kind,
+        name: asData(name),
+        assetId,
+        ...(/\.svg$/i.test(p) ? { svg: true as const } : {}),
+      });
+      if (out.length >= 20) return out;
+    }
+  }
+  return out;
 }
 
 const CHECK_LINE = (brief: ContentCheckBrief) =>

@@ -11,7 +11,9 @@ import {
   type Job,
   MAX_PRODUCT_IMAGES,
 } from "@studio/contract";
-import { and, count, eq, inArray, isNull, ne } from "drizzle-orm";
+// The slide HTML reader only (the canvas index also brings the in-page linter, DOM types).
+import { readCanvas } from "@studio/design-kit/canvas/html";
+import { and, asc, count, eq, inArray, isNull, ne } from "drizzle-orm";
 import type { z } from "zod";
 import { createDb, type Db } from "../db/client.ts";
 import { type ApprovalRow, toApproval, toBrandProduct } from "../db/mappers.ts";
@@ -20,6 +22,9 @@ import {
   assets,
   brandProducts,
   contents,
+  contentVersionDocuments,
+  contentVersionSlides,
+  contentVersions,
   conversations,
   messages,
 } from "../db/schema.ts";
@@ -244,8 +249,29 @@ export async function approveRequest(
   }
 
   // A post's picture: fill its slot with a new rendered version (like image.generate's target).
+  // A canvas post (its current version is a Wecra document) gets the picture on the canvas:
+  // Wecra's `place_image` on the slot's layer, so the document and the hand edits stay.
   let job: Job | null = null;
-  if (row.contentId && row.slotId) {
+  const canvas =
+    row.contentId && row.slotId ? await canvasSlot(db, row.contentId, row.slotId) : null;
+  if (canvas && row.contentId) {
+    job = await ctx.createJob({
+      type: "canvas.apply",
+      brandId: row.brandId,
+      contentId: row.contentId,
+      payload: {
+        version: canvas.version,
+        operations: [
+          {
+            tool: "place_image",
+            args: { nodeId: canvas.nodeId, assetId: chosen, scaleMode: "FILL" },
+          },
+        ],
+        note: "Onaylanan görsel yerleştirildi",
+        ...(row.conversationId ? { conversationId: row.conversationId } : {}),
+      },
+    });
+  } else if (row.contentId && row.slotId) {
     job = await ctx.createJob({
       type: "content.render",
       brandId: row.brandId,
@@ -262,6 +288,40 @@ export async function approveRequest(
   await ctx.announce(view);
   const content = row.contentId ? await ctx.loadContent(row.contentId) : null;
   return { approval: view, content, product: null, job };
+}
+
+/**
+ * The slot's Wecra layer when the post's current version was saved on the canvas (null: an HTML
+ * version — its slot is filled by rendering). `slotId` is the Wecra layer id (the Wecra engine's
+ * picture area) or the design-contract layer an imported slot kept (its canvas mark).
+ */
+export async function canvasSlot(
+  db: Db,
+  contentId: string,
+  slotId: string,
+): Promise<{ version: number; nodeId: string } | null> {
+  const [current] = await db
+    .select({ id: contentVersions.id, version: contentVersions.version })
+    .from(contents)
+    .innerJoin(contentVersions, eq(contents.currentVersionId, contentVersions.id))
+    .innerJoin(contentVersionDocuments, eq(contentVersionDocuments.versionId, contentVersions.id))
+    .where(eq(contents.id, contentId));
+  if (!current) return null;
+  const slides = await db
+    .select({ html: contentVersionSlides.html })
+    .from(contentVersionSlides)
+    .where(eq(contentVersionSlides.versionId, current.id))
+    .orderBy(asc(contentVersionSlides.position));
+  for (const s of slides) {
+    const c = readCanvas(s.html);
+    if (c.kind !== "facts") continue;
+    const node =
+      c.facts.nodes.find((n) => n.id === slotId) ??
+      c.facts.nodes.find((n) => n.mark?.layer === slotId);
+    if (node) return { version: current.version, nodeId: node.id };
+  }
+  // A Wecra id the facts left out (a busy slide): Wecra itself says if it is not there.
+  return /^\d+:\d+$/.test(slotId) ? { version: current.version, nodeId: slotId } : null;
 }
 
 /**

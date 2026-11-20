@@ -13,11 +13,11 @@ import {
   canvasFormatFor,
   canvasFrameRef,
   isCanvasRunner,
-  resolveCanvasFrameRefs,
   JOB_PAYLOAD_SCHEMAS,
   JOB_TYPE_REQUIREMENTS,
   JobType,
   MAX_CANVAS_OPERATIONS,
+  resolveCanvasFrameRefs,
 } from "../src/index.ts";
 
 describe("canvas jobs", () => {

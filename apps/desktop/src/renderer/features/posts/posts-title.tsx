@@ -7,6 +7,7 @@ import { MenuButton, type MenuEntry } from "../../components/ui/menu.tsx";
 import { useAppStore } from "../../state/app-store.ts";
 import { useBrands } from "../../state/studio.tsx";
 import { TemplatePicker } from "../brand/template-use.tsx";
+import { BlankCanvasDialog } from "./blank-canvas-dialog.tsx";
 import { useContent } from "./data.ts";
 import { usePostsStore } from "./store.ts";
 
@@ -18,6 +19,7 @@ export function PostsTitleButton() {
   const brands = useBrands();
   const content = useContent(opened?.contentId ?? null);
   const [picking, setPicking] = useState<string | null>(null);
+  const [blank, setBlank] = useState<string | null>(null);
   const active = (brands.data ?? []).filter((b) => b.status === "active");
   const brandName = allBrands ? "Tüm markalar" : active.find((b) => b.id === currentBrandId)?.name;
   const title = opened ? (content.data?.title ?? "Post") : "Profil";
@@ -41,6 +43,13 @@ export function PostsTitleButton() {
       onSelect: () => usePostsStore.getState().setAllBrands(true),
     },
     { type: "separator" },
+    {
+      id: "blank-canvas",
+      label: "Boş tuvalden yeni post…",
+      disabled: allBrands || !currentBrandId,
+      ...(allBrands || !currentBrandId ? { detail: "Önce bir marka seç" } : {}),
+      onSelect: () => setBlank(currentBrandId),
+    },
     {
       id: "from-template",
       label: "Şablondan yeni post…",
@@ -71,6 +80,7 @@ export function PostsTitleButton() {
         )}
       </MenuButton>
       {picking && <TemplatePicker brandId={picking} onClose={() => setPicking(null)} />}
+      {blank && <BlankCanvasDialog brandId={blank} onClose={() => setBlank(null)} />}
     </>
   );
 }

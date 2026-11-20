@@ -45,10 +45,7 @@ function base64(bytes: Uint8Array): string {
 
 /** The asset is an SVG (a brand logo): its text, else null. */
 export function svgText(bytes: Uint8Array): string | null {
-  const head = new TextDecoder()
-    .decode(bytes.subarray(0, 512))
-    .replace(/^﻿/, "")
-    .trimStart();
+  const head = new TextDecoder().decode(bytes.subarray(0, 512)).replace(/^﻿/, "").trimStart();
   if (!/^<(\?xml|svg|!--|!DOCTYPE svg)/i.test(head)) return null;
   const text = new TextDecoder().decode(bytes);
   return /<svg[\s>]/i.test(text) ? text : null;
@@ -86,7 +83,7 @@ export async function resolveImages(
       const bytes = await deps.fetchAsset(assetId);
       if (svgText(bytes) !== null)
         throw new Error(
-          'place_image: bu görsel bir SVG (logo); create_nodes {nodes: [{image: {assetId}, x, y, width}]} ile vektör katman olarak ekle.',
+          "place_image: bu görsel bir SVG (logo); create_nodes {nodes: [{image: {assetId}, x, y, width}]} ile vektör katman olarak ekle.",
         );
       return { name: "Görsel", ...rest, data: base64(bytes) };
     }

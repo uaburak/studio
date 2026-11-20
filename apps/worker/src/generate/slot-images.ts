@@ -135,6 +135,11 @@ export async function queueSlotImageJobs(
     jobId: string;
     payload: ContentGenerateJobInput;
     slides: ReadonlyArray<{ html: string }>;
+    /**
+     * The empty slots when the design says them itself (the Wecra engine: its picture areas,
+     * named by their Wecra layer ids); default: read from the slides' HTML.
+     */
+    slots?: readonly EmptyImageSlot[];
     /** The image slot the design was made with (the payload's, else what the media decided). */
     imageSlot: string;
     signal: AbortSignal;
@@ -150,7 +155,9 @@ export async function queueSlotImageJobs(
   const conversationId = request.conversationId ?? payload.conversationId;
   const jobs: SlotImageJob[] = [];
   try {
-    const slots = emptyImageSlots(input.slides);
+    const slots = input.slots
+      ? input.slots.slice(0, MAX_SLOT_IMAGES)
+      : emptyImageSlots(input.slides);
     if (slots.length === 0) {
       return {
         jobs: [],

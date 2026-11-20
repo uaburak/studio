@@ -96,7 +96,7 @@ struct ApprovalTests {
         #expect(style == #"{"imageStylePreset":"retro"}"#)
         // Name-only updates say nothing about the engine.
         #expect(String(decoding: try encoder.encode(BrandUpdate(name: "A")), as: UTF8.self) == #"{"name":"A"}"#)
-        #expect(GenerationEngine.listed.filter(\.isReady) == [.html])
+        #expect(GenerationEngine.listed.filter(\.isReady) == [.wecra, .html])
     }
 
     @Test func messagePartsAndEntityMentions() throws {

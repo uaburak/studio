@@ -68,6 +68,7 @@ import type { DesignBrief } from "./prompt.ts";
 import { loadRepurpose, reelSpecFromPost, repurposeMedia, storyBrief } from "./repurpose.ts";
 import { queueSlotImageJobs } from "./slot-images.ts";
 import { runTemplateGenerate, type TemplateAiCaller } from "./template.ts";
+import { runWecraGenerate } from "./wecra/engine.ts";
 
 export interface ContentGenerateDeps extends AgentDeps {
   /** Shared Chromium renderer (lazily launched). */
@@ -137,8 +138,8 @@ async function runContentGenerate(
   const payload = parsed.payload;
   const { brandId, contentId } = payload;
 
-  // The design engine the owner picked: only HTML runs today; the others fail clearly and never
-  // fall back to HTML (docs/URETIM-RESIM.md).
+  // The design engine the owner picked: HTML and Wecra run today; the others fail clearly and
+  // never fall back to HTML (docs/URETIM-RESIM.md).
   const engineError = engineNotReadyError(payload.engine ?? DEFAULT_GENERATION_ENGINE);
   if (engineError) throw new Error(`${engineError}; post üretilmedi.`);
 
@@ -172,6 +173,17 @@ async function runContentGenerate(
     } catch (error) {
       throw describeGenerateError(error, ctx, deps);
     }
+  }
+
+  // The Wecra engine (Faz 2): a blank Wecra document designed with Wecra's own operations by the
+  // Mac's canvas runner (wecra/engine.ts).
+  if (payload.engine === "wecra") {
+    return runWecraGenerate(ctx, deps, payload, {
+      requestedModel,
+      requestedEffort,
+      resolveMedia: (p) => resolveMedia(deps, p, signal),
+      check: (input) => checkGenerated(deps, ctx, input),
+    });
   }
 
   const health = deps.health();

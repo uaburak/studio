@@ -190,6 +190,7 @@ describe("AgentRuntime announcements", () => {
       "image.generate",
       "brand.skill_draft",
       "comments.suggest",
+      "content.details",
     ]);
     expect(r.versionSuffix()).toBe("");
     expect(changes).toBe(2);
@@ -211,6 +212,7 @@ describe("AgentRuntime announcements", () => {
       "image.generate",
       "brand.skill_draft",
       "comments.suggest",
+      "content.details",
     ]);
     expect(r.gate.status().parkedUntil?.getTime()).toBe(until.getTime());
 
@@ -277,6 +279,7 @@ describe("worker with an agent runtime", () => {
         "image.generate",
         "brand.skill_draft",
         "comments.suggest",
+        "content.details",
       ],
       workerVersion: "0.1.0",
     });

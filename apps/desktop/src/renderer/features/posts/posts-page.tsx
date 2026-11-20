@@ -61,6 +61,7 @@ import { BulkBar } from "./bulk-bar.tsx";
 import { useBoard, useTrash } from "./data.ts";
 import { addMonths, monthKeyOf, monthName, monthTitle } from "./dates.ts";
 import { downloadMenuEntry, exportMenuEntries, usePostExport } from "./export.ts";
+import { NewPostMenu } from "./new-post-menu.tsx";
 import { PlansView } from "./plans-view.tsx";
 import type { PostCardActions } from "./post-card.tsx";
 import { PostCardView } from "./post-card.tsx";
@@ -604,6 +605,7 @@ export function Board({
                 >
                   Sohbette üret
                 </Button>
+                {!grouped && <NewPostMenu brandId={brandId} />}
                 <Button
                   variant="secondary"
                   icon={<IconCalendar size={14} strokeWidth={1.75} />}

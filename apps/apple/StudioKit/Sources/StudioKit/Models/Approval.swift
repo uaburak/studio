@@ -6,13 +6,13 @@ import Foundation
 
 // MARK: - Generation engine
 
-/// `GenerationEngine`: who designs a post. Only `html` runs today; the others are "yakında".
+/// `GenerationEngine`: who designs a post. `wecra` and `html` run today; the others are "yakında".
 public enum GenerationEngine: String, OpenEnum {
     case wecra, html, svg, code
     case unknown
 
     /// `READY_GENERATION_ENGINES`.
-    public static let ready: [GenerationEngine] = [.html]
+    public static let ready: [GenerationEngine] = [.wecra, .html]
     /// The order the brand page lists them in.
     public static let listed: [GenerationEngine] = [.wecra, .html, .svg, .code]
 

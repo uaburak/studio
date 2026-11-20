@@ -362,7 +362,7 @@ export const STUDIO_TOOLS: readonly StudioToolDefinition[] = [
   {
     name: "generate_post",
     description:
-      "Post tasarım üretimini başlatır (`content.generate` işi kuyruğa alınır; tasarım burada yapılmaz). Ya kabul edilmiş bir plan kalemi (`planItemId`) ya da yeni bir brief ver. Çağırmadan önce kullanıcıya hangi motorla (`engine`) ve kaç varyant (`variants`, en çok 4) üretileceğini sor; kullanıcı söylediyse ya da markanın varsayılan motoru varsa sorma. Şimdilik yalnızca `html` motoru çalışır. Her varyant ayrı bir post ve ayrı bir iştir. Sonuç iş kimliklerini döner; bitmesini `wait_jobs` ile bekle. AI görsel yuvası (`imageSlot: ai_generate`) varsa araç, tasarımla birlikte görseli de üretmek için tek bir ücretli izin kartı gösterir; izin verilirse her postun tasarımı hazır olunca yuvası ürün görseli hattıyla (ürün fotoğraflarından birebir tarif → üretim → yapay zekâ kontrolü) üretilir, görsel sohbete onay kartı olarak düşer ve yuva ancak kullanıcı onaylayınca dolar. İzin verilmezse post yine üretilir, yuva boş kalır.",
+      "Post tasarım üretimini başlatır (`content.generate` işi kuyruğa alınır; tasarım burada yapılmaz). Ya kabul edilmiş bir plan kalemi (`planItemId`) ya da yeni bir brief ver. Çağırmadan önce kullanıcıya hangi motorla (`engine`) ve kaç varyant (`variants`, en çok 4) üretileceğini sor; kullanıcı söylediyse ya da markanın varsayılan motoru varsa sorma. `html` ve `wecra` motorları çalışır (`wecra`: tasarım Mac'teki Wecra tuvalinde boş belgeden Wecra'nın kendi araçlarıyla yapılır, post tuvalde düzenlenebilir; Mac uygulaması açık olmalı). Her varyant ayrı bir post ve ayrı bir iştir. Sonuç iş kimliklerini döner; bitmesini `wait_jobs` ile bekle. AI görsel yuvası (`imageSlot: ai_generate`) varsa araç, tasarımla birlikte görseli de üretmek için tek bir ücretli izin kartı gösterir; izin verilirse her postun tasarımı hazır olunca yuvası ürün görseli hattıyla (ürün fotoğraflarından birebir tarif → üretim → yapay zekâ kontrolü) üretilir, görsel sohbete onay kartı olarak düşer ve yuva ancak kullanıcı onaylayınca dolar. İzin verilmezse post yine üretilir, yuva boş kalır.",
     inputSchema: {
       type: "object",
       properties: {
@@ -384,7 +384,7 @@ export const STUDIO_TOOLS: readonly StudioToolDefinition[] = [
           type: "string",
           enum: ["wecra", "html", "svg", "code"],
           description:
-            "Tasarım motoru: kullanıcının seçtiği (Wecra, HTML, SVG, Kod); boşsa markanın varsayılanı, o da yoksa html. Şimdilik yalnızca html hazır; diğerleri 'Bu motor henüz hazır değil' hatası verir.",
+            "Tasarım motoru: kullanıcının seçtiği (Wecra, HTML, SVG, Kod); boşsa markanın varsayılanı, o da yoksa html. html ve wecra hazır; svg ve code 'Bu motor henüz hazır değil' hatası verir.",
         },
         variants: {
           type: "integer",

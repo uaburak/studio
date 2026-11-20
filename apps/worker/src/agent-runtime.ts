@@ -41,6 +41,7 @@ import {
 } from "./claude/usage.ts";
 import { readCliUsage, UsagePoller } from "./claude/usage-cli.ts";
 import type { WorkerConfig } from "./config.ts";
+import { createContentDetailsHandler } from "./details/handler.ts";
 import { createCommentsSuggestHandler } from "./engagement/suggest.ts";
 import { createCommentsSyncHandler, createInsightsSyncHandler } from "./engagement/sync.ts";
 import { checkGeminiHealth } from "./gemini/health.ts";
@@ -84,6 +85,7 @@ export const AI_JOB_TYPES = [
   "image.generate",
   "brand.skill_draft",
   "comments.suggest",
+  "content.details",
 ] as const;
 export const CLAUDE_JOB_TYPES = AI_JOB_TYPES;
 
@@ -485,7 +487,8 @@ export class AgentRuntime {
       .register("media.analyze", createMediaAnalyzeHandler({ ...this.deps, vision: this.vision }))
       .register("insights.sync", createInsightsSyncHandler(this.deps))
       .register("comments.sync", createCommentsSyncHandler(this.deps))
-      .register("comments.suggest", createCommentsSuggestHandler(this.deps));
+      .register("comments.suggest", createCommentsSuggestHandler(this.deps))
+      .register("content.details", createContentDetailsHandler(this.deps));
   }
 
   /**

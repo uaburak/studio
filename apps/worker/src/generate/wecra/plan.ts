@@ -178,10 +178,14 @@ export function normalizeHashtags(raw: unknown): string[] {
   const out: string[] = [];
   for (const item of Array.isArray(raw) ? raw : []) {
     if (typeof item !== "string") continue;
-    const tag = item.replace(/^#+/, "").replace(/[\s#]+/g, "").trim();
+    const tag = item
+      .replace(/^#+/, "")
+      .replace(/[\s#]+/g, "")
+      .trim();
     if (!tag || !/^[\p{L}\p{N}_]+$/u.test(tag)) continue;
     const full = `#${tag}`;
-    if (!out.some((t) => t.toLocaleLowerCase("tr") === full.toLocaleLowerCase("tr"))) out.push(full);
+    if (!out.some((t) => t.toLocaleLowerCase("tr") === full.toLocaleLowerCase("tr")))
+      out.push(full);
     if (out.length >= 30) break;
   }
   return out;

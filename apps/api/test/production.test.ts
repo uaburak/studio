@@ -15,10 +15,21 @@ import {
   Plan,
   TurnContext,
   UserMessageResult,
+  WECRA_DOCUMENT_MIME,
 } from "@studio/contract";
+import { canvasSlideHtml } from "@studio/design-kit/canvas/html";
 import { describe, expect, it } from "vitest";
-import { api, BASE, createBrand, createContent, expectError, localFetch } from "./helpers.ts";
-import { seedPlan } from "./lifecycle-helpers.ts";
+import { canvasFacts } from "../../../packages/design-kit/test/canvas-fixture.ts";
+import {
+  addVersion,
+  api,
+  BASE,
+  createBrand,
+  createContent,
+  expectError,
+  localFetch,
+} from "./helpers.ts";
+import { seedPlan, uploadFile } from "./lifecycle-helpers.ts";
 
 /*
  * Post production basics (docs/URETIM-RESIM.md, Faz 0): approval requests, `@product` / `@post`
@@ -151,6 +162,52 @@ describe("approval requests", () => {
     expect(result.job).toMatchObject({ type: "content.render", contentId: post.id });
     expect(result.job?.payload).toMatchObject({ slotAssignments: { hero: b.id } });
     expect(result.content?.id).toBe(post.id);
+  });
+
+  it("approving a canvas post's picture places it on the canvas (Wecra's place_image)", async () => {
+    const brand = await createBrand();
+    const post = await createContent(brand.id);
+    const zip = new Uint8Array([0x50, 0x4b, 0x03, 0x04, 0x14, 0x00, 0x00, 0x00, 1, 2, 3, 4]);
+    const doc = await uploadFile(brand.id, zip, WECRA_DOCUMENT_MIME, "post.wecra");
+    const v = await addVersion(post.id, {
+      origin: "generated",
+      slides: [
+        {
+          html: canvasSlideHtml({
+            facts: canvasFacts(),
+            src: "/media/render.png",
+            sha256: "c".repeat(64),
+          }),
+          width: 1080,
+          height: 1350,
+        },
+      ],
+      editorDocument: { kind: "wecra", assetId: doc.id, format: 2 },
+    });
+    const picture = await upload(brand.id);
+    // An imported slot (its design-contract name) and the Wecra engine's area (its layer id).
+    for (const [slotId, nodeId] of [
+      ["field-photo", "7:4"],
+      ["9:9", "9:9"],
+    ] as const) {
+      const req = await createApproval({
+        brandId: brand.id,
+        kind: "product_image",
+        contentId: post.id,
+        slotId,
+        assetIds: [picture.id],
+      });
+      const result = ApprovalActionResult.parse(
+        (await api("POST", `/api/approvals/${req.id}/approve`, {})).body,
+      );
+      expect(result.job).toMatchObject({ type: "canvas.apply", contentId: post.id });
+      expect(result.job?.payload).toMatchObject({
+        version: v.version,
+        operations: [
+          { tool: "place_image", args: { nodeId, assetId: picture.id, scaleMode: "FILL" } },
+        ],
+      });
+    }
   });
 
   it("approving a product photo upgrade replaces the photo and trashes the old one", async () => {

@@ -111,3 +111,22 @@ Reels ve hikâye sonra ayrı ele alınacak.
   oranına en yakın en-boy, varyant postlarda `variant {index, count}`. Yuva yalnızca onayla dolar.
   İzin yoksa iş açılmaz; aynı üretim işinin yeniden denemesi ikinci kez ücret ödetmez
   (`stateDir/slot-images/<jobId>.json`).
+
+## Faz 2 — Wecra motoru (yapıldı)
+
+- `READY_GENERATION_ENGINES = [wecra, html]`. `content.generate` `engine: wecra` (`apps/worker/src/generate/wecra/`):
+  worker marka bağlamını, yerleştirilebilir görselleri (logolar/marka görselleri, @görseller, ürün
+  fotoğrafları; hepsi assetId ile) okur, modelden boş karelere (`"frame:N"`) Wecra işlemleri + açıklama +
+  hashtag ister; Mac'teki tuval çalıştırıcısı `canvas.create` ile boş Wecra belgesini (1080×1350; story
+  1080×1920; "kare format" denirse 1080×1080) kurar, işlemleri uygular, kareleri dışa aktarır ve
+  `editorDocument`'lı `generated` sürümü kaydeder. Sonra 1 + `designFixPasses` (en çok 3) eleştiri →
+  düzeltme turu (`canvas.apply`, `ai_edit`); uygulanamayan düzeltme tasarımı bozmaz. Kontroller son
+  sürümde çalışır. `ai_generate` yuvası "AI görsel" adlı katmandır; izin varsa `queueSlotImageJobs` o
+  katmanın Wecra id'siyle iş açar. Tuval postunda onay görseli `canvas.apply place_image` ile yerleştirir.
+- `canvas.create` (çalıştırıcı işi): boş kareler + isteğe bağlı işlemler; SVG logo `image: {assetId}` ile
+  vektör katman olur. Mac'te "+ Yeni post → Boş tuvalden yeni post" aynı işi yapay zekâsız çalıştırır.
+- `content.details` ("Bilgileri üret", worker): tasarımın renderları ve metin katmanlarından açıklama,
+  hashtag, başlık, alt metin, ilk yorum yazar; sürüm oluşturmaz, onaylı postun açıklamasına ve elle
+  yazılmış alt metne dokunmaz. Post düzenleyicisinin Açıklama sekmesinde.
+- Sohbet: `@post` satırı tuval postunu "tuvalde" diye işaretler (`TurnContent.canvas`); "devamını getir"
+  kuralı canvas araçlarıyla, elle yapılan katmanları koruyarak tamamlatır; `canvas_outline` `brandAssets` verir.
