@@ -236,12 +236,14 @@ struct IOSModelTests {
         let (app, _, _) = await makeIOSApp()
         let products = IOSProductsModel(app: app)
         await products.load()
-        #expect(products.products.isEmpty)
+        // The sample brand starts with its two products (Venta Borinc, Boro).
+        let seeded = products.products.map(\.name)
+        #expect(seeded == ["Venta Borinc", "Boro"])
         let created = try await app.dataService.createProduct(brandId: app.currentBrandId!, BrandProductCreate(name: " Kompoze ", tags: ["a", "A"]))
         products.saved(created)
-        #expect(products.products.map(\.name) == ["Kompoze"])
+        #expect(products.products.map(\.name) == seeded + ["Kompoze"])
         #expect(await products.delete(created) == nil)
-        #expect(products.products.isEmpty)
+        #expect(products.products.map(\.name) == seeded)
 
         let media = IOSMediaModel(app: app)
         await media.load()

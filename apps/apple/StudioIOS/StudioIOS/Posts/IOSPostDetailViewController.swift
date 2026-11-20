@@ -279,6 +279,7 @@ final class IOSPostDetailViewController: UIViewController, UITextViewDelegate {
         navHasher.combine(s.canRedo)
         navHasher.combine(s.slides.contains { $0.renderedAssetId != nil })
         navHasher.combine(s.content.status)
+        navHasher.combine(s.content.waitingApprovals)
         let navSignature = navHasher.finalize()
         if navSignature != self.navSignature {
             self.navSignature = navSignature
@@ -388,12 +389,20 @@ final class IOSPostDetailViewController: UIViewController, UITextViewDelegate {
                 Toast.show("Açıklama kopyalandı", in: self?.view)
             },
         ])
+        var approvals: [UIMenuElement] = []
+        let waiting = session.content.waitingApprovals
+        if waiting > 0 {
+            approvals.append(UIAction(title: "Onay bekleyenler", subtitle: "\(waiting) görsel onayını bekliyor", image: UIImage(systemName: "checkmark.seal.fill")) { [weak self] _ in
+                guard let self else { return }
+                self.app.open(.approvals(contentId: self.session.content.id))
+            })
+        }
         let blocker = IOSPostsModel.deletionBlocker(session.card)
         let manage = UIMenu(title: "", options: .displayInline, children: [
             UIAction(title: "Çoğalt", image: UIImage(systemName: "plus.square.on.square")) { [weak self] _ in self?.duplicate() },
             UIAction(title: "Sil…", image: UIImage(systemName: "trash"), attributes: blocker == nil ? .destructive : [.destructive, .disabled]) { [weak self] _ in self?.delete() },
         ])
-        return UIMenu(children: [export, manage])
+        return UIMenu(children: [UIMenu(options: .displayInline, children: approvals), export, manage])
     }
 
     // MARK: Post tab
@@ -408,6 +417,17 @@ final class IOSPostDetailViewController: UIViewController, UITextViewDelegate {
             statusViews.append(UILabel.studio("· \(TurkishFormat.dayAndTime(schedule.scheduledAt))", size: 15, color: IOSTheme.textSecondary, style: .subheadline))
         }
         statusViews.append(UIView.spacer())
+        // "Onay bekliyor": a generated picture waits; the button opens this post's requests.
+        let waiting = s.content.waitingApprovals
+        if waiting > 0 {
+            let chip = UIButton.studioPill(title: waiting > 1 ? "Onay bekliyor · \(waiting)" : "Onay bekliyor", kind: .primary, image: "checkmark.seal") { [weak self] in
+                guard let self else { return }
+                self.app.open(.approvals(contentId: s.content.id))
+            }
+            chip.configuration?.contentInsets = NSDirectionalEdgeInsets(top: 5, leading: 10, bottom: 5, trailing: 10)
+            chip.accessibilityHint = "Bu postun onay bekleyen görsellerini açar"
+            statusViews.append(chip)
+        }
         tabContent.addArrangedSubview(UIStackView.h(statusViews, spacing: 8))
 
         if !s.isViewingCurrentVersion, let shown = s.activeVersion?.version {

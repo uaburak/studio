@@ -239,7 +239,7 @@ final class ChatComposerView: UIView, UITextViewDelegate {
             outer.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14),
             outer.topAnchor.constraint(equalTo: topAnchor, constant: 6),
             outer.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -8),
-            suggestionsScroll.heightAnchor.constraint(equalToConstant: 40),
+            suggestionsScroll.heightAnchor.constraint(equalToConstant: 46),
             startersScroll.heightAnchor.constraint(equalToConstant: 40),
             draftsScroll.heightAnchor.constraint(equalToConstant: 80),
         ])
@@ -495,19 +495,29 @@ final class ChatComposerView: UIView, UITextViewDelegate {
         guard suggestions != renderedSuggestions else { return }
         renderedSuggestions = suggestions
         suggestionsStack.removeAllArranged()
-        for candidate in suggestions.prefix(12) {
+        for candidate in suggestions.prefix(16) {
             var config = UIButton.Configuration.glass()
             config.cornerStyle = .capsule
             config.baseForegroundColor = IOSTheme.textPrimary
-            config.title = "@\(candidate.alias)"
+            // A product or post: its name, with the `@name` it inserts under it.
+            config.title = candidate.title
+            if let entity = candidate.entity {
+                config.subtitle = "@\(entity.slug) · \(entity.kind.label)"
+                config.titleAlignment = .leading
+            }
             config.imagePadding = 6
             config.contentInsets = NSDirectionalEdgeInsets(top: 4, leading: 4, bottom: 4, trailing: 12)
-            if let draft = composer.draft(alias: candidate.alias) {
+            if let draft = composer.draft(alias: candidate.alias), candidate.entity == nil {
                 config.image = Self.round(draft.thumbnail, side: 28)
             } else if let assetId = candidate.assetId, let image = model.app.images.image(assetId, width: 160) {
                 config.image = Self.round(image, side: 28)
             } else {
-                config.image = UIImage(systemName: "photo")
+                let symbol = switch candidate.entity?.kind {
+                case .product: "shippingbox"
+                case .content: "square.grid.2x2"
+                default: "photo"
+                }
+                config.image = UIImage(systemName: symbol)
                 config.contentInsets.leading = 10
             }
             config.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { incoming in
@@ -515,8 +525,14 @@ final class ChatComposerView: UIView, UITextViewDelegate {
                 out.font = IOSTheme.font(14, .medium, style: .subheadline)
                 return out
             }
+            config.subtitleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { incoming in
+                var out = incoming
+                out.font = IOSTheme.font(11, style: .caption2)
+                out.foregroundColor = IOSTheme.textSecondary
+                return out
+            }
             let button = UIButton(configuration: config, primaryAction: UIAction { [weak self] _ in self?.choose(candidate) })
-            button.accessibilityLabel = "@\(candidate.alias) an"
+            button.accessibilityLabel = candidate.entity.map { "\($0.kind.label) \($0.label), @\($0.slug) an" } ?? "@\(candidate.alias) an"
             if let assetId = candidate.assetId { model.app.images.load(assetId, width: 160) }
             suggestionsStack.addArrangedSubview(button)
         }

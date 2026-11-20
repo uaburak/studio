@@ -9,10 +9,12 @@ public enum JobStreamMessage: Sendable, Equatable {
     case jobUpdated(Job)
     case presence(WorkerPresence)
     case pong(ts: Double)
+    /// An approval request was created or decided (`approval.updated`).
+    case approvalUpdated(ApprovalRequest)
     /// A frame type this build does not know.
     case unknown(type: String)
 
-    private enum CodingKeys: String, CodingKey { case type, jobs, presence, job, ts }
+    private enum CodingKeys: String, CodingKey { case type, jobs, presence, job, ts, approval }
 
     public static func decode(_ text: String) throws -> JobStreamMessage {
         try StudioJSON.decoder().decode(Wire.self, from: Data(text.utf8)).message
@@ -30,6 +32,7 @@ public enum JobStreamMessage: Sendable, Equatable {
             case "job.updated": message = .jobUpdated(try c.decode(Job.self, forKey: .job))
             case "presence": message = .presence(try c.decode(WorkerPresence.self, forKey: .presence))
             case "pong": message = .pong(ts: try c.decode(Double.self, forKey: .ts))
+            case "approval.updated": message = .approvalUpdated(try c.decode(ApprovalRequest.self, forKey: .approval))
             default: message = .unknown(type: type)
             }
         }

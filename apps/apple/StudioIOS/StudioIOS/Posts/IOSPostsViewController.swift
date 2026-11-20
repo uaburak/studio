@@ -937,9 +937,14 @@ final class PostGridCell: UICollectionViewCell {
         } else if card.state == .generating {
             badgeText = "Üretiliyor"
         }
+        // A generated picture waits for the owner's word (docs/URETIM-RESIM.md §12).
+        let waitsForApproval = badgeText == nil && card.content.waitingApprovals > 0
+        if waitsForApproval { badgeText = "Onay bekliyor" }
         badge.isHidden = badgeText == nil
+        badge.backgroundColor = waitsForApproval ? IOSTheme.accent : UIColor.black.withAlphaComponent(0.6)
         badgeLabel.text = badgeText
-        badgeText == nil ? badgeSpinner.stopAnimating() : badgeSpinner.startAnimating()
+        badgeSpinner.isHidden = waitsForApproval
+        badgeText == nil || waitsForApproval ? badgeSpinner.stopAnimating() : badgeSpinner.startAnimating()
 
         accessibilityLabel = "\(card.title), \(card.day.map(TurkishFormat.longDay) ?? "tarih yok"), \(card.state.label)\(badgeText.map { ", \($0)" } ?? "")"
         accessibilityHint = "Postu açar. Daha fazla işlem için basılı tut."

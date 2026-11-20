@@ -123,7 +123,7 @@ public struct JobBoard: Sendable, Equatable {
             }
         case .message(.presence(let presence)):
             self.presence = presence
-        case .message(.pong), .message(.unknown):
+        case .message(.pong), .message(.unknown), .message(.approvalUpdated):
             break
         }
     }

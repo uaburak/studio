@@ -27,11 +27,15 @@ public struct BrandProduct: Codable, Sendable, Hashable, Identifiable {
     public var imageAssetIds: [EntityID]
     public var createdAt: Date
     public var updatedAt: Date
+    /// The `@name` the chat calls it by (`venta-boro`); nil from older servers.
+    public var slug: String?
 
     public init(
         id: EntityID, brandId: EntityID, name: String, description: String = "", category: String = "",
-        tags: [String] = [], notes: String = "", imageAssetIds: [EntityID] = [], createdAt: Date, updatedAt: Date
+        tags: [String] = [], notes: String = "", imageAssetIds: [EntityID] = [], createdAt: Date, updatedAt: Date,
+        slug: String? = nil
     ) {
+        self.slug = slug
         self.id = id
         self.brandId = brandId
         self.name = name
@@ -47,7 +51,7 @@ public struct BrandProduct: Codable, Sendable, Hashable, Identifiable {
     public var coverAssetId: EntityID? { imageAssetIds.first }
 
     private enum CodingKeys: String, CodingKey {
-        case id, brandId, name, description, category, tags, notes, imageAssetIds, createdAt, updatedAt
+        case id, brandId, name, description, category, tags, notes, imageAssetIds, createdAt, updatedAt, slug
     }
 
     /// Lists and texts the server may leave out decode as empty.
@@ -63,6 +67,7 @@ public struct BrandProduct: Codable, Sendable, Hashable, Identifiable {
         imageAssetIds = try c.decodeIfPresent([EntityID].self, forKey: .imageAssetIds) ?? []
         createdAt = try c.decode(Date.self, forKey: .createdAt)
         updatedAt = try c.decode(Date.self, forKey: .updatedAt)
+        slug = try c.decodeIfPresent(String.self, forKey: .slug)
     }
 }
 

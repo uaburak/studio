@@ -152,27 +152,52 @@ public struct AgentSelectionStore: @unchecked Sendable {
 
 // MARK: - Mention autocomplete
 
-/// A name the `@` suggestions offer: a sent alias of the conversation or a draft attachment.
+/// A name the `@` suggestions offer: a sent alias of the conversation, a draft attachment, or a
+/// product / post of the brand (`entity`, from `mention-candidates`).
 public struct MentionCandidate: Hashable, Sendable, Identifiable {
     public var alias: String
-    /// The asset behind it (nil while a draft uploads).
+    /// The asset behind it (nil while a draft uploads); a product's or post's cover.
     public var assetId: EntityID?
     public var isDraft: Bool
-    public var id: String { alias }
+    /// A product or post (`@venta-boro`); nil for a file alias.
+    public var entity: EntityMentionCandidate?
+    public var id: String { entity.map { "\($0.kind.rawValue):\($0.id)" } ?? alias }
 
     public init(alias: String, assetId: EntityID?, isDraft: Bool) {
         self.alias = alias
         self.assetId = assetId
         self.isDraft = isDraft
     }
+
+    public init(entity: EntityMentionCandidate) {
+        self.alias = entity.slug
+        self.assetId = entity.imageAssetId
+        self.isDraft = false
+        self.entity = entity
+    }
+
+    /// What the suggestion shows: the product's name / post's title, else `@alias`.
+    public var title: String { entity?.label ?? "@\(alias)" }
 }
 
 extension MentionText {
-    /// Candidates for the `@query` being typed: prefix matches first, then other matches.
+    /// Candidates for the `@query` being typed: prefix matches first, then other matches (a
+    /// product's or post's name counts too, Turkish letters folded).
     public static func suggestions(_ candidates: [MentionCandidate], query: String) -> [MentionCandidate] {
         let q = query.lowercased()
         guard !q.isEmpty else { return candidates }
-        return candidates.filter { $0.alias.hasPrefix(q) } + candidates.filter { !$0.alias.hasPrefix(q) && $0.alias.contains(q) }
+        func label(_ candidate: MentionCandidate) -> String { candidate.entity.map { Brand.slugify($0.label) } ?? "" }
+        let prefix = candidates.filter { $0.alias.hasPrefix(q) || label($0).hasPrefix(q) }
+        let prefixIds = Set(prefix.map(\.id))
+        let other = candidates.filter { !prefixIds.contains($0.id) && ($0.alias.contains(q) || label($0).contains(q)) }
+        return prefix + other
+    }
+
+    /// File aliases first (they win over products and posts of the same name), then products and
+    /// posts whose names no file alias took.
+    public static func merge(aliases: [MentionCandidate], entities: [EntityMentionCandidate]) -> [MentionCandidate] {
+        let taken = Set(aliases.map(\.alias))
+        return aliases + entities.filter { !taken.contains($0.slug) }.map(MentionCandidate.init(entity:))
     }
 
     /// Replace the `@query` that starts at `start` (UTF-16) and ends at `cursor` with

@@ -476,6 +476,11 @@ final class StudioRootViewController: UIViewController, UINavigationControllerDe
             show(.settings)
         case .pair, .usage:
             break
+        case .approvals(let contentId):
+            showApprovals(contentId: contentId)
+        case .conversationMessage(let id, let messageId):
+            showConversation(id)
+            chat?.scrollToMessage(messageId)
         case .brand(let id):
             if let top = mainNav.topViewController as? BrandProfileViewController, top.brandId == id { return }
             replaceRoot(with: [sectionRoot(BrandsViewController(app: app)), BrandProfileViewController(app: app, brandId: id)])
@@ -569,6 +574,12 @@ final class StudioRootViewController: UIViewController, UINavigationControllerDe
             return
         }
         replaceChat(with: makeChat(app.conversationModel(id)))
+    }
+
+    /// "Onay bekleyenler" pushed over the page on screen (the chat, a post), with a back button.
+    private func showApprovals(contentId: EntityID?) {
+        if let top = mainNav.topViewController as? IOSApprovalsViewController, top.contentId == contentId { return }
+        mainNav.pushViewController(IOSApprovalsViewController(app: app, contentId: contentId), animated: isOnScreen)
     }
 
     /// The home: an empty new chat (kept if it is already on screen, with its draft).
