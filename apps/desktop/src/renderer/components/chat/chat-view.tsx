@@ -7,7 +7,7 @@ import { ScrollFollower, type ScrollMetrics, showJumpToLatest } from "../../lib/
 import { buildTranscript, type TranscriptItem } from "../../lib/transcript.ts";
 import { canRunChat } from "../../lib/usage.ts";
 import { useAppStore } from "../../state/app-store.ts";
-import type { ConversationController } from "../../state/conversation.ts";
+import type { ConversationController, ConversationSnapshot } from "../../state/conversation.ts";
 import { useFocusRequests } from "../../state/focus-requests.ts";
 import { useAgentChoice, useConversation, useJobs } from "../../state/studio.tsx";
 import { useConversationActions } from "../shell/conversation-actions.ts";
@@ -103,6 +103,7 @@ export function ChatView({ id }: { id: string }) {
   const composer = useRef<ComposerHandle | null>(null);
   const [placeholder, setPlaceholder] = useState("Bir şey sor…");
   const follow = useFollowBottom();
+  const older = useOlderMessages(controller, conversation, follow.scroller);
   const presence: WorkerPresence | null = state?.presence ?? jobs.presence;
   const aliases = state?.aliases ?? [];
   const entities = useMentionCandidates(state?.conversation.brandId ?? null);
@@ -167,11 +168,18 @@ export function ChatView({ id }: { id: string }) {
     <div className="relative min-h-0 flex-1">
       <div
         ref={follow.scroller}
-        onScroll={follow.onScroll}
-        onWheel={follow.onWheel}
+        onScroll={() => {
+          follow.onScroll();
+          older.onScroll();
+        }}
+        onWheel={(event) => {
+          follow.onWheel(event);
+          older.onUserScroll();
+        }}
         className="scroll-area absolute inset-0 overflow-x-hidden [overflow-anchor:none]"
       >
         <div ref={follow.content} className={cn(COLUMN, "pt-7 pb-[148px]")}>
+          <OlderMessages snapshot={conversation} onLoad={older.load} />
           <TranscriptItems
             items={items}
             aliases={aliases}
@@ -286,33 +294,151 @@ export function useMessageFocus(
   conversationId: string,
   items: readonly TranscriptItem[],
   onBeforeScroll?: () => void,
+  /**
+   * Loads older messages until `messageId` is in the transcript (ConversationController
+   * .ensureMessage); resolves false when it is not there. Without it only a message already
+   * on screen is shown.
+   */
+  ensure?: (messageId: string) => Promise<boolean>,
 ): string | null {
   const request = useFocusRequests((s) => s.message);
   const [highlight, setHighlight] = useState<string | null>(null);
+  const [scrollTo, setScrollTo] = useState<{ id: string; nonce: number } | null>(null);
   const ready = items.length > 0 && !items.some((i) => i.kind === "loading");
   const before = useRef(onBeforeScroll);
   before.current = onBeforeScroll;
+  const ensureRef = useRef(ensure);
+  ensureRef.current = ensure;
+  /** The request whose message is being loaded (older pages). */
+  const loading = useRef<number | null>(null);
   useEffect(() => {
     if (!request || request.conversationId !== conversationId || !ready) return;
-    useFocusRequests.getState().takeMessage(request.nonce);
     const target = request.messageId;
-    if (!items.some((i) => itemMessageId(i) === target)) return;
+    if (!items.some((i) => itemMessageId(i) === target)) {
+      const load = ensureRef.current;
+      if (!load) {
+        useFocusRequests.getState().takeMessage(request.nonce);
+        return;
+      }
+      if (loading.current === request.nonce) return;
+      loading.current = request.nonce;
+      const { nonce } = request;
+      // Found: the grown transcript runs this effect again and it scrolls there.
+      void load(target)
+        .catch(() => false)
+        .then((found) => {
+          if (loading.current === nonce) loading.current = null;
+          if (!found) useFocusRequests.getState().takeMessage(nonce);
+        });
+      return;
+    }
+    useFocusRequests.getState().takeMessage(request.nonce);
     setHighlight(target);
+    // Scrolled in its own effect: taking the request re-runs this one at once.
+    setScrollTo({ id: target, nonce: request.nonce });
+  }, [request, conversationId, ready, items]);
+  useEffect(() => {
+    if (!scrollTo) return;
     const frame = requestAnimationFrame(() => {
       before.current?.();
       const el = [...document.querySelectorAll<HTMLElement>("[data-message-id]")].find(
-        (node) => node.dataset.messageId === target,
+        (node) => node.dataset.messageId === scrollTo.id,
       );
       el?.scrollIntoView?.({ block: "center", behavior: "smooth" });
     });
     return () => cancelAnimationFrame(frame);
-  }, [request, conversationId, ready, items]);
+  }, [scrollTo]);
   useEffect(() => {
     if (!highlight) return;
     const timer = setTimeout(() => setHighlight(null), 2_400);
     return () => clearTimeout(timer);
   }, [highlight]);
   return highlight;
+}
+
+/** Within this many pixels of the top, scrolling up loads the older messages. */
+export const LOAD_OLDER_THRESHOLD = 400;
+
+/**
+ * "Load older messages" for a transcript that follows the bottom: scrolling up near the top (by
+ * the reader, not a scroll the view makes) loads the page before the oldest message, and the
+ * view keeps its place when that page lands above it.
+ */
+export function useOlderMessages(
+  controller: ConversationController | null,
+  snapshot: Pick<ConversationSnapshot, "state" | "loadingOlder"> | null,
+  scroller: React.RefObject<HTMLDivElement | null>,
+) {
+  const hasMore = snapshot?.state?.hasMoreMessages ?? false;
+  const loadingOlder = snapshot?.loadingOlder ?? false;
+  const first = snapshot?.state?.messages[0]?.id ?? null;
+  /** Distance from the end to keep while older messages land above (null: none asked). */
+  const keep = useRef<number | null>(null);
+  const userAt = useRef(0);
+
+  const load = useCallback(() => {
+    if (!controller || !hasMore || loadingOlder) return;
+    const el = scroller.current;
+    keep.current = el ? el.scrollHeight - el.scrollTop : null;
+    void controller.loadOlder();
+  }, [controller, hasMore, loadingOlder, scroller]);
+
+  useLayoutEffect(() => {
+    if (loadingOlder || keep.current === null) return;
+    const el = scroller.current;
+    // `first` changed: the older page is in; the content above grew by its height.
+    if (el && first !== null) el.scrollTop = el.scrollHeight - keep.current;
+    keep.current = null;
+  }, [first, loadingOlder, scroller]);
+
+  return {
+    load,
+    /** The reader moved the view (wheel, trackpad): scrolls that follow are theirs. */
+    onUserScroll: () => {
+      userAt.current = Date.now();
+    },
+    onScroll: () => {
+      const el = scroller.current;
+      if (!el || Date.now() - userAt.current > 1_000) return;
+      if (el.scrollTop < LOAD_OLDER_THRESHOLD) load();
+    },
+  };
+}
+
+/** The top of a transcript with older messages: loading, its error, or the button. */
+export function OlderMessages({
+  snapshot,
+  onLoad,
+}: {
+  snapshot: Pick<ConversationSnapshot, "state" | "loadingOlder" | "olderError"> | null;
+  onLoad(): void;
+}) {
+  if (!snapshot?.state?.hasMoreMessages) return null;
+  return (
+    <div className="flex items-center justify-center gap-2 pb-4 text-footnote text-fg-3">
+      {snapshot.loadingOlder ? (
+        <>
+          <WorkingDots size={12} />
+          Önceki mesajlar yükleniyor…
+        </>
+      ) : snapshot.olderError ? (
+        <>
+          <span className="text-danger">Önceki mesajlar yüklenemedi: {snapshot.olderError}</span>
+          <button type="button" onClick={onLoad} className="text-accent-text hover:underline">
+            Yeniden dene
+          </button>
+        </>
+      ) : (
+        <button
+          type="button"
+          onClick={onLoad}
+          className="rounded-full px-2 py-0.5 hover:bg-control hover:text-fg"
+        >
+          Önceki mesajlar
+        </button>
+      )}
+    </div>
+  );
 }
 
 function MessageAnchor({
@@ -363,7 +489,15 @@ export function TranscriptItems({
   onEditPlan(): void;
   onEditQueued(text: string): void;
 }) {
-  const highlight = useMessageFocus(controller.id, items, onFocusScroll);
+  const highlight = useMessageFocus(
+    controller.id,
+    items,
+    onFocusScroll,
+    // Test stubs may be partial controllers.
+    typeof controller.ensureMessage === "function"
+      ? (messageId) => controller.ensureMessage(messageId)
+      : undefined,
+  );
   // Only the last reply's error offers "Yeniden dene", and only while nothing runs or waits.
   const busy = items.some((i) => i.kind === "working" || i.kind === "queued");
   let lastAssistant = -1;
