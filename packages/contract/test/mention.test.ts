@@ -2,8 +2,10 @@ import { describe, expect, it } from "vitest";
 import {
   allocateMentionSlugs,
   engineNotReadyError,
+  isSvgSlideHtml,
   mentionBase,
   productPhotoAngle,
+  READY_GENERATION_ENGINES,
   resolveEntityMentions,
 } from "../src/index.ts";
 
@@ -66,10 +68,25 @@ describe("@product / @post mention names", () => {
 });
 
 describe("generation engines", () => {
-  it("HTML and Wecra are ready", () => {
+  it("HTML, Wecra and SVG are ready", () => {
     expect(engineNotReadyError("html")).toBeNull();
     expect(engineNotReadyError("wecra")).toBeNull();
-    expect(engineNotReadyError("svg")).toBe("Bu motor henüz hazır değil (SVG)");
+    expect(engineNotReadyError("svg")).toBeNull();
+    expect(READY_GENERATION_ENGINES).toEqual(["wecra", "html", "svg"]);
     expect(engineNotReadyError("code")).toBe("Bu motor henüz hazır değil (Kod)");
+  });
+
+  it("recognises an SVG engine slide by its mark", () => {
+    expect(
+      isSvgSlideHtml(
+        '<!doctype html>\n<html lang="tr" data-studio-engine="svg"><body><svg></svg></body></html>',
+      ),
+    ).toBe(true);
+    expect(
+      isSvgSlideHtml(
+        '<!doctype html><html lang="tr"><body><div data-artboard></div></body></html>',
+      ),
+    ).toBe(false);
+    expect(isSvgSlideHtml(null)).toBe(false);
   });
 });

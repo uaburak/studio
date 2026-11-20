@@ -8,7 +8,8 @@ import { ARTBOARDS, type ContentType } from "./content.ts";
  * The owner picks the engine that designs a post: `wecra` (Wecra's canvas tools), `html` (the
  * HTML/CSS pipeline), `svg` (vector, written by the agent) or `code` (Python in a closed
  * sandbox). Every engine delivers the same thing (1080×1350 pictures, caption + hashtags, the
- * engine's source). `html` and `wecra` are ready; the others fail clearly instead of falling back.
+ * engine's source). `html`, `wecra` and `svg` are ready; `code` fails clearly instead of falling
+ * back.
  */
 
 export const GenerationEngine = z
@@ -20,7 +21,19 @@ export type GenerationEngine = z.infer<typeof GenerationEngine>;
 export const DEFAULT_GENERATION_ENGINE: GenerationEngine = "html";
 
 /** Engines that run today. */
-export const READY_GENERATION_ENGINES: readonly GenerationEngine[] = ["wecra", "html"];
+export const READY_GENERATION_ENGINES: readonly GenerationEngine[] = ["wecra", "html", "svg"];
+
+/**
+ * The SVG engine stores each slide as an HTML document around one inline `<svg>` (the engine's
+ * source), marked `<html data-studio-engine="svg">`. Such a version is edited only from the chat
+ * (`revise_post` revises the SVG), never on the canvas.
+ */
+export const SVG_SLIDE_ATTR = "data-studio-engine";
+
+/** A slide made by the SVG engine (its HTML carries the engine mark on `<html>`). */
+export function isSvgSlideHtml(html: string | null | undefined): boolean {
+  return typeof html === "string" && /<html\b[^>]*\sdata-studio-engine=["']?svg\b/i.test(html);
+}
 
 /** What the owner sees when a not-yet-ready engine is asked for. */
 export const ENGINE_NOT_READY_MESSAGE = "Bu motor henüz hazır değil";

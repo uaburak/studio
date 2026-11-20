@@ -210,6 +210,38 @@ describe("approval requests", () => {
     }
   });
 
+  it("approving an SVG post's picture renders it into the SVG's slot of that version", async () => {
+    const brand = await createBrand();
+    const post = await createContent(brand.id);
+    const v = await addVersion(post.id, {
+      origin: "generated",
+      slides: [
+        {
+          html: '<!doctype html>\n<html lang="tr" data-studio-engine="svg">\n<head><link rel="stylesheet" href="/brand/brand.css"></head>\n<body>\n<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="1350" viewBox="0 0 1080 1350"><rect data-slot="ai-image" data-slot-ratio="4:3" x="80" y="500" width="920" height="690"></rect></svg>\n</body>\n</html>\n',
+          width: 1080,
+          height: 1350,
+        },
+      ],
+    });
+    const picture = await upload(brand.id);
+    const req = await createApproval({
+      brandId: brand.id,
+      kind: "product_image",
+      contentId: post.id,
+      slotId: "ai-image",
+      assetIds: [picture.id],
+    });
+    const result = ApprovalActionResult.parse(
+      (await api("POST", `/api/approvals/${req.id}/approve`, {})).body,
+    );
+    expect(result.job).toMatchObject({ type: "content.render", contentId: post.id });
+    expect(result.job?.payload).toMatchObject({
+      version: v.version,
+      slotAssignments: { "ai-image": picture.id },
+      note: "Onaylanan görsel SVG yuvasına yerleştirildi",
+    });
+  });
+
   it("approving a product photo upgrade replaces the photo and trashes the old one", async () => {
     const brand = await createBrand();
     const [front, back, better] = [
@@ -393,7 +425,7 @@ describe("brand engine and picture style", () => {
     expect(accepted.status, JSON.stringify(accepted.body)).toBe(200);
     Plan.parse(accepted.body);
     const refused = expectError(
-      await api("POST", `/api/plans/${planId}/generate`, { engine: "svg" }),
+      await api("POST", `/api/plans/${planId}/generate`, { engine: "code" }),
       400,
       "validation_error",
     );

@@ -839,6 +839,14 @@ describe("the canvas read only (E3)", () => {
     // An AI run that may make a version: the canvas waits.
     expect(editLock(base, { chatWorking: true })).toMatchObject({ kind: "busy" });
     expect(editLock(base, { jobRunning: true })).toMatchObject({ kind: "busy" });
+    // A version the SVG engine made is edited only from the chat (Faz 3).
+    const svgHtml =
+      '<!doctype html>\n<html lang="tr" data-studio-engine="svg"><head></head><body><svg width="1080" height="1350"></svg></body></html>';
+    const svgVersion = { ...v2, slides: v2.slides.map((s) => ({ ...s, html: svgHtml })) };
+    expect(editLock({ ...base, current: svgVersion, displayed: svgVersion })).toMatchObject({
+      kind: "svg",
+      message: expect.stringContaining("sohbetten"),
+    });
     expect(editLock({ ...base, activity: { kind: "revising", message: "" } })).toMatchObject({
       kind: "busy",
     });

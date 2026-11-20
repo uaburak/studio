@@ -8,6 +8,7 @@ import {
   type ApprovalRequest,
   type ApprovalTarget,
   type BrandProduct,
+  isSvgSlideHtml,
   type Job,
   MAX_PRODUCT_IMAGES,
 } from "@studio/contract";
@@ -272,6 +273,10 @@ export async function approveRequest(
       },
     });
   } else if (row.contentId && row.slotId) {
+    // An SVG engine version (Faz 3): the worker turns the SVG's slot marker into an <image> of
+    // the picture and renders a new version of exactly that version. An HTML version: the slot
+    // is filled by rendering the current version.
+    const svg = await svgSlot(db, row.contentId, row.slotId);
     job = await ctx.createJob({
       type: "content.render",
       brandId: row.brandId,
@@ -279,7 +284,9 @@ export async function approveRequest(
       payload: {
         format: "jpeg",
         slotAssignments: { [row.slotId]: chosen },
-        note: "Onaylanan görsel yerleştirildi",
+        ...(svg
+          ? { version: svg.version, note: "Onaylanan görsel SVG yuvasına yerleştirildi" }
+          : { note: "Onaylanan görsel yerleştirildi" }),
       },
     });
   }
@@ -322,6 +329,31 @@ export async function canvasSlot(
   }
   // A Wecra id the facts left out (a busy slide): Wecra itself says if it is not there.
   return /^\d+:\d+$/.test(slotId) ? { version: current.version, nodeId: slotId } : null;
+}
+
+/**
+ * The current version when it was made by the SVG engine and has the slot marker
+ * (`data-slot="<slotId>"` in its SVG); null otherwise.
+ */
+export async function svgSlot(
+  db: Db,
+  contentId: string,
+  slotId: string,
+): Promise<{ version: number } | null> {
+  const [current] = await db
+    .select({ id: contentVersions.id, version: contentVersions.version })
+    .from(contents)
+    .innerJoin(contentVersions, eq(contents.currentVersionId, contentVersions.id))
+    .where(eq(contents.id, contentId));
+  if (!current) return null;
+  const slides = await db
+    .select({ html: contentVersionSlides.html })
+    .from(contentVersionSlides)
+    .where(eq(contentVersionSlides.versionId, current.id));
+  const marker = `data-slot="${slotId.replace(/&/g, "&amp;").replace(/"/g, "&quot;")}"`;
+  return slides.some((s) => isSvgSlideHtml(s.html) && s.html.includes(marker))
+    ? { version: current.version }
+    : null;
 }
 
 /**

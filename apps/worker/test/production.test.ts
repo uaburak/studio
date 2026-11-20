@@ -124,9 +124,9 @@ describe("generate_post: engine, variants and products", () => {
 
   it("fails clearly for an engine that is not ready, also when it is the brand's default", async () => {
     const asked = executor();
-    const res = await asked.ex.execute("generate_post", { brief: "Hasat", engine: "svg" });
+    const res = await asked.ex.execute("generate_post", { brief: "Hasat", engine: "code" });
     expect(res.isError).toBe(true);
-    expect(String(res.data.error)).toContain("Bu motor henüz hazır değil (SVG)");
+    expect(String(res.data.error)).toContain("Bu motor henüz hazır değil (Kod)");
     expect(asked.state.jobs).toHaveLength(0);
 
     const byBrand = executor({ brands: [fakeBrand({ id: "brand_1", defaultEngine: "code" })] });

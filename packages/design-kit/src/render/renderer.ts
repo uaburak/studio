@@ -11,6 +11,7 @@ import {
   type InPageResult,
   inPageLintInvocation,
 } from "../lint/inpage.ts";
+import type { Raster } from "../lint/raster.ts";
 import type { LintConfig, LintReport } from "../lint/report.ts";
 import { type LintPage, lintSlide, type NetworkLog } from "../lint/run.ts";
 import { STRICT_CSP } from "../sanitize/preview.ts";
@@ -96,6 +97,22 @@ export interface RenderAndLintRequest extends RenderRequest {
 
 export interface RenderAndLintResult extends RenderResult {
   report: LintReport;
+}
+
+export interface RenderAndInspectRequest extends RenderRequest {
+  /** An expression evaluated in the laid-out page (the design's own JavaScript stays off). */
+  inspect: string;
+  /**
+   * CSS added for a second capture at CSS scale (e.g. text made transparent, for contrast
+   * against the rendered background); omitted: no second capture.
+   */
+  rasterCss?: string;
+}
+
+export interface RenderAndInspectResult<T> extends RenderResult {
+  inspected: T;
+  /** The capture with `rasterCss` applied. */
+  raster?: Raster;
 }
 
 export interface PdfRequest {
@@ -394,6 +411,41 @@ export class Renderer {
         network: s.network,
         served: s.served,
         timings: { ...s.timings, screenshotMs, encodeMs, lintMs, totalMs: Date.now() - t0 },
+      };
+    });
+  }
+
+  /**
+   * Render and inspect in one page load: the images, the value of `inspect` evaluated in the
+   * page (geometry a caller measures itself, e.g. an SVG design's text boxes) and, with
+   * `rasterCss`, a second capture with that CSS applied.
+   */
+  async renderAndInspect<T>(req: RenderAndInspectRequest): Promise<RenderAndInspectResult<T>> {
+    const t0 = Date.now();
+    return this.#session(req, async (s) => {
+      const { screenshotMs, encodeMs, ...img } = await this.#capture(s, req);
+      const inspected = (await s.page.evaluate(req.inspect)) as T;
+      let raster: Raster | undefined;
+      if (req.rasterCss !== undefined) {
+        await s.page.evaluate(
+          `(() => { const s = document.createElement("style"); s.textContent = ${JSON.stringify(req.rasterCss)}; document.head.appendChild(s); })()`,
+        );
+        const png = await s.page.screenshot({
+          type: "png",
+          clip: { x: 0, y: 0, width: req.width, height: req.height },
+          scale: "css",
+          animations: "disabled",
+          caret: "hide",
+        });
+        raster = await decodePng(new Uint8Array(png));
+      }
+      return {
+        ...img,
+        inspected,
+        ...(raster ? { raster } : {}),
+        network: s.network,
+        served: s.served,
+        timings: { ...s.timings, screenshotMs, encodeMs, totalMs: Date.now() - t0 },
       };
     });
   }

@@ -28,9 +28,11 @@ export {
   type NumberToken,
 } from "./numbers.ts";
 export {
+  buildReport,
   type CarouselLintReport,
   CarouselLintReportSchema,
   DEFAULT_VOID,
+  issue,
   type LayerMetrics,
   type LintConfig,
   type LintIssue,

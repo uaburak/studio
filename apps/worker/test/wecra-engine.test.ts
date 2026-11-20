@@ -378,9 +378,9 @@ describe("the Wecra engine (content.generate, engine: wecra)", () => {
       throw new Error("no AI call expected");
     };
     const handler = createContentGenerateHandler(deps(api, runner));
-    const svg = job({ engine: "svg" });
-    await expect(handler.run(svg.job.payload as never, svg.ctx)).rejects.toThrow(
-      "Bu motor henüz hazır değil (SVG)",
+    const code = job({ engine: "code" });
+    await expect(handler.run(code.job.payload as never, code.ctx)).rejects.toThrow(
+      "Bu motor henüz hazır değil (Kod)",
     );
     const reel = job({ engine: "wecra", type: "reel" });
     await expect(handler.run(reel.job.payload as never, reel.ctx)).rejects.toThrow(/Reels/);

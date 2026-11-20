@@ -351,10 +351,17 @@ const DATA_NAME = /^(data|aria)-[a-z0-9_.:-]+$/;
 
 type Action = "keep" | "drop" | "unwrap";
 
-function elementAction(el: P5Element): { action: Action; why?: string } {
+function elementAction(el: P5Element, opts: SanitizeOptions): { action: Action; why?: string } {
   const tag = el.tagName.toLowerCase();
   if (el.namespaceURI === NS.SVG) {
     if (SVG_KEEP.has(tag)) return { action: "keep" };
+    // A picture in an SVG design (the SVG engine): only a served asset, like <img src>.
+    if (tag === "image") {
+      const href = attr(el, "href") ?? attr(el, "xlink:href");
+      return href !== null && isVirtualAssetUrl(href, opts.assetPrefixes)
+        ? { action: "keep" }
+        : { action: "drop", why: "<image> must reference an allowed asset URL" };
+    }
     return { action: "drop", why: `<${tag}> is not allowed inside SVG` };
   }
   if (el.namespaceURI !== NS.HTML) return { action: "drop", why: `foreign element <${tag}>` };
@@ -401,8 +408,13 @@ function attributeProblem(
   if (!allowed) return `attribute "${name}" is not allowed on <${tag}>`;
   const v = a.value;
   if (svg) {
-    if (name === "href" || name === "xlink:href")
+    if (name === "href" || name === "xlink:href") {
+      if (tag === "image")
+        return isVirtualAssetUrl(v, opts.assetPrefixes)
+          ? null
+          : `image href "${v.slice(0, 120)}" is not an allowed asset URL`;
       return isFragmentUrl(v) ? null : `"${name}" must be a #fragment`;
+    }
     if (/url\s*\(|\\/i.test(v)) {
       const refs = urlReferences(tokenizeCss(v));
       if (refs.bad || refs.dynamic || refs.urls.some((u) => !isFragmentUrl(u.trim())))
@@ -441,7 +453,7 @@ function collectEdits(source: string, root: P5ParentNode, opts: SanitizeOptions)
       if (!isElement(node)) continue;
       const el = node;
       const tag = el.tagName.toLowerCase();
-      const { action, why } = elementAction(el);
+      const { action, why } = elementAction(el, opts);
       const ranges = elementRanges(el);
       if (action === "drop") {
         out.findings.push({ kind: "element", tag, action: "removed", detail: why ?? "" });
@@ -537,7 +549,7 @@ function rebuildClean(root: P5ParentNode, opts: SanitizeOptions) {
       continue;
     }
     const el = node;
-    const { action } = elementAction(el);
+    const { action } = elementAction(el, opts);
     if (action === "drop") continue;
     rebuildClean(el, opts);
     if (action === "unwrap") {

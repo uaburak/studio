@@ -210,6 +210,29 @@ describe("sanitiser: XSS and exfiltration corpus", () => {
     expect(isSanitized(ok)).toBe(true);
   });
 
+  it("keeps an SVG <image> only for a served asset (the SVG engine's pictures)", () => {
+    const ok = wrap(
+      '<svg viewBox="0 0 2 2"><image href="/media/asset_1.jpg" width="2" height="2" preserveAspectRatio="xMidYMid slice"/></svg>',
+    );
+    expect(isSanitized(ok)).toBe(true);
+    for (const bad of [
+      '<svg><image href="https://evil.example/x.png"/></svg>',
+      '<svg><image href="data:image/png;base64,AAAA"/></svg>',
+      '<svg><image href="/etc/passwd"/></svg>',
+      '<svg><image width="2" height="2"/></svg>',
+    ]) {
+      const res = sanitizeSlideHtml(wrap(bad));
+      expect(res.html, bad).not.toContain("<image");
+      assertSafe(res.html);
+    }
+    // Only the prefixes the caller allows.
+    expect(
+      sanitizeSlideHtml(wrap('<svg><image href="/media/a.jpg"/></svg>'), {
+        assetPrefixes: ["/brand/"],
+      }).html,
+    ).not.toContain("<image");
+  });
+
   it("falls back to rebuilding when splicing cannot reach a node (merged body attributes)", () => {
     const res = sanitizeSlideHtml(`${wrap("<p>x</p>")}<body onload="alert(1)">`);
     assertSafe(res.html);

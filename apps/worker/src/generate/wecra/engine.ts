@@ -468,7 +468,7 @@ export function brandPictures(brand: BrandContext): WecraPicture[] {
 }
 
 /** The named products' photos (the first few each; the cover is shown to the model). */
-async function productPictures(
+export async function productPictures(
   deps: ContentGenerateDeps,
   brandId: string,
   productIds: readonly string[],

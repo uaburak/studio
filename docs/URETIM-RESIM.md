@@ -130,3 +130,37 @@ Reels ve hikâye sonra ayrı ele alınacak.
   yazılmış alt metne dokunmaz. Post düzenleyicisinin Açıklama sekmesinde.
 - Sohbet: `@post` satırı tuval postunu "tuvalde" diye işaretler (`TurnContent.canvas`); "devamını getir"
   kuralı canvas araçlarıyla, elle yapılan katmanları koruyarak tamamlatır; `canvas_outline` `brandAssets` verir.
+
+## Faz 3 — SVG motoru (yapıldı)
+
+- `READY_GENERATION_ENGINES = [wecra, html, svg]` (Mac ayarları ve iOS `GenerationEngine.ready` aynı).
+  `content.generate` `engine: svg` (`apps/worker/src/generate/svg/`): HTML/Wecra ile aynı marka girdileri
+  (onaylı profil belirteçleri, renkler, fontlar, logolar, facts/izinli sayılar, ses, skill'ler, @görseller,
+  ürün fotoğrafları, internet). Model her slaytı tek bir `<svg>` olarak (1080×1350; story 1080×1920; "kare
+  format" denirse 1080×1080) ve açıklama + hashtag'leri yazar. Görseller yol ile: `/brand/logos/…`,
+  `/media/<assetId>.<ext>`; fontlar `style="font-family: var(--font-<rol>)"` ile brand.css'in
+  `@font-face`'lerinden.
+- Saklanan slayt: `<html data-studio-engine="svg">` içinde brand.css bağlantısı, SVG'nin kendi `<style>`'ı
+  (başa taşınır) ve `<svg>` — motorun kaynağı budur (`readSvgSlide`, `isSvgSlideHtml`). Temizlik iki kat:
+  SVG geçişi (tek kök, artboard ölçüsü, `@import`/`@font-face` yok, `<a>` açılır, yalnızca markanın ve
+  sunulan `/media` görselleri) + design-kit HTML temizleyicisi (script, foreignObject, on…, animasyon,
+  dış adresler gider; SVG `<image>` yalnızca `/brand/`, `/media/` ile kalır) + son denetim.
+- Render: Chromium (design-kit `Renderer.renderAndInspect`). resvg seçilmedi: marka fontları WOFF2 ve
+  `@font-face` ile geliyor (resvg ikisini de okumaz), metin ölçümü ve kontrast için sayfa gerekiyor.
+  Aynı sayfada her `<text>` kutusu, fontu, boyutu, rengi, görseller ve yuva işaretleri ölçülür; yazısız
+  ikinci çekimle kontrast. Bulgular design-kit kural adlarıyla (`text-outside-artboard`, `safe-area`,
+  `min-font-size`, `font-family`, `font-load`, `text-overlap`, `text-logo-overlap`, `image-distorted`,
+  `slot-empty`, `slot-ratio-mismatch`, `unverified-number`, `contrast`, `network-request`) LintReport olur.
+- Döngü: üretim → eleştiri/düzeltme (render + rapor) bir kez her zaman, sonra hata kaldıkça; toplam
+  1 + `designFixPasses` (en çok 3) tur. En iyi sürüm (önce yapılamayan slayt, sonra hata sayısı) yüklenir,
+  `generated` sürüm kaydedilir, kontroller motorun raporlarıyla çalışır (SVG'ye otomatik HTML yaması yok;
+  `content.check` ve render sonrası kontroller de SVG ölçümünü kullanır).
+- Düzenleme yalnızca sohbetten: `revise_post` SVG sürümünde `engine: svg` gönderir; motor belirtilmemiş
+  bir `baseVersion + instructions` işi de taban sürüm SVG ise SVG motoruna gider (toplu düzeltme dahil).
+  Saklı SVG + render'lar + talimat → tek düzenleme çağrısı → `ai_edit` sürüm. Mac'te SVG sürümü tuvalde
+  salt okunur açılır ("SVG motoruyla üretildi; … sohbetten iste"), sohbet notu `revise_post` der.
+- "AI görsel" yuvası: `<rect data-slot="ai-image" data-slot-ratio="W:H" data-slot-label="AI görsel" …/>`.
+  İzin varsa `queueSlotImageJobs` bu işaretle iş açar; onay (`approvals.ts`) SVG sürümünde
+  `content.render {version, slotAssignments}` kuyruğa alır, worker işareti aynı kutuda
+  `<image … preserveAspectRatio="xMidYMid slice">` yapar (yuvarlak köşe clipPath ile korunur), yeniden
+  render eder, yeni sürüm. Reels SVG ile üretilmez.

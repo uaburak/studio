@@ -308,13 +308,8 @@ describe("@product / @post mentions", () => {
 describe("brand production engine", () => {
   it("lists every engine, only the ready ones selectable", () => {
     const options = engineOptions();
-    expect(options.map((o) => o.label)).toEqual([
-      "Wecra",
-      "HTML",
-      "SVG (yakında)",
-      "Kod (yakında)",
-    ]);
-    expect(options.filter((o) => o.ready).map((o) => o.value)).toEqual(["wecra", "html"]);
+    expect(options.map((o) => o.label)).toEqual(["Wecra", "HTML", "SVG", "Kod (yakında)"]);
+    expect(options.filter((o) => o.ready).map((o) => o.value)).toEqual(["wecra", "html", "svg"]);
     expect(engineChoice("")).toBeNull();
     expect(engineChoice("html")).toBe("html");
     expect(engineChoice("nope")).toBeNull();

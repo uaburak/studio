@@ -17,6 +17,7 @@ import {
   ApiError,
   ContentRenderPayload,
   type ContentVersion,
+  isSvgSlideHtml,
   type SlideInput,
   type SlideLayout,
 } from "@studio/contract";
@@ -45,6 +46,8 @@ import {
   type SlideReport,
 } from "../checks/pipeline.ts";
 import { loadBrandContext } from "../generate/brand.ts";
+import { fillSvgSlot } from "../generate/svg/document.ts";
+import { renderSvgSlide, type SvgRenderer, svgRendererOf } from "../generate/svg/render.ts";
 import { extensionForMime } from "../media.ts";
 import { defineHandler, type JobContext, RetryableError } from "../registry.ts";
 import {
@@ -119,6 +122,8 @@ export function applySlotAssignmentToSlide(
   patchCtx: PatchContext,
   src: string = mediaSrcFor(assetId),
 ): { html: string; matched: boolean } {
+  // An SVG engine slide: the slot marker becomes an <image> of the picture (Faz 3).
+  if (isSvgSlideHtml(html)) return fillSvgSlot(html, slotLayerId, src);
   const doc = parseSlide(html);
   const entry = doc.entries.get(slotLayerId);
 
@@ -549,6 +554,29 @@ async function renderSingleSlideJpeg(input: {
   };
 }
 
+/** An SVG engine slide: rendered and linted by the SVG engine's own pass (Faz 3). */
+async function renderSvgForRender(input: {
+  renderer: SvgRenderer;
+  html: string;
+  width: number;
+  height: number;
+  resolver: AssetResolver;
+  signal: AbortSignal;
+  lint: NonNullable<RenderAndLintRequest["lint"]>;
+}): Promise<Awaited<ReturnType<typeof renderSingleSlideJpeg>>> {
+  const res = await renderSvgSlide(input.renderer, { ...input, formats: ["png", "jpeg"] });
+  const jpeg = res.png ? await pngToSrgbJpeg(res.png, 92) : res.jpeg;
+  if (!jpeg) throw new Error("Slayt render çıktısı (PNG/JPEG) alınamadı.");
+  return {
+    jpeg,
+    width: input.width,
+    height: input.height,
+    layout: layoutFromReport(res.report),
+    missingFonts: [],
+    report: res.report,
+  };
+}
+
 export interface ExecuteContentRenderOptions {
   deps: ContentRenderDeps;
   jobId?: string;
@@ -805,17 +833,30 @@ export async function executeContentRender(
       const slide = targetVersion.slides[i];
       if (!slide) continue;
       signal.throwIfAborted();
-      const rendered = await renderSingleSlideJpeg({
-        renderer,
-        html: slide.html,
-        width: slide.width,
-        height: slide.height,
-        clampInstagramWidth: clampInstagram,
-        resolver,
-        signal,
-        systemFonts: brand.manifest.systemFontFamilies,
-        ...(lint ? { lint } : {}),
-      });
+      // An SVG engine slide is measured by its own lint (the HTML contract linter would only
+      // report the SVG as foreign markup).
+      const svgRenderer = isSvgSlideHtml(slide.html) ? svgRendererOf(renderer) : null;
+      const rendered = svgRenderer
+        ? await renderSvgForRender({
+            renderer: svgRenderer,
+            html: slide.html,
+            width: slide.width,
+            height: slide.height,
+            resolver,
+            signal,
+            lint: lint ?? { systemFonts: brand.manifest.systemFontFamilies },
+          })
+        : await renderSingleSlideJpeg({
+            renderer,
+            html: slide.html,
+            width: slide.width,
+            height: slide.height,
+            clampInstagramWidth: clampInstagram,
+            resolver,
+            signal,
+            systemFonts: brand.manifest.systemFontFamilies,
+            ...(lint ? { lint } : {}),
+          });
       for (const family of rendered.missingFonts) missingFonts.add(family);
       if (rendered.report) {
         checkReports.set(i, { report: rendered.report, jpegBytes: rendered.jpeg.byteLength });

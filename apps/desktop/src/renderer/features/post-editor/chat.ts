@@ -8,7 +8,12 @@
 // version first (S5), so the agent works on what the canvas shows; when a reply ends the post is
 // re-read, and versions the agent made land on the canvas (finished jobs of the post do the same,
 // post-detail.tsx). While a reply runs the canvas is read only (edit-lock.ts).
-import type { ApiClient, Content, ContentVersion } from "@studio/contract";
+import {
+  type ApiClient,
+  type Content,
+  type ContentVersion,
+  isSvgSlideHtml,
+} from "@studio/contract";
 import { useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from "react";
 import { describeError, useApi } from "../../lib/api.ts";
 import { type AgentChoice, choiceFor, FALLBACK_CHOICE, saveChoicePatch } from "../../lib/models.ts";
@@ -71,6 +76,11 @@ export function canvasNote(version: number): string {
   return `(v${version} Mac'teki tasarım tuvalinde kaydedildi: tasarım bu sürümün Wecra belgesidir, tuvalde elle yapılan değişiklikler onda. Değişikliği canvas_outline ile okuyup canvas_edit ile yap; HTML'den yeniden üretme.)`;
 }
 
+/** The note a request about an SVG engine version carries: it is revised from its SVG. */
+export function svgNote(version: number): string {
+  return `(v${version} SVG motoruyla üretildi: tasarım bu sürümün SVG'sidir ve yalnızca sohbetten düzenlenir. Değişikliği revise_post ile yap.)`;
+}
+
 /**
  * What every message says about the post it is about (E17: the current version each time). A
  * version saved from the canvas adds that its Wecra document is the design (`canvasNote`).
@@ -82,6 +92,8 @@ export function postReference(
     | null,
 ): string {
   const head = `“${content.title}” postu (id: ${content.id}${version ? `, güncel sürüm v${version.version}` : ""}) için:`;
+  if (version?.slides?.some((s) => isSvgSlideHtml(s.html)))
+    return `${head}\n${svgNote(version.version)}`;
   if (!version || !isCanvasVersion(version)) return head;
   return `${head}\n${canvasNote(version.version)}`;
 }

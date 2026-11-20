@@ -10,6 +10,7 @@ import {
   canvasNote,
   postReference,
   scopedInstruction,
+  svgNote,
 } from "../../src/renderer/features/post-editor/chat.ts";
 import { DEMO_PROFILE } from "../../src/renderer/features/post-editor/demo/fixtures.ts";
 import { slideDocument } from "../../src/renderer/features/post-editor/html/slide-document.ts";
@@ -223,6 +224,23 @@ describe("the AI on a version saved from the canvas", () => {
     expect(postReference({ id: "p1", title: "Post" }, { version: 2 })).toBe(
       "“Post” postu (id: p1, güncel sürüm v2) için:",
     );
+    // An SVG engine version is revised from its SVG, from the chat (Faz 3).
+    const svg = postReference(
+      { id: "p1", title: "Post" },
+      {
+        version: 4,
+        slides: [
+          {
+            html: '<!doctype html>\n<html lang="tr" data-studio-engine="svg"><body><svg></svg></body></html>',
+            width: 1080,
+            height: 1350,
+            renderedAssetId: null,
+          },
+        ],
+      },
+    );
+    expect(svg).toContain(svgNote(4));
+    expect(svg).toContain("revise_post");
   });
 });
 

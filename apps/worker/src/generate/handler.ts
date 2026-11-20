@@ -67,6 +67,7 @@ import {
 import type { DesignBrief } from "./prompt.ts";
 import { loadRepurpose, reelSpecFromPost, repurposeMedia, storyBrief } from "./repurpose.ts";
 import { queueSlotImageJobs } from "./slot-images.ts";
+import { isSvgRevision, runSvgGenerate } from "./svg/engine.ts";
 import { runTemplateGenerate, type TemplateAiCaller } from "./template.ts";
 import { runWecraGenerate } from "./wecra/engine.ts";
 
@@ -138,8 +139,8 @@ async function runContentGenerate(
   const payload = parsed.payload;
   const { brandId, contentId } = payload;
 
-  // The design engine the owner picked: HTML and Wecra run today; the others fail clearly and
-  // never fall back to HTML (docs/URETIM-RESIM.md).
+  // The design engine the owner picked: HTML, Wecra and SVG run today; the others fail clearly
+  // and never fall back to HTML (docs/URETIM-RESIM.md).
   const engineError = engineNotReadyError(payload.engine ?? DEFAULT_GENERATION_ENGINE);
   if (engineError) throw new Error(`${engineError}; post üretilmedi.`);
 
@@ -179,6 +180,17 @@ async function runContentGenerate(
   // Mac's canvas runner (wecra/engine.ts).
   if (payload.engine === "wecra") {
     return runWecraGenerate(ctx, deps, payload, {
+      requestedModel,
+      requestedEffort,
+      resolveMedia: (p) => resolveMedia(deps, p, signal),
+      check: (input) => checkGenerated(deps, ctx, input),
+    });
+  }
+
+  // The SVG engine (Faz 3): each slide one SVG document (svg/engine.ts). A chat revision of an
+  // SVG post (a base version + an instruction, no other engine named) is the SVG engine's too.
+  if (payload.engine === "svg" || (await isSvgRevision(deps, payload, signal))) {
+    return runSvgGenerate(ctx, deps, payload, {
       requestedModel,
       requestedEffort,
       resolveMedia: (p) => resolveMedia(deps, p, signal),

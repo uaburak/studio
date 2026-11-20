@@ -8,6 +8,8 @@ export {
   isChromiumAvailable,
   type PdfRequest,
   playwrightLintPage,
+  type RenderAndInspectRequest,
+  type RenderAndInspectResult,
   type RenderAndLintRequest,
   type RenderAndLintResult,
   RenderError,

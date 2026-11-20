@@ -28,6 +28,7 @@ import {
   type ContentVersion,
   defaultCheckSettings,
   isCheckEnabled,
+  isSvgSlideHtml,
   MAX_CHECK_RESULTS,
   type Platform,
   type SlideLayout,
@@ -57,6 +58,8 @@ import type { AgentDeps } from "../agent.ts";
 import { designSkillsBlock, loadEnabledBrandSkills, selectBrandSkills } from "../brand/skills.ts";
 import { type BrandContext, loadBrandContext } from "../generate/brand.ts";
 import { presetFor } from "../generate/pipeline.ts";
+import { svgTexts } from "../generate/svg/document.ts";
+import { renderSvgSlide, svgRendererOf } from "../generate/svg/render.ts";
 import { layoutFromReport } from "../render/layout.ts";
 import { createApiAssetPathResolver } from "../video/render-reel.ts";
 import {
@@ -208,6 +211,8 @@ export function presetForVersion(
 
 /** Visible text layers of a slide with their full text. */
 export function slideTexts(html: string): SlideText[] {
+  if (isSvgSlideHtml(html))
+    return svgTexts(html).map((t) => ({ layer: t.id, role: null, text: t.text.slice(0, 2_000) }));
   try {
     return parseSlide(html)
       .model.layers.filter((l) => l.type === "text" && !l.hidden && l.text.trim())
@@ -365,6 +370,19 @@ export async function runContentChecks(o: RunChecksOptions): Promise<RunChecksRe
 
   const lintRender = async (html: string, width: number, height: number, count: number) => {
     try {
+      // An SVG engine slide has its own lint (the HTML contract linter cannot read it).
+      const svgRenderer = isSvgSlideHtml(html) ? svgRendererOf(deps.renderer()) : null;
+      if (svgRenderer) {
+        const res = await renderSvgSlide(svgRenderer, {
+          html,
+          width,
+          height,
+          resolver,
+          signal,
+          lint: checkLintConfig(brand, preset, content.type, count),
+        });
+        return { report: res.report, jpeg: res.jpeg, failure: null };
+      }
       const res = await deps.renderer().renderAndLint({
         html,
         width,
@@ -536,6 +554,8 @@ export async function runContentChecks(o: RunChecksOptions): Promise<RunChecksRe
     const state = slide !== null && slide !== undefined ? states[slide] : undefined;
     // A canvas slide is the canvas's render: it is fixed on the canvas, not by patching HTML.
     if (!state?.report || state.canvas !== "none") return false;
+    // An SVG slide is changed from the chat (revise_post), not by patching HTML layers.
+    if (isSvgSlideHtml(state.html)) return false;
     return slideFixFor(r, fixContext(state)) !== null;
   };
   const fixContext = (s: SlideState): FixContext => ({
