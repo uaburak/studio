@@ -412,13 +412,15 @@ interface MarkableItem {
   title: string;
   hook: string | null;
   brief: string;
+  pillar: string | null;
   date: string | null;
   status: string;
 }
 
 /**
- * Near-duplicate marks for a plan's items (in their order) against the brand's history and each
- * other. Skipped items get none.
+ * Near-duplicate marks for a plan's items (in their order) against the brand's posts and each
+ * other (rejected, left-out and other open plans' items do not count: `countsAsHistory`). Skipped
+ * items get none.
  */
 export async function similarityMarks(
   db: Db,
@@ -439,7 +441,14 @@ export async function similarityMarks(
   );
   const live = items.filter((i) => i.status !== "skipped");
   const marks = planItemSimilarities(
-    live.map((i) => ({ id: i.id, title: i.title, hook: i.hook, brief: i.brief, date: i.date })),
+    live.map((i) => ({
+      id: i.id,
+      title: i.title,
+      hook: i.hook,
+      brief: i.brief,
+      pillar: i.pillar,
+      date: i.date,
+    })),
     history.entries,
   );
   const byId = new Map(

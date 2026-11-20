@@ -263,19 +263,33 @@ export interface SimilarityCandidate {
   title: string;
   hook?: string | null;
   brief?: string | null;
+  pillar?: string | null;
   date?: string | null;
 }
 
 /**
- * Near-duplicates of each item among the history and the plan's earlier items (best first, at
- * most two). The plan's own items in the history (same `planItemId`) are skipped.
+ * History that counts for near-duplicates: the brand's real posts (published, scheduled,
+ * approved, and the drafts of accepted plans). Items of rejected plans, items left out of
+ * accepted ones, other open proposals and posts in the trash never reached the audience, so
+ * repeating them is no repeat (the prompt's history block still tells the agent about them).
+ */
+export function countsAsHistory(entry: Pick<PlanningHistoryEntry, "kind">): boolean {
+  return entry.kind === "post";
+}
+
+/**
+ * Near-duplicates of each item among the brand's posts (`countsAsHistory`) and the plan's earlier
+ * items (best first, at most two). The plan's own items in the history (same `planItemId`) are
+ * skipped. Items of one plan are compared by title and opening line only.
  */
 export function planItemSimilarities(
   items: readonly SimilarityCandidate[],
   history: readonly PlanningHistoryEntry[],
 ): PlanItemSimilar[][] {
   const own = new Set(items.map((i) => i.id).filter((id): id is string => !!id));
-  const against = history.filter((e) => !(e.planItemId && own.has(e.planItemId)));
+  const against = history.filter(
+    (e) => countsAsHistory(e) && !(e.planItemId && own.has(e.planItemId)),
+  );
   const hits = findNearDuplicates(items, against, { withinList: true, limit: 2 });
   return hits.map((list) =>
     list.map((hit): PlanItemSimilar => {
