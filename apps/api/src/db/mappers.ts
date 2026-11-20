@@ -1,5 +1,7 @@
 import {
   type AgentRun,
+  type ApprovalCheckReport,
+  type ApprovalRequest,
   type Asset,
   assetContentPath,
   type Brand,
@@ -19,6 +21,7 @@ import {
   type JobStatus,
   type JobType,
   type Message,
+  type MessageEntityMention,
   type MessageMention,
   type MessagePart,
   type Plan,
@@ -53,6 +56,7 @@ export type PlanItemRow = typeof schema.planItems.$inferSelect;
 export type ConversationAliasRow = typeof schema.conversationAliases.$inferSelect;
 export type ContentCheckRunRow = typeof schema.contentCheckRuns.$inferSelect;
 export type BrandCheckSettingsRow = typeof schema.brandCheckSettings.$inferSelect;
+export type ApprovalRow = typeof schema.approvalRequests.$inferSelect;
 
 const iso = (d: Date) => d.toISOString();
 const isoOrNull = (d: Date | null) => (d ? d.toISOString() : null);
@@ -66,6 +70,8 @@ export function toBrand(r: BrandRow): Brand {
     status: r.status,
     createdAt: iso(r.createdAt),
     updatedAt: iso(r.updatedAt),
+    defaultEngine: r.defaultEngine ?? null,
+    imageStylePreset: r.imageStylePreset,
   };
 }
 
@@ -120,11 +126,13 @@ export function toBrandProfile(r: BrandProfileRow): BrandProfile {
   };
 }
 
-export function toBrandProduct(r: BrandProductRow): BrandProduct {
+/** `slug`: the product's mention name (lib/mentions.ts); omitted when not computed. */
+export function toBrandProduct(r: BrandProductRow, slug?: string): BrandProduct {
   return {
     id: r.id,
     brandId: r.brandId,
     name: r.name,
+    ...(slug ? { slug } : {}),
     description: r.description,
     category: r.category,
     tags: r.tags,
@@ -161,7 +169,15 @@ export interface CurrentVersionRef {
   contentHash: string;
 }
 
-export function toContent(r: ContentRow, current: CurrentVersionRef | null): Content {
+/**
+ * `pendingApprovals`: the post's pending approval requests (lib/approvals.ts `pendingCounts`);
+ * left out of the response when the caller did not count them.
+ */
+export function toContent(
+  r: ContentRow,
+  current: CurrentVersionRef | null,
+  pendingApprovals?: number,
+): Content {
   return {
     id: r.id,
     brandId: r.brandId,
@@ -189,6 +205,7 @@ export function toContent(r: ContentRow, current: CurrentVersionRef | null): Con
         ? { contentId: r.sourceContentId, version: r.sourceVersion, kind: r.sourceKind }
         : null,
     ...publishDetailsOf(r.publishDetails),
+    ...(pendingApprovals !== undefined ? { pendingApprovals } : {}),
   };
 }
 
@@ -337,6 +354,7 @@ export function toMessage(r: MessageRow): Message {
     // Written only by the chat service from contract-validated parts.
     parts: r.parts as MessagePart[],
     mentions: (r.mentions as MessageMention[] | null) ?? [],
+    entityMentions: (r.entityMentions as MessageEntityMention[] | null) ?? [],
     createdAt: iso(r.createdAt),
     updatedAt: iso(r.updatedAt),
   };
@@ -477,5 +495,31 @@ export function toBrandCheckSettings(r: BrandCheckSettingsRow): BrandCheckSettin
     strictness: r.strictness,
     autoFix: r.autoFix,
     updatedAt: iso(r.updatedAt),
+  };
+}
+
+export function toApproval(r: ApprovalRow): ApprovalRequest {
+  return {
+    id: r.id,
+    brandId: r.brandId,
+    contentId: r.contentId,
+    productId: r.productId,
+    conversationId: r.conversationId,
+    messageId: r.messageId,
+    kind: r.kind,
+    assetIds: r.assetIds,
+    // Stored by this server from a validated ApprovalCreate.
+    checkReport: (r.checkReport as ApprovalCheckReport | null) ?? null,
+    status: r.status,
+    slotId: r.slotId,
+    replacesAssetId: r.replacesAssetId,
+    approvedAssetId: r.approvedAssetId,
+    sourceJobId: r.sourceJobId,
+    regenerateJobId: r.regenerateJobId,
+    canRegenerate: r.request !== null,
+    decisionNote: r.decisionNote,
+    createdAt: iso(r.createdAt),
+    updatedAt: iso(r.updatedAt),
+    decidedAt: isoOrNull(r.decidedAt),
   };
 }

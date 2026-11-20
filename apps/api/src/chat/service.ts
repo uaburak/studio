@@ -17,7 +17,9 @@ import {
   type ConversationUpdate,
   checkPlanPeriod,
   checkQuestionAnswer,
+  DEFAULT_GENERATION_ENGINE,
   DEFAULT_JOB_MAX_ATTEMPTS,
+  engineNotReadyError,
   isActiveRunStatus,
   isPlanEditable,
   isTerminalJobStatus,
@@ -48,6 +50,7 @@ import {
   type RunFail,
   type RunUsage,
   resolveAliasMentions,
+  resolveEntityMentions,
   type TurnContext,
   type TurnOps,
   type TurnWriteResult,
@@ -78,6 +81,7 @@ import {
 } from "../db/mappers.ts";
 import {
   agentRuns,
+  approvalRequests,
   assets,
   brandProfiles,
   brands,
@@ -95,6 +99,7 @@ import {
 } from "../db/schema.ts";
 import { ApiProblem, badRequest, conflict, invalidTransition, notFound } from "../lib/errors.ts";
 import { newId } from "../lib/ids.ts";
+import { brandMentions } from "../lib/mentions.ts";
 import { marksChanged, similarityMarks, storedMarks } from "../lib/planning.ts";
 import { assertPlanTemplates } from "../lib/templates.ts";
 import {
@@ -579,6 +584,21 @@ async function buildPart(
     }
     case "question":
       return { ...input, answer: null };
+    case "approval_request": {
+      const approval = await db.query.approvalRequests.findFirst({
+        where: eq(approvalRequests.id, input.approvalId),
+      });
+      if (!approval) throw notFound("approval request", input.approvalId);
+      if (conv.brandId && approval.brandId !== conv.brandId) {
+        throw badRequest(`approval request ${input.approvalId} belongs to another brand`, [
+          {
+            path: `${path}.approvalId`,
+            message: "approval request must belong to the conversation's brand",
+          },
+        ]);
+      }
+      return input;
+    }
   }
 }
 
@@ -720,6 +740,7 @@ async function finishRun(change: Change, run: AgentRunRow, outcome: RunOutcome):
       parts: [errorPart],
       deltaSeqs: [0],
       mentions: null,
+      entityMentions: null,
       clientMessageId: null,
       createdAt: now,
       updatedAt: now,
@@ -760,6 +781,7 @@ async function assistantDraft(change: Change, run: AgentRunRow) {
     parts: [],
     deltaSeqs: [],
     mentions: null,
+    entityMentions: null,
     clientMessageId: null,
     createdAt: change.now,
     updatedAt: change.now,
@@ -1070,6 +1092,15 @@ async function sendUserMessage(
     parts.push(attachmentPart(asset, alias));
   }
   const mentions = input.text ? resolveAliasMentions(input.text, book.targets()) : [];
+  // `@product` / `@post` of the conversation's brand; the conversation's file names win.
+  const entityMentions =
+    input.text && conv.brandId
+      ? resolveEntityMentions(
+          input.text,
+          (await brandMentions(db, conv.brandId)).targets,
+          new Set(book.targets().flatMap((t) => [t.alias, ...t.previousAliases])),
+        )
+      : [];
 
   const message: MessageRow = {
     id: messageId,
@@ -1080,6 +1111,7 @@ async function sendUserMessage(
     parts,
     deltaSeqs: parts.map(() => 0),
     mentions: mentions.length > 0 ? mentions : null,
+    entityMentions: entityMentions.length > 0 ? entityMentions : null,
     clientMessageId: input.clientMessageId ?? null,
     createdAt: now,
     updatedAt: now,
@@ -1929,6 +1961,18 @@ async function generatePlan(
   const profile = await db.query.brandProfiles.findFirst({
     where: and(eq(brandProfiles.brandId, plan.brandId), eq(brandProfiles.isCurrent, true)),
   });
+  // The design engine: asked for, else the brand's default, else HTML. Never a silent fallback.
+  const brandRow = await db.query.brands.findFirst({ where: eq(brands.id, plan.brandId) });
+  const engine = input.engine ?? brandRow?.defaultEngine ?? DEFAULT_GENERATION_ENGINE;
+  const notReady = engineNotReadyError(engine);
+  if (notReady) {
+    throw badRequest(notReady, [
+      {
+        path: "engine",
+        message: input.engine ? notReady : `${notReady}: markanın varsayılan motoru`,
+      },
+    ]);
+  }
 
   const created: JobRow[] = [];
   const nextItems = items.map((item) => {
@@ -1959,6 +2003,7 @@ async function generatePlan(
       ...(input.instructions ? { instructions: input.instructions } : {}),
       ...(input.model ? { model: input.model } : {}),
       ...(input.effort ? { effort: input.effort } : {}),
+      engine,
     });
     const job: JobRow = {
       id: newId(),

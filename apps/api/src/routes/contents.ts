@@ -51,6 +51,7 @@ import {
   schedules,
 } from "../db/schema.ts";
 import { assertChecksAllowApproval } from "../lib/approval-checks.ts";
+import { pendingCounts } from "../lib/approvals.ts";
 import { ApiProblem, badRequest, conflict, invalidTransition, notFound } from "../lib/errors.ts";
 import { newId } from "../lib/ids.ts";
 import { toPage } from "../lib/pagination.ts";
@@ -137,7 +138,8 @@ function cancelPendingSchedules(db: Db, contentId: string, now: Date): BatchItem
 
 async function respondContent(db: Db, id: string) {
   const loaded = await loadContent(db, id);
-  return toContent(loaded.row, loaded.current);
+  const pending = await pendingCounts(db, [id]);
+  return toContent(loaded.row, loaded.current, pending.get(id) ?? 0);
 }
 
 async function requireVersion(db: Db, contentId: string, version: number) {
@@ -318,18 +320,23 @@ export const contentRoutes = createRouter()
       if (deleted === "only") where.push(isNotNull(contents.deletedAt));
       else if (deleted !== "include") where.push(isNull(contents.deletedAt));
       if (cursor) where.push(lt(contents.id, cursor));
-      const rows = await createDb(c.env.DB)
+      const db = createDb(c.env.DB);
+      const rows = await db
         .select({ row: contents, current: currentVersionColumns })
         .from(contents)
         .leftJoin(contentVersions, eq(contents.currentVersionId, contentVersions.id))
         .where(and(...where))
         .orderBy(desc(contents.id))
         .limit(limit + 1);
+      const pending = await pendingCounts(
+        db,
+        rows.map((r) => r.row.id),
+      );
       return c.json(
         toPage(
           rows,
           limit,
-          (r) => toContent(r.row, r.current),
+          (r) => toContent(r.row, r.current, pending.get(r.row.id) ?? 0),
           (r) => r.row.id,
         ),
         200,
@@ -586,7 +593,7 @@ export const contentRoutes = createRouter()
         approvalMatchesCurrent(loaded) &&
         row.approvedHash === hash
       ) {
-        return c.json(toContent(row, current), 200);
+        return c.json(await respondContent(db, id), 200);
       }
       if (!statusIn(row.status, APPROVABLE_STATUSES)) {
         throw invalidTransition(

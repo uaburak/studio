@@ -49,6 +49,7 @@ import {
   planItems,
 } from "../db/schema.ts";
 import { notFound } from "../lib/errors.ts";
+import { mentionedEntities } from "../lib/mentions.ts";
 import { planningContext } from "../lib/planning.ts";
 import { enabledBrandSkills } from "../routes/brand-skills.ts";
 
@@ -209,6 +210,11 @@ export async function turnContext(db: Db, runId: string): Promise<TurnContext> {
       assistantMessageOf(db, run.id),
       messageCountOf(db, conv.id),
     ]);
+  // `@product` / `@post` of the message this turn answers (the trigger, else the latest user one).
+  const trigger = list.find((m) => m.id === run.triggerMessageId);
+  const latestUser =
+    trigger?.role === "user" ? trigger : [...list].reverse().find((m) => m.role === "user");
+  const mentioned = await mentionedEntities(db, conv.brandId, latestUser?.entityMentions ?? []);
   return {
     run: toAgentRun(run),
     conversation: await conversationView(db, conv),
@@ -223,6 +229,8 @@ export async function turnContext(db: Db, runId: string): Promise<TurnContext> {
     messageCount: total,
     brandSkills: conv.brandId ? await enabledBrandSkills(db, conv.brandId) : [],
     planning: await planningForTurn(db, conv.id, conv.brandId, list, openPlan),
+    mentionedProducts: mentioned.products,
+    mentionedContents: mentioned.contents,
   };
 }
 

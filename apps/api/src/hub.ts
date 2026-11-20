@@ -2,6 +2,7 @@ import { DurableObject } from "cloudflare:workers";
 import {
   type AiProviderStatus,
   type AiProvidersControl,
+  type ApprovalRequest,
   type ClaudeAccount,
   type ClaudeCommand,
   type ClaudeControl,
@@ -253,6 +254,20 @@ export class Hub extends DurableObject<Env> {
       }
     }
     return sockets.length;
+  }
+
+  /**
+   * An approval request was created or decided: tell the job-stream clients watching its brand
+   * or everything (lists showing "Onay bekliyor" refresh).
+   */
+  async approvalChanged(approval: ApprovalRequest): Promise<void> {
+    const targets = new Set<WebSocket>([
+      ...this.ctx.getWebSockets(`brand:${approval.brandId}`),
+      ...this.ctx.getWebSockets("all"),
+    ]);
+    if (targets.size === 0) return;
+    const frame = encodeJobStreamMessage({ type: "approval.updated", approval });
+    for (const ws of targets) trySend(ws, frame);
   }
 
   /** The API inserted a queued job: tell watchers and try to dispatch it. */

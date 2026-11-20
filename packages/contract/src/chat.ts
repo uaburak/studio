@@ -9,6 +9,7 @@ import {
 } from "./agent.ts";
 import { Asset, AssetKind } from "./asset.ts";
 import { Brand } from "./brand.ts";
+import { BrandProduct } from "./brand-product.ts";
 import { BrandProfile } from "./brand-profile.ts";
 import { BrandSkill } from "./brand-skill.ts";
 import { AttachmentAlias, MessageMention, TurnAlias } from "./chat-alias.ts";
@@ -23,6 +24,8 @@ import {
   Timestamp,
   utf8Length,
 } from "./common.ts";
+import { Content } from "./content.ts";
+import { MessageEntityMention } from "./mention.ts";
 import { MAX_PLAN_ITEMS, Plan, PlanItemInput } from "./plan.ts";
 import { PlanningContext } from "./planning.ts";
 
@@ -154,6 +157,7 @@ export const MessagePartType = z
     "error",
     "tool_step",
     "consent",
+    "approval_request",
   ])
   .meta({ id: "MessagePartType" });
 export type MessagePartType = z.infer<typeof MessagePartType>;
@@ -262,6 +266,16 @@ export const ErrorPart = z
   })
   .meta({ id: "ErrorPart" });
 
+/**
+ * A generated picture waiting for the owner's word (approval.ts): the card shows the pictures,
+ * the check report and Onayla / Reddet / Yeniden üret. Read the request with
+ * `GET /api/approvals/{approvalId}`; `approval.updated` on the job stream announces changes.
+ */
+export const ApprovalRequestPart = z
+  .object({ type: z.literal("approval_request"), approvalId: EntityId })
+  .meta({ id: "ApprovalRequestPart" });
+export type ApprovalRequestPart = z.infer<typeof ApprovalRequestPart>;
+
 export const MessagePart = z
   .discriminatedUnion("type", [
     TextPart,
@@ -273,6 +287,7 @@ export const MessagePart = z
     ErrorPart,
     ToolStepPart,
     ConsentPart,
+    ApprovalRequestPart,
   ])
   .meta({ id: "MessagePart" });
 export type MessagePart = z.infer<typeof MessagePart>;
@@ -359,6 +374,10 @@ export const ErrorPartInput = z
   })
   .meta({ id: "ErrorPartInput" });
 
+export const ApprovalRequestPartInput = z
+  .object({ type: z.literal("approval_request"), approvalId: EntityId })
+  .meta({ id: "ApprovalRequestPartInput" });
+
 export const MessagePartInput = z
   .discriminatedUnion("type", [
     TextPartInput,
@@ -370,6 +389,7 @@ export const MessagePartInput = z
     ErrorPartInput,
     ToolStepPartInput,
     ConsentPartInput,
+    ApprovalRequestPartInput,
   ])
   .meta({ id: "MessagePartInput" });
 export type MessagePartInput = z.input<typeof MessagePartInput>;
@@ -391,6 +411,11 @@ export const Message = z
      * assistant and system messages); optional for older stored events.
      */
     mentions: z.array(MessageMention).optional(),
+    /**
+     * `@product` / `@post` references the server resolved in a user message's text (mention.ts),
+     * in text order. Always sent by this server (empty when none); absent from older ones.
+     */
+    entityMentions: z.array(MessageEntityMention).optional(),
     createdAt: Timestamp,
     updatedAt: Timestamp,
   })
@@ -601,6 +626,48 @@ export const RunAttempt = z.number().int().min(1);
 export const RunStart = z.object({ attempt: RunAttempt }).meta({ id: "RunStart" });
 export type RunStart = z.input<typeof RunStart>;
 
+/** One photo of a mentioned product, with what is known about it (angle, what it shows). */
+export const TurnProductPhoto = z
+  .object({
+    assetId: EntityId,
+    mimeType: z.string(),
+    width: z.number().int().nullable(),
+    height: z.number().int().nullable(),
+    filename: z.string().nullable(),
+    /** 0-based place in the product's photos (0 = cover). */
+    position: z.number().int().min(0),
+    /**
+     * Which side it shows when the file name or the picture's tags say it ("ön", "arka", "yan",
+     * "sol", "sağ", "üst", "alt", "etiket"…); null when unknown.
+     */
+    angleHint: z.string().nullable(),
+    /** The Mac's picture analysis (N12) when there is one. */
+    caption: z.string().nullable(),
+    tags: z.array(z.string()),
+    /** Text read in the photo (OCR, clipped). */
+    text: z.string(),
+  })
+  .meta({ id: "TurnProductPhoto" });
+export type TurnProductPhoto = z.infer<typeof TurnProductPhoto>;
+
+export const TurnProduct = z
+  .object({
+    /** The name it was mentioned with (without `@`). */
+    mention: z.string(),
+    product: BrandProduct,
+    photos: z.array(TurnProductPhoto),
+  })
+  .meta({ id: "TurnProduct" });
+export type TurnProduct = z.infer<typeof TurnProduct>;
+
+export const TurnContent = z
+  .object({
+    mention: z.string(),
+    content: Content,
+  })
+  .meta({ id: "TurnContent" });
+export type TurnContent = z.infer<typeof TurnContent>;
+
 /** Everything the agent needs for one turn. */
 export const TurnContext = z
   .object({
@@ -642,6 +709,13 @@ export const TurnContext = z
      * for the period the message most likely means (N5, N6). Null or absent otherwise.
      */
     planning: PlanningContext.nullable().optional(),
+    /**
+     * Products `@mentioned` in the turn's user message (`entityMentions`), with every photo.
+     * Always sent by this server (empty when none).
+     */
+    mentionedProducts: z.array(TurnProduct).optional(),
+    /** Posts `@mentioned` in the turn's user message. Always sent by this server. */
+    mentionedContents: z.array(TurnContent).optional(),
   })
   .meta({ id: "TurnContext" });
 export type TurnContext = z.infer<typeof TurnContext>;

@@ -383,6 +383,11 @@ export const Content = z
      * none; absent from older servers). Set with `PUT /api/contents/{id}/publish-details`.
      */
     publishDetails: PublishDetails.nullable().optional(),
+    /**
+     * Approval requests of this post still waiting for the owner (`ApprovalRequest`); above 0 the
+     * post shows as "Onay bekliyor". Always sent by this server; absent from older ones (= 0).
+     */
+    pendingApprovals: z.number().int().min(0).optional(),
   })
   .meta({ id: "Content" });
 export type Content = z.infer<typeof Content>;

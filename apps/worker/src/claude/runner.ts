@@ -66,6 +66,12 @@ export interface ClaudeCallOptions {
   /** Allowed MCP tools (`--allowedTools`). */
   allowedTools?: readonly string[];
   /**
+   * Let the model search the web and fetch pages (Claude Code's read-only `WebSearch` /
+   * `WebFetch`; nothing that writes on the Mac). Used by post generation and the chat agent to
+   * look at current design trends and references.
+   */
+  webAccess?: boolean;
+  /**
    * The chat agent (A5): Studio's MCP server, `system` appended to Claude Code's own
    * prompt, a session kept in the conversation's own folder. Replaces the flags above.
    */
@@ -162,6 +168,7 @@ export async function runClaude(
     ...(options.resumeSessionId ? { resumeSessionId: options.resumeSessionId } : {}),
     ...(options.mcpConfigFile ? { mcpConfigFile: options.mcpConfigFile } : {}),
     ...(options.allowedTools ? { allowedTools: options.allowedTools } : {}),
+    ...(options.webAccess ? { webAccess: true } : {}),
   });
   const env = buildClaudeEnv(runnerOptions.parentEnv ?? process.env, runnerOptions.env);
   const log = await openLog(runnerOptions, options.label, now);
@@ -196,6 +203,7 @@ async function runAgent(
     effort: options.effort,
     resumeSessionId: agent.resumeSessionId,
     sessionId: agent.sessionId,
+    ...(options.webAccess ? { webAccess: true } : {}),
   });
   const env = buildClaudeEnv(runnerOptions.parentEnv ?? process.env, {
     ...runnerOptions.env,

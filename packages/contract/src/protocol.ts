@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { ClaudeAccount, GeminiAccount, WorkerCommand } from "./agent.ts";
 import { AiProviderStatus } from "./ai.ts";
+import { ApprovalRequest } from "./approval.ts";
 import { Job, JobId, WorkerPresence, WorkerUsage } from "./job.ts";
 
 /**
@@ -298,13 +299,25 @@ export const PresenceEvent = z.object({
   presence: WorkerPresence,
 });
 
+/**
+ * An approval request (approval.ts) was created or decided: sent to sockets watching its brand
+ * or everything. Lists showing "Onay bekliyor" refresh on it. Clients that do not know the type
+ * ignore it.
+ */
+export const ApprovalUpdatedEvent = z.object({
+  type: z.literal("approval.updated"),
+  approval: ApprovalRequest,
+});
+
 export const JobStreamMessage = z.discriminatedUnion("type", [
   JobsSnapshotEvent,
   JobUpdatedEvent,
   PresenceEvent,
   PongMessage,
+  ApprovalUpdatedEvent,
 ]);
 
+export type ApprovalUpdatedEvent = z.infer<typeof ApprovalUpdatedEvent>;
 export type JobsSnapshotEvent = z.infer<typeof JobsSnapshotEvent>;
 export type JobUpdatedEvent = z.infer<typeof JobUpdatedEvent>;
 export type PresenceEvent = z.infer<typeof PresenceEvent>;

@@ -71,6 +71,10 @@ export const ENUMS = {
   commentActionKind: ["reply", "hide", "unhide", "delete"],
   commentActionStatus: ["pending", "sending", "done", "failed"],
   knownLocationSource: ["page", "manual", "used"],
+  // --- post production (docs/URETIM-RESIM.md Faz 0; 0024) ---
+  generationEngine: ["wecra", "html", "svg", "code"],
+  approvalKind: ["product_image", "variant", "product_photo_upgrade"],
+  approvalStatus: ["pending", "approved", "rejected", "superseded"],
 } as const;
 
 /** `col in ('a', 'b')` for CHECK constraints (values are constants above, never input). */
@@ -100,6 +104,13 @@ export const brands = sqliteTable(
     status: text("status", { enum: ENUMS.brandStatus }).notNull().default("active"),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
+    /**
+     * Engine the agent uses without asking (0024; null = ask). `ENUMS.generationEngine`; no
+     * CHECK (an added column), the API validates it.
+     */
+    defaultEngine: text("default_engine", { enum: ENUMS.generationEngine }),
+    /** Style preset for generated pictures (0024; "" = none). */
+    imageStylePreset: text("image_style_preset").notNull().default(""),
   },
   (t) => [
     uniqueIndex("brands_slug_unique").on(t.slug),
@@ -880,6 +891,8 @@ export const messages = sqliteTable(
     deltaSeqs: text("delta_seqs", { mode: "json" }).$type<number[]>().notNull(),
     /** Resolved `@alias` mentions of a user message (contract MessageMention[]); null = none. */
     mentions: text("mentions", { mode: "json" }).$type<unknown[]>(),
+    /** Resolved `@product` / `@post` mentions (contract MessageEntityMention[], 0024); null = none. */
+    entityMentions: text("entity_mentions", { mode: "json" }).$type<unknown[]>(),
     /** Idempotency key of a user message (unique per conversation). */
     clientMessageId: text("client_message_id"),
     createdAt: createdAt(),
@@ -1443,3 +1456,48 @@ export const aiSettings = sqliteTable("ai_settings", {
   mediaCaptions: integer("media_captions", { mode: "boolean" }).notNull().default(false),
   updatedAt: updatedAt(),
 });
+
+// --- approval requests ("Onay bekleyenler", docs/URETIM-RESIM.md; 0024) ----------------------
+// A generated picture waiting for the owner's word (contract approval.ts). Rows are kept after
+// the decision (history); a post's pending rows make it "Onay bekliyor".
+
+export const approvalRequests = sqliteTable(
+  "approval_requests",
+  {
+    id: text("id").primaryKey(),
+    brandId: text("brand_id")
+      .notNull()
+      .references(() => brands.id),
+    contentId: text("content_id").references(() => contents.id, { onDelete: "cascade" }),
+    /** No foreign key: products are hard-deleted and the history stays. */
+    productId: text("product_id"),
+    conversationId: text("conversation_id").references(() => conversations.id, {
+      onDelete: "set null",
+    }),
+    messageId: text("message_id").references(() => messages.id, { onDelete: "set null" }),
+    kind: text("kind", { enum: ENUMS.approvalKind }).notNull(),
+    assetIds: text("asset_ids", { mode: "json" }).$type<string[]>().notNull(),
+    /** ApprovalCheckReport JSON; null = no check ran. */
+    checkReport: text("check_report", { mode: "json" }).$type<Record<string, unknown>>(),
+    status: text("status", { enum: ENUMS.approvalStatus }).notNull().default("pending"),
+    slotId: text("slot_id"),
+    replacesAssetId: text("replaces_asset_id"),
+    approvedAssetId: text("approved_asset_id"),
+    sourceJobId: text("source_job_id"),
+    regenerateJobId: text("regenerate_job_id"),
+    /** ApprovalRegenerateRequest JSON (`{ jobType, payload }`); null = cannot regenerate. */
+    request: text("request", { mode: "json" }).$type<Record<string, unknown>>(),
+    decisionNote: text("decision_note"),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+    decidedAt: integer("decided_at", { mode: "timestamp_ms" }),
+  },
+  (t) => [
+    index("approval_requests_brand_status_idx").on(t.brandId, t.status, t.id),
+    index("approval_requests_content_status_idx").on(t.contentId, t.status),
+    index("approval_requests_conversation_idx").on(t.conversationId, t.id),
+    index("approval_requests_status_idx").on(t.status, t.id),
+    check("approval_requests_kind_check", oneOf(t.kind, ENUMS.approvalKind)),
+    check("approval_requests_status_check", oneOf(t.status, ENUMS.approvalStatus)),
+  ],
+);

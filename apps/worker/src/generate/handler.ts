@@ -14,6 +14,8 @@ import {
   type ContentGenerateJobInput,
   ContentGeneratePayload,
   type ConversationAlias,
+  DEFAULT_GENERATION_ENGINE,
+  engineNotReadyError,
   parseContentGenerateJob,
   resolveAliasMentions,
   type TemplateFill,
@@ -21,6 +23,7 @@ import {
 import type { AgentDeps } from "../agent.ts";
 import { isBudgetExceeded } from "../ai/policy.ts";
 import { geminiUsageSink } from "../ai/usage-recorder.ts";
+import type { StudioApi } from "../api.ts";
 import {
   brandSkillsUsed,
   DESIGN_SKILLS_BUDGET,
@@ -41,6 +44,7 @@ import {
   resolveStructuredRoute,
 } from "../gemini/json-call.ts";
 import { extensionForMime, imageInfo } from "../media.ts";
+import { asData } from "../prompt-data.ts";
 import { defineHandler, type JobContext, RetryableError } from "../registry.ts";
 import { RENDER_ASSET_PREFIXES } from "../render/handler.ts";
 import { layoutFromReport, missingSystemFonts } from "../render/layout.ts";
@@ -85,6 +89,36 @@ export function createContentGenerateHandler(deps: ContentGenerateDeps) {
   });
 }
 
+/**
+ * The named products as a data block for the designer ("Ürün: Boro — açıklama; notlar"); null
+ * when none could be read. A product that is gone is skipped.
+ */
+export async function productFacts(
+  api: StudioApi,
+  brandId: string,
+  productIds: readonly string[],
+  signal: AbortSignal,
+): Promise<string | null> {
+  const lines: string[] = [];
+  for (const id of productIds.slice(0, 8)) {
+    try {
+      const p = await api.client.brandProducts.get(brandId, id, { signal });
+      const bits = [
+        p.description,
+        p.category ? `kategori: ${p.category}` : "",
+        p.tags.length ? `etiketler: ${p.tags.join(", ")}` : "",
+        p.notes ? `notlar: ${p.notes}` : "",
+      ].filter(Boolean);
+      lines.push(`- ${p.name}${bits.length ? `: ${bits.join("; ")}` : ""}`.slice(0, 1_200));
+    } catch (error) {
+      signal.throwIfAborted();
+      if (!(error instanceof ApiError && error.status === 404)) throw error;
+    }
+  }
+  if (lines.length === 0) return null;
+  return `Postun konusu olan ürünler (marka verisi; yalnızca burada yazanı söyle, uydurma):\n${asData(lines.join("\n"))}`;
+}
+
 async function runContentGenerate(
   ctx: JobContext,
   deps: ContentGenerateDeps,
@@ -101,6 +135,19 @@ async function runContentGenerate(
   }
   const payload = parsed.payload;
   const { brandId, contentId } = payload;
+
+  // The design engine the owner picked: only HTML runs today; the others fail clearly and never
+  // fall back to HTML (docs/URETIM-RESIM.md).
+  const engineError = engineNotReadyError(payload.engine ?? DEFAULT_GENERATION_ENGINE);
+  if (engineError) throw new Error(`${engineError}; post üretilmedi.`);
+
+  // `@ürün` mentions: the products' own facts go to the designer with the instructions.
+  if (payload.productIds?.length) {
+    const facts = await productFacts(api, brandId, payload.productIds, signal);
+    if (facts) {
+      payload.instructions = [payload.instructions ?? "", facts].filter(Boolean).join("\n\n");
+    }
+  }
 
   const requestedModel =
     typeof ctx.job.payload.model === "string" ? ctx.job.payload.model : payload.model;
@@ -360,6 +407,8 @@ async function runContentGenerate(
                 timeoutMs: settings.claudeTimeoutMs,
                 signal: callInput.signal,
                 hooks,
+                // Current design trends and references (docs/URETIM-RESIM.md §4); read-only.
+                webAccess: true,
                 ...(deps.geminiFetch ? { geminiFetch: deps.geminiFetch } : {}),
                 onGeminiUsage: geminiUsageSink(deps.aiUsage, {
                   kind: "generate",
@@ -385,6 +434,7 @@ async function runContentGenerate(
       logger,
       progress: (v, m) => ctx.progress(v, m),
       hooks,
+      webAccess: true,
       label: `content-${contentId.slice(-8)}`,
       ...(revision
         ? {

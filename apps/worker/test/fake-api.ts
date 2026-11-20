@@ -9,6 +9,7 @@ import {
   ApiError,
   type Asset,
   type AssetAnalysisPut,
+  allocateMentionSlugs,
   assetMatchesQuery,
   type Brand,
   type BrandCheckSettings,
@@ -474,6 +475,40 @@ export function createFakeApi(init: Partial<FakeApiState> = {}): {
         state.brands.push(brand);
         return brand;
       },
+      /** Products, then posts, named like the server does (contract mention.ts). */
+      mentionCandidates: async (id: string) => {
+        const taken = new Set<string>();
+        const products = state.products.filter((p) => p.brandId === id);
+        const posts = [...state.contents.values()].filter((c) => c.brandId === id);
+        const productSlugs = allocateMentionSlugs(products, "product", taken);
+        const postSlugs = allocateMentionSlugs(
+          posts.map((c) => ({ id: c.id, name: c.title })),
+          "content",
+          taken,
+        );
+        return {
+          items: [
+            ...products.map((p) => ({
+              kind: "product" as const,
+              id: p.id,
+              slug: productSlugs.get(p.id) ?? "",
+              label: p.name,
+              imageAssetId: p.imageAssetIds[0] ?? null,
+              detail: p.category,
+              pendingApprovals: 0,
+            })),
+            ...posts.map((c) => ({
+              kind: "content" as const,
+              id: c.id,
+              slug: postSlugs.get(c.id) ?? "",
+              label: c.title,
+              imageAssetId: null,
+              detail: c.status,
+              pendingApprovals: c.pendingApprovals ?? 0,
+            })),
+          ],
+        };
+      },
     },
     brandSkills: {
       list: async (brandId: string) => ({
@@ -543,6 +578,11 @@ export function createFakeApi(init: Partial<FakeApiState> = {}): {
         items: state.products.filter((p) => p.brandId === brandId),
         nextCursor: null,
       }),
+      get: async (brandId: string, productId: string) => {
+        const p = state.products.find((x) => x.brandId === brandId && x.id === productId);
+        if (!p) throw new ApiError("product not found", 404, "not_found");
+        return p;
+      },
     },
     brandKits: {
       get: async (brandId: string) => {
