@@ -48,6 +48,12 @@ extension BrandProfileViewController {
             BrandRowView(title: "Marka adı", detail: "Sohbetlerde ve kartlarda görünen ad.", value: brand.name) { [weak self] in self?.editBrand() },
             BrandRowView(title: "Kısa ad", detail: "Küçük harf, rakam ve tire (mtm-agro).", value: brand.slug) { [weak self] in self?.editBrand() },
             BrandRowView(title: "İçerik dili", detail: "Postlar bu dilde yazılır.", value: BrandLanguages.label(brand.defaultLanguage), menu: languageMenu),
+            BrandRowView(
+                title: "Varsayılan üretim motoru", detail: "Sohbette post üretilirken kullanılır. “Sor” seçiliyse ajan her seferinde sorar.",
+                value: brand.defaultEngine?.label ?? "Sor", menu: engineMenu(brand)),
+            BrandRowView(
+                title: "Görsel stili", detail: "İsteğe bağlı. Üretilen görsellere eklenir (ör. vintage, retro, sıcak film tonu); ürünün kendisi değişmez.",
+                value: Self.styleValue(brand.imageStylePreset)) { [weak self] in self?.editImageStyle() },
             BrandRowView(title: "Seçili marka", detail: "Sohbet, Profil ve Takvim seçili markayla çalışır.", value: model.isCurrent ? "Bu marka" : "Başka marka", chevron: !model.isCurrent,
                          onTap: model.isCurrent || model.isArchived ? nil : { [weak self] in self?.selectBrand() }),
         ])
@@ -80,6 +86,41 @@ extension BrandProfileViewController {
             chevron: false) { [weak self] in self?.toggleArchive() }
         archive.titleLabel.textColor = archived ? IOSTheme.textPrimary : .systemRed
         body.addArrangedSubview(archive)
+    }
+
+    /// "Sor", then every engine; the ones not ready yet say "yakında" and cannot be picked.
+    private func engineMenu(_ brand: Brand) -> UIMenu {
+        let current = brand.defaultEngine
+        let choose: (GenerationEngine?) -> Void = { [weak self] engine in
+            guard let self, engine != brand.defaultEngine else { return }
+            Task { self.report(await self.model.updateBrand(.engine(engine)), success: "Üretim motoru: \(engine?.label ?? "Sor")") }
+        }
+        let ask = UIAction(title: "Sor", subtitle: "Ajan her üretimde sorar", state: current == nil ? .on : .off) { _ in choose(nil) }
+        let engines = GenerationEngine.listed.map { engine in
+            UIAction(
+                title: engine.label, subtitle: engine.isReady ? engine.detail : "yakında",
+                attributes: engine.isReady ? [] : .disabled, state: current == engine ? .on : .off) { _ in choose(engine) }
+        }
+        return UIMenu(title: "Varsayılan üretim motoru", children: [UIMenu(options: .displayInline, children: [ask]), UIMenu(options: .displayInline, children: engines)])
+    }
+
+    static func styleValue(_ preset: String?) -> String {
+        let text = preset?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !text.isEmpty else { return "Yok" }
+        return text.count > 24 ? String(text.prefix(23)) + "…" : text
+    }
+
+    /// "Görsel stili": free text, empty clears it.
+    func editImageStyle() {
+        guard let brand = model.brand else { return }
+        prompt(
+            "Görsel stili", message: "Üretilen görsellerin havası (ör. vintage, retro, sıcak film tonu). Boş bırakırsan stil eklenmez.",
+            text: brand.imageStylePreset, placeholder: "ör. vintage, sıcak film tonu", action: "Kaydet") { [weak self] text in
+            guard let self else { return }
+            let trimmed = String(text.trimmingCharacters(in: .whitespacesAndNewlines).prefix(ImageStylePreset.maxLength))
+            guard trimmed != (brand.imageStylePreset ?? "") else { return }
+            Task { self.report(await self.model.updateBrand(BrandUpdate(imageStylePreset: trimmed)), success: trimmed.isEmpty ? "Görsel stili kaldırıldı" : "Görsel stili kaydedildi") }
+        }
     }
 
     /// Colours as circles in a sideways strip.

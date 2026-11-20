@@ -22,11 +22,17 @@ public struct SampleData: Sendable {
     public var runs: [AgentRun] = []
     /// Attachment aliases per conversation, oldest first.
     public var aliases: [EntityID: [ConversationAlias]] = [:]
+    /// Products per brand, oldest first.
+    public var products: [EntityID: [BrandProduct]] = [:]
+    /// Approval requests ("Onay bekleyenler"), oldest first.
+    public var approvals: [ApprovalRequest] = []
 
     public static let mtm = "b-mtm"
     public static let kasimConversation = "c-kasim"
     public static let lansmanConversation = "c-lansman"
     public static let hasatConversation = "c-hasat"
+    /// The chat where product pictures wait for approval.
+    public static let gorselConversation = "c-gorsel"
     public static let kasimPlan = "plan-kasim"
 
     /// Sample "today": 16 Kasım 2026, 10:00 Istanbul.
@@ -132,6 +138,7 @@ public struct SampleData: Sendable {
         }
         conversations = [
             conversation(Self.kasimConversation, mtm, "Kasım planı", minutesAgo: 6),
+            conversation(Self.gorselConversation, mtm, "Venta Borinc ürün görseli", minutesAgo: 22),
             conversation(Self.lansmanConversation, mtm, "Venta Borinc lansmanı", minutesAgo: 70),
             conversation(Self.hasatConversation, mtm, "Hasat sezonu serisi", minutesAgo: 60 * 26),
             conversation("c-bayi", mtm, "Bayi duyurusu", minutesAgo: 60 * 50),
@@ -284,6 +291,62 @@ public struct SampleData: Sendable {
             Asset(id: id, brandId: mtm, kind: .image, source: .upload, objectKey: "brands/\(mtm)/assets/\(id).png", mimeType: "image/png", bytes: 120_000, sha256: String(repeating: "0", count: 64), width: 1080, height: 1350, originalFilename: name, createdAt: ago(60 * 26))
         }
         assets = ["asset-tarla": asset("asset-tarla", "tarla.jpg"), "asset-depo": asset("asset-depo", "depo.jpg")]
+        func generated(_ id: String, _ name: String, minutesAgo: Double) -> Asset {
+            Asset(id: id, brandId: mtm, kind: .image, source: .generated, objectKey: "brands/\(mtm)/assets/\(id).jpg", mimeType: "image/jpeg", bytes: 240_000, sha256: String(repeating: "1", count: 64), width: 1080, height: 1350, originalFilename: name, createdAt: ago(minutesAgo))
+        }
+        for candidate in [
+            generated("asset-aday-venta-1", "venta-borinc-tarla-1.jpg", minutesAgo: 24),
+            generated("asset-aday-venta-2", "venta-borinc-tarla-2.jpg", minutesAgo: 24),
+            generated("asset-aday-tarla-1", "tarladan-varyant.jpg", minutesAgo: 23),
+            generated("asset-boro-yeni", "boro-studyo.jpg", minutesAgo: 90),
+            asset("asset-boro-eski", "boro.jpg"),
+        ] { assets[candidate.id] = candidate }
+
+        // MARK: Products
+
+        let productList = [
+                BrandProduct(
+                    id: "product-venta", brandId: mtm, name: "Venta Borinc", description: "Bor ve çinko içeren yaprak gübresi.", category: "Yaprak gübresi",
+                    tags: ["bor", "çinko"], imageAssetIds: ["asset-depo", "asset-tarla"], createdAt: ago(60 * 24 * 30), updatedAt: ago(60 * 24 * 30)),
+                BrandProduct(
+                    id: "product-boro", brandId: mtm, name: "Boro", description: "Sıvı bor.", category: "Sıvı gübre",
+                    tags: ["bor"], imageAssetIds: ["asset-boro-eski"], createdAt: ago(60 * 24 * 29), updatedAt: ago(60 * 24 * 29)),
+        ]
+        products = [mtm: productList]
+
+        // MARK: Approval requests
+
+        approvals = [
+            ApprovalRequest(
+                id: "apr-venta", brandId: mtm, contentId: "post-01", productId: "product-venta",
+                conversationId: Self.gorselConversation, messageId: "m-g2", kind: .productImage,
+                assetIds: ["asset-aday-venta-1", "asset-aday-venta-2"],
+                checkReport: ApprovalCheckReport(passed: false, items: [
+                    ApprovalCheckItem(aspect: "Etiket yazısı", ok: true),
+                    ApprovalCheckItem(aspect: "Kapak rengi", ok: false, note: "Kapak beyaz yerine açık gri geldi."),
+                    ApprovalCheckItem(aspect: "Şişe şekli ve oran", ok: true),
+                    ApprovalCheckItem(aspect: "Logo", ok: true),
+                ], summary: "Kapak rengi hatalı geldi: beyaz yerine açık gri. Diğer her şey ürün fotoğrafıyla aynı."),
+                slotId: "photo", sourceJobId: "job-gorsel-1", createdAt: ago(24), updatedAt: ago(24)),
+            ApprovalRequest(
+                id: "apr-tarla", brandId: mtm, contentId: "post-06", productId: "product-venta",
+                conversationId: Self.gorselConversation, messageId: "m-g2", kind: .variant,
+                assetIds: ["asset-aday-tarla-1"],
+                checkReport: ApprovalCheckReport(passed: true, items: [
+                    ApprovalCheckItem(aspect: "Etiket yazısı", ok: true),
+                    ApprovalCheckItem(aspect: "Renk ve desen", ok: true),
+                    ApprovalCheckItem(aspect: "Şekil ve oran", ok: true),
+                ], summary: "Ürün fotoğrafıyla birebir; sorun bulmadım."),
+                slotId: "photo", sourceJobId: "job-gorsel-2", createdAt: ago(23), updatedAt: ago(23)),
+            ApprovalRequest(
+                id: "apr-boro", brandId: mtm, productId: "product-boro", kind: .productPhotoUpgrade,
+                assetIds: ["asset-boro-yeni"],
+                checkReport: ApprovalCheckReport(passed: true, items: [
+                    ApprovalCheckItem(aspect: "Etiket yazısı", ok: true),
+                    ApprovalCheckItem(aspect: "Kapak ve şişe", ok: true),
+                ], summary: "Beyaz zemin, stüdyo ışığı; etiket okunuyor."),
+                replacesAssetId: "asset-boro-eski", sourceJobId: "job-boro-1", createdAt: ago(90), updatedAt: ago(90)),
+        ]
 
         // MARK: Aliases
 
@@ -340,6 +403,23 @@ public struct SampleData: Sendable {
                     .progress(ProgressPart(stepId: "posts", label: "Postlar hazırlanıyor", state: .done, current: 4, total: 4)),
                 ], minutesAgo: 60 * 26, run: "run-hasat"),
             ],
+            Self.gorselConversation: {
+                let text = "@venta-borinc için tarlada, sabah ışığında bir ürün görseli üret; @venta-borinc-2 postuna koy. @tarladan için de bir varyant olsun."
+                let candidates = Self.mentionCandidates(products: productList, contents: contents, approvals: [])
+                var message = user("m-g1", Self.gorselConversation, [.text(text)], minutesAgo: 26)
+                message.entityMentions = EntityMentionNames.resolve(text, candidates: candidates)
+                return [
+                    message,
+                    assistant("m-g2", Self.gorselConversation, [
+                        .toolStep(ToolStepPart(id: "ts-refs", name: "product_photos", label: "Ürün fotoğrafları seçildi", state: .done, summary: "ön, etiket")),
+                        .toolStep(ToolStepPart(id: "ts-gen", name: "generate_image", label: "Görseller üretildi", state: .done, summary: "3 görsel")),
+                        .toolStep(ToolStepPart(id: "ts-check", name: "check_image", label: "Ürünle karşılaştırıldı", state: .done)),
+                        .text("Görseller hazır. Venta Borinc postunun ilk görselinde kapak rengi biraz farklı geldi; Tarladan varyantında sorun bulmadım."),
+                        .approvalRequest(approvalId: "apr-venta"),
+                        .approvalRequest(approvalId: "apr-tarla"),
+                    ], minutesAgo: 22, run: "run-gorsel"),
+                ]
+            }(),
             "c-bayi": [
                 user("m-b1", "c-bayi", [.text("Bayilere kasım kampanyası için kısa bir duyuru yaz ve onaya sun.")], minutesAgo: 60 * 50 + 5),
                 assistant("m-b2", "c-bayi", [
@@ -349,6 +429,26 @@ public struct SampleData: Sendable {
                 ], minutesAgo: 60 * 50, run: "run-bayi"),
             ],
         ]
+    }
+
+    /// What `GET /api/brands/{id}/mention-candidates` lists: products (oldest first, their own
+    /// `slug` when they have one), then posts (newest first); names unique across both.
+    public static func mentionCandidates(products: [BrandProduct], contents: [Content], approvals: [ApprovalRequest]) -> [EntityMentionCandidate] {
+        var taken = Set<String>()
+        let oldestProducts = products.sorted { $0.createdAt < $1.createdAt }
+        for product in oldestProducts { if let slug = product.slug { taken.insert(slug) } }
+        let productSlugs = EntityMentionNames.allocate(oldestProducts.filter { $0.slug == nil }.map { ($0.id, $0.name) }, kind: .product, taken: &taken)
+        let posts = contents.filter { $0.deletedAt == nil }
+        let postSlugs = EntityMentionNames.allocate(posts.sorted { $0.createdAt < $1.createdAt }.map { ($0.id, $0.title) }, kind: .content, taken: &taken)
+        let productItems = oldestProducts.map { product in
+            EntityMentionCandidate(kind: .product, id: product.id, slug: product.slug ?? productSlugs[product.id] ?? "urun", label: product.name, imageAssetId: product.coverAssetId, detail: product.category)
+        }
+        let postItems = posts.sorted { $0.createdAt > $1.createdAt }.prefix(200).map { content in
+            EntityMentionCandidate(
+                kind: .content, id: content.id, slug: postSlugs[content.id] ?? "post", label: content.title, imageAssetId: nil, detail: content.status.rawValue,
+                pendingApprovals: approvals.filter { $0.contentId == content.id && $0.status == .pending }.count)
+        }
+        return productItems + postItems
     }
 
     /// A small slide document following the design contract; never rendered by the apps.

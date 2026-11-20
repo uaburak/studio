@@ -59,6 +59,10 @@ final class IOSComposerModel {
     var attachDisabledReason: String?
     var error: String?
     private(set) var conversationAliases: [ConversationAlias] = []
+    /// The brand's products and posts (`@venta-boro`); file aliases win over the same name.
+    var entityCandidates: [EntityMentionCandidate] = [] {
+        didSet { if entityCandidates != oldValue { updateSuggestions() } }
+    }
     private(set) var suggestions: [MentionCandidate] = []
     private(set) var queryStart: Int?
 
@@ -259,8 +263,9 @@ final class IOSComposerModel {
     // MARK: Mentions
 
     var candidates: [MentionCandidate] {
-        conversationAliases.map { MentionCandidate(alias: $0.alias, assetId: $0.assetId, isDraft: false) }
+        let files = conversationAliases.map { MentionCandidate(alias: $0.alias, assetId: $0.assetId, isDraft: false) }
             + drafts.map { MentionCandidate(alias: $0.alias, assetId: $0.asset?.id, isDraft: true) }
+        return MentionText.merge(aliases: files, entities: entityCandidates)
     }
 
     func draft(alias: String) -> Draft? { drafts.first { $0.alias == alias } }
@@ -390,6 +395,9 @@ final class IOSConversationModel {
     func refreshComposerState() {
         let reason: String? = brandId == nil ? "Markasız sohbete görsel eklenemez; önce bir marka seç." : nil
         if composer.attachDisabledReason != reason { composer.attachDisabledReason = reason }
+        // `@` offers the brand's products and posts (loaded for the current brand).
+        let entities = brandId != nil && brandId == app.currentBrandId ? app.mentionCandidates : []
+        if composer.entityCandidates != entities { composer.entityCandidates = entities }
         if let placeholderOverride {
             if composer.placeholder != placeholderOverride { composer.placeholder = placeholderOverride }
         } else if isNew {

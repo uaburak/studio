@@ -184,6 +184,10 @@ enum IOSRoute: Equatable {
     /// "iPhone'u bağla" / "Yeniden bağla": the QR scanner (with `IOSAppModel.pendingInvite`
     /// when a `studio://pair` link was opened).
     case pair
+    /// "Onay bekleyenler" (the ⋯ menu), optionally one post's.
+    case approvals(contentId: EntityID?)
+    /// A conversation scrolled to one of its messages (an approval request's card).
+    case conversationMessage(EntityID, messageId: EntityID)
 }
 
 /// Full pages pushed over the chat from the drawer (each former tab and more).
@@ -284,6 +288,11 @@ final class IOSAppModel {
     let images = IOSImageStore()
     let posts = IOSPostsModel()
     let calendar = IOSCalendarModel()
+    /// Approval requests ("Onay bekleyenler").
+    let approvals = IOSApprovalsModel()
+    /// The current brand's products and posts the composer offers after `@`.
+    private(set) var mentionCandidates: [EntityMentionCandidate] = []
+    @ObservationIgnored private var mentionCandidatesBrandId: EntityID?
     let notifier: IOSNotifier
     private(set) var conversationModels: [EntityID: IOSConversationModel] = [:]
     @ObservationIgnored private var feedTask: Task<Void, Never>?
@@ -345,6 +354,7 @@ final class IOSAppModel {
         images.app = self
         posts.app = self
         calendar.app = self
+        approvals.app = self
     }
 
     var presence: WorkerPresence? { jobBoard.presence }
@@ -425,6 +435,22 @@ final class IOSAppModel {
             await posts.load()
             await calendar.load()
         }
+        Task {
+            await approvals.load()
+            await loadMentionCandidates()
+        }
+    }
+
+    /// Products and posts for `@` (once per brand unless `force`).
+    func loadMentionCandidates(force: Bool = false) async {
+        guard let brandId = currentBrandId else {
+            mentionCandidates = []
+            return
+        }
+        guard force || mentionCandidatesBrandId != brandId else { return }
+        guard let list = try? await dataService.mentionCandidates(brandId: brandId), brandId == currentBrandId else { return }
+        mentionCandidates = list
+        mentionCandidatesBrandId = brandId
     }
 
     // MARK: Connection
@@ -448,6 +474,9 @@ final class IOSAppModel {
         loadError = nil
         posts.reset()
         calendar.reset()
+        approvals.reset()
+        mentionCandidates = []
+        mentionCandidatesBrandId = nil
         linkTask?.cancel()
         linkTask = nil
         retryTask?.cancel()
@@ -620,6 +649,8 @@ final class IOSAppModel {
         }
         startJobFeed()
         await posts.load()
+        await approvals.load()
+        await loadMentionCandidates(force: true)
         // Shares the share sheet left for the app (their uploads ended after it closed).
         if !isSample { await IOSShareInbox.deliverReady(app: self) }
     }
@@ -698,6 +729,8 @@ final class IOSAppModel {
             }
             let title = job.contentId.flatMap { posts.card($0)?.title }
             for notice in noticeTracker.notices(for: job, contentTitle: title) { deliver(notice) }
+        case .message(.approvalUpdated(let approval)):
+            approvals.apply(approval)
         default:
             break
         }

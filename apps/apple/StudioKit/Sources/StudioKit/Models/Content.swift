@@ -180,14 +180,20 @@ public struct Content: Codable, Sendable, Hashable, Identifiable {
     public var updatedAt: Date
     /// Set while the post is in the trash (restore with `POST /api/contents/{id}/restore`).
     public var deletedAt: Date?
+    /// Approval requests of this post still waiting (above 0: "Onay bekliyor"); nil from older servers.
+    public var pendingApprovals: Int?
+
+    /// `pendingApprovals`, 0 when the server did not say.
+    public var waitingApprovals: Int { max(0, pendingApprovals ?? 0) }
 
     public init(
         id: EntityID, brandId: EntityID, type: ContentType, title: String, brief: String = "",
         status: ContentStatus, targetPlatforms: [Platform], caption: String,
         currentVersion: ContentVersionRef?, approval: ContentApproval? = nil, createdAt: Date, updatedAt: Date,
-        deletedAt: Date? = nil
+        deletedAt: Date? = nil, pendingApprovals: Int? = nil
     ) {
         self.deletedAt = deletedAt
+        self.pendingApprovals = pendingApprovals
         self.id = id
         self.brandId = brandId
         self.type = type

@@ -15,11 +15,19 @@ public struct Brand: Codable, Sendable, Hashable, Identifiable {
     public var status: BrandStatus
     public var createdAt: Date
     public var updatedAt: Date
+    /// The engine the agent uses for this brand's posts without asking (nil: ask each time, or an
+    /// older server).
+    public var defaultEngine: GenerationEngine?
+    /// Style preset for generated pictures ("" / nil = none).
+    public var imageStylePreset: String?
 
     public init(
         id: EntityID, name: String, slug: String, defaultLanguage: String = "tr",
-        status: BrandStatus = .active, createdAt: Date, updatedAt: Date
+        status: BrandStatus = .active, createdAt: Date, updatedAt: Date,
+        defaultEngine: GenerationEngine? = nil, imageStylePreset: String? = nil
     ) {
+        self.defaultEngine = defaultEngine
+        self.imageStylePreset = imageStylePreset
         self.id = id
         self.name = name
         self.slug = slug
@@ -87,12 +95,45 @@ public struct BrandUpdate: Codable, Sendable, Equatable {
     public var slug: String?
     public var defaultLanguage: String?
     public var status: BrandStatus?
+    /// A new default engine; see `clearsDefaultEngine` for "Sor" (null).
+    public var defaultEngine: GenerationEngine?
+    /// Sends `defaultEngine: null`: the agent asks each time.
+    public var clearsDefaultEngine = false
+    /// "" clears the preset.
+    public var imageStylePreset: String?
 
-    public init(name: String? = nil, slug: String? = nil, defaultLanguage: String? = nil, status: BrandStatus? = nil) {
+    public init(
+        name: String? = nil, slug: String? = nil, defaultLanguage: String? = nil, status: BrandStatus? = nil,
+        defaultEngine: GenerationEngine? = nil, clearsDefaultEngine: Bool = false, imageStylePreset: String? = nil
+    ) {
         self.name = name
         self.slug = slug
         self.defaultLanguage = defaultLanguage
         self.status = status
+        self.defaultEngine = defaultEngine
+        self.clearsDefaultEngine = clearsDefaultEngine && defaultEngine == nil
+        self.imageStylePreset = imageStylePreset.map { String($0.trimmingCharacters(in: .whitespacesAndNewlines).prefix(ImageStylePreset.maxLength)) }
+    }
+
+    /// "Varsayılan üretim motoru": an engine, or nil for "Sor".
+    public static func engine(_ engine: GenerationEngine?) -> BrandUpdate {
+        BrandUpdate(defaultEngine: engine, clearsDefaultEngine: engine == nil)
+    }
+
+    private enum CodingKeys: String, CodingKey { case name, slug, defaultLanguage, status, defaultEngine, imageStylePreset }
+
+    public func encode(to encoder: any Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encodeIfPresent(name, forKey: .name)
+        try c.encodeIfPresent(slug, forKey: .slug)
+        try c.encodeIfPresent(defaultLanguage, forKey: .defaultLanguage)
+        try c.encodeIfPresent(status, forKey: .status)
+        if clearsDefaultEngine {
+            try c.encodeNil(forKey: .defaultEngine)
+        } else {
+            try c.encodeIfPresent(defaultEngine, forKey: .defaultEngine)
+        }
+        try c.encodeIfPresent(imageStylePreset, forKey: .imageStylePreset)
     }
 }
 

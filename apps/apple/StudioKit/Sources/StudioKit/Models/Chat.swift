@@ -227,10 +227,12 @@ public enum MessagePart: Sendable, Hashable, Codable {
     case error(ErrorPart)
     case toolStep(ToolStepPart)
     case consent(ConsentPart)
+    /// A generated picture waiting for the owner's word (`GET /api/approvals/{approvalId}`).
+    case approvalRequest(approvalId: EntityID)
     /// A part type this build does not know yet; kept so indexes stay aligned.
     case unknown(type: String)
 
-    private enum CodingKeys: String, CodingKey { case type, text, planId }
+    private enum CodingKeys: String, CodingKey { case type, text, planId, approvalId }
 
     public init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -245,6 +247,7 @@ public enum MessagePart: Sendable, Hashable, Codable {
         case "error": self = .error(try ErrorPart(from: decoder))
         case "tool_step": self = .toolStep(try ToolStepPart(from: decoder))
         case "consent": self = .consent(try ConsentPart(from: decoder))
+        case "approval_request": self = .approvalRequest(approvalId: try container.decode(String.self, forKey: .approvalId))
         default: self = .unknown(type: type)
         }
     }
@@ -262,6 +265,7 @@ public enum MessagePart: Sendable, Hashable, Codable {
         case .error(let part): try part.encode(to: encoder)
         case .toolStep(let part): try part.encode(to: encoder)
         case .consent(let part): try part.encode(to: encoder)
+        case .approvalRequest(let approvalId): try container.encode(approvalId, forKey: .approvalId)
         case .unknown: break
         }
     }
@@ -277,6 +281,7 @@ public enum MessagePart: Sendable, Hashable, Codable {
         case .error: "error"
         case .toolStep: "tool_step"
         case .consent: "consent"
+        case .approvalRequest: "approval_request"
         case .unknown(let type): type
         }
     }
@@ -292,13 +297,17 @@ public struct Message: Codable, Sendable, Hashable, Identifiable {
     public var parts: [MessagePart]
     /// `@alias` references the server resolved in a user message's text part (text order).
     public var mentions: [MessageMention]?
+    /// `@product` / `@post` references the server resolved in a user message (text order).
+    public var entityMentions: [MessageEntityMention]?
     public var createdAt: Date
     public var updatedAt: Date
 
     public init(
         id: EntityID, conversationId: EntityID, role: MessageRole, status: MessageStatus = .complete,
-        runId: EntityID? = nil, parts: [MessagePart], mentions: [MessageMention]? = nil, createdAt: Date, updatedAt: Date
+        runId: EntityID? = nil, parts: [MessagePart], mentions: [MessageMention]? = nil,
+        entityMentions: [MessageEntityMention]? = nil, createdAt: Date, updatedAt: Date
     ) {
+        self.entityMentions = entityMentions
         self.id = id
         self.conversationId = conversationId
         self.role = role
@@ -310,12 +319,17 @@ public struct Message: Codable, Sendable, Hashable, Identifiable {
         self.updatedAt = updatedAt
     }
 
+    /// The approval requests this message shows, in order.
+    public var approvalIds: [EntityID] {
+        parts.compactMap { if case .approvalRequest(let id) = $0 { id } else { nil } }
+    }
+
     /// All text parts joined (for search and previews).
     public var plainText: String {
         parts.compactMap { if case .text(let text) = $0 { text } else { nil } }.joined(separator: "\n")
     }
 
-    private enum CodingKeys: String, CodingKey { case id, conversationId, role, status, runId, parts, mentions, createdAt, updatedAt }
+    private enum CodingKeys: String, CodingKey { case id, conversationId, role, status, runId, parts, mentions, entityMentions, createdAt, updatedAt }
 
     /// A part that does not decode (a newer server, a bug) becomes `MessagePart.unreadable`
     /// in place, so the message, its part indexes and the rest of the conversation still read.
@@ -328,6 +342,7 @@ public struct Message: Codable, Sendable, Hashable, Identifiable {
         runId = try c.decodeIfPresent(EntityID.self, forKey: .runId)
         parts = try c.decode([LossyPart].self, forKey: .parts).map(\.part)
         mentions = try? c.decodeIfPresent([MessageMention].self, forKey: .mentions)
+        entityMentions = try? c.decodeIfPresent([MessageEntityMention].self, forKey: .entityMentions)
         createdAt = try c.decode(Date.self, forKey: .createdAt)
         updatedAt = try c.decodeIfPresent(Date.self, forKey: .updatedAt) ?? createdAt
     }

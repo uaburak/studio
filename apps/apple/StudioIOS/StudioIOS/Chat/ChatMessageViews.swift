@@ -14,6 +14,10 @@ struct ChatCellContext {
     var onCopy: (Message) -> Void = { _ in }
     var onSpeak: (Message) -> Void = { _ in }
     var onShare: (Message, UIView) -> Void = { _, _ in }
+    /// A tapped `@product` / `@post`.
+    var onEntityMention: (MessageEntityMention) -> Void = { _ in }
+    /// The screen that presents the approval cards' prompts and pictures.
+    var host: () -> UIViewController? = { nil }
     var images: IOSImageStore { model.app.images }
 }
 
@@ -21,6 +25,8 @@ struct ChatCellContext {
 
 enum ChatText {
     static let mentionScheme = "studio-mention"
+    /// `studio-entity://product/<id>`, `studio-entity://content/<id>`.
+    static let entityScheme = "studio-entity"
 
     /// Reading size of replies (New York, scaled with Dynamic Type).
     static let bodySize: CGFloat = 17
@@ -121,13 +127,14 @@ enum ChatText {
         return out
     }
 
-    /// User text: the server's mentions (UTF-16 ranges), drawn with the alias's current name.
-    static func user(_ text: String, mentions: [MessageMention], aliases: [ConversationAlias]) -> NSAttributedString {
+    /// User text: the server's mentions (UTF-16 ranges), drawn with the alias's current name;
+    /// `@product` / `@post` names in the accent colour.
+    static func user(_ text: String, mentions: [MessageMention], entityMentions: [MessageEntityMention] = [], aliases: [ConversationAlias]) -> NSAttributedString {
         let paragraph = NSMutableParagraphStyle()
         paragraph.lineSpacing = 3
         let attrs: [NSAttributedString.Key: Any] = [.font: IOSTheme.font(17), .foregroundColor: IOSTheme.textPrimary, .paragraphStyle: paragraph]
         let out = NSMutableAttributedString()
-        for segment in MentionText.segments(text, mentions: mentions) {
+        for segment in MentionText.segments(text, mentions: mentions, entityMentions: entityMentions) {
             switch segment {
             case .text(let chunk):
                 out.append(NSAttributedString(string: chunk, attributes: attrs))
@@ -137,6 +144,12 @@ enum ChatText {
                 mentionAttrs[.font] = IOSTheme.font(17, .semibold)
                 if let url = URL(string: "\(mentionScheme)://\(mention.aliasId)") { mentionAttrs[.link] = url }
                 out.append(NSAttributedString(string: "@\(name)", attributes: mentionAttrs))
+            case .entity(let mention):
+                var entityAttrs = attrs
+                entityAttrs[.font] = IOSTheme.font(17, .semibold)
+                entityAttrs[.foregroundColor] = IOSTheme.accent
+                if let url = URL(string: "\(entityScheme)://\(mention.kind.rawValue)/\(mention.id)") { entityAttrs[.link] = url }
+                out.append(NSAttributedString(string: "@\(mention.name)", attributes: entityAttrs))
             }
         }
         return out
@@ -158,6 +171,7 @@ enum ChatText {
 /// Read-only, selectable text that sizes itself and reports mention taps.
 final class ChatTextView: UITextView, UITextViewDelegate {
     var onMention: ((EntityID) -> Void)?
+    var onEntityMention: ((MessageEntityMention) -> Void)?
 
     init() {
         super.init(frame: .zero, textContainer: nil)
@@ -180,11 +194,16 @@ final class ChatTextView: UITextView, UITextViewDelegate {
         if case .link(let url) = textItem.content, url.scheme == ChatText.mentionScheme, let id = url.host {
             return UIAction { [weak self] _ in self?.onMention?(id) }
         }
+        if case .link(let url) = textItem.content, url.scheme == ChatText.entityScheme, let kind = url.host.flatMap(MentionEntityKind.init(rawValue:)) {
+            let id = url.lastPathComponent
+            let name = (textView.attributedText.string as NSString).substring(with: textItem.range).trimmingCharacters(in: CharacterSet(charactersIn: "@"))
+            return UIAction { [weak self] _ in self?.onEntityMention?(MessageEntityMention(kind: kind, id: id, name: name, start: 0, end: 0)) }
+        }
         return defaultAction
     }
 
     func textView(_ textView: UITextView, menuConfigurationFor textItem: UITextItem, defaultMenu: UIMenu) -> UITextItem.MenuConfiguration? {
-        if case .link(let url) = textItem.content, url.scheme == ChatText.mentionScheme { return nil }
+        if case .link(let url) = textItem.content, url.scheme == ChatText.mentionScheme || url.scheme == ChatText.entityScheme { return nil }
         return UITextItem.MenuConfiguration(menu: defaultMenu)
     }
 }
@@ -235,6 +254,14 @@ final class ChatMessageCell: UITableViewCell {
         stack.removeAllArranged()
         views.forEach { stack.addArrangedSubview($0) }
     }
+
+    /// A soft highlight that fades: "this is the message you came for".
+    func flash() {
+        contentView.backgroundColor = IOSTheme.accent.withAlphaComponent(0.12)
+        UIView.animate(withDuration: 1.2, delay: 0.5, options: [.allowUserInteraction]) {
+            self.contentView.backgroundColor = .clear
+        }
+    }
 }
 
 /// Builders for the parts of a message.
@@ -270,8 +297,11 @@ enum ChatViews {
             bubble.layer.cornerCurve = .continuous
             let textView = ChatTextView()
             let state = context.model.state
-            textView.attributedText = ChatText.user(text, mentions: state?.mentions(in: message, text: text) ?? message.mentions ?? [], aliases: state?.aliases ?? [])
+            textView.attributedText = ChatText.user(
+                text, mentions: state?.mentions(in: message, text: text) ?? message.mentions ?? [],
+                entityMentions: message.entityMentions ?? [], aliases: state?.aliases ?? [])
             textView.onMention = context.onMention
+            textView.onEntityMention = context.onEntityMention
             bubble.addSubview(textView)
             textView.pin(to: bubble, insets: UIEdgeInsets(top: 11, left: 16, bottom: 11, right: 16))
             column.addArrangedSubview(bubble)
@@ -366,6 +396,8 @@ enum ChatViews {
             return toolStepRow(step)
         case .consent(let consent):
             return consentCard(message: message, consent: consent, context: context)
+        case .approvalRequest(let approvalId):
+            return ApprovalViews.card(approvalId, app: context.model.app, host: context.host)
         case .question(let question):
             return questionCard(message: message, question: question, context: context)
         case .planProposal(let planId):

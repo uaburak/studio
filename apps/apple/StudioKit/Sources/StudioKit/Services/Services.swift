@@ -206,6 +206,17 @@ public protocol StudioDataService: Sendable {
     func specialDays(from: String, to: String) async throws -> [SpecialDay]
     func specialDayOverrides() async throws -> SpecialDayOverrides
     func saveSpecialDayOverrides(_ overrides: [ReligiousDayOverride]) async throws -> SpecialDayOverrides
+
+    // Approval requests and `@` names (docs/URETIM-RESIM.md, Faz 0). Defaults in ApprovalServices.swift.
+    /// Newest first; `brandId` / `contentId` / `conversationId` nil = any.
+    func approvals(brandId: EntityID?, contentId: EntityID?, conversationId: EntityID?, status: ApprovalStatusFilter) async throws -> [ApprovalRequest]
+    func approval(_ id: EntityID) async throws -> ApprovalRequest
+    func approveApproval(_ id: EntityID, assetId: EntityID?) async throws -> ApprovalActionResult
+    func rejectApproval(_ id: EntityID, note: String?) async throws -> ApprovalActionResult
+    /// The owner's consent to generate again (paid).
+    func regenerateApproval(_ id: EntityID, _ input: ApprovalRegenerate) async throws -> ApprovalActionResult
+    /// Products, then the newest posts, each with its `@` name.
+    func mentionCandidates(brandId: EntityID) async throws -> [EntityMentionCandidate]
 }
 
 /// Brand page defaults (skills, templates, checks, special days): other conformers keep

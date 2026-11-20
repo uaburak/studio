@@ -29,6 +29,8 @@ final class IOSChatViewController: UIViewController, UITableViewDelegate {
     private var scrollButtonShown = false
     /// True until the reader drags away from the end; streaming replies then stay in view.
     private var followsBottom = true
+    /// A message to bring into view once it is on screen ("Onay bekleyenler" → its card).
+    private var pendingScrollMessageId: EntityID?
     private var contentSizeObservation: NSKeyValueObservation?
 
     static let starters = ["Bu ayın postlarını üret", "Yeni ürün duyurusu hazırla", "Bu haftayı planla", "Kullanımı sor"]
@@ -135,7 +137,10 @@ final class IOSChatViewController: UIViewController, UITableViewDelegate {
         }
 
         observation = observeIOS { [weak self] in self?.render() }
-        badgeObservation = observeIOS { [weak self] in self?.renderDrawerBadge() }
+        badgeObservation = observeIOS { [weak self] in
+            self?.renderDrawerBadge()
+            self?.renderMoreBadge()
+        }
     }
 
     override func viewWillAppear(_ animated: Bool) {
@@ -154,6 +159,8 @@ final class IOSChatViewController: UIViewController, UITableViewDelegate {
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
         app.visibleConversationId = model.id
+        // New products and posts since the last time show up after `@`.
+        Task { await app.loadMentionCandidates(force: true) }
         if focusComposerOnAppear {
             focusComposerOnAppear = false
             composer.textView.becomeFirstResponder()
@@ -208,6 +215,14 @@ final class IOSChatViewController: UIViewController, UITableViewDelegate {
         drawerItem.accessibilityValue = waiting ? "Bekleyen işler var" : nil
     }
 
+    /// The number of pictures waiting for approval on "…" (its menu opens the list).
+    private func renderMoreBadge() {
+        let count = app.approvals.count
+        moreItem.badge = count > 0 ? .count(count) : nil
+        if count > 0 { moreItem.badge?.backgroundColor = IOSTheme.accent }
+        moreItem.accessibilityValue = count > 0 ? "\(count) görsel onay bekliyor" : nil
+    }
+
     // MARK: Render
 
     private func render() {
@@ -247,6 +262,11 @@ final class IOSChatViewController: UIViewController, UITableViewDelegate {
                     hasher.combine(app.posts.card(ref.contentId)?.title)
                 case .toolStep:
                     hasher.combine(index)
+                case .approvalRequest(let approvalId):
+                    hasher.combine(app.approvals.records[approvalId])
+                    hasher.combine(app.approvals.busy.contains(approvalId))
+                    hasher.combine(app.approvals.isMissing(approvalId))
+                    hasher.combine(app.approvals.records[approvalId].flatMap { app.approvals.subject(of: $0) })
                 default:
                     break
                 }
@@ -287,9 +307,34 @@ final class IOSChatViewController: UIViewController, UITableViewDelegate {
                 self.didInitialScroll = true
                 self.followsBottom = true
             }
-            if self.followsBottom { self.pinToBottom() }
+            if self.pendingScrollMessageId != nil {
+                self.applyPendingScroll()
+            } else if self.followsBottom {
+                self.pinToBottom()
+            }
             self.updateScrollButton()
         }
+    }
+
+    /// Bring a message into view (now, or once the conversation has loaded) and flash it.
+    func scrollToMessage(_ id: EntityID) {
+        pendingScrollMessageId = id
+        if isViewLoaded, dataSource != nil { applyPendingScroll() }
+    }
+
+    private func applyPendingScroll() {
+        guard let id = pendingScrollMessageId, let indexPath = dataSource.indexPath(for: "m:\(id)") else { return }
+        pendingScrollMessageId = nil
+        followsBottom = false
+        didInitialScroll = true
+        // Rows size themselves: place it once, let the layout settle, place it again.
+        tableView.scrollToRow(at: indexPath, at: .top, animated: false)
+        tableView.layoutIfNeeded()
+        tableView.scrollToRow(at: indexPath, at: .top, animated: false)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
+            (self?.tableView.cellForRow(at: indexPath) as? ChatMessageCell)?.flash()
+        }
+        updateScrollButton()
     }
 
     /// Connection trouble of this conversation, as a small line in the title area.
@@ -385,7 +430,9 @@ final class IOSChatViewController: UIViewController, UITableViewDelegate {
             onShare: { [weak self] message, source in
                 guard let self else { return }
                 FileSharing.share([message.plainText], from: self, source: source)
-            })
+            },
+            onEntityMention: { [weak self] mention in self?.openEntity(mention) },
+            host: { [weak self] in self })
     }
 
     private func runRow(_ run: AgentRun) -> UIView {
@@ -443,6 +490,12 @@ final class IOSChatViewController: UIViewController, UITableViewDelegate {
                 self?.app.open(.newConversation)
             })
         }
+        let waiting = app.approvals.count
+        top.append(UIAction(
+            title: "Onay bekleyenler", subtitle: waiting > 0 ? "\(waiting) görsel onayını bekliyor" : "Bekleyen yok",
+            image: UIImage(systemName: waiting > 0 ? "checkmark.seal.fill" : "checkmark.seal")) { [weak self] _ in
+            self?.app.open(.approvals(contentId: nil))
+        })
         top.append(StudioMenus.usageAction(model.presence) { [weak self] in self?.showUsage() })
         if !model.isNew {
             top.append(UIAction(title: "Kullanımı sor (/usage)", image: UIImage(systemName: "text.bubble")) { [weak self] _ in
@@ -491,6 +544,26 @@ final class IOSChatViewController: UIViewController, UITableViewDelegate {
             lines.append("\(message.role == .user ? "Sen" : "Studio"): \(text)")
         }
         return lines.joined(separator: "\n\n")
+    }
+
+    /// A tapped `@post` opens the post; `@product` the product.
+    private func openEntity(_ mention: MessageEntityMention) {
+        switch mention.kind {
+        case .content:
+            app.open(.post(mention.id))
+        case .product:
+            Task {
+                let products = IOSProductsModel(app: app)
+                await products.load()
+                guard products.products.contains(where: { $0.id == mention.id }) else {
+                    Toast.show("Ürün bulunamadı", in: view, isError: true)
+                    return
+                }
+                navigationController?.pushViewController(ProductDetailViewController(app: app, model: products, productId: mention.id), animated: true)
+            }
+        case .unknown:
+            break
+        }
     }
 
     private func showUsage() {

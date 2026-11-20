@@ -265,6 +265,36 @@ public enum MentionText {
         case text(String)
         /// A mention, with the alias it resolves to.
         case mention(MessageMention)
+        /// A product or post (`@venta-boro`).
+        case entity(MessageEntityMention)
+    }
+
+    /// Split `text` at file mentions and product / post mentions (UTF-16 ranges); overlapping
+    /// and invalid ranges are ignored.
+    public static func segments(_ text: String, mentions: [MessageMention], entityMentions: [MessageEntityMention]) -> [Segment] {
+        guard !entityMentions.isEmpty else { return segments(text, mentions: mentions) }
+        let units = Array(text.utf16)
+        enum Hit { case file(MessageMention), entity(MessageEntityMention) }
+        var hits: [(start: Int, end: Int, hit: Hit)] = mentions.map { ($0.start, $0.end, .file($0)) }
+        hits += entityMentions.map { ($0.start, $0.end, .entity($0)) }
+        hits.sort { $0.start < $1.start }
+        var segments: [Segment] = []
+        var cursor = 0
+        for (start, end, hit) in hits {
+            guard start >= cursor, end <= units.count, start < end else { continue }
+            if start > cursor {
+                segments.append(.text(String(decoding: units[cursor..<start], as: UTF16.self)))
+            }
+            switch hit {
+            case .file(let mention): segments.append(.mention(mention))
+            case .entity(let mention): segments.append(.entity(mention))
+            }
+            cursor = end
+        }
+        if cursor < units.count {
+            segments.append(.text(String(decoding: units[cursor...], as: UTF16.self)))
+        }
+        return segments
     }
 
     /// Split `text` at `mentions` (UTF-16 ranges); invalid ranges are ignored.

@@ -45,6 +45,7 @@ public actor SampleBackend: ConversationService, StudioDataService {
         }
         self.data = data
         self.uploadDelay = uploadDelay
+        self.products = data.products
         var hist: [EntityID: [ContentVersion]] = [:]
         for (contentId, version) in data.versions {
             hist[contentId] = [version]
@@ -170,7 +171,12 @@ public actor SampleBackend: ConversationService, StudioDataService {
         let text = message.text.trimmingCharacters(in: .whitespacesAndNewlines)
         if !text.isEmpty { parts.append(.text(text)) }
         let mentions = MentionText.resolve(text, aliases: aliases.map(MentionText.Target.init))
-        let stored = Message(id: messageId, conversationId: conversationId, role: .user, parts: parts, mentions: mentions, createdAt: now, updatedAt: now)
+        let brandId = data.conversations.first { $0.id == conversationId }?.brandId
+        let fileNames = Set(aliases.flatMap { [$0.alias] + $0.previousAliases })
+        let entityMentions = brandId.map { EntityMentionNames.resolve(text, candidates: sampleMentionCandidates(brandId: $0), skip: fileNames) } ?? []
+        let stored = Message(
+            id: messageId, conversationId: conversationId, role: .user, parts: parts, mentions: mentions,
+            entityMentions: entityMentions, createdAt: now, updatedAt: now)
         data.messages[conversationId, default: []].append(stored)
 
         if text.lowercased() == "/usage" && message.attachments.isEmpty {
@@ -835,6 +841,12 @@ public actor SampleBackend: ConversationService, StudioDataService {
         if let slug = input.slug { data.brands[index].slug = slug }
         if let lang = input.defaultLanguage { data.brands[index].defaultLanguage = lang }
         if let status = input.status { data.brands[index].status = status }
+        if input.clearsDefaultEngine {
+            data.brands[index].defaultEngine = nil
+        } else if let engine = input.defaultEngine {
+            data.brands[index].defaultEngine = engine
+        }
+        if let preset = input.imageStylePreset { data.brands[index].imageStylePreset = preset }
         data.brands[index].updatedAt = now
         return data.brands[index]
     }
@@ -1112,14 +1124,14 @@ public actor SampleBackend: ConversationService, StudioDataService {
     // MARK: - Contents, Versions, Slot-Fill, Layer Patch & Export
 
     public func contents(brandId: EntityID) async throws -> [Content] {
-        data.contents.filter { $0.brandId == brandId }
+        data.contents.filter { $0.brandId == brandId }.map(withApprovals)
     }
 
     public func content(_ id: EntityID) async throws -> Content {
         guard let content = data.contents.first(where: { $0.id == id }) else {
             throw StudioAPIError.server(status: 404, code: .notFound, message: "content not found", issues: [])
         }
-        return content
+        return withApprovals(content)
     }
 
     public func version(contentId: EntityID, version: Int) async throws -> ContentVersion {
@@ -1742,6 +1754,158 @@ public actor SampleBackend: ConversationService, StudioDataService {
         data.jobs[index].finishedAt = now
         broadcastJobs()
         return data.jobs[index]
+    }
+
+    // MARK: - Approval requests and @ names (docs/URETIM-RESIM.md, Faz 0)
+
+    /// The post with its pending approval count, as the API sends it.
+    private func withApprovals(_ content: Content) -> Content {
+        var content = content
+        content.pendingApprovals = data.approvals.filter { $0.contentId == content.id && $0.status == .pending }.count
+        return content
+    }
+
+    private func sampleMentionCandidates(brandId: EntityID) -> [EntityMentionCandidate] {
+        SampleData.mentionCandidates(
+            products: products[brandId] ?? [], contents: data.contents.filter { $0.brandId == brandId }, approvals: data.approvals)
+    }
+
+    public func mentionCandidates(brandId: EntityID) async throws -> [EntityMentionCandidate] {
+        sampleMentionCandidates(brandId: brandId)
+    }
+
+    public func approvals(brandId: EntityID?, contentId: EntityID?, conversationId: EntityID?, status: ApprovalStatusFilter) async throws -> [ApprovalRequest] {
+        data.approvals
+            .filter { brandId == nil || $0.brandId == brandId }
+            .filter { contentId == nil || $0.contentId == contentId }
+            .filter { conversationId == nil || $0.conversationId == conversationId }
+            .filter { status == .all || $0.status.rawValue == status.rawValue }
+            .sorted { $0.createdAt > $1.createdAt }
+    }
+
+    public func approval(_ id: EntityID) async throws -> ApprovalRequest {
+        guard let found = data.approvals.first(where: { $0.id == id }) else {
+            throw StudioAPIError.server(status: 404, code: .notFound, message: "approval \(id) not found", issues: [])
+        }
+        return found
+    }
+
+    /// The index of a pending request (404 unknown, 409 decided).
+    private func pendingApprovalIndex(_ id: EntityID) throws -> Int {
+        guard let index = data.approvals.firstIndex(where: { $0.id == id }) else {
+            throw StudioAPIError.server(status: 404, code: .notFound, message: "approval \(id) not found", issues: [])
+        }
+        guard data.approvals[index].status == .pending else {
+            throw StudioAPIError.server(status: 409, code: .conflict, message: "approval \(id) is \(data.approvals[index].status.rawValue)", issues: [])
+        }
+        return index
+    }
+
+    /// `approval.updated` on the job feed.
+    private func announce(_ approval: ApprovalRequest) {
+        for continuation in jobObservers.values { continuation.yield(.message(.approvalUpdated(approval))) }
+    }
+
+    private func actionResult(_ approval: ApprovalRequest, job: Job?, product: BrandProduct? = nil) -> ApprovalActionResult {
+        let content = approval.contentId.flatMap { id in data.contents.first { $0.id == id } }.map(withApprovals)
+        return ApprovalActionResult(approval: approval, content: content, product: product, job: job)
+    }
+
+    public func approveApproval(_ id: EntityID, assetId: EntityID?) async throws -> ApprovalActionResult {
+        let index = try pendingApprovalIndex(id)
+        var approval = data.approvals[index]
+        guard let chosen = assetId ?? approval.assetIds.first, approval.assetIds.contains(chosen) else {
+            throw StudioAPIError.server(status: 400, code: .validationError, message: "assetId is not a candidate of this request", issues: [])
+        }
+        var job: Job?
+        var product: BrandProduct?
+        if approval.kind == .productPhotoUpgrade {
+            if let productId = approval.productId, var found = products[approval.brandId]?.first(where: { $0.id == productId }) {
+                if let old = approval.replacesAssetId, let slot = found.imageAssetIds.firstIndex(of: old) {
+                    found.imageAssetIds[slot] = chosen
+                } else {
+                    found.imageAssetIds.insert(chosen, at: 0)
+                }
+                found.updatedAt = now
+                products[approval.brandId] = products[approval.brandId]?.map { $0.id == productId ? found : $0 }
+                product = found
+            }
+        } else if let contentId = approval.contentId, let slotId = approval.slotId {
+            _ = try fillSlotInternal(contentId: contentId, slotId: slotId, assetId: chosen)
+            let render = Job(id: nextId("job"), type: .contentRender, status: .succeeded, brandId: approval.brandId, contentId: contentId, createdAt: now, updatedAt: now, finishedAt: now)
+            data.jobs.insert(render, at: 0)
+            job = render
+        }
+        approval.status = .approved
+        approval.approvedAssetId = chosen
+        approval.decidedAt = now
+        approval.updatedAt = now
+        data.approvals[index] = approval
+        announce(approval)
+        if job != nil { broadcastJobs() }
+        return actionResult(approval, job: job, product: product)
+    }
+
+    public func rejectApproval(_ id: EntityID, note: String?) async throws -> ApprovalActionResult {
+        let index = try pendingApprovalIndex(id)
+        var approval = data.approvals[index]
+        approval.status = .rejected
+        approval.decisionNote = ApprovalReject(note: note).note
+        approval.decidedAt = now
+        approval.updatedAt = now
+        data.approvals[index] = approval
+        announce(approval)
+        return actionResult(approval, job: nil)
+    }
+
+    /// The sample "generates" at once: the request becomes `superseded` and the new pictures
+    /// arrive as a new pending request (in the same chat, under a new message).
+    public func regenerateApproval(_ id: EntityID, _ input: ApprovalRegenerate) async throws -> ApprovalActionResult {
+        let index = try pendingApprovalIndex(id)
+        var approval = data.approvals[index]
+        guard approval.canRegenerate else {
+            throw StudioAPIError.server(status: 409, code: .conflict, message: "the original request is unknown", issues: [])
+        }
+        var payload: JSONObject = ["preserveProductLabel": .bool(input.preserveLabelComposite)]
+        if let instructions = input.instructions { payload["instructions"] = .string(instructions) }
+        let job = Job(
+            id: nextId("job"), type: .imageGenerate, status: .succeeded, payload: payload, brandId: approval.brandId,
+            contentId: approval.contentId, createdAt: now, updatedAt: now, startedAt: now, finishedAt: now)
+        data.jobs.insert(job, at: 0)
+        approval.status = .superseded
+        approval.regenerateJobId = job.id
+        approval.decidedAt = now
+        approval.updatedAt = now
+        data.approvals[index] = approval
+        announce(approval)
+
+        let pictures = approval.assetIds.map { _ in registerGeneratedImage(brandId: approval.brandId, name: "yeniden-uretim.jpg") }
+        let summary = input.preserveLabelComposite
+            ? "Etiket gerçek fotoğraftan birebir yerleştirildi; sorun bulmadım."
+            : "Yeni görsel ürün fotoğrafıyla örtüşüyor; sorun bulmadım."
+        var next = ApprovalRequest(
+            id: nextId("apr"), brandId: approval.brandId, contentId: approval.contentId, productId: approval.productId,
+            kind: approval.kind, assetIds: pictures,
+            checkReport: ApprovalCheckReport(passed: true, items: (approval.checkReport?.items ?? []).map { ApprovalCheckItem(aspect: $0.aspect, ok: true) }, summary: summary),
+            slotId: approval.slotId, replacesAssetId: approval.replacesAssetId, sourceJobId: job.id,
+            createdAt: now, updatedAt: now)
+        if let conversationId = approval.conversationId, data.conversations.contains(where: { $0.id == conversationId }) {
+            let messageId = nextId("m")
+            next.conversationId = conversationId
+            next.messageId = messageId
+            var text = input.preserveLabelComposite ? "Etiketi gerçek fotoğraftan birebir koruyarak yeniden yerleştirdim." : "Yeniden ürettim."
+            if let instructions = input.instructions { text += " İsteğin: “\(instructions)”." }
+            let reply = Message(
+                id: messageId, conversationId: conversationId, role: .assistant, status: .complete, runId: nil,
+                parts: [.text(text), .approvalRequest(approvalId: next.id)], createdAt: now, updatedAt: now)
+            data.messages[conversationId, default: []].append(reply)
+            if let conv = data.conversations.firstIndex(where: { $0.id == conversationId }) { data.conversations[conv].lastActivityAt = now }
+        }
+        data.approvals.append(next)
+        if let conversationId = next.conversationId { broadcast(conversationId) }
+        announce(next)
+        broadcastJobs()
+        return actionResult(approval, job: job)
     }
 }
 
