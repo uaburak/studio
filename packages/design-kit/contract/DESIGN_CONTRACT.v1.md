@@ -162,6 +162,10 @@ Machine-checked:
   line-clamp **[lint: text-overflow-box, text-clipped, text-outside-artboard, text-truncated, text-line-clamp]**.
 - **Visible**: text is not painted underneath another element **[lint: text-occluded]**.
 - **No overlapping text** between layers unless marked `data-allow-overlap` **[lint: text-overlap]**.
+- **Nothing cuts into text**: no shape, badge, picture or slot may touch a text layer's letters, above or below
+  them (e.g. a badge whose edge sits under the first letter of an eyebrow). Place them side by side with a gap. A
+  panel or photo that holds the whole text behind it is fine; mark a deliberate overlap with `data-allow-overlap`
+  **[lint: text-element-overlap]**.
 - **Diacritics**: Turkish marks (İ Ö Ü Ğ above, Ç Ş below) must not touch the neighbouring line. In uppercase display
   type keep line-height ≥ 0.96 **[lint: diacritic-collision]**.
 - **Widows**: large text (≥ 44px) must not end on a lone short word **[lint: widow]**. Use `text-wrap: balance` for

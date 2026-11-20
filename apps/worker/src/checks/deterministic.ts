@@ -85,6 +85,7 @@ export const RULE_CHECKS: Readonly<Record<string, CheckId>> = {
   "text-line-clamp": "layout.overflow",
   "text-overlap": "layout.overflow",
   "text-occluded": "layout.overflow",
+  "text-element-overlap": "layout.overflow",
   "safe-area": "layout.safe-area",
   contrast: "layout.contrast",
   "contrast-busy-background": "layout.contrast",
@@ -233,6 +234,10 @@ export function lintMessage(issue: LintIssue, safeHint: string): string {
     }
     case "text-occluded":
       return `${L} metni başka bir öğenin altında kalıyor.`;
+    case "text-element-overlap": {
+      const other = str(d.element);
+      return `${L} metninin harfleri${other ? ` "${other}" öğesiyle` : " başka bir öğeyle"} çakışıyor${d.above === true ? " (öğe metnin üstünde)" : ""}.`;
+    }
     case "safe-area": {
       const px = num(d.overflow);
       return `${L} güvenli alanın ${px !== null ? `${Math.round(px)} px ` : ""}dışında${safeHint}.`;

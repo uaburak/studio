@@ -746,6 +746,192 @@ export function studioInPageLint(input: InPageInput, docArg?: Document): InPageR
           { other: idOf(ib), area: round(area) },
         );
     }
+  // ---------- text vs shapes, pictures and slots ----------
+  // A shape, picture or slot that cuts into a text's ink is a collision whether it is painted
+  // above the text or under it (a badge under the first letters, text straddling a photo's
+  // edge). A backdrop that holds the whole text (a panel or photo behind a caption, a badge's
+  // own letter on its shape) is intended; an element painted over ALL of a text is the
+  // `text-occluded` finding. Logos have their own rule; backgrounds (data-role="background" or
+  // ≥ 25% of the artboard) never collide. The overlap is measured by hit-testing the element at
+  // sample points inside the text's ink band, so clip-paths (hexagons) and rounded corners count
+  // as drawn, not as their bounding box.
+  {
+    const TOL = 2;
+    const paintsBox = (e: Element): boolean => {
+      const tag = e.tagName.toLowerCase();
+      if (tag === "img" || tag === "svg" || tag === "video" || tag === "canvas") return true;
+      if (e.getAttribute("data-type") === "slot") return true;
+      const s = cssOf(e);
+      const alpha = (c: string) => {
+        const m = c.match(/rgba?\(([^)]+)\)/);
+        if (!m) return 0;
+        const p = (m[1] ?? "")
+          .split(/[\s,/]+/)
+          .filter(Boolean)
+          .map(Number);
+        return p.length > 3 ? (p[3] as number) : 1;
+      };
+      return (
+        s.backgroundImage !== "none" ||
+        alpha(s.backgroundColor) > 0.05 ||
+        (Number.parseFloat(s.borderTopWidth) > 0 && alpha(s.borderTopColor) > 0.05) ||
+        (Number.parseFloat(s.borderLeftWidth) > 0 && alpha(s.borderLeftColor) > 0.05) ||
+        s.boxShadow !== "none" ||
+        e.querySelector("img, svg, video, canvas") !== null
+      );
+    };
+    const visuals: { el: Element; id: string; rect: InPageRect }[] = [];
+    for (const el of layerEls) {
+      const type = el.getAttribute("data-type") ?? "";
+      if (type !== "shape" && type !== "image" && type !== "slot") continue;
+      if (el.getAttribute("data-role") === "background" || !isVisible(el)) continue;
+      const c = clipToArtboard(box(el.getBoundingClientRect()));
+      if (!c || (c.w * c.h) / (width * height) >= 0.25) continue;
+      if (!paintsBox(el)) continue;
+      visuals.push({ el, id: el.getAttribute("data-layer") ?? "", rect: c });
+    }
+    // A picture's box is not its ink: a cut-out product photo (transparent, or white under
+    // mix-blend-mode multiply) or the letterbox of object-fit: contain paints nothing there.
+    const pixels = new Map<Element, { data: Uint8ClampedArray; w: number; h: number } | null>();
+    const imageInk = (img: HTMLImageElement, x: number, y: number): boolean => {
+      const ir = img.getBoundingClientRect();
+      const s = cssOf(img);
+      const bl = Number.parseFloat(s.borderLeftWidth) + Number.parseFloat(s.paddingLeft) || 0;
+      const bt = Number.parseFloat(s.borderTopWidth) + Number.parseFloat(s.paddingTop) || 0;
+      const br = Number.parseFloat(s.borderRightWidth) + Number.parseFloat(s.paddingRight) || 0;
+      const bb = Number.parseFloat(s.borderBottomWidth) + Number.parseFloat(s.paddingBottom) || 0;
+      const cx = ir.left + bl;
+      const cy = ir.top + bt;
+      const cw = ir.width - bl - br;
+      const ch = ir.height - bt - bb;
+      const nw = img.naturalWidth;
+      const nh = img.naturalHeight;
+      if (!nw || !nh || cw <= 0 || ch <= 0) return true;
+      const fit = s.objectFit;
+      let sx = cw / nw;
+      let sy = ch / nh;
+      if (fit === "contain") sx = sy = Math.min(sx, sy);
+      else if (fit === "cover") sx = sy = Math.max(sx, sy);
+      else if (fit === "none") sx = sy = 1;
+      else if (fit === "scale-down") sx = sy = Math.min(1, Math.min(sx, sy));
+      const dw = nw * sx;
+      const dh = nh * sy;
+      const pos = (v: string | undefined, free: number) => {
+        if (!v) return free / 2;
+        if (v === "left" || v === "top") return 0;
+        if (v === "right" || v === "bottom") return free;
+        if (v === "center") return free / 2;
+        if (v.endsWith("%")) return (free * Number.parseFloat(v)) / 100;
+        return Number.parseFloat(v) || 0;
+      };
+      const op = s.objectPosition.split(/\s+/);
+      const dx = cx + pos(op[0], cw - dw);
+      const dy = cy + pos(op[1], ch - dh);
+      if (x < dx || y < dy || x >= dx + dw || y >= dy + dh) return false;
+      let px = pixels.get(img);
+      if (px === undefined) {
+        px = null;
+        try {
+          const k = Math.min(1, 512 / Math.max(nw, nh));
+          const c = doc.createElement("canvas");
+          c.width = Math.max(1, Math.round(nw * k));
+          c.height = Math.max(1, Math.round(nh * k));
+          const g = c.getContext("2d");
+          if (g) {
+            g.drawImage(img, 0, 0, c.width, c.height);
+            px = { data: g.getImageData(0, 0, c.width, c.height).data, w: c.width, h: c.height };
+          }
+        } catch {
+          px = null; // unreadable (cross-origin): count the box as ink
+        }
+        pixels.set(img, px);
+      }
+      if (!px) return true;
+      const u = Math.min(px.w - 1, Math.max(0, Math.floor(((x - dx) / dw) * px.w)));
+      const w = Math.min(px.h - 1, Math.max(0, Math.floor(((y - dy) / dh) * px.h)));
+      const i = (w * px.w + u) * 4;
+      const r = px.data[i] ?? 0;
+      const g = px.data[i + 1] ?? 0;
+      const b = px.data[i + 2] ?? 0;
+      if ((px.data[i + 3] ?? 0) < 26) return false;
+      const blend = s.mixBlendMode;
+      if ((blend === "multiply" || blend === "darken") && Math.min(r, g, b) > 240) return false;
+      if ((blend === "screen" || blend === "lighten") && Math.max(r, g, b) < 15) return false;
+      return true;
+    };
+    if (visuals.length > 0) {
+      // Hit-testing must see every element, whatever its pointer-events.
+      const force = doc.createElement("style");
+      force.textContent = "*, *::before, *::after { pointer-events: auto !important; }";
+      (doc.head ?? doc.documentElement).appendChild(force);
+      try {
+        for (const tkey of ids) {
+          const te = textEls[tkey];
+          const L = textLines[tkey] ?? [];
+          if (!te || !L.length || te.hasAttribute("data-allow-overlap")) continue;
+          const U = {
+            x0: Math.min(...L.map((l) => l.x)),
+            y0: Math.min(...L.map((l) => l.y)),
+            x1: Math.max(...L.map((l) => l.x + l.w)),
+            y1: Math.max(...L.map((l) => l.y + l.h)),
+          };
+          for (const v of visuals) {
+            if (v.el.hasAttribute("data-allow-overlap")) continue;
+            if (v.el.contains(te) || te.contains(v.el)) continue;
+            const r = v.rect;
+            // Backdrop (or a full cover, which text-occluded reports): it holds the whole text.
+            if (
+              r.x - TOL <= U.x0 &&
+              r.y - TOL <= U.y0 &&
+              r.x + r.w + TOL >= U.x1 &&
+              r.y + r.h + TOL >= U.y1
+            )
+              continue;
+            let area = 0;
+            let above: boolean | null = null;
+            for (const l of L) {
+              const x0 = Math.max(l.x, r.x + TOL);
+              const y0 = Math.max(l.y, r.y + TOL);
+              const x1 = Math.min(l.x + l.w, r.x + r.w - TOL);
+              const y1 = Math.min(l.y + l.h, r.y + r.h - TOL);
+              if (x1 - x0 < 1 || y1 - y0 < 1) continue;
+              const step = Math.max(2, Math.ceil(Math.sqrt(((x1 - x0) * (y1 - y0)) / 400)));
+              for (let y = y0 + step / 2; y < y1; y += step)
+                for (let x = x0 + step / 2; x < x1; x += step) {
+                  if (x < 0 || y < 0 || x >= width || y >= height) continue;
+                  const stack = doc.elementsFromPoint(x, y);
+                  const vi = stack.findIndex(
+                    (e) =>
+                      (e === v.el || v.el.contains(e)) &&
+                      !(
+                        e.tagName.toLowerCase() === "img" && !imageInk(e as HTMLImageElement, x, y)
+                      ),
+                  );
+                  if (vi < 0) continue;
+                  area += step * step;
+                  if (above === null) {
+                    const ti = stack.findIndex((e) => e === te || te.contains(e));
+                    above = ti < 0 || vi < ti;
+                  }
+                }
+            }
+            if (area > 40)
+              add(
+                "text-element-overlap",
+                idOf(tkey),
+                above
+                  ? `"${v.id}" is painted over part of the text of "${idOf(tkey)}" (${round(area)}px²). Move it clear of the text or make it a backdrop that holds the whole text.`
+                  : `The text of "${idOf(tkey)}" runs onto the edge of "${v.id}" (${round(area)}px² of its letters sit on it). Move the text or the element so they do not touch, or make it a backdrop that holds the whole text.`,
+                { element: v.id, area: round(area), above: above === true },
+              );
+          }
+        }
+      } finally {
+        force.remove();
+      }
+    }
+  }
+
   const logos: { id: string; src: string; rect: InPageRect }[] = [];
   for (const lg of Array.from(doc.querySelectorAll('[data-type="logo"]'))) {
     if (!isVisible(lg)) continue;
