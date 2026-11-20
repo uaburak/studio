@@ -313,6 +313,13 @@ describe("Expanded Studio Chat Agent Tools (Wave 2A)", () => {
           preserveProductLabel: true,
           targetContentId: "cnt_1",
           targetSlotId: "hero-slot",
+          // The picture asks for the owner's word in this chat before it fills the slot.
+          approval: {
+            kind: "product_image",
+            conversationId: "conv_1",
+            contentId: "cnt_1",
+            slotId: "hero-slot",
+          },
         },
       ],
       [

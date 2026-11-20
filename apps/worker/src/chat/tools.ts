@@ -18,6 +18,7 @@ import path from "node:path";
 import {
   type AgentEffort,
   ApiError,
+  type ApprovalTarget,
   type Asset,
   AssetOrientation,
   aiCallCostUsd,
@@ -48,6 +49,8 @@ import { z } from "zod";
 import type { StudioApi } from "../api.ts";
 import { abortableSleep } from "../claude/gate.ts";
 import type { TurnWaits } from "../claude/turn-waits.ts";
+import { assessPhotoQuality, type PhotoQuality } from "../image/photo-quality.ts";
+import { type ProductPhotoRef, selectProductReferences } from "../image/references.ts";
 import type { Logger } from "../log.ts";
 import { silentLogger } from "../log.ts";
 import { prepareModelImage } from "../media.ts";
@@ -410,7 +413,7 @@ export const STUDIO_TOOLS: readonly StudioToolDefinition[] = [
   {
     name: "get_product",
     description:
-      "Bir ürünün bütün bilgilerini ve fotoğraflarını (ön, arka, yan etiket… açı ipuçlarıyla) getirir. `withPhotos: true` ile fotoğrafların kendisini de gösterir. İstenen açıya (ör. 'sola bakan') uygun fotoğrafı seçmek için kullan.",
+      "Bir ürünün bütün bilgilerini ve fotoğraflarını (ön, arka, yan etiket… açı ipuçlarıyla) getirir. `withPhotos: true` ile fotoğrafların kendisini de gösterir. İstenen açıya (ör. 'sola bakan') uygun fotoğrafı seçmek için kullan. Her fotoğrafın kalitesi de ölçülür (`quality`: çözünürlük, netlik, ışık); kalitesiz olanlar `lowQualityPhotos`'ta gelir.",
     inputSchema: {
       type: "object",
       required: ["product"],
@@ -419,6 +422,31 @@ export const STUDIO_TOOLS: readonly StudioToolDefinition[] = [
         withPhotos: {
           type: "boolean",
           description: "Fotoğraflar da gösterilsin mi (en fazla 8).",
+        },
+      },
+    },
+  },
+  {
+    name: "upgrade_product_photo",
+    description:
+      'Kalitesiz bir ürün fotoğrafının (düşük çözünürlük, bulanık, gürültülü, kötü ışık) yerine beyaz zeminde, profesyonel stüdyo ışığında, yüksek çözünürlüklü, kusursuz ayrıntılı yeni bir fotoğraf üretir; ürün birebir korunur (etiket yazısı, renk, şekil) ve yapay zekâ kontrol eder. Yalnızca kullanıcı ask_user ile sorulan "Bu ürünün resmi kalitesiz, kalitesini artırayım mı?" sorusuna evet dedikten sonra çağır. Ücretlidir: izin kartı gösterir. Sonuç sohbete onay kartı olarak düşer; onaylanırsa ürünün fotoğrafı değişir, eskisi 30 gün çöpte durur.',
+    inputSchema: {
+      type: "object",
+      required: ["product"],
+      properties: {
+        product: { type: "string", description: "Ürünün @adı ya da id'si." },
+        assetId: {
+          type: "string",
+          description:
+            "İyileştirilecek fotoğraf (get_product'taki assetId); boşsa ürünün en kalitesiz fotoğrafı.",
+        },
+        notes: {
+          type: "string",
+          description: "Kullanıcının ek isteği (ör. 'kapak tarafı da görünsün').",
+        },
+        repeat: {
+          type: "boolean",
+          description: "Aynı istek bu sohbette zaten çalıştıysa yine de yeniden üret.",
         },
       },
     },
@@ -631,7 +659,7 @@ export const STUDIO_TOOLS: readonly StudioToolDefinition[] = [
   {
     name: "generate_ai_image",
     description:
-      "Gemini görsel modeliyle yapay zekâ görseli üretir (`image.generate`). Ücretlidir: kullanıcıya model ve tahmini tutarla izin (consent) kartı gösterir ve yanıtını bekler. Aynı istek bu sohbette zaten çalıştıysa yeni iş açmaz, öncekini döner (`repeat: true` yalnızca kullanıcı bilerek bir kez daha isterse). Ürün ambalajı referans görseli varsa `preserveProductLabel: true` ile Türkçe etiket yazılarını piksel hassasiyetiyle korur ve isteğe bağlı olarak doğrudan bir postun görsel yuvasına yerleştirir.",
+      "Gemini görsel modeliyle yapay zekâ görseli üretir (`image.generate`). Ücretlidir: kullanıcıya model ve tahmini tutarla izin (consent) kartı gösterir ve yanıtını bekler. Aynı istek bu sohbette zaten çalıştıysa yeni iş açmaz, öncekini döner (`repeat: true` yalnızca kullanıcı bilerek bir kez daha isterse). Ürün görseli için `referenceProducts` ver: ürünün fotoğrafları birebir okunur (etiket yazısı harfi harfine, renk, şekil, kapak, doku) ve prompta yazılır; model yalnızca kadrajı, ortamı, ışığı ve kaliteyi değiştirir. Her görsel bitince yapay zekâ ürünle karşılaştırır ve görsel, kontrol raporuyla birlikte sohbete onay kartı (Onayla / Reddet / Yeniden üret) olarak düşer; hedef post yuvası ancak onaylanınca dolar. Kontrol hata bulsa da kendiliğinden yeniden üretilmez.",
     inputSchema: {
       type: "object",
       required: ["prompt"],
@@ -662,12 +690,27 @@ export const STUDIO_TOOLS: readonly StudioToolDefinition[] = [
           type: "array",
           items: { type: "string" },
           description:
-            "Referans ürünler: @ad ya da id. Uygun açıdaki fotoğrafı kendin seçtiysen referenceAssetIds kullan; yoksa ürünün ilk fotoğrafları (en fazla 3) gider.",
+            "Görselde görünecek ürünler: @ad ya da id. Uygun açıdaki fotoğrafı kendin seçtiysen onu referenceAssetIds'e de koy; yoksa istenen açıya (`view` ya da tarifteki 'sola bakan', 'arkadan'…) uyan fotoğraf seçilir, açı belli değilse ilk 3 fotoğraf gider.",
+        },
+        view: {
+          type: "string",
+          description:
+            "İstenen açı: 'ön', 'arka', 'sol', 'sağ', 'yan', 'üst' (ör. 'sola bakan' için 'sol'). Ürün fotoğrafı seçiminde kullanılır.",
+        },
+        style: {
+          type: "string",
+          description:
+            "Bu görselin stili (ör. 'vintage', 'retro'); yalnızca sahneye, ışığa ve renk tonuna uygulanır, ürüne asla. Verilmezse markanın görsel stili kullanılır; boş metin ('') stil yok demektir.",
+        },
+        variants: {
+          type: "integer",
+          description:
+            "Kaç görsel (1-4, varsayılan 1). Her biri ayrı ücretlidir, hazır oldukça ayrı onay kartıyla sohbete düşer.",
         },
         preserveProductLabel: {
           type: "boolean",
           description:
-            "Referans ürün ambalajındaki Türkçe yazıları ve etiketi bozmadan korumak için true: model yalnızca sahneyi çizer, gerçek ürün fotoğrafı kesilip yerleştirilir ve etiket sonradan okunarak doğrulanır (sonuçtaki `labelCheck`; 'ok' değilse kullanıcıya söyle).",
+            "Varsayılan false. Yalnızca kullanıcı açıkça 'Etiketi birebir koruyarak yerleştir' isterse true: model yalnızca sahneyi çizer, gerçek ürün fotoğrafı kesilip sahneye yapıştırılır ve etiket sonradan okunarak doğrulanır.",
         },
         productPosition: {
           type: "string",
@@ -901,8 +944,13 @@ const GetProductInput = z.object({
   withPhotos: z.boolean().default(false),
 });
 
-/** Product photos sent as references when the agent did not pick them itself. */
-const MAX_PRODUCT_REFERENCES = 3;
+const UpgradeProductPhotoInput = z.object({
+  repeat: z.boolean().default(false),
+  product: z.string().trim().min(1),
+  /** The photo to improve (default: the product's lowest-quality photo, else its cover). */
+  assetId: z.string().trim().min(1).optional(),
+  notes: trimmed(1_000).optional(),
+});
 
 const GenerateReelInput = z
   .object({
@@ -991,6 +1039,9 @@ const GenerateAiImageInput = z.object({
   referenceAliases: z.array(z.string()).default([]),
   referenceAssetIds: z.array(z.string().trim().min(1)).default([]),
   referenceProducts: z.array(z.string().trim().min(1)).max(4).default([]),
+  view: trimmed(80).optional(),
+  style: trimmed(500).optional(),
+  variants: z.coerce.number().int().min(1).max(MAX_GENERATION_VARIANTS).default(1),
   preserveProductLabel: z.boolean().default(false),
   targetContentId: z.string().trim().min(1).optional(),
   targetSlotId: z.string().trim().min(1).max(128).optional(),
@@ -1325,6 +1376,8 @@ export class StudioToolExecutor {
         );
       case "generate_ai_image":
         return this.generateAiImage(stepId, args, rawCallId);
+      case "upgrade_product_photo":
+        return this.upgradeProductPhoto(stepId, args, rawCallId);
       case "fill_post_slot":
         return this.runSafe(
           stepId,
@@ -2401,28 +2454,28 @@ export class StudioToolExecutor {
     const product = await this.productRef(parsed.product, brandId);
     const photos = [];
     const images: StudioToolImage[] = [];
-    for (const [position, assetId] of product.imageAssetIds.entries()) {
-      const asset = await this.options.api.client.assets
-        .get(assetId, { signal: this.options.signal })
-        .catch((error: unknown) => {
-          this.options.signal.throwIfAborted();
-          if (error instanceof ApiError && error.status === 404) return null;
-          throw error;
-        });
-      if (!asset || asset.deletedAt) continue;
+    for (const photo of await this.productPhotoRefs(product)) {
+      // Is it good enough to work from (docs/URETIM-RESIM.md §13)? Measured here, on this Mac.
+      const quality = await this.photoQuality(photo.assetId);
       photos.push({
-        assetId,
-        position,
-        filename: asset.originalFilename ?? null,
-        width: asset.width,
-        height: asset.height,
-        angleHint: productPhotoAngle(asset.originalFilename ?? null),
+        ...photo,
+        ...(quality
+          ? {
+              quality: {
+                lowQuality: quality.lowQuality,
+                reasons: quality.reasons,
+                sharpness: quality.sharpness,
+                brightness: quality.brightness,
+              },
+            }
+          : {}),
       });
       if (parsed.withPhotos && images.length < 8) {
-        const picture = await this.pictureOf(assetId, 768);
+        const picture = await this.pictureOf(photo.assetId, 768);
         if (picture) images.push(picture);
       }
     }
+    const lowQuality = photos.filter((p) => p.quality?.lowQuality);
     return {
       data: {
         ok: true,
@@ -2436,10 +2489,214 @@ export class StudioToolExecutor {
           notes: product.notes,
         },
         photos,
+        ...(lowQuality.length > 0
+          ? {
+              lowQualityPhotos: lowQuality.map((p) => p.assetId),
+              note: `Bu ürünün ${lowQuality.length} fotoğrafı kalitesiz (${[
+                ...new Set(lowQuality.flatMap((p) => p.quality?.reasons ?? [])),
+              ].join(
+                ", ",
+              )}). Kullanıcıya ask_user ile "Bu ürünün resmi kalitesiz, kalitesini artırayım mı?" diye sor; evet derse upgrade_product_photo.`,
+            }
+          : {}),
       },
-      summary: `${product.name} · ${photos.length} fotoğraf`,
+      summary: `${product.name} · ${photos.length} fotoğraf${lowQuality.length > 0 ? ` · ${lowQuality.length} kalitesiz` : ""}`,
       ...(images.length ? { images } : {}),
     };
+  }
+
+  /** A product's photos still in the library, with the side each shows (by file name). */
+  private async productPhotoRefs(
+    product: BrandProduct,
+  ): Promise<
+    (ProductPhotoRef & { filename: string | null; width: number | null; height: number | null })[]
+  > {
+    const out = [];
+    for (const [position, assetId] of product.imageAssetIds.entries()) {
+      const asset = await this.options.api.client.assets
+        .get(assetId, { signal: this.options.signal })
+        .catch((error: unknown) => {
+          this.options.signal.throwIfAborted();
+          if (error instanceof ApiError && error.status === 404) return null;
+          throw error;
+        });
+      if (!asset || asset.deletedAt) continue;
+      out.push({
+        assetId,
+        position,
+        filename: asset.originalFilename ?? null,
+        width: asset.width,
+        height: asset.height,
+        angleHint: productPhotoAngle(asset.originalFilename ?? null),
+      });
+    }
+    return out;
+  }
+
+  /** Resolution and sharpness of a photo (null: it could not be read). */
+  private async photoQuality(assetId: string): Promise<PhotoQuality | null> {
+    try {
+      const { bytes } = await this.options.api.downloadAsset(assetId, {
+        maxBytes: 25 * 1024 * 1024,
+        signal: this.options.signal,
+      });
+      return await assessPhotoQuality(bytes);
+    } catch (error) {
+      this.options.signal.throwIfAborted();
+      this.logger.warn(`photo quality of ${assetId}: ${(error as Error).message}`);
+      return null;
+    }
+  }
+
+  /**
+   * `upgrade_product_photo` (docs/URETIM-RESIM.md §13): after the owner said yes to "Bu ürünün
+   * resmi kalitesiz, kalitesini artırayım mı?", a paid generation (consent card) of the same
+   * product on a clean white background in studio light, read and checked like every product
+   * picture. Its result is a `product_photo_upgrade` approval request in this chat: approved, it
+   * replaces the photo (the old one stays 30 days in the trash).
+   */
+  private async upgradeProductPhoto(
+    stepId: string,
+    args: Record<string, unknown>,
+    callId?: string,
+  ): Promise<StudioToolExecutionResult> {
+    const tool = "upgrade_product_photo";
+    const runningLabel = "Ürün fotoğrafı iyileştirme için izin bekleniyor…";
+    const doneLabel = "Ürün fotoğrafı iyileştirme kuyruğa alındı";
+    const stepIndex = await this.options.writer.setPart({
+      type: "tool_step",
+      id: stepId,
+      name: tool,
+      label: runningLabel,
+      state: "running",
+      summary: null,
+    });
+    try {
+      const parsed = UpgradeProductPhotoInput.parse(args);
+      const brandId = this.brandId;
+      if (!brandId) throw new Error("Konuşmanın markası yok; önce set_conversation_brand kullan.");
+      const product = await this.productRef(parsed.product, brandId);
+      const photos = await this.productPhotoRefs(product);
+      if (photos.length === 0) throw new Error(`"${product.name}" ürününün fotoğrafı yok.`);
+      let target = parsed.assetId ? photos.find((p) => p.assetId === parsed.assetId) : undefined;
+      if (parsed.assetId && !target) {
+        throw new Error(`Bu fotoğraf "${product.name}" ürününün değil: ${parsed.assetId}`);
+      }
+      let quality: PhotoQuality | null = null;
+      if (!target) {
+        // The worst photo (low quality first, then the least sharp), else the cover.
+        let worst: { photo: (typeof photos)[number]; q: PhotoQuality } | null = null;
+        for (const photo of photos) {
+          const q = await this.photoQuality(photo.assetId);
+          if (!q) continue;
+          const worse =
+            !worst ||
+            (q.lowQuality && !worst.q.lowQuality) ||
+            (q.lowQuality === worst.q.lowQuality && q.sharpness < worst.q.sharpness);
+          if (worse) worst = { photo, q };
+        }
+        target = worst?.photo ?? photos[0];
+        quality = worst?.q ?? null;
+      } else {
+        quality = await this.photoQuality(target.assetId);
+      }
+      if (!target) throw new Error(`"${product.name}" ürününün fotoğrafı yok.`);
+
+      const payload = {
+        prompt: parsed.notes || "Aynı ürünün profesyonel stüdyo çekimi.",
+        aspectRatio: "1:1" as const,
+        imageSize: "2K" as const,
+        referenceAssetIds: [target.assetId],
+        preserveProductLabel: false,
+        productIds: [product.id],
+        style: "",
+        approval: {
+          kind: "product_photo_upgrade" as const,
+          conversationId: this.options.conversationId,
+          productId: product.id,
+          replacesAssetId: target.assetId,
+        },
+      };
+      const key = toolCallKey(tool, { brandId, ...payload });
+      const earlier = await this.earlierCall(tool, key, parsed.repeat);
+      if (earlier) {
+        await this.options.writer.setPart(
+          {
+            type: "tool_step",
+            id: stepId,
+            name: tool,
+            label: "Ürün fotoğrafı zaten iyileştiriliyor",
+            state: "done",
+            summary: "Aynı istek bu sohbette zaten çalıştı; ikinci kez ücret ödenmedi",
+          },
+          stepIndex,
+        );
+        return {
+          data: {
+            ...earlier.data,
+            duplicate: true,
+            note: "Bu fotoğraf bu sohbette zaten iyileştirmeye alınmıştı; ikinci kez ücret ödenmedi. Kullanıcı bilerek bir kez daha isterse repeat: true ile çağır.",
+          },
+          isError: false,
+        };
+      }
+
+      const model = this.options.imageModel ?? "gemini-nano-banana-2.1";
+      const decision = await this.awaitConsent({
+        tool,
+        title: `"${product.name}" fotoğrafını iyileştir (ücretli)`,
+        detail: [
+          quality?.lowQuality ? `Fotoğraf kalitesiz: ${quality.reasons.join(", ")}.` : "",
+          "Beyaz zeminde, stüdyo ışığında, yüksek çözünürlüklü yeni bir ürün fotoğrafı üretilir; ürün birebir korunur ve yapay zekâ kontrol eder. Onaylarsan ürünün fotoğrafı değişir, eskisi 30 gün çöpte durur.",
+          aiImageConsentDetail({
+            model,
+            prompt: payload.prompt,
+            aspectRatio: payload.aspectRatio,
+            imageSize: payload.imageSize,
+            references: 1,
+            preserveLabel: false,
+          }),
+        ]
+          .filter(Boolean)
+          .join("\n"),
+        stepId,
+        stepIndex,
+        doneLabel,
+      });
+      if (!decision.allowed) return { data: decision, isError: false };
+
+      const job = await this.options.api.client.jobs.create(
+        { type: "image.generate", brandId, payload },
+        { signal: this.options.signal },
+      );
+      const data = {
+        ok: true,
+        jobId: job.id,
+        brandId,
+        status: job.status,
+        productId: product.id,
+        replacesAssetId: target.assetId,
+        ...(quality
+          ? { quality: { lowQuality: quality.lowQuality, reasons: quality.reasons } }
+          : {}),
+        note: "Yeni fotoğraf hazır olunca kontrol raporuyla bu sohbete onay kartı olarak düşecek ve kullanıcıya 'Olmuş mu?' diye sorulacak. Onaylanırsa ürünün fotoğrafı değişir.",
+      };
+      await this.ledger.put({ key, tool, callId: callId ?? null, data });
+      await this.options.writer.setPart(
+        {
+          type: "tool_step",
+          id: stepId,
+          name: tool,
+          label: doneLabel,
+          state: "done",
+          summary: `Ürün fotoğrafı işi (${job.id})`,
+        },
+        stepIndex,
+      );
+      return { data: { allowed: true, ...data }, isError: false };
+    } catch (error) {
+      return this.failStep(stepId, tool, runningLabel, stepIndex, error);
+    }
   }
 
   private async generateReel(args: Record<string, unknown>, callId?: string) {
@@ -3087,28 +3344,52 @@ export class StudioToolExecutor {
         const assetId = await this.resolveAliasToAssetId(aliasName);
         if (!referenceAssetIds.includes(assetId)) referenceAssetIds.push(assetId);
       }
-      // `@ürün` references: the product's own photos (the first few unless chosen above).
+      // `@ürün` references: the photos that show the asked side (else the first few), unless
+      // the agent chose some of the product's photos itself.
+      const productIds: string[] = [];
+      const referenceNotes: string[] = [];
       for (const ref of parsed.referenceProducts) {
         const product = await this.productRef(ref, brandId);
-        const photos = product.imageAssetIds.slice(0, MAX_PRODUCT_REFERENCES);
-        if (photos.length === 0) throw new Error(`"${product.name}" ürününün fotoğrafı yok.`);
+        if (product.imageAssetIds.length === 0) {
+          throw new Error(`"${product.name}" ürününün fotoğrafı yok.`);
+        }
+        if (!productIds.includes(product.id)) productIds.push(product.id);
         if (product.imageAssetIds.some((id) => referenceAssetIds.includes(id))) continue;
-        for (const id of photos) if (referenceAssetIds.length < 10) referenceAssetIds.push(id);
+        const choice = selectProductReferences(await this.productPhotoRefs(product), {
+          prompt: parsed.prompt,
+          view: parsed.view ?? null,
+        });
+        referenceNotes.push(`${product.name}: ${choice.reason}`);
+        for (const id of choice.assetIds) {
+          if (referenceAssetIds.length < 10 && !referenceAssetIds.includes(id)) {
+            referenceAssetIds.push(id);
+          }
+        }
       }
+      const targetContentId = parsed.targetContentId
+        ? await this.contentRef(parsed.targetContentId)
+        : undefined;
       const payload = {
         prompt: parsed.prompt,
         aspectRatio: parsed.aspectRatio,
         imageSize: parsed.imageSize,
         referenceAssetIds,
         preserveProductLabel: parsed.preserveProductLabel,
-        ...(parsed.targetContentId ? { targetContentId: parsed.targetContentId } : {}),
+        ...(targetContentId ? { targetContentId } : {}),
         ...(parsed.targetSlotId ? { targetSlotId: parsed.targetSlotId } : {}),
         ...(parsed.productPosition ? { productPosition: parsed.productPosition } : {}),
         ...(parsed.productScale !== undefined ? { productScale: parsed.productScale } : {}),
         ...(parsed.labelText ? { labelText: parsed.labelText } : {}),
+        ...(productIds.length > 0 ? { productIds } : {}),
+        ...(parsed.style !== undefined ? { style: parsed.style } : {}),
       };
+      const variants = parsed.variants;
 
-      const key = toolCallKey(tool, { brandId, ...payload });
+      const key = toolCallKey(tool, {
+        brandId,
+        ...payload,
+        ...(variants > 1 ? { variants } : {}),
+      });
       const earlier = await this.earlierCall(tool, key, parsed.repeat);
       if (earlier) {
         await this.options.writer.setPart(
@@ -3143,6 +3424,7 @@ export class StudioToolExecutor {
           imageSize: parsed.imageSize,
           references: referenceAssetIds.length,
           preserveLabel: parsed.preserveProductLabel,
+          variants,
         }),
         stepId,
         stepIndex,
@@ -3152,20 +3434,45 @@ export class StudioToolExecutor {
         return { data: decision, isError: false };
       }
 
-      const job = await this.options.api.client.jobs.create(
-        { type: "image.generate", brandId, payload },
-        { signal: this.options.signal },
-      );
+      // Every picture asks for the owner's word in this chat (docs/URETIM-RESIM.md §12).
+      const approval: ApprovalTarget = {
+        kind: variants > 1 ? "variant" : "product_image",
+        conversationId: this.options.conversationId,
+        ...(targetContentId ? { contentId: targetContentId } : {}),
+        ...(parsed.targetSlotId ? { slotId: parsed.targetSlotId } : {}),
+        ...(productIds[0] ? { productId: productIds[0] } : {}),
+      };
+      const jobs: Job[] = [];
+      for (let index = 1; index <= variants; index++) {
+        jobs.push(
+          await this.options.api.client.jobs.create(
+            {
+              type: "image.generate",
+              brandId,
+              payload: {
+                ...payload,
+                approval,
+                ...(variants > 1 ? { variant: { index, count: variants } } : {}),
+              },
+            },
+            { signal: this.options.signal },
+          ),
+        );
+      }
+      const job = jobs[0] as Job;
       const data = {
         ok: true,
         jobId: job.id,
+        ...(jobs.length > 1 ? { jobIds: jobs.map((j) => j.id) } : {}),
         brandId,
         status: job.status,
         model,
         referenceAssetIds,
+        ...(referenceNotes.length > 0 ? { referenceChoice: referenceNotes } : {}),
         preserveProductLabel: parsed.preserveProductLabel,
-        ...(parsed.targetContentId ? { targetContentId: parsed.targetContentId } : {}),
+        ...(targetContentId ? { targetContentId } : {}),
         ...(parsed.targetSlotId ? { targetSlotId: parsed.targetSlotId } : {}),
+        note: "Her görsel hazır olunca yapay zekâ kontrolünün raporuyla bu sohbete onay kartı olarak düşecek (Onayla / Reddet / Yeniden üret); yuva ancak onaylanınca dolar. Kontrol hata bulsa da kendiliğinden yeniden üretilmez.",
       };
       await this.ledger.put({ key, tool, callId: callId ?? null, data });
       await this.options.writer.setPart(
@@ -3175,7 +3482,7 @@ export class StudioToolExecutor {
           name: tool,
           label: doneLabel,
           state: "done",
-          summary: `AI görsel işi (${job.id})`,
+          summary: jobs.length > 1 ? `${jobs.length} AI görsel işi` : `AI görsel işi (${job.id})`,
         },
         stepIndex,
       );
@@ -3629,19 +3936,23 @@ export function aiImageConsentDetail(input: {
   imageSize: string;
   references: number;
   preserveLabel: boolean;
+  /** Pictures asked for at once (each paid). */
+  variants?: number;
 }): string {
-  const usd = aiCallCostUsd({
+  const count = Math.max(1, input.variants ?? 1);
+  const one = aiCallCostUsd({
     provider: "gemini",
     model: input.model,
     inputTokens: Math.ceil(input.prompt.length / 4) + input.references * REFERENCE_IMAGE_TOKENS,
     imageOutputTokens: IMAGE_OUTPUT_TOKENS,
   });
+  const usd = one === null ? null : one * count;
   const cost =
     usd === null
       ? "tahmini tutar bilinmiyor (model fiyat tablosunda yok)"
       : `tahmini ≈ ${Math.max(usd, 0.001).toFixed(3).replace(".", ",")} $`;
   return [
-    `Model: ${input.model} · ${input.imageSize} · ${input.aspectRatio} · ${cost}`,
+    `Model: ${input.model} · ${input.imageSize} · ${input.aspectRatio} · ${count > 1 ? `${count} görsel · ` : ""}${cost}`,
     input.references > 0
       ? `${input.references} referans görsel${input.preserveLabel ? " · ürün etiketi korunacak" : ""}`
       : "",

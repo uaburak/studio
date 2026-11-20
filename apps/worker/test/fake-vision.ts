@@ -21,7 +21,7 @@ export interface FakeVisionOptions {
   /** The product's box on the reference (normalized); the mask cuts this rectangle out. */
   productBox?: Box;
   /** OCR answers by file name prefix: `reference`, `final-product`, `scene`, else `other`. */
-  ocr?: Partial<Record<"reference" | "final-product" | "scene" | "other", OcrLine[]>>;
+  ocr?: Partial<Record<"reference" | "final-product" | "scene" | "generated" | "other", OcrLine[]>>;
   saliency?: SaliencyResult;
   analyze?: AnalyzeResult;
   /** foreground-mask fails with this code. */
@@ -47,8 +47,9 @@ export function line(text: string, box: Box, confidence = 0.95): OcrLine {
 
 export function fakeVision(options: FakeVisionOptions = {}): FakeVision {
   const calls: { command: string; file: string }[] = [];
-  const which = (file: string): "reference" | "final-product" | "scene" | "other" => {
+  const which = (file: string): "reference" | "final-product" | "scene" | "generated" | "other" => {
     const name = path.basename(file);
+    if (name.startsWith("generated")) return "generated";
     if (name.startsWith("reference")) return "reference";
     if (name.startsWith("final-product")) return "final-product";
     if (name.startsWith("scene")) return "scene";

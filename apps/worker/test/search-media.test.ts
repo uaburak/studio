@@ -101,7 +101,7 @@ describe("search_media (N12): the agent finds pictures itself", () => {
     const tool = STUDIO_TOOLS.find((t) => t.name === "search_media");
     expect(tool?.inputSchema.properties?.query?.type).toBe("string");
     expect(CHAT_SYSTEM_PROMPT).toContain("search_media");
-    expect(CHAT_SYSTEM_PROMPT).toContain("labelCheck");
+    expect(CHAT_SYSTEM_PROMPT).toContain("checkReport");
   });
 
   it("searches Turkish tags and the text on pictures, results as data", async () => {

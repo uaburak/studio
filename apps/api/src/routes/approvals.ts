@@ -11,6 +11,7 @@ import {
 } from "@studio/contract";
 import { and, desc, eq, lt, type SQL } from "drizzle-orm";
 import type { Context } from "hono";
+import { runChat } from "../chat/command.ts";
 import { createDb } from "../db/client.ts";
 import { toApproval, toContent } from "../db/mappers.ts";
 import { approvalRequests } from "../db/schema.ts";
@@ -53,6 +54,10 @@ function approvalEnv(c: Context<AppEnv>): ApprovalEnv {
       const loaded = await loadContent(db, contentId);
       const pending = await pendingCounts(db, [contentId]);
       return toContent(loaded.row, loaded.current, pending.get(contentId) ?? 0);
+    },
+    postMessage: async (input) => {
+      const message = await runChat(c.env, { kind: "postApprovalMessage", ...input });
+      return message.id;
     },
   };
 }
@@ -198,7 +203,9 @@ approvalRoutes
       summary: "Worker: a finished generation asks for the owner's word",
       description:
         "Pictures must be `image` assets of the brand; the post, product, conversation and " +
-        "message must belong to it. `supersedesId` marks that pending request `superseded`.",
+        "message must belong to it. `supersedesId` marks that pending request `superseded`. " +
+        "`chatMessage` (with `conversationId`, without `messageId`) posts an assistant message " +
+        "with the text and the request's card into the conversation.",
       request: { body: jsonBody(ApprovalCreate) },
       responses: {
         201: json(ApprovalRequest, "Created."),
