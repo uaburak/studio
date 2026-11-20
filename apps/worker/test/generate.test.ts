@@ -624,6 +624,108 @@ describe("content.generate handler (fake renderer)", () => {
     expect(calls).toBe(3);
   });
 
+  it("gives the HTML engine the named products' photos as pictures (imageSlot stays none)", async () => {
+    const { api, state } = createFakeApi({ brands: [fakeBrand()] });
+    state.contents.set("content_1", content({ title: "Venta Boro" }));
+    const cover = new Uint8Array(
+      await sharp({ create: { width: 900, height: 1200, channels: 3, background: "#2e5e46" } })
+        .jpeg()
+        .toBuffer(),
+    );
+    const side = new Uint8Array(readFileSync(kit("venta/assets/product-venta-borinc.png")));
+    state.assets.set("asset_cover", { bytes: cover, contentType: "image/jpeg" });
+    state.assets.set("asset_side", { bytes: side, contentType: "image/png" });
+    state.products.push({
+      id: "prod_boro",
+      brandId: "brand_1",
+      name: "Venta Boro",
+      slug: "venta-boro",
+      description: "Sıvı bor gübresi",
+      category: null,
+      tags: [],
+      notes: null,
+      imageAssetIds: ["asset_cover", "asset_side"],
+      createdAt: NOW,
+      updatedAt: NOW,
+    } as never);
+    // The model places the cover photo as an image layer.
+    const withPhoto = typographic.replace(
+      "</main>",
+      '<img data-layer="product-photo" data-type="image" src="/media/asset_cover.jpg" alt="Venta Boro" style="position:absolute; left:640px; top:700px; width:360px; height:480px; object-fit:contain">\n  </main>',
+    );
+    const calls: ClaudeCallOptions[] = [];
+    const runner: ClaudeRunner = async (options) => {
+      calls.push(options);
+      return designResult(withPhoto);
+    };
+    const rendered: string[] = [];
+    const renderer: SlideRenderer = {
+      async renderAndLint(req) {
+        rendered.push(req.html);
+        expect((await req.resolver?.resolve("/media/asset_cover.jpg"))?.body).toEqual(cover);
+        expect((await req.resolver?.resolve("/media/asset_side.png"))?.body).toEqual(side);
+        return {
+          jpeg: await jpeg(),
+          pixelWidth: 1080,
+          pixelHeight: 1350,
+          deviceScaleFactor: 1,
+          network: { blocked: [], missing: [] },
+          served: [],
+          timings: {
+            contextMs: 1,
+            loadMs: 1,
+            assetsMs: 1,
+            screenshotMs: 1,
+            encodeMs: 1,
+            totalMs: 5,
+          },
+          report: report(0),
+        };
+      },
+    };
+    const handler = createContentGenerateHandler(makeDeps(api, runner, renderer));
+    const job = jobFor({
+      brandId: "brand_1",
+      contentId: "content_1",
+      title: "Venta Boro",
+      brief: "Venta Boro tanıtım postu. Ürünün kendi fotoğrafını kullan.",
+      type: "post",
+      imageSlot: "none",
+      engine: "html",
+      productIds: ["prod_boro"],
+    });
+    const out = await handler.run(job.payload as never, ctxFor(job).ctx);
+
+    const gen = calls[0]?.content[0];
+    const text = gen?.type === "text" ? gen.text : "";
+    expect(text).toContain("Product photos");
+    expect(text).toContain("/media/asset_cover.jpg (Venta Boro (kapak), 900x1200)");
+    expect(text).toContain("/media/asset_side.png (Venta Boro (2. fotoğraf), 1200x1200)");
+    // imageSlot "none": no empty or AI slot is asked for; the product photos are pictures.
+    expect(text).toContain("no empty image slot");
+    expect(text).not.toContain("EMPTY image slot");
+    // The product's facts still come with the instructions.
+    expect(text).toContain("Sıvı bor gübresi");
+    // The cover is shown to the model, labelled as the product's photo.
+    const blocks = calls[0]?.content ?? [];
+    expect(blocks.filter((b) => b.type === "image")).toHaveLength(1);
+    expect(
+      blocks.some(
+        (b) =>
+          b.type === "text" &&
+          b.text.startsWith('Product photo "Venta Boro (kapak)" = /media/asset_cover.jpg'),
+      ),
+    ).toBe(true);
+    // The sanitiser keeps the product photo; the stored version shows it.
+    expect(rendered[0]).toContain('src="/media/asset_cover.jpg"');
+    expect(state.versionCreates[0]?.slides[0]?.html).toContain('src="/media/asset_cover.jpg"');
+    expect(out).toMatchObject({
+      media: [],
+      productPhotos: ["/media/asset_cover.jpg", "/media/asset_side.png"],
+    });
+    expect(out).not.toHaveProperty("slotImages");
+  });
+
   it("generates reels via the video engine and supports Gemini fallback when Claude is unavailable", async () => {
     const { api, state } = createFakeApi({ brands: [fakeBrand()] });
     state.contents.set("content_1", content({ type: "reel", title: "Hasat Zamanı" }));

@@ -28,6 +28,7 @@ import { GeminiError } from "../gemini/errors.ts";
 import type { StructuredFallback } from "../gemini/json-call.ts";
 import type { Logger } from "../log.ts";
 import { prepareModelImage } from "../media.ts";
+import { asData } from "../prompt-data.ts";
 import type { BrandContext } from "./brand.ts";
 import {
   buildDesignSystemPrompt,
@@ -549,7 +550,9 @@ export async function runDesignPipeline(input: PipelineInput): Promise<PipelineR
     if (!img) continue;
     mediaBlocks.push({
       type: "text",
-      text: `User image @${m.alias} = ${m.path} (${m.width}x${m.height}):`,
+      text: m.product
+        ? `Product photo "${asData(m.product.label)}" = ${m.path} (${m.width}x${m.height}):`
+        : `User image @${m.alias} = ${m.path} (${m.width}x${m.height}):`,
     });
     mediaBlocks.push({ type: "image", mediaType: img.mediaType, data: img.data });
   }
