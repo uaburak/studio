@@ -165,9 +165,90 @@ describe("near-duplicates", () => {
       history,
     );
     expect(marks[0]?.[0]).toMatchObject({ kind: "post", contentId: "post-1", date: "2026-10-12" });
-    expect(marks[1]?.[0]).toMatchObject({ kind: "rejected", planItemId: "old-item" });
+    // A rejected plan never happened: its items are not history.
+    expect(marks[1]).toEqual([]);
     expect(marks[2]).toEqual([]);
     expect(marks[3]?.[0]).toMatchObject({ kind: "same_plan", planItemId: "i3" });
+  });
+
+  it("counts only real posts as history", () => {
+    const same = { title: "Bu haftanın şarkısı: Halil Sezai – Olsun", hook: "Olsun'u çalalım" };
+    const history = (["rejected", "skipped", "planned", "deleted"] as const).map((kind, i) =>
+      entry({ kind, ...same, contentId: null, planItemId: `old-${i}` }),
+    );
+    expect(planItemSimilarities([same], history)).toEqual([[]]);
+    const [marks] = planItemSimilarities([same], [...history, entry({ ...same })]);
+    expect(marks).toHaveLength(1);
+    expect(marks?.[0]).toMatchObject({ kind: "post", contentId: "c-1" });
+  });
+
+  it("does not mark a plan's items for its series names, pillars and numbering", () => {
+    // The real case: a 32-item plan of a guitar school where every item was marked.
+    const titles = [
+      "01 · Bu haftanın şarkısı · Sezen Aksu – Gülümse",
+      "02 · Teknik · Barre akoru nasıl basılır",
+      "03 · Bu haftanın şarkısı · Halil Sezai – Olsun",
+      "04 · Topluluk · Kendi şarkını ekle",
+      "05 · Teknik · Ritim kalıpları: 4/4 tutuş",
+      "06 · Bu haftanın şarkısı · Teoman – İstanbul'da Sonbahar",
+      "07 · Topluluk · Ayın gitaristi: Sizden gelen videolar",
+      "08 · Gituar'da yeni: şarkı listesi güncellendi",
+      "09 · Teknik · Parmak egzersizleri ile hız",
+      "10 · Bu haftanın şarkısı · Barış Manço – Gülpembe",
+      "11 · Topluluk · En sevdiğin şarkıyı yorumla",
+      "12 · Gituar ipucu · Tel değiştirme rehberi",
+    ];
+    const items = titles.map((title, i) => ({
+      id: `i${i + 1}`,
+      title,
+      pillar: title.includes("Teknik") ? "Teknik" : "Topluluk",
+      hook: `${title.split("·").pop()?.trim()} için hazır mısın?`,
+      brief: "Gituar topluluğu için şarkı ve gitar odaklı, sıcak bir paylaşım.",
+      date: `2026-11-${String(i + 1).padStart(2, "0")}`,
+    }));
+    const marks = planItemSimilarities(items, []);
+    expect(marks.map((m) => m.length)).toEqual(titles.map(() => 0));
+    // Two episodes of the series, without the rest of the plan around them.
+    expect(
+      planItemSimilarities(
+        [
+          { title: "Bu haftanın şarkısı · Halil Sezai – Olsun" },
+          { title: "Bu haftanın şarkısı · Sezen Aksu – Gülümse" },
+        ],
+        [],
+      ),
+    ).toEqual([[], []]);
+    // The Olsun item against "Kendi şarkını ekle", by title, hook and brief.
+    expect(
+      textSimilarity(
+        {
+          title: "03 · Bu haftanın şarkısı · Halil Sezai – Olsun",
+          hook: "Bu haftanın şarkısı: Olsun",
+          brief: "Gituar'da bu haftanın şarkısı Olsun; akorlarıyla birlikte.",
+        },
+        {
+          title: "04 · Topluluk · Kendi şarkını ekle",
+          hook: "Sen de kendi şarkını ekle",
+          brief: "Gituar'da kendi şarkını ekleyebilirsin; akorlarıyla birlikte.",
+        },
+        { withTopic: false },
+      ),
+    ).toBeNull();
+  });
+
+  it("still marks a real near-duplicate in the same plan and in the history", () => {
+    const marks = planItemSimilarities(
+      [
+        { id: "a", title: "03 · Bu haftanın şarkısı · Halil Sezai – Olsun" },
+        { id: "b", title: "07 · Teknik · Barre akoru nasıl basılır", pillar: "Teknik" },
+        { id: "c", title: "11 · Bu haftanın şarkısı · Halil Sezai – Olsun (akustik)" },
+      ],
+      [entry({ title: "Barre akoruna nasıl basılır?", contentId: "c-9" })],
+    );
+    expect(marks[0]).toEqual([]);
+    expect(marks[2]?.[0]).toMatchObject({ kind: "same_plan", planItemId: "a", field: "title" });
+    expect(marks[2]?.[0]?.score).toBeGreaterThanOrEqual(0.6);
+    expect(marks[1]?.[0]).toMatchObject({ kind: "post", contentId: "c-9" });
   });
 
   it("skips the plan's own items in the history", () => {

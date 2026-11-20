@@ -4,8 +4,17 @@
  *
  * Turkish is agglutinative ("kış", "kışa", "kışın"), so whole-word overlap misses obvious
  * repeats; trigrams anchored at the start of each word ("^ki", "kis", "isa") survive the suffixes.
- * Words that appear in many texts of the same brand (its name, its main product) are dropped
- * before comparing, otherwise every post of an agricultural brand would look alike.
+ *
+ * The signal must be precise or it is noise that pushes the agent to rewrite good plans, so
+ * everything a brand's posts share by design is removed before comparing:
+ * - numbers (numbering "03 ·", years, dates) and hashtags;
+ * - recurring title segments: a series name ("Bu haftanın şarkısı · <şarkı>") or a pillar prefix
+ *   ("Topluluk · …") that appears as a separate segment in two or more titles;
+ * - pillar names;
+ * - words in many texts of the brand (its name, its main product) and trigrams in many texts
+ *   (suffix variants of the brand's vocabulary: "şarkı", "şarkını", "şarkısı").
+ * Items of the same plan are compared by title and opening line only: briefs of one plan share
+ * the brand's message by design.
  */
 
 const FOLD: Record<string, string> = {
@@ -104,6 +113,14 @@ const STOPWORDS = new Set([
   "gunumuz",
   "gunler",
   "gunleri",
+  // Words of recurring series titles ("Bu haftanın şarkısı", "Ayın ürünü").
+  "hafta",
+  "haftanin",
+  "haftalik",
+  "ayin",
+  "aylik",
+  "bugun",
+  "bugunun",
 ]);
 
 /** Stems of the same kind of filler, with any suffix ("kutlaması", "mesajımız"). */
@@ -114,7 +131,11 @@ export function topicWords(text: string): string[] {
   return normalizeTurkish(text)
     .split(" ")
     .filter(
-      (w) => w.length >= 2 && !STOPWORDS.has(w) && !STOP_STEMS.some((stem) => w.startsWith(stem)),
+      (w) =>
+        w.length >= 2 &&
+        !/\d/.test(w) &&
+        !STOPWORDS.has(w) &&
+        !STOP_STEMS.some((stem) => w.startsWith(stem)),
     );
 }
 
@@ -143,11 +164,13 @@ export function jaccard(a: ReadonlySet<string>, b: ReadonlySet<string>): number 
   return shared / (a.size + b.size - shared);
 }
 
-/** A text to compare: what the post is about, its opening line, its brief. */
+/** A text to compare: what the post is about, its opening line, its brief, its pillar. */
 export interface SimilarityText {
   title: string;
   hook?: string | null;
   brief?: string | null;
+  /** Content pillar: its words are shared by design and say nothing about the topic. */
+  pillar?: string | null;
 }
 
 export type SimilarityField = "title" | "hook" | "topic";
@@ -159,16 +182,68 @@ export const SIMILARITY_THRESHOLDS: Record<SimilarityField, number> = {
   topic: 0.35,
 };
 
+/**
+ * From this score a near-duplicate is strong: the same topic said almost the same way. Only
+ * strong ones are worth stopping the plan agent for; weaker ones are a mark on the card.
+ */
+export const STRONG_SIMILARITY = 0.6;
+
+export function isStrongSimilarity(match: { score: number }): boolean {
+  return match.score >= STRONG_SIMILARITY;
+}
+
 /** Fewer distinct trigrams than this: too short to judge. */
 const MIN_SHINGLES = 5;
 /** A word in more than this share of the texts is the brand's vocabulary, not a topic. */
-const COMMON_WORD_SHARE = 0.34;
+const COMMON_WORD_SHARE = 0.25;
 /** …once there are at least this many texts. */
 const COMMON_WORD_MIN_TEXTS = 6;
+/** A trigram in more than this share of the texts carries no topic (suffix variants included). */
+const COMMON_SHINGLE_SHARE = 0.2;
+/** …once there are at least this many texts. */
+const COMMON_SHINGLE_MIN_TEXTS = 10;
 
-/** Words that appear in too many of the texts to tell them apart. */
+/** Title segments: "03 · Bu haftanın şarkısı · Halil Sezai – Olsun" → three segments. */
+const SEGMENT_SPLIT = /\s*[·•|:–—/]\s*|\s+-\s+/;
+
+/** The normalised topic-word segments of a title or hook (empty ones, e.g. "03", out). */
+function segmentsOf(text: string | null | undefined): string[] {
+  if (!text) return [];
+  return text
+    .split(SEGMENT_SPLIT)
+    .map((seg) => topicWords(seg).join(" "))
+    .filter(Boolean);
+}
+
+/**
+ * Recurring title labels: a series name or pillar prefix leading two or more titles as its own
+ * segment ("Bu haftanın şarkısı · …", "Topluluk · …"). Only the leading segment counts: a shared
+ * later segment ("… · Halil Sezai – Olsun") is the topic itself.
+ */
+export function seriesSegments(texts: readonly SimilarityText[]): Set<string> {
+  const df = new Map<string, number>();
+  for (const t of texts) {
+    const [lead, ...rest] = segmentsOf(t.title);
+    if (!lead || rest.length === 0) continue;
+    df.set(lead, (df.get(lead) ?? 0) + 1);
+  }
+  return new Set([...df].filter(([, n]) => n >= 2).map(([seg]) => seg));
+}
+
+/** The words of a title or hook without its series segments (all kept if nothing else is left). */
+function wordsWithoutSeries(
+  text: string | null | undefined,
+  series: ReadonlySet<string>,
+): string[] {
+  const segs = segmentsOf(text);
+  const kept = segs.filter((s) => !series.has(s));
+  return (kept.length > 0 ? kept : segs).join(" ").split(" ").filter(Boolean);
+}
+
+/** Words that appear in too many of the texts to tell them apart, and the pillars' words. */
 export function commonWords(texts: readonly SimilarityText[]): Set<string> {
   const out = new Set<string>();
+  for (const t of texts) for (const w of topicWords(t.pillar ?? "")) out.add(w);
   if (texts.length < COMMON_WORD_MIN_TEXTS) return out;
   const df = new Map<string, number>();
   for (const t of texts) {
@@ -186,19 +261,49 @@ interface Prepared {
   topic: Set<string>;
 }
 
-function prepare(t: SimilarityText, drop: ReadonlySet<string>): Prepared {
+interface Vocabulary {
+  words: ReadonlySet<string>;
+  series: ReadonlySet<string>;
+  shingles: ReadonlySet<string>;
+}
+
+function without(set: Set<string>, drop: ReadonlySet<string>): Set<string> {
+  if (drop.size === 0) return set;
+  return new Set([...set].filter((s) => !drop.has(s)));
+}
+
+function prepare(t: SimilarityText, vocab: Vocabulary): Prepared {
   // The brief's first sentence is its message; the rest is design direction ("sade, tipografik
   // tasarım…") that every brief of the brand shares.
   const brief = t.brief ? firstSentences(t.brief, 1) : "";
+  const title = wordsWithoutSeries(t.title, vocab.series);
+  const hook = wordsWithoutSeries(t.hook, vocab.series);
+  const sh = (words: string[]) => without(shingles(words, vocab.words), vocab.shingles);
   return {
-    title: shingles(topicWords(t.title), drop),
-    hook: shingles(topicWords(t.hook ?? ""), drop),
+    title: sh(title),
+    hook: sh(hook),
     // Only when there is more than the title to compare.
-    topic:
-      t.hook || brief
-        ? shingles(topicWords(`${t.title} ${t.hook ?? ""} ${brief}`), drop)
-        : new Set<string>(),
+    topic: hook.length || brief ? sh([...title, ...hook, ...topicWords(brief)]) : new Set<string>(),
   };
+}
+
+/** What the texts share by design: common and pillar words, series segments, common trigrams. */
+function vocabulary(texts: readonly SimilarityText[]): Vocabulary {
+  const words = commonWords(texts);
+  const series = seriesSegments(texts);
+  const common = new Set<string>();
+  if (texts.length >= COMMON_SHINGLE_MIN_TEXTS) {
+    const df = new Map<string, number>();
+    for (const t of texts) {
+      const set = shingles(
+        [...wordsWithoutSeries(t.title, series), ...wordsWithoutSeries(t.hook, series)],
+        words,
+      );
+      for (const s of set) df.set(s, (df.get(s) ?? 0) + 1);
+    }
+    for (const [s, n] of df) if (n / texts.length > COMMON_SHINGLE_SHARE) common.add(s);
+  }
+  return { words, series, shingles: common };
 }
 
 /** The first `n` sentences (the brief's main message; the rest is design detail). */
@@ -212,16 +317,19 @@ export interface SimilarityMatch {
   score: number;
 }
 
-/** The first comparison that passes its threshold, the most specific first. */
-function compare(a: Prepared, b: Prepared): SimilarityMatch | null {
+/**
+ * The best comparison that passes its threshold. `withTopic: false` compares only titles and
+ * opening lines (items of one plan share the brand's message in their briefs by design).
+ */
+function compare(a: Prepared, b: Prepared, withTopic = true): SimilarityMatch | null {
   const pairs: Array<[SimilarityField, Set<string>, Set<string>]> = [
     ["hook", a.hook, b.hook],
     // A title against an opening line catches "same hook, new title".
     ["hook", a.title, b.hook],
     ["hook", a.hook, b.title],
     ["title", a.title, b.title],
-    ["topic", a.topic, b.topic],
   ];
+  if (withTopic) pairs.push(["topic", a.topic, b.topic]);
   for (const [field, x, y] of pairs) {
     if (x.size < MIN_SHINGLES || y.size < MIN_SHINGLES) continue;
     const score = jaccard(x, y);
@@ -234,9 +342,10 @@ function compare(a: Prepared, b: Prepared): SimilarityMatch | null {
 export function textSimilarity(
   a: SimilarityText,
   b: SimilarityText,
-  drop: ReadonlySet<string> = new Set(),
+  options: { withTopic?: boolean } = {},
 ): SimilarityMatch | null {
-  return compare(prepare(a, drop), prepare(b, drop));
+  const vocab = vocabulary([a, b]);
+  return compare(prepare(a, vocab), prepare(b, vocab), options.withTopic ?? true);
 }
 
 export interface SimilarityHit extends SimilarityMatch {
@@ -247,7 +356,8 @@ export interface SimilarityHit extends SimilarityMatch {
 
 /**
  * For each item: the texts of `against` it nearly repeats, and (`withinList`) the earlier items
- * of the same list it repeats, best match first, at most `limit` per item.
+ * of the same list it repeats by title or opening line, best match first, at most `limit` per
+ * item.
  */
 export function findNearDuplicates(
   items: readonly SimilarityText[],
@@ -255,9 +365,9 @@ export function findNearDuplicates(
   options: { withinList?: boolean; limit?: number } = {},
 ): SimilarityHit[][] {
   const limit = options.limit ?? 2;
-  const drop = commonWords([...items, ...against]);
-  const preparedItems = items.map((t) => prepare(t, drop));
-  const preparedAgainst = against.map((t) => prepare(t, drop));
+  const vocab = vocabulary([...items, ...against]);
+  const preparedItems = items.map((t) => prepare(t, vocab));
+  const preparedAgainst = against.map((t) => prepare(t, vocab));
   return preparedItems.map((item, i) => {
     const hits: SimilarityHit[] = [];
     preparedAgainst.forEach((other, index) => {
@@ -266,7 +376,7 @@ export function findNearDuplicates(
     });
     if (options.withinList) {
       for (let j = 0; j < i; j++) {
-        const match = compare(item, preparedItems[j] as Prepared);
+        const match = compare(item, preparedItems[j] as Prepared, false);
         if (match) hits.push({ ...match, index: j, sameList: true });
       }
     }

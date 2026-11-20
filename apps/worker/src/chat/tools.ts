@@ -33,6 +33,7 @@ import {
   ESTIMATE_CONFIRM_THRESHOLD,
   engineNotReadyError,
   GenerationEngine,
+  isStrongSimilarity,
   isTerminalJobStatus,
   type Job,
   MAX_GENERATION_VARIANTS,
@@ -1773,27 +1774,30 @@ export class StudioToolExecutor {
     if (notes.length > 0) {
       this.logger.info(`plan fixes (${this.options.runId}): ${notes.join("; ")}`);
     }
-    // N6: near-duplicates of the brand's last months (or of each other) go back to the agent once,
-    // before the plan is shown; a second proposal is saved and the API marks what is left.
+    // N6: strong near-duplicates of the brand's posts (or of each other) go back to the agent
+    // once, before the plan is shown; a second proposal is saved and the API marks what is left.
+    // Weaker resemblances are only marks on the card: they must not make the agent rewrite a
+    // good plan.
     const brandForCheck = explicitBrandId ?? this.brandId;
     if (brandForCheck && !this.similarityReturned) {
       const marks = await this.nearDuplicates(brandForCheck, plan).catch((error: unknown) => {
         this.logger.warn(`similarity check skipped: ${(error as Error).message}`);
         return null;
       });
-      const flagged = marks?.filter((m) => m.length > 0).length ?? 0;
-      if (marks && flagged > 0) {
+      const strong = marks?.map((list) => list.filter(isStrongSimilarity)) ?? [];
+      const flagged = strong.filter((m) => m.length > 0).length;
+      if (flagged > 0) {
         this.similarityReturned = true;
         return {
           data: {
             ok: false,
             saved: false,
             reason: "similar",
-            message: `Plan henüz gösterilmedi: ${flagged} kalem markanın son aylarındaki içeriklere ya da plandaki başka bir kaleme çok benziyor. Bu kalemleri yeni bir konu ya da kancayla değiştirip propose_plan'ı yeniden çağır. Benzerliği bilerek koruyorsan aynı kalemlerle yeniden çağır; plan kaydedilir ve o kalemler "Benzer" diye işaretlenir.`,
-            similar: similarityReport(plan.items, marks),
+            message: `Plan henüz gösterilmedi: ${flagged} kalem markanın yayınlanmış / hazır postlarından birini ya da plandaki başka bir kalemi neredeyse aynen tekrarlıyor. Yalnızca bu kalemlere bak: gerçekten aynı konuysa yeni bir konu ya da kancayla değiştir; bilerek tekrarlıyorsan (ör. bir seri) aynı kalemlerle yeniden çağır, plan kaydedilir. Diğer kalemlere dokunma.`,
+            similar: similarityReport(plan.items, strong),
           },
-          summary: `${flagged} kalem geçmişe benziyor; plan düzeltiliyor`,
-          label: "Benzer kalemler bulundu",
+          summary: `${flagged} kalem önceki bir postu tekrarlıyor`,
+          label: "Tekrarlanan kalemler bulundu",
         };
       }
     }
@@ -1848,6 +1852,7 @@ export class StudioToolExecutor {
         title: item.title,
         hook: item.hook ?? null,
         brief: item.brief ?? "",
+        pillar: item.pillar ?? null,
         date: item.date ?? null,
       })),
       ctx.history.entries,

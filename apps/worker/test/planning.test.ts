@@ -233,7 +233,8 @@ const PLAN = {
       contentType: "post",
       title: "Kışa hazırlık: toprak analizi",
       brief: "Toprak analizinin kıştan önce önemi.",
-      hook: "Toprağını tanıyor musun?",
+      // The opening line of the brand's October post, nearly word for word.
+      hook: "Toprağın kışa hazır mı sence?",
     },
     {
       date: "2026-12-05",
@@ -279,9 +280,78 @@ describe("planning tools (N5, N6)", () => {
     const second = await ex.execute("propose_plan", PLAN);
     expect(second.data).toMatchObject({ ok: true, itemCount: 2 });
     expect(state.plans).toHaveLength(1);
-    expect(state.plans[0]?.items[0]).toMatchObject({ hook: "Toprağını tanıyor musun?" });
+    expect(state.plans[0]?.items[0]).toMatchObject({ hook: "Toprağın kışa hazır mı sence?" });
     // One context fetch for the turn.
     expect(state.planningCalls).toHaveLength(1);
+  });
+
+  it("propose_plan does not stop the agent for a weak resemblance", async () => {
+    const { ex, state } = executor();
+    // Same subject as the October post, said differently: a mark on the card, no rewrite.
+    const weak = {
+      ...PLAN,
+      items: [{ ...PLAN.items[0], hook: "Toprağını tanıyor musun?" }, { ...PLAN.items[1] }],
+    };
+    const res = await ex.execute("propose_plan", weak);
+    expect(res.data).toMatchObject({ ok: true, itemCount: 2 });
+    expect(state.plans).toHaveLength(1);
+  });
+
+  it("propose_plan keeps a series plan and ignores rejected plans", async () => {
+    const { ex, state } = executor();
+    state.planningHistory = [
+      ...HISTORY,
+      entry({
+        kind: "rejected",
+        title: "Bu haftanın şarkısı · Halil Sezai – Olsun",
+        hook: "Bu haftanın şarkısı: Olsun",
+        contentId: null,
+        planItemId: "old_song",
+        date: null,
+        status: null,
+      }),
+    ];
+    const item = (date: string, title: string, hook: string, pillar: string) => ({
+      date,
+      platforms: ["instagram"],
+      contentType: "post",
+      title,
+      hook,
+      pillar,
+      brief: "Gituar topluluğu için şarkı odaklı, sıcak bir paylaşım.",
+    });
+    const songs = {
+      ...PLAN,
+      items: [
+        item(
+          "2026-12-01",
+          "01 · Bu haftanın şarkısı · Sezen Aksu – Gülümse",
+          "Bu haftanın şarkısı: Gülümse",
+          "Şarkılar",
+        ),
+        item(
+          "2026-12-03",
+          "03 · Bu haftanın şarkısı · Halil Sezai – Olsun",
+          "Bu haftanın şarkısı: Olsun",
+          "Şarkılar",
+        ),
+        item(
+          "2026-12-04",
+          "04 · Topluluk · Kendi şarkını ekle",
+          "Sen de kendi şarkını ekle",
+          "Topluluk",
+        ),
+        item(
+          "2026-12-08",
+          "08 · Bu haftanın şarkısı · Teoman – İstanbul'da Sonbahar",
+          "Bu haftanın şarkısı: İstanbul'da Sonbahar",
+          "Şarkılar",
+        ),
+      ],
+    };
+    const res = await ex.execute("propose_plan", songs);
+    expect(res.data).toMatchObject({ ok: true, itemCount: 4 });
+    expect(state.plans).toHaveLength(1);
   });
 
   it("propose_plan saves a plan without repeats at once", async () => {
