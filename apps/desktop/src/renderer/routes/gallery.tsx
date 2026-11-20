@@ -227,6 +227,8 @@ const PLAN: Plan = {
     hook: null,
     imageSlot: "none" as Plan["items"][number]["imageSlot"],
     imageBrief: null,
+    productIds: [],
+    imageView: null,
     status: "planned" as const,
     similar: [],
     contentId: null,

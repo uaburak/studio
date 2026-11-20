@@ -76,6 +76,8 @@ function item(over: Partial<PlanItem> = {}): PlanItem {
     position: 0,
     date: "2026-11-20",
     platforms: ["instagram"],
+    productIds: [],
+    imageView: null,
     contentType: "post",
     title: "Kış bakımı",
     brief: "Toprak",

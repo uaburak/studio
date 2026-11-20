@@ -81,6 +81,8 @@ function planItem(over: Partial<PlanItem> = {}): PlanItem {
     similar: [],
     imageSlot: "none",
     imageBrief: null,
+    productIds: [],
+    imageView: null,
     status: "accepted",
     contentId: "p3",
     generation: null,
