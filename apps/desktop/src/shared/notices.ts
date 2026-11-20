@@ -242,3 +242,88 @@ export function waitingNotice(
   }
   return null;
 }
+
+// --- approval requests ("Onay bekleyenler", docs/URETIM-RESIM.md §11–13) ------------------------
+
+/** An `ApprovalRequest` read loosely (the main process has no contract runtime). */
+export interface ApprovalLike {
+  id: string;
+  brandId: string;
+  kind: string;
+  status: string;
+  contentId?: string | null | undefined;
+  productId?: string | null | undefined;
+  conversationId?: string | null | undefined;
+  messageId?: string | null | undefined;
+  checkReport?: unknown;
+  createdAt?: string | undefined;
+}
+
+/** A pending request older than this is not news (it was listed long ago). */
+export const APPROVAL_FRESH_MS = 30 * 60_000;
+
+/** Notice route prefixes: a chat message (`m:<conversationId>/<messageId>`), a brand's list. */
+export const MESSAGE_ROUTE_PREFIX = "m:";
+export const APPROVALS_ROUTE_PREFIX = "approvals:";
+
+const APPROVAL_KIND_LABELS: Record<string, string> = {
+  product_image: "Ürün görseli",
+  variant: "Varyant",
+  product_photo_upgrade: "Ürün fotoğrafı iyileştirme",
+};
+
+export function approvalNoticeTitle(kind: string): string {
+  if (kind === "product_photo_upgrade") return "Ürün fotoğrafı iyileştirildi";
+  if (kind === "variant") return "Onay bekleyen varyant";
+  return "Onay bekleyen görsel";
+}
+
+/** The AI check in a notice: "Kontrol temiz", "2 sorun: Etiket yazısı, Kapak". */
+export function approvalCheckSummary(report: unknown): string {
+  if (!report || typeof report !== "object") return "Kontrol yapılmadı";
+  const r = report as { passed?: unknown; items?: unknown; summary?: unknown };
+  const items = Array.isArray(r.items) ? (r.items as { aspect?: unknown; ok?: unknown }[]) : [];
+  const failed = items
+    .filter((item) => item?.ok === false)
+    .map((item) => (typeof item.aspect === "string" ? item.aspect : "?"));
+  if (failed.length > 0) return `${failed.length} sorun: ${failed.join(", ")}`;
+  if (r.passed !== false) return "Kontrol temiz";
+  const summary = typeof r.summary === "string" ? r.summary.trim() : "";
+  return summary ? summary.slice(0, 140) : "Kontrol sorun buldu";
+}
+
+/** Where a click goes: the request's chat card, else the brand's "Onay bekleyenler". */
+export function approvalRoute(approval: ApprovalLike): string {
+  if (approval.conversationId) {
+    return approval.messageId
+      ? `${MESSAGE_ROUTE_PREFIX}${approval.conversationId}/${approval.messageId}`
+      : `c:${approval.conversationId}`;
+  }
+  return `${APPROVALS_ROUTE_PREFIX}${approval.brandId}`;
+}
+
+/** A new pending request's notice (null once decided). `subject`: the post's or product's name. */
+export function approvalNotice(
+  approval: ApprovalLike,
+  subject?: string | null,
+): NoticeInput | null {
+  if (approval.status !== "pending") return null;
+  const name = subject?.trim() || APPROVAL_KIND_LABELS[approval.kind] || "Görsel";
+  return {
+    id: `approval:${approval.id}`,
+    title: approvalNoticeTitle(approval.kind),
+    body: `${name} · ${approvalCheckSummary(approval.checkReport)}`,
+    route: approvalRoute(approval),
+  };
+}
+
+/** `m:<conversationId>/<messageId>` → its parts (null for other routes). */
+export function parseMessageRoute(
+  route: string,
+): { conversationId: string; messageId: string } | null {
+  if (!route.startsWith(MESSAGE_ROUTE_PREFIX)) return null;
+  const rest = route.slice(MESSAGE_ROUTE_PREFIX.length);
+  const slash = rest.indexOf("/");
+  if (slash <= 0 || slash === rest.length - 1) return null;
+  return { conversationId: rest.slice(0, slash), messageId: rest.slice(slash + 1) };
+}

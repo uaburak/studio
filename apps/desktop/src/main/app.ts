@@ -201,6 +201,7 @@ export function startApp(): void {
       !mainWindow.isDestroyed() &&
       mainWindow.isVisible() &&
       mainWindow.isFocused(),
+    currentRoute: () => settings.get().session.route,
     log: (message) => mainLog.write("warn", message),
   });
 
