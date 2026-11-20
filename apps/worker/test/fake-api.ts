@@ -7,6 +7,8 @@ import {
   type AgentRun,
   type ApiClient,
   ApiError,
+  type ApprovalCreate,
+  type ApprovalRequest,
   type Asset,
   type AssetAnalysisPut,
   allocateMentionSlugs,
@@ -116,6 +118,8 @@ export interface FakeApiState {
   checkSettings: Map<string, BrandCheckSettings>;
   /** Brand products (every brand). */
   products: BrandProduct[];
+  /** Approval requests the worker created (`workerApprovals.create`), in order. */
+  approvalCreates: ApprovalCreate[];
   /** What `planning.context` answers (N5, N6): the brand's history and the period's days. */
   planningHistory: PlanningHistoryEntry[];
   specialDays: SpecialDay[];
@@ -234,6 +238,7 @@ export function createFakeApi(init: Partial<FakeApiState> = {}): {
     checkRuns: [],
     checkSettings: new Map(),
     products: [],
+    approvalCreates: [],
     planningHistory: [],
     specialDays: [],
     planningCalls: [],
@@ -1169,6 +1174,40 @@ export function createFakeApi(init: Partial<FakeApiState> = {}): {
         };
         state.assetRecords.push(assetRecord);
         return assetRecord;
+      },
+    },
+    workerApprovals: {
+      create: async (input: ApprovalCreate): Promise<ApprovalRequest> => {
+        state.approvalCreates.push(input);
+        const id = `apr_${state.approvalCreates.length}`;
+        return {
+          id,
+          brandId: input.brandId,
+          contentId: input.contentId ?? null,
+          productId: input.productId ?? null,
+          conversationId: input.conversationId ?? null,
+          messageId: input.messageId ?? (input.chatMessage ? `msg_${id}` : null),
+          kind: input.kind,
+          assetIds: input.assetIds,
+          checkReport: input.checkReport
+            ? {
+                passed: input.checkReport.passed,
+                items: (input.checkReport.items ?? []).map((i) => ({ ...i, note: i.note ?? "" })),
+                summary: input.checkReport.summary ?? "",
+              }
+            : null,
+          status: "pending",
+          slotId: input.slotId ?? null,
+          replacesAssetId: input.replacesAssetId ?? null,
+          approvedAssetId: null,
+          sourceJobId: input.sourceJobId ?? null,
+          regenerateJobId: null,
+          canRegenerate: Boolean(input.request),
+          decisionNote: null,
+          createdAt: NOW,
+          updatedAt: NOW,
+          decidedAt: null,
+        };
       },
     },
     workerAssets: {

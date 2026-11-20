@@ -247,6 +247,40 @@ describe("approval requests", () => {
     );
   });
 
+  it("posts the request's card in its chat when asked to", async () => {
+    const brand = await createBrand();
+    const a = await upload(brand.id);
+    const conv = Conversation.parse(
+      (await api("POST", "/api/conversations", { brandId: brand.id })).body,
+    );
+    const req = await createApproval({
+      brandId: brand.id,
+      kind: "product_image",
+      conversationId: conv.id,
+      assetIds: [a.id],
+      checkReport: { passed: false, items: [], summary: "Kapak rengi farklı." },
+      chatMessage: { text: "Görsel geldi; kontrol: kapak rengi farklı. Onaylıyor musun?" },
+    });
+    expect(req.messageId).toBeTruthy();
+    const list = (await api("GET", `/api/conversations/${conv.id}/messages`)).body as {
+      items: { id: string; role: string; status: string; runId: string | null; parts: unknown[] }[];
+    };
+    const msg = list.items.find((m) => m.id === req.messageId);
+    expect(msg).toMatchObject({ role: "assistant", status: "complete", runId: null });
+    expect(msg?.parts).toEqual([
+      { type: "text", text: "Görsel geldi; kontrol: kapak rengi farklı. Onaylıyor musun?" },
+      { type: "approval_request", approvalId: req.id },
+    ]);
+    // Without a conversation there is nothing to post.
+    const quiet = await createApproval({
+      brandId: brand.id,
+      kind: "product_image",
+      assetIds: [a.id],
+      chatMessage: { text: "x" },
+    });
+    expect(quiet.messageId).toBeNull();
+  });
+
   it("refuses requests with foreign pictures and without the worker token", async () => {
     const brand = await createBrand();
     const other = await createBrand();

@@ -75,6 +75,12 @@ export interface ApprovalEnv {
   }) => Promise<Job>;
   announce: (approval: ApprovalRequest) => Promise<void>;
   loadContent: (contentId: string) => Promise<ApprovalActionResult["content"]>;
+  /** Post the request's card in its chat (`ApprovalCreate.chatMessage`); returns the message id. */
+  postMessage?: (input: {
+    conversationId: string;
+    approvalId: string;
+    text: string;
+  }) => Promise<string>;
 }
 
 /** Validate and store a request from the worker; an earlier pending one it replaces is superseded. */
@@ -156,6 +162,20 @@ export async function createApproval(
     decidedAt: null,
   };
   await db.insert(approvalRequests).values(row);
+  if (input.chatMessage && input.conversationId && !input.messageId && ctx.postMessage) {
+    // The card in the chat it came from; a failure leaves the request (listed elsewhere too).
+    try {
+      const messageId = await ctx.postMessage({
+        conversationId: input.conversationId,
+        approvalId: row.id,
+        text: input.chatMessage.text,
+      });
+      await db.update(approvalRequests).set({ messageId }).where(eq(approvalRequests.id, row.id));
+      row.messageId = messageId;
+    } catch (error) {
+      console.warn(`api: could not post approval ${row.id} in its chat`, error);
+    }
+  }
   if (input.supersedesId) {
     const [old] = await db
       .update(approvalRequests)

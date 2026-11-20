@@ -80,3 +80,24 @@ Reels ve hikâye sonra ayrı ele alınacak.
   `{items: [{kind, id, slug, label, imageAssetId|null, detail, pendingApprovals}]}`.
 - Motor: `GenerationEngine = wecra|html|svg|code` (hazır: html); `Brand.defaultEngine|null`,
   `Brand.imageStylePreset` (string).
+
+## Faz 1 arka ucu (worker, yapıldı) — ürün görseli hattı
+
+- `ImageGeneratePayload` yeni alanlar: `productIds` (en çok 4; birebir tarif + kontrol açılır), `style`
+  (yoksa `Brand.imageStylePreset`; `""` = stil yok), `variant {index, count}`.
+- Akış (`apps/worker/src/image/`): `references.ts` (açıya göre fotoğraf seçimi, karar yoksa ilk 3) →
+  `product-description.ts` (Apple Vision OCR + Gemini Pro/Claude ile birebir tarif; foto başına
+  `stateDir/product-descriptions/<assetId>-<sha256>.json` önbelleği) → `product-prompt.ts` (yalnızca
+  kadraj/ortam/ambiyans/ışık/kalite değişir kuralı) → Gemini → `verify.ts` (OCR ile satır satır
+  etiket karşılaştırması + model; `checkReport` 8 başlık: Etiket yazısı, Logo, Şekil ve oranlar,
+  Kapak, Renkler, Desen ve doku, Eklenen ya da eksik öğe, Gerçekçilik ve kalite) → `approval.ts`.
+- `approval` varsa yuva doldurulmaz; `POST /api/worker/approvals` ile kayıt açılır. Hiçbir zaman
+  kendiliğinden yeniden üretilmez. Kesip yapıştırma (`preserveProductLabel`) yalnızca istekte açıkça
+  varsa çalışır.
+- `ApprovalCreate.chatMessage {text}` (yeni, isteğe bağlı): `conversationId` varsa API sohbete
+  çalışmadan bağımsız, `complete` bir asistan mesajı ekler: parçalar `[{type:"text", text},
+  {type:"approval_request", approvalId}]`, `runId: null`; kaydın `messageId`'si o mesaj olur.
+- Sohbet araçları: `generate_ai_image` (`referenceProducts`, `view`, `style`, `variants` 1–4; her
+  varyant ayrı iş ve ayrı onay kartı, tür `variant`), `get_product` (foto başına `quality`,
+  `lowQualityPhotos`), `upgrade_product_photo` (beyaz zemin stüdyo çekimi →
+  `product_photo_upgrade`, `replacesAssetId`).

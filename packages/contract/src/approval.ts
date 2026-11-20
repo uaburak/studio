@@ -137,6 +137,12 @@ export const ApprovalCreate = z
     request: ApprovalRegenerateRequest.optional(),
     /** An earlier request this one replaces (it becomes `superseded` if still pending). */
     supersedesId: EntityId.optional(),
+    /**
+     * With `conversationId` and no `messageId`: the API posts a complete assistant message with
+     * this text and the request's card (`approval_request` part) into the conversation and
+     * stores its id as `messageId` ("Görsel geldi; kontrol: … Onaylıyor musun?").
+     */
+    chatMessage: z.object({ text: z.string().trim().max(4_000) }).optional(),
   })
   .meta({ id: "ApprovalCreate" });
 export type ApprovalCreate = z.input<typeof ApprovalCreate>;

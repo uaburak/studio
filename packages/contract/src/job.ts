@@ -14,7 +14,7 @@ import {
 } from "./common.ts";
 import { ContentCheckPayload } from "./content-check.ts";
 import { CommentsSuggestPayload, CommentsSyncPayload, InsightsSyncPayload } from "./engagement.ts";
-import { ApprovalTarget } from "./generation.ts";
+import { ApprovalTarget, MAX_GENERATION_VARIANTS } from "./generation.ts";
 import { ReelSpecPatch } from "./reel.ts";
 
 export const JobId = z.string().min(1).max(128);
@@ -272,6 +272,25 @@ export const ImageGeneratePayload = z
      * kind (`POST /api/worker/approvals`) instead of filling `targetSlotId` right away.
      */
     approval: ApprovalTarget.optional(),
+    /**
+     * The products the picture shows (docs/URETIM-RESIM.md §8–9): their reference photos are
+     * read and described exactly (label text verbatim, colours, shape…) into the prompt — the
+     * model may change only framing, setting, ambience, light and quality — and the result is
+     * checked against them by the AI (`checkReport`).
+     */
+    productIds: z.array(EntityId).max(4).optional(),
+    /**
+     * This picture's style ("vintage", "retro"). Absent: the brand's `imageStylePreset`; "" = no
+     * style at all.
+     */
+    style: z.string().trim().max(500).optional(),
+    /** One of N variants asked for at once (each its own job and approval request). */
+    variant: z
+      .object({
+        index: z.number().int().min(1).max(MAX_GENERATION_VARIANTS),
+        count: z.number().int().min(1).max(MAX_GENERATION_VARIANTS),
+      })
+      .optional(),
   })
   .meta({ id: "ImageGeneratePayload" });
 export type ImageGeneratePayload = z.infer<typeof ImageGeneratePayload>;

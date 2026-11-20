@@ -8,10 +8,24 @@
  *   that reads differently or not at all is reported and the picture is not put into a post,
  * - Fills and renders `targetContentId` + `targetSlotId` when specified,
  * - Tags the new picture for the library (N12) right away.
+ *
+ * Product pictures (`productIds`, docs/URETIM-RESIM.md Faz 1): every reference photo of the
+ * products is read first ("birebir tarif": label text verbatim, colours, shape…, cached per
+ * photo) and written word for word into the prompt — the model changes only framing, setting,
+ * ambience, light and quality, plus the optional style (the request's, else the brand's preset).
+ * The result is checked against the product by the AI (`checkReport`). The label composite above
+ * runs only when the request sets `preserveProductLabel` ("Etiketi birebir koruyarak yerleştir").
+ * With `approval`, the picture becomes an approval request (with its card in the chat it came
+ * from) instead of filling the slot; nothing is ever generated again without the owner.
  */
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { ApiError, ImageGeneratePayload } from "@studio/contract";
+import {
+  ApiError,
+  type ApprovalCheckReport,
+  type BrandProduct,
+  ImageGeneratePayload,
+} from "@studio/contract";
 import sharp from "sharp";
 import { isBudgetExceeded } from "../ai/policy.ts";
 import { geminiUsageSink } from "../ai/usage-recorder.ts";
@@ -23,12 +37,14 @@ import { defineHandler, type JobContext, RetryableError } from "../registry.ts";
 import { type ContentRenderDeps, executeContentRender } from "../render/handler.ts";
 import { analyzePicture } from "../vision/analyze.ts";
 import { missingVisionHelper } from "../vision/helper.ts";
+import { buildApprovalCreate } from "./approval.ts";
 import {
   buildLabelPreservingScenePrompt,
   DEFAULT_PRODUCT_SCALE,
   type PlacedPosition,
   removeDir,
 } from "./compose.ts";
+import { expectedFromOwner } from "./label-check.ts";
 import {
   labelBlocksDelivery,
   type PreparedProduct,
@@ -36,6 +52,14 @@ import {
   placementSummary,
   prepareProduct,
 } from "./label-pipeline.ts";
+import {
+  describeReference,
+  expectedLabelLines,
+  type ReferenceDescription,
+} from "./product-description.ts";
+import { buildProductImagePrompt, resolveStyle, withStyle } from "./product-prompt.ts";
+import { verifyProductImage } from "./verify.ts";
+import { productVisionCaller, type VisionModelCaller } from "./vision-model.ts";
 
 export { buildLabelPreservingScenePrompt, extractProductCutout } from "./compose.ts";
 
@@ -43,6 +67,18 @@ export interface ImageGenerateDeps extends ContentRenderDeps {
   imageFetch?: typeof globalThis.fetch;
   /** Test seam: the waits between 429 retries. */
   imageSleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
+  /**
+   * Test seam: the vision model that describes product photos and checks the result (default:
+   * Gemini Pro, else Claude; null when neither can run).
+   */
+  productVision?: (kind: "describe" | "verify", jobId: string) => VisionModelCaller | null;
+}
+
+/** A reference photo as downloaded (its asset id kept for the description cache). */
+interface Reference {
+  assetId: string;
+  bytes: Uint8Array;
+  mimeType: string;
 }
 
 /** What the label-preserving steps reported (kept with the stored picture, U7). */
@@ -76,6 +112,10 @@ interface StoredImage {
   /** Set once the upload went through. */
   assetId?: string;
   label?: LabelReport;
+  /** The AI check of a product picture (null: none ran). */
+  checkReport?: ApprovalCheckReport | null;
+  /** Set once the approval request was created (a retry does not ask twice). */
+  approvalId?: string;
 }
 
 function resultDir(stateDir: string, jobId: string): string {
@@ -148,10 +188,49 @@ export function createImageGenerateHandler(deps: ImageGenerateDeps) {
         "gemini-nano-banana-2.1";
       const doFetch = deps.imageFetch ?? deps.geminiFetch ?? globalThis.fetch.bind(globalThis);
       const signal = ctx.signal;
+      const visionCaller = (kind: "describe" | "verify") =>
+        deps.productVision
+          ? deps.productVision(kind, ctx.jobId)
+          : productVisionCaller(deps, ctx.jobId, kind);
+
+      // The products the picture shows: described exactly and checked (docs/URETIM-RESIM.md).
+      const productIds = [
+        ...new Set([
+          ...(payload.productIds ?? []),
+          ...(payload.approval?.productId && !payload.productIds?.length
+            ? [payload.approval.productId]
+            : []),
+        ]),
+      ];
+      const products: BrandProduct[] = [];
+      for (const id of productIds) {
+        try {
+          products.push(await deps.api.client.brandProducts.get(brandId, id, { signal }));
+        } catch (error) {
+          if (signal.aborted) throw error;
+          if (error instanceof ApiError && error.status === 404) {
+            throw new Error("Görseli istenen ürün bulunamadı; silinmiş olabilir.");
+          }
+          throw error;
+        }
+      }
+      const productMode = products.length > 0;
+      const upgrade = payload.approval?.kind === "product_photo_upgrade";
+      let brandStyle: string | undefined;
+      if (payload.style === undefined) {
+        try {
+          brandStyle = (await deps.api.client.brands.get(brandId, { signal })).imageStylePreset;
+        } catch (error) {
+          if (signal.aborted) throw error;
+          deps.logger.warn(`[job ${ctx.jobId}] brand style unknown: ${(error as Error).message}`);
+        }
+      }
+      const style = resolveStyle(payload.style, brandStyle);
 
       /** One paid Gemini call (plus the label compositing); returns the final picture. */
       const generatePicture = async () => {
         ctx.progress(0.08, "Referans görseller hazırlanıyor");
+        const references: Reference[] = [];
         const refDownloads: { bytes: Uint8Array; mimeType: string }[] = [];
         for (const assetId of payload.referenceAssetIds) {
           signal.throwIfAborted();
@@ -159,8 +238,71 @@ export function createImageGenerateHandler(deps: ImageGenerateDeps) {
             maxBytes: deps.settings.imageMaxBytes,
             signal,
           });
-          refDownloads.push(await normalizeReferenceForGemini(dl.bytes, dl.contentType));
+          const normalized = await normalizeReferenceForGemini(dl.bytes, dl.contentType);
+          refDownloads.push(normalized);
+          references.push({ assetId, ...normalized });
         }
+
+        // "Birebir tarif": read every product photo before paying (cached per photo).
+        const described: { ref: Reference; description: ReferenceDescription | null }[] = [];
+        if (productMode) {
+          const own = new Set(products.flatMap((p) => p.imageAssetIds));
+          const productRefs = references.some((r) => own.has(r.assetId))
+            ? references.filter((r) => own.has(r.assetId))
+            : references;
+          if (productRefs.length > 0) {
+            ctx.progress(0.12, "Ürün fotoğrafları birebir okunuyor (etiket, renk, şekil)");
+          }
+          const describeDeps = {
+            vision,
+            stateDir: deps.stateDir,
+            logger: deps.logger,
+            model: visionCaller("describe"),
+          };
+          for (const ref of productRefs) {
+            const owner = products.find((p) => p.imageAssetIds.includes(ref.assetId));
+            const description = await describeReference(
+              describeDeps,
+              {
+                assetId: ref.assetId,
+                bytes: ref.bytes,
+                ...(owner ? { productName: owner.name } : {}),
+              },
+              { signal },
+            );
+            described.push({ ref, description });
+          }
+        }
+
+        /** "Kontrol yapay zekâda": the picture against the product's photos and facts. */
+        const check = async (bytes: Uint8Array): Promise<ApprovalCheckReport | null> => {
+          if (!productMode) return null;
+          ctx.progress(0.7, "Yapay zekâ kontrolü: ürün referans fotoğraflarla karşılaştırılıyor");
+          const descriptions = described.flatMap((d) => (d.description ? [d.description] : []));
+          const owner = payload.labelText ? expectedFromOwner(payload.labelText) : [];
+          return verifyProductImage(
+            { vision, stateDir: deps.stateDir, logger: deps.logger, model: visionCaller("verify") },
+            {
+              generated: bytes,
+              references:
+                described.length > 0
+                  ? described.map((d) => ({ bytes: d.ref.bytes, description: d.description }))
+                  : references.map((r) => ({ bytes: r.bytes, description: null })),
+              products: products.map((p) => ({
+                name: p.name,
+                category: p.category,
+                description: p.description,
+                notes: p.notes,
+              })),
+              expectedLines:
+                owner.length > 0
+                  ? [...new Set([...owner, ...expectedLabelLines(descriptions)])]
+                  : expectedLabelLines(descriptions),
+              mode: upgrade ? "upgrade" : "scene",
+            },
+            signal,
+          );
+        };
 
         const preserveLabel = payload.preserveProductLabel && refDownloads.length > 0;
         const requestedPosition: PlacedPosition | undefined =
@@ -181,12 +323,33 @@ export function createImageGenerateHandler(deps: ImageGenerateDeps) {
           }
           const promptText =
             preserveLabel && product
-              ? buildLabelPreservingScenePrompt(payload.prompt, payload.aspectRatio, {
-                  position: requestedPosition ?? "bottom-center",
-                  scale: payload.productScale ?? DEFAULT_PRODUCT_SCALE,
-                  labelLines: product.expected,
-                })
-              : payload.prompt;
+              ? buildLabelPreservingScenePrompt(
+                  withStyle(payload.prompt, style),
+                  payload.aspectRatio,
+                  {
+                    position: requestedPosition ?? "bottom-center",
+                    scale: payload.productScale ?? DEFAULT_PRODUCT_SCALE,
+                    labelLines: product.expected,
+                  },
+                )
+              : productMode
+                ? buildProductImagePrompt({
+                    request: payload.prompt,
+                    mode: upgrade ? "upgrade" : "scene",
+                    products: products.map((p) => ({
+                      product: p,
+                      descriptions: described
+                        .filter(
+                          (d) =>
+                            p.imageAssetIds.includes(d.ref.assetId) ||
+                            !products.some((q) => q.imageAssetIds.includes(d.ref.assetId)),
+                        )
+                        .flatMap((d) => (d.description ? [d.description] : [])),
+                    })),
+                    style,
+                    aspectRatio: payload.aspectRatio,
+                  })
+                : withStyle(payload.prompt, style);
 
           const parts: Record<string, unknown>[] = [{ text: promptText }];
           for (const ref of refDownloads) {
@@ -340,6 +503,7 @@ export function createImageGenerateHandler(deps: ImageGenerateDeps) {
               height: placed.height,
               preserveLabel,
               label,
+              checkReport: await check(placed.bytes),
             };
           }
           const meta = await sharp(generated, { animated: false }).metadata();
@@ -354,6 +518,7 @@ export function createImageGenerateHandler(deps: ImageGenerateDeps) {
             height: meta.height ?? 1350,
             preserveLabel,
             label: undefined,
+            checkReport: await check(generated),
           };
         } finally {
           if (product) await removeDir(product.workDir);
@@ -370,8 +535,10 @@ export function createImageGenerateHandler(deps: ImageGenerateDeps) {
         let finalHeight: number;
         let preserveLabel: boolean;
         let label: LabelReport | undefined;
+        let checkReport: ApprovalCheckReport | null;
         let usedModel = model;
         let assetId: string | undefined;
+        let approvalId: string | undefined;
         if (stored) {
           deps.logger.info(
             `[job ${ctx.jobId}] reusing the picture an earlier attempt generated (no second charge)`,
@@ -383,8 +550,10 @@ export function createImageGenerateHandler(deps: ImageGenerateDeps) {
           finalHeight = stored.meta.height;
           preserveLabel = stored.meta.preserveProductLabel;
           label = stored.meta.label;
+          checkReport = stored.meta.checkReport ?? null;
           usedModel = stored.meta.model;
           assetId = stored.meta.assetId;
+          approvalId = stored.meta.approvalId;
         } else {
           const generated = await generatePicture();
           finalBytes = generated.bytes;
@@ -393,6 +562,7 @@ export function createImageGenerateHandler(deps: ImageGenerateDeps) {
           finalHeight = generated.height;
           preserveLabel = generated.preserveLabel;
           label = generated.label;
+          checkReport = generated.checkReport;
           // Kept before the upload: a failed upload is retried without paying again.
           await saveStoredImage(
             dir,
@@ -404,12 +574,27 @@ export function createImageGenerateHandler(deps: ImageGenerateDeps) {
               preserveProductLabel: preserveLabel,
               file: "image.bin",
               ...(label ? { label } : {}),
+              checkReport,
             },
             finalBytes,
           ).catch((error: unknown) =>
             deps.logger.warn(`could not keep the generated picture: ${(error as Error).message}`),
           );
         }
+        const keep = (extra: Partial<StoredImage>) =>
+          saveStoredImage(dir, {
+            mimeType: finalMimeType,
+            width: finalWidth,
+            height: finalHeight,
+            model: usedModel,
+            preserveProductLabel: preserveLabel,
+            file: "image.bin",
+            ...(assetId ? { assetId } : {}),
+            ...(label ? { label } : {}),
+            checkReport,
+            ...(approvalId ? { approvalId } : {}),
+            ...extra,
+          }).catch(() => undefined);
 
         let uploaded: { id: string };
         if (assetId) {
@@ -434,16 +619,8 @@ export function createImageGenerateHandler(deps: ImageGenerateDeps) {
             },
             { signal },
           );
-          await saveStoredImage(dir, {
-            mimeType: finalMimeType,
-            width: finalWidth,
-            height: finalHeight,
-            model: usedModel,
-            preserveProductLabel: preserveLabel,
-            file: "image.bin",
-            assetId: uploaded.id,
-            ...(label ? { label } : {}),
-          }).catch(() => undefined);
+          assetId = uploaded.id;
+          await keep({ assetId: uploaded.id });
           // N12: tag the new picture for the library now (best effort; a backfill retries).
           try {
             const analysis = await analyzePicture({ ...deps, vision }, finalBytes, {
@@ -461,14 +638,36 @@ export function createImageGenerateHandler(deps: ImageGenerateDeps) {
 
         let filledContentId: string | undefined;
         let filledVersion: number | undefined;
-        const blocked = label ? labelBlocksDelivery(label.labelCheck) : false;
+        const blocked =
+          (label ? labelBlocksDelivery(label.labelCheck) : false) ||
+          (checkReport !== null && !checkReport.passed);
         const notes = [...(label?.notes ?? [])];
 
-        if (payload.targetContentId && payload.targetSlotId) {
+        if (payload.approval) {
+          // The owner decides (Onayla / Reddet / Yeniden üret); the slot is filled on approval.
+          // Never generated again here, whatever the check said.
+          if (!approvalId) {
+            ctx.progress(0.9, "Onay isteği hazırlanıyor");
+            const created = await deps.api.client.workerApprovals.create(
+              buildApprovalCreate({
+                brandId,
+                jobId: ctx.jobId,
+                payload,
+                assetId: uploaded.id,
+                checkReport,
+              }),
+              { signal },
+            );
+            approvalId = created.id;
+            await keep({ approvalId });
+          }
+        } else if (payload.targetContentId && payload.targetSlotId) {
           if (blocked) {
             // Never put a picture whose label reads differently into a post without the owner.
             notes.push(
-              "Etiket doğrulanamadığı için görsel posta yerleştirilmedi; Medya'da duruyor. Kontrol edip uygunsa yuvaya elle yerleştirin.",
+              checkReport && !checkReport.passed
+                ? "Kontrol ürünle farklar bulduğu için görsel posta yerleştirilmedi; Medya'da duruyor. Kontrol edip uygunsa yuvaya elle yerleştirin."
+                : "Etiket doğrulanamadığı için görsel posta yerleştirilmedi; Medya'da duruyor. Kontrol edip uygunsa yuvaya elle yerleştirin.",
             );
           } else {
             ctx.progress(0.88, "Hedef postun görsel yuvası doldurulup render ediliyor");
@@ -490,9 +689,13 @@ export function createImageGenerateHandler(deps: ImageGenerateDeps) {
 
         ctx.progress(
           1,
-          label && label.labelCheck.status !== "ok"
-            ? `Tamamlandı · ${label.labelCheck.status === "skipped" || label.labelCheck.status === "no_label" ? "etiket doğrulanamadı" : "etiket uyuşmuyor, kontrol edin"}`
-            : "Tamamlandı",
+          checkReport
+            ? checkReport.passed
+              ? "Tamamlandı · kontrol temiz"
+              : "Tamamlandı · kontrol farklar buldu, onayınız bekleniyor"
+            : label && label.labelCheck.status !== "ok"
+              ? `Tamamlandı · ${label.labelCheck.status === "skipped" || label.labelCheck.status === "no_label" ? "etiket doğrulanamadı" : "etiket uyuşmuyor, kontrol edin"}`
+              : "Tamamlandı",
         );
         await rm(dir, { recursive: true, force: true }).catch(() => undefined);
         return {
@@ -510,8 +713,10 @@ export function createImageGenerateHandler(deps: ImageGenerateDeps) {
                 cutout: label.cutout,
               }
             : {}),
+          ...(checkReport ? { checkReport } : {}),
+          ...(approvalId ? { approvalId } : {}),
           ...(notes.length > 0 ? { notes } : {}),
-          ...(blocked && payload.targetContentId ? { slotSkipped: true } : {}),
+          ...(blocked && payload.targetContentId && !payload.approval ? { slotSkipped: true } : {}),
           ...(filledContentId !== undefined ? { filledContentId } : {}),
           ...(filledVersion !== undefined ? { filledVersion } : {}),
         };

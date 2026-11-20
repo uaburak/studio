@@ -166,7 +166,8 @@ export type ChatCommand =
       conversationId: string;
       aliasId: string;
       input: z.output<typeof ConversationAliasUpdate>;
-    };
+    }
+  | { kind: "postApprovalMessage"; conversationId: string; approvalId: string; text: string };
 
 export interface ChatResults {
   updateConversation: Conversation;
@@ -187,6 +188,7 @@ export interface ChatResults {
   completeRun: AgentRun;
   failRun: AgentRun;
   renameAlias: ConversationAlias;
+  postApprovalMessage: Message;
 }
 
 /** What the Hub must do after a committed change. */
@@ -986,7 +988,49 @@ export async function executeChat(
       return failRun(change, command.runId, command.input);
     case "renameAlias":
       return renameAlias(change, command.conversationId, command.aliasId, command.input);
+    case "postApprovalMessage":
+      return postApprovalMessage(change, command.conversationId, command.approvalId, command.text);
   }
+}
+
+/**
+ * A finished generation's approval card in the chat it came from (docs/URETIM-RESIM.md §12): a
+ * complete assistant message outside any run with the worker's words and the card. The request
+ * was checked against the conversation's brand when it was created.
+ */
+async function postApprovalMessage(
+  change: Change,
+  conversationId: string,
+  approvalId: string,
+  text: string,
+): Promise<Message> {
+  const { db, now } = change;
+  await requireConversation(db, conversationId);
+  const approval = await db.query.approvalRequests.findFirst({
+    where: eq(approvalRequests.id, approvalId),
+  });
+  if (!approval) throw notFound("approval request", approvalId);
+  const parts: MessagePart[] = [];
+  if (text.trim()) parts.push({ type: "text", text: text.trim() });
+  parts.push({ type: "approval_request", approvalId });
+  const row: MessageRow = {
+    id: newId(),
+    conversationId,
+    role: "assistant",
+    status: "complete",
+    runId: null,
+    parts,
+    deltaSeqs: parts.map(() => 0),
+    mentions: null,
+    entityMentions: null,
+    clientMessageId: null,
+    createdAt: now,
+    updatedAt: now,
+  };
+  persistMessage(change, row, true);
+  change.emit(conversationId, { type: "message.created", message: messageRowView(row) });
+  await change.commit();
+  return messageRowView(row);
 }
 
 async function updateConversation(
