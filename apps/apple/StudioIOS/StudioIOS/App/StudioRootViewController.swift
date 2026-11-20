@@ -5,6 +5,13 @@ import UIKit
 /// drawer slides in from the left, pushing the page aside (rounded, not dimmed). Postlar,
 /// Takvim, Medya, Ürünler, Markalar, Mac durumu and Ayarlar are sections beside the chat
 /// (each replaces the root and has the drawer button, no back button). Notifications and links arrive as `IOSRoute`s and land here.
+/// A sideways scroller that, where it stands, leaves a rightward swipe to the screen's swipe
+/// back (a brand's tab pager on its first tab).
+@MainActor
+protocol SwipeBackYielding: AnyObject {
+    var yieldsSwipeBack: Bool { get }
+}
+
 /// A page that uses the rightward swipe itself at times (Medya's Video page swipes back to Resim).
 @MainActor
 protocol DrawerSwipeBlocking: AnyObject {
@@ -329,7 +336,8 @@ final class StudioRootViewController: UIViewController, UINavigationControllerDe
         if gestureRecognizer === openPan { simultaneousScrolls.removeAll() }
         var view = touch.view
         while let current = view, current !== mainContainer {
-            if let scroll = current as? UIScrollView, Self.scrollsHorizontally(scroll) { return false }
+            if let scroll = current as? UIScrollView, Self.scrollsHorizontally(scroll),
+               (scroll as? SwipeBackYielding)?.yieldsSwipeBack != true { return false }
             if current is UISlider || current is UISwitch { return false }
             view = current.superview
         }

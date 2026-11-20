@@ -23,21 +23,34 @@ enum BrandTab: Int, CaseIterable {
 /// Profil, Hesaplar, Ürünler and Şablonlar. Everything the Mac's brand page does is here:
 /// editing goes into sheets (a skill's editor too), the longer lists (checks, special days) and a
 /// product's page are pushed.
-final class BrandProfileViewController: UIViewController, UIGestureRecognizerDelegate, DrawerSwipeBlocking {
+final class BrandProfileViewController: UIViewController, UIScrollViewDelegate, DrawerSwipeBlocking {
     private unowned let app: IOSAppModel
     let brandId: EntityID
     let model: BrandPageModel
     private(set) var currentTab: BrandTab
 
-    private let scroll = UIScrollView()
+    /// The tabs side by side in the system's own paging scroll view (as Instagram's profile):
+    /// the slide, its speed, catching it mid-way and the give at the ends are all UIKit's.
+    private let pager = BrandTabPager()
+    /// One page per tab, each scrolling on its own and keeping its place.
+    private var pages: [BrandTab: BrandTabPage] = [:]
+    /// The brand and the tab strip: inside the current page (they scroll away with it), lifted
+    /// above the pages while these slide sideways (they stay put, the pages pass under them).
+    private let headerBox = UIView()
     private let header = BrandPageHeader()
     private let tabs = BrandTabStrip()
-    /// Where the tab builders put their rows: the page's own stack, or (while the pages slide)
-    /// the neighbouring tab's.
+    private var headerHeight: CGFloat = 0
+    private weak var headerPage: BrandTabPage?
+    /// The same hairline gap between the pages as between Profil's.
+    private let pageGap: CGFloat = 1.5
+    private var pagerPlaced = false
+    /// Where the tab builders put their rows: the stack of the page being built.
     private(set) var body = UIStackView.v([], spacing: 0)
-    private lazy var pageBody = body
     private var observation: IOSObservationToken?
     private var lastSignature: Int?
+    /// The data each page was last built from (a page whose data changed is rebuilt before it
+    /// comes into view).
+    private var builtSignature: [BrandTab: Int] = [:]
     /// Tiles of the Ürünler tab the product page zooms out of (by product id).
     var productTiles: [EntityID: UIView] = [:]
     /// The profile version picked in Profil (nil: the current one).
@@ -64,56 +77,47 @@ final class BrandProfileViewController: UIViewController, UIGestureRecognizerDel
         more.accessibilityLabel = "Marka seçenekleri"
         navigationItem.rightBarButtonItem = more
 
-        scroll.translatesAutoresizingMaskIntoConstraints = false
-        scroll.alwaysBounceVertical = true
-        scroll.topEdgeEffect.style = .soft
-        scroll.contentInset.bottom = 40
-        view.addSubview(scroll)
-        scroll.pin(to: view)
-        setContentScrollView(scroll, for: .top)
+        pager.isPagingEnabled = true
+        pager.showsHorizontalScrollIndicator = false
+        pager.showsVerticalScrollIndicator = false
+        pager.alwaysBounceVertical = false
+        pager.contentInsetAdjustmentBehavior = .never
+        pager.isDirectionalLockEnabled = true
+        pager.delegate = self
+        pager.shouldBeginPaging = { [weak self] pan in self?.pagerShouldBegin(pan) ?? false }
+        view.addSubview(pager)
 
-        let column = UIStackView.v([header, tabs, pageBody], spacing: 0)
-        // The neighbouring tab's page lies beside the column's own, outside its bounds.
-        column.clipsToBounds = false
-        scroll.addSubview(column)
-        NSLayoutConstraint.activate([
-            column.topAnchor.constraint(equalTo: scroll.contentLayoutGuide.topAnchor),
-            column.leadingAnchor.constraint(equalTo: scroll.contentLayoutGuide.leadingAnchor),
-            column.trailingAnchor.constraint(equalTo: scroll.contentLayoutGuide.trailingAnchor),
-            column.bottomAnchor.constraint(equalTo: scroll.contentLayoutGuide.bottomAnchor),
-            column.widthAnchor.constraint(equalTo: scroll.frameLayoutGuide.widthAnchor),
-        ])
+        for tab in BrandTab.allCases {
+            let page = BrandTabPage()
+            page.delegate = self
+            let refresh = UIRefreshControl()
+            refresh.addAction(UIAction { [weak self, weak refresh] _ in
+                Task {
+                    await self?.model.load()
+                    refresh?.endRefreshing()
+                }
+            }, for: .valueChanged)
+            page.refreshControl = refresh
+            pager.addSubview(page)
+            pages[tab] = page
+        }
+        body = pages[currentTab]!.stack
+
+        let headerStack = UIStackView.v([header, tabs], spacing: 0)
+        headerBox.backgroundColor = IOSTheme.canvas
+        headerBox.addSubview(headerStack)
+        headerStack.pin(to: headerBox)
+        attachHeader(to: pages[currentTab]!)
+        setContentScrollView(pages[currentTab], for: .top)
 
         header.images = app.images
         header.onSelect = { [weak self] in self?.selectBrand() }
         header.onChat = { [weak self] in self?.openChat() }
         header.onCount = { [weak self] tab in self?.show(tab) }
         tabs.onSelect = { [weak self] tab in self?.show(tab) }
-        pagePan.delegate = self
-        view.addGestureRecognizer(pagePan)
-        scroll.panGestureRecognizer.require(toFail: pagePan)
-
-        let refresh = UIRefreshControl()
-        refresh.addAction(UIAction { [weak self, weak refresh] _ in
-            Task {
-                await self?.model.load()
-                refresh?.endRefreshing()
-            }
-        }, for: .valueChanged)
-        scroll.refreshControl = refresh
 
         observation = observeIOS { [weak self] in self?.render() }
         Task { await model.load() }
-    }
-
-    override func viewDidLayoutSubviews() {
-        super.viewDidLayoutSubviews()
-        // Room below a short tab, so a page can always stand at the top of the screen (a tab
-        // switched to while scrolled down starts there instead of jumping back up).
-        let safeBottom = scroll.safeAreaInsets.bottom
-        let needed = pageBody.frame.minY - scroll.adjustedContentInset.top + scroll.bounds.height - scroll.contentSize.height - safeBottom
-        let bottom = max(40, needed.rounded(.up))
-        if abs(scroll.contentInset.bottom - bottom) > 0.5 { scroll.contentInset.bottom = bottom }
     }
 
     override func viewWillDisappear(_ animated: Bool) {
@@ -121,315 +125,184 @@ final class BrandProfileViewController: UIViewController, UIGestureRecognizerDel
         model.flushKit()
     }
 
-    func show(_ next: BrandTab) {
-        guard next != currentTab || pageAnimator != nil else { return }
-        slide(to: next)
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        layoutPages()
     }
 
-    // MARK: Paging between tabs (as Profil's Gönderiler / Reels / Hikâyeler)
+    /// The pages side by side, the header's height in every page's top inset, and room under a
+    /// short tab so a page can always stand with the header scrolled away.
+    private func layoutPages() {
+        let width = view.bounds.width
+        let height = view.bounds.height
+        guard width > 0 else { return }
+        let span = width + pageGap
+        let pagerFrame = CGRect(x: 0, y: 0, width: span, height: height)
+        if pager.frame != pagerFrame { pager.frame = pagerFrame }
+        pager.contentSize = CGSize(width: span * CGFloat(BrandTab.allCases.count), height: height)
+        updateHeaderHeight(width: width)
+        let safe = view.safeAreaInsets
+        for (tab, page) in pages {
+            let frame = CGRect(x: CGFloat(tab.rawValue) * span, y: 0, width: width, height: height)
+            if page.frame != frame { page.frame = frame }
+            let top = safe.top + headerHeight
+            if abs(page.contentInset.top - top) > 0.5, page.refreshControl?.isRefreshing != true {
+                let delta = top - page.contentInset.top
+                page.contentInset.top = top
+                page.verticalScrollIndicatorInsets.top = top
+                page.contentOffset.y -= delta
+            }
+            let bottom = safe.bottom + 40
+            if abs(page.contentInset.bottom - bottom) > 0.5 { page.contentInset.bottom = bottom }
+            page.minimumContentHeight = max(height - safe.top - bottom, 0)
+        }
+        if let page = headerPage, abs(headerBox.frame.width - width) > 0.5 || abs(headerBox.frame.height - headerHeight) > 0.5 {
+            headerBox.frame = CGRect(x: 0, y: -headerHeight, width: width, height: headerHeight)
+            page.layoutIfNeeded()
+        }
+        if !pagerPlaced || !(pager.isDragging || pager.isDecelerating || isPagerAnimating) {
+            pager.contentOffset.x = CGFloat(currentTab.rawValue) * span
+            pagerPlaced = true
+        }
+    }
 
-    private lazy var pagePan = UIPanGestureRecognizer(target: self, action: #selector(paged(_:)))
-    private var pageAnimator: UIViewPropertyAnimator?
-    private var pageTarget: BrandTab?
-    private var pageOffset: CGFloat = 0
-    private var panBase: CGFloat = 0
-    /// The neighbouring tab's rows beside the page while it slides.
-    private var neighborPage: PageStack?
-    private var neighborTab: BrandTab?
-    /// -1: the neighbour is to the right (the next tab), 1: to the left, 0: none.
-    private var neighborSide: CGFloat = 0
-    /// Carries the offset through the animators, so a catch knows where the page is.
-    private lazy var pageTracker: UIView = {
-        let tracker = UIView()
-        tracker.isUserInteractionEnabled = false
-        view.insertSubview(tracker, at: 0)
-        return tracker
-    }()
-    /// The same hairline gap between the pages as between Profil's.
-    private let pageGap: CGFloat = 1.5
+    private func updateHeaderHeight(width: CGFloat) {
+        let size = headerBox.subviews.first?.systemLayoutSizeFitting(
+            CGSize(width: width, height: 0), withHorizontalFittingPriority: .required, verticalFittingPriority: .fittingSizeLevel) ?? .zero
+        let height = (header.isHidden && tabs.isHidden) ? 0 : ceil(size.height)
+        guard abs(height - headerHeight) > 0.5 else { return }
+        headerHeight = height
+        if headerPage != nil {
+            headerBox.frame = CGRect(x: 0, y: -height, width: width, height: height)
+        }
+    }
 
-    private var pageHeading: BrandTab { pageAnimator != nil ? (pageTarget ?? currentTab) : currentTab }
+    func show(_ next: BrandTab) {
+        guard pages[next] != nil else { return }
+        let span = view.bounds.width + pageGap
+        let target = CGFloat(next.rawValue) * span
+        guard abs(pager.contentOffset.x - target) > 0.5 else { return }
+        // The pages passed on the way show their rows too.
+        let low = min(next.rawValue, currentTab.rawValue), high = max(next.rawValue, currentTab.rawValue)
+        for raw in low...high { if let tab = BrandTab(rawValue: raw) { ensureBuilt(tab) } }
+        liftHeader()
+        isPagerAnimating = true
+        pagerTarget = target
+        pager.setContentOffset(CGPoint(x: target, y: 0), animated: true)
+        Haptics.selection()
+    }
+
+    // MARK: Paging
+
+    private var isPagerAnimating = false
+    /// Where a tapped tab's slide is going (UIKit can report the end of that animation before
+    /// it has even run; only arriving there counts).
+    private var pagerTarget: CGFloat?
+    private var isPaging: Bool { pager.isDragging || pager.isDecelerating || isPagerAnimating }
 
     /// Rightward swipes page back while not on the first tab; on Genel they go back a screen.
-    var blocksDrawerSwipe: Bool { pageHeading != .general }
+    var blocksDrawerSwipe: Bool { currentTab != .general || isPaging }
 
-    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
-        guard gestureRecognizer === pagePan else { return true }
+    private func pagerShouldBegin(_ pan: UIPanGestureRecognizer) -> Bool {
+        guard model.brand != nil else { return false }
+        // A finger landing on a slide still settling catches it (as any scroll view), and the
+        // next swipe goes on from there.
+        if pager.isDecelerating || isPagerAnimating { return true }
         // The tab strip scrolls sideways itself.
-        var view = touch.view
-        while let current = view {
-            if current === tabs { return false }
-            view = current.superview
-        }
+        if tabs.bounds.contains(pan.location(in: tabs)), headerBox.window != nil { return false }
+        let velocity = pan.velocity(in: view)
+        guard abs(velocity.x) > abs(velocity.y) else { return false }
+        // On Genel, a rightward swipe goes back a screen (unless a slide is still settling).
+        if velocity.x > 0, pager.contentOffset.x <= 0.5 { return false }
         return true
     }
 
-    func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
-        guard gestureRecognizer === pagePan, model.brand != nil else { return gestureRecognizer !== pagePan }
-        let velocity = pagePan.velocity(in: view)
-        guard abs(velocity.x) > abs(velocity.y) * 1.2 else { return false }
-        if velocity.x < 0 { return pageAnimator != nil || currentTab.rawValue < BrandTab.allCases.count - 1 }
-        return pageHeading != .general
+    private func attachHeader(to page: BrandTabPage) {
+        headerBox.removeFromSuperview()
+        headerBox.frame = CGRect(x: 0, y: -headerHeight, width: page.bounds.width > 0 ? page.bounds.width : view.bounds.width, height: headerHeight)
+        page.addSubview(headerBox)
+        headerPage = page
     }
 
-    @objc private func paged(_ pan: UIPanGestureRecognizer) {
-        let width = max(view.bounds.width, 1)
-        let dx = pan.translation(in: view).x
-        switch pan.state {
-        case .began:
-            // The distance the finger went before the pan was recognised is not applied at
-            // once (the page jumped by it): the page follows from here.
-            panBase = interruptPaging() - dx
-            pageTarget = nil
-        case .changed:
-            var offset = panBase + dx
-            let last = BrandTab.allCases.count - 1
-            if (currentTab == .general && offset > 0) || (currentTab.rawValue == last && offset < 0) { offset *= 0.3 }
-            setPage(offset: offset)
-        case .ended, .cancelled, .failed:
-            let offset = pageOffset
-            let velocity = pan.state == .ended ? pan.velocity(in: view).x : 0
-            var target = currentTab
-            if offset < -width * 0.25 || velocity < -500 {
-                target = (neighborSide < 0 ? neighborTab : nil) ?? BrandTab(rawValue: currentTab.rawValue + 1) ?? currentTab
+    /// The header leaves the page for the slide, staying where it is on screen; the other pages
+    /// line up under it (or, with it scrolled away, keep their own place).
+    private func liftHeader() {
+        guard let page = headerPage else { return }
+        let frame = page.convert(headerBox.frame, to: view)
+        headerBox.removeFromSuperview()
+        headerBox.frame = frame
+        view.insertSubview(headerBox, aboveSubview: pager)
+        headerPage = nil
+        let safeTop = view.safeAreaInsets.top
+        let headerShows = frame.maxY > safeTop + 0.5
+        for (tab, other) in pages where other !== page {
+            if headerShows {
+                other.contentOffset.y = -frame.maxY
+            } else if other.contentOffset.y < -safeTop {
+                other.contentOffset.y = -safeTop
             }
-            if offset > width * 0.25 || velocity > 500 {
-                target = (neighborSide > 0 ? neighborTab : nil) ?? BrandTab(rawValue: currentTab.rawValue - 1) ?? currentTab
-            }
-            slide(to: target, from: offset)
-        default:
-            break
+            _ = tab
+        }
+        for raw in [currentTab.rawValue - 1, currentTab.rawValue + 1] {
+            if let tab = BrandTab(rawValue: raw) { ensureBuilt(tab) }
         }
     }
 
-    /// The page's rows moved sideways (the header and the tab strip stay), the neighbouring tab's
-    /// glued to their side and the underline following.
-    private func setPage(offset: CGFloat) {
-        // On whole pixels: a page standing between two pixels draws its words soft, then sharp,
-        // then soft again as the finger moves (white titles on pictures shimmered).
-        let scale = max(traitCollection.displayScale, 1)
-        let offset = (offset * scale).rounded() / scale
-        pageOffset = offset
-        let move = CGAffineTransform(translationX: offset, y: 0)
-        pageBody.transform = move
-        pageTracker.transform = move
-        let side: CGFloat = offset < 0 ? -1 : (offset > 0 ? 1 : 0)
-        if pageTarget == nil, side != 0, side != neighborSide {
-            showNeighbor(BrandTab(rawValue: currentTab.rawValue - Int(side)), side: side)
-        }
-        let span = view.bounds.width + pageGap
-        neighborPage?.transform = CGAffineTransform(translationX: offset - neighborSide * span, y: 0)
-        let steps = neighborTab.map { CGFloat(abs($0.rawValue - currentTab.rawValue)) } ?? 1
-        tabs.follow(CGFloat(currentTab.rawValue) - offset / max(span, 1) * max(steps, 1))
-    }
-
-    /// The tabs beside the current one, built while the page is still (building one when the
-    /// finger first moves stalled the slide for a few frames).
-    private var preparedPages: [BrandTab: PageStack] = [:]
-
-    private func prepareNeighbors() {
-        guard !isPaging else { return }
-        for tab in [BrandTab(rawValue: currentTab.rawValue - 1), BrandTab(rawValue: currentTab.rawValue + 1)].compactMap({ $0 })
-        where preparedPages[tab] == nil {
-            if let stack = makePage(tab) {
-                stack.isHidden = true
-                preparedPages[tab] = stack
-            }
-        }
-    }
-
-    /// Once the current pass (and any slide) is over.
-    private func schedulePrepare() {
-        DispatchQueue.main.async { [weak self] in self?.prepareNeighbors() }
-    }
-
-    private func dropPrepared() {
-        preparedPages.values.forEach { $0.removeFromSuperview() }
-        preparedPages = [:]
-    }
-
-    /// Where a page coming in from the side starts: the page's own top, or (scrolled further
-    /// down) the top of the screen, so it never comes in as an empty stretch.
-    private var incomingTop: CGFloat {
-        max(pageBody.frame.minY, scroll.contentOffset.y + scroll.adjustedContentInset.top)
-    }
-
-    /// `tab`'s rows in their own stack, laid where the page is (hidden until used).
-    private func makePage(_ tab: BrandTab) -> PageStack? {
-        guard let brand = model.brand, let overview = model.overview, let column = pageBody.superview else { return nil }
-        let stack = PageStack()
-        let savedTiles = productTiles
-        productTiles = [:]
-        body = stack
-        UIView.performWithoutAnimation { build(tab, brand, overview) }
-        body = pageBody
-        stack.tiles = productTiles
-        productTiles = savedTiles
-        let width = pageBody.bounds.width
-        let size = stack.systemLayoutSizeFitting(CGSize(width: width, height: 0), withHorizontalFittingPriority: .required, verticalFittingPriority: .fittingSizeLevel)
-        stack.frame = CGRect(x: pageBody.frame.minX, y: incomingTop, width: width, height: size.height)
-        column.addSubview(stack)
-        stack.layoutIfNeeded()
-        return stack
-    }
-
-    private func showNeighbor(_ tab: BrandTab?, side: CGFloat) {
-        dropNeighbor()
-        neighborTab = tab
-        neighborSide = side
-        guard let tab else { return }
-        if let prepared = preparedPages.removeValue(forKey: tab) {
-            prepared.frame.origin = CGPoint(x: pageBody.frame.minX, y: incomingTop)
-            if abs(prepared.frame.width - pageBody.bounds.width) > 0.5 {
-                let width = pageBody.bounds.width
-                let size = prepared.systemLayoutSizeFitting(CGSize(width: width, height: 0), withHorizontalFittingPriority: .required, verticalFittingPriority: .fittingSizeLevel)
-                prepared.frame.size = CGSize(width: width, height: size.height)
-                prepared.layoutIfNeeded()
-            }
-            prepared.isHidden = false
-            neighborPage = prepared
-        } else {
-            neighborPage = makePage(tab)
-        }
-    }
-
-    private func dropNeighbor() {
-        // A neighbour still beside the current tab goes back to wait for the next swipe.
-        if let page = neighborPage, let tab = neighborTab, abs(tab.rawValue - currentTab.rawValue) == 1, preparedPages[tab] == nil {
-            page.isHidden = true
-            page.transform = .identity
-            preparedPages[tab] = page
-        } else {
-            neighborPage?.removeFromSuperview()
-        }
-        neighborPage = nil
-        neighborTab = nil
-        neighborSide = 0
-    }
-
-    /// Stops a running slide where it is; one caught on its way to another tab hands over to it
-    /// at once (its page becomes the current one, at the same spot), so a second swipe goes on.
-    private func interruptPaging() -> CGFloat {
-        if let animator = pageAnimator {
-            pageAnimator = nil
-            animator.stopAnimation(false)
-            animator.finishAnimation(at: .current)
-            setPage(offset: pageTracker.transform.tx)
-            if let target = pageTarget, target != currentTab, neighborTab == target {
-                let onScreen = pageOffset - neighborSide * (view.bounds.width + pageGap)
-                let previous = currentTab
-                pageTarget = nil
-                switchTab(to: target)
-                if onScreen != 0 { showNeighbor(previous, side: onScreen < 0 ? -1 : 1) }
-                setPage(offset: onScreen)
-            }
-        }
-        pageTarget = nil
-        tabs.select(currentTab, animated: false)
-        return pageOffset
-    }
-
-    private func switchTab(to tab: BrandTab) {
-        if let page = neighborPage, neighborTab == tab, !renderWaits {
-            adopt(page, as: tab)
-        } else {
-            currentTab = tab
-            dropNeighbor()
-            lastSignature = nil
-            // Now, even under a finger that caught the slide: this is the tab switch itself.
-            forceRender = true
-            render()
-            forceRender = false
-        }
-        view.layoutIfNeeded()
-        // Scrolled further down than the page's top: the new page starts at the top of the
-        // screen, where it came in.
-        let pageTopOffset = pageBody.frame.minY - scroll.adjustedContentInset.top
-        if scroll.contentOffset.y > pageTopOffset {
-            scroll.contentOffset.y = pageTopOffset
-        }
-        schedulePrepare()
-    }
-
-    /// The page that slid in becomes the page as it is (its pictures already shown); rebuilding
-    /// it blanked the pictures for a moment. The page that left waits beside, for a swipe back.
-    private func adopt(_ page: PageStack, as tab: BrandTab) {
-        let previous = currentTab
-        let leaving = PageStack()
-        leaving.tiles = productTiles
-        let height = pageBody.bounds.height
-        for row in pageBody.arrangedSubviews {
-            pageBody.removeArrangedSubview(row)
-            leaving.addArrangedSubview(row)
-        }
-        for row in page.arrangedSubviews {
-            page.removeArrangedSubview(row)
-            pageBody.addArrangedSubview(row)
-        }
-        productTiles = page.tiles
-        page.removeFromSuperview()
-        neighborPage = nil
-        neighborTab = nil
-        neighborSide = 0
+    /// The slide is over: the page on screen is the current one and takes the header back.
+    private func settle() {
+        // A tapped tab's slide is over only when it arrives (starting it also reports the end
+        // of a glide, and settling then snapped the page back half-way).
+        if let target = pagerTarget, abs(pager.contentOffset.x - target) > 1 { return }
+        isPagerAnimating = false
+        pagerTarget = nil
+        let span = max(view.bounds.width + pageGap, 1)
+        let index = min(max(Int((pager.contentOffset.x / span).rounded()), 0), BrandTab.allCases.count - 1)
+        guard let tab = BrandTab(rawValue: index), let page = pages[tab] else { return }
+        if tab != currentTab { Haptics.selection() }
         currentTab = tab
-        lastSignature = signature()
-        if abs(previous.rawValue - tab.rawValue) == 1, let column = pageBody.superview {
-            preparedPages.removeValue(forKey: previous)?.removeFromSuperview()
-            leaving.frame = CGRect(x: pageBody.frame.minX, y: pageBody.frame.minY, width: pageBody.bounds.width, height: height)
-            leaving.isHidden = true
-            column.addSubview(leaving)
-            leaving.layoutIfNeeded()
-            preparedPages[previous] = leaving
+        ensureBuilt(tab)
+        if headerPage !== page {
+            attachHeader(to: page)
         }
-        // Prepared pages two steps away are no longer neighbours.
-        for (key, stack) in preparedPages where abs(key.rawValue - tab.rawValue) != 1 {
-            stack.removeFromSuperview()
-            preparedPages.removeValue(forKey: key)
+        setContentScrollView(page, for: .top)
+        tabs.select(tab, animated: false)
+        if renderWaits { render() }
+        scheduleNeighbors()
+    }
+
+    func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
+        guard scrollView === pager else { return }
+        isPagerAnimating = false
+        pagerTarget = nil
+        // The page under the finger stops scrolling up or down: the swipe is sideways.
+        for page in pages.values where page.panGestureRecognizer.state == .began || page.panGestureRecognizer.state == .changed {
+            page.panGestureRecognizer.isEnabled = false
+            page.panGestureRecognizer.isEnabled = true
+        }
+        liftHeader()
+    }
+
+    func scrollViewDidScroll(_ scrollView: UIScrollView) {
+        guard scrollView === pager else { return }
+        let span = max(view.bounds.width + pageGap, 1)
+        let position = pager.contentOffset.x / span
+        tabs.follow(position)
+        // Whatever comes into view has its rows (normally built already, beforehand).
+        for raw in [Int(position.rounded(.down)), Int(position.rounded(.up))] {
+            if let tab = BrandTab(rawValue: raw) { ensureBuilt(tab) }
         }
     }
 
-    /// To `target`: both pages slide together, side by side, until the other fills the screen;
-    /// or back into place. Interruptible at any moment (a new swipe or tap takes over).
-    private func slide(to target: BrandTab, from offset: CGFloat? = nil) {
-        let start = offset ?? interruptPaging()
-        if let animator = pageAnimator {
-            pageAnimator = nil
-            animator.stopAnimation(true)
-        }
-        let width = max(view.bounds.width, 1)
-        pageTarget = target
-        guard target != currentTab else {
-            setPage(offset: start)
-            let back = UIViewPropertyAnimator(duration: 0.32, dampingRatio: 1) { self.setPage(offset: 0) }
-            back.addCompletion { [weak self] position in
-                guard let self, position == .end, self.pageAnimator === back else { return }
-                self.pageAnimator = nil
-                self.pageTarget = nil
-                self.dropNeighbor()
-                self.tabs.select(self.currentTab, animated: false)
-                if self.renderWaits { self.render() }
-                self.schedulePrepare()
-            }
-            pageAnimator = back
-            back.startAnimation()
-            return
-        }
-        let side: CGFloat = target.rawValue > currentTab.rawValue ? -1 : 1
-        if neighborTab != target || neighborSide != side || neighborPage == nil { showNeighbor(target, side: side) }
-        setPage(offset: start)
-        let end = side * (width + pageGap)
-        let remaining = min(max(abs(end - start) / width, 0.3), 1)
-        let across = UIViewPropertyAnimator(duration: 0.38 * remaining, dampingRatio: 1) { self.setPage(offset: end) }
-        across.addCompletion { [weak self] position in
-            guard let self, position == .end, self.pageAnimator === across else { return }
-            self.pageAnimator = nil
-            self.pageTarget = nil
-            self.switchTab(to: target)
-            self.setPage(offset: 0)
-        }
-        pageAnimator = across
-        across.startAnimation()
-        Haptics.selection()
+    func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
+        if scrollView === pager, !decelerate { settle() }
+    }
+
+    func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) {
+        if scrollView === pager { settle() }
+    }
+
+    func scrollViewDidEndScrollingAnimation(_ scrollView: UIScrollView) {
+        if scrollView === pager { settle() }
     }
 
     /// Renders even when the model did not change (a picked profile version).
@@ -442,7 +315,6 @@ final class BrandProfileViewController: UIViewController, UIGestureRecognizerDel
 
     private func signature() -> Int {
         var hasher = Hasher()
-        hasher.combine(currentTab)
         hasher.combine(model.brand)
         hasher.combine(model.kit)
         hasher.combine(model.kitError)
@@ -473,16 +345,12 @@ final class BrandProfileViewController: UIViewController, UIGestureRecognizerDel
         return hasher.finalize()
     }
 
-    /// A render that came while the pages slide: done when they stop (rebuilding the page under
-    /// the finger made it jump; the neighbour's build itself starts loads that change the model).
+    /// A render that came while the pages slide: done when they stop (rebuilding a page under
+    /// the finger made it jump).
     private var renderWaits = false
-    private var forceRender = false
-    private var isPaging: Bool {
-        pageAnimator != nil || pagePan.state == .began || pagePan.state == .changed
-    }
 
     private func render() {
-        if isPaging, !forceRender {
+        if isPaging {
             renderWaits = true
             return
         }
@@ -492,17 +360,20 @@ final class BrandProfileViewController: UIViewController, UIGestureRecognizerDel
         guard signature != lastSignature else { return }
         lastSignature = signature
         title = model.brand?.name ?? "Marka"
-        guard let brand = model.brand, let overview = model.overview else {
+        guard let brand = model.brand, let overview = model.overview, let page = pages[currentTab] else {
             header.isHidden = true
             tabs.isHidden = true
-            body.removeAllArranged()
+            builtSignature = [:]
+            guard let page = pages[currentTab] else { return }
+            page.stack.removeAllArranged()
             if model.hasLoaded {
-                body.addArrangedSubview(BrandUI.inset(BrandUI.footnote("Marka bulunamadı."), top: 24))
+                page.stack.addArrangedSubview(BrandUI.inset(BrandUI.footnote("Marka bulunamadı."), top: 24))
             } else {
                 let spinner = UIActivityIndicatorView(style: .medium)
                 spinner.startAnimating()
-                body.addArrangedSubview(BrandUI.inset(spinner, top: 40))
+                page.stack.addArrangedSubview(BrandUI.inset(spinner, top: 40))
             }
+            view.setNeedsLayout()
             return
         }
         header.isHidden = false
@@ -511,13 +382,44 @@ final class BrandProfileViewController: UIViewController, UIGestureRecognizerDel
             brand: brand, overview: overview, isCurrent: model.isCurrent,
             counts: [(.products, model.products.products.count, "ürün"), (.templates, model.templates.count, "şablon"), (.kit, model.skills.count, "skill")],
             status: statusLine(), loading: model.isLoading && !model.hasLoaded)
-        if pageAnimator == nil { tabs.select(currentTab, animated: true) }
-        productTiles = [:]
-        body.removeAllArranged()
-        build(currentTab, brand, overview)
-        // The neighbours again, from the new data, once this pass is over.
-        dropPrepared()
-        schedulePrepare()
+        tabs.select(currentTab, animated: true)
+        _ = page
+        rebuild(currentTab)
+        view.setNeedsLayout()
+        view.layoutIfNeeded()
+        scheduleNeighbors()
+    }
+
+    /// `tab`'s page from the current data (its scroll position stays).
+    private func rebuild(_ tab: BrandTab) {
+        guard let brand = model.brand, let overview = model.overview, let page = pages[tab] else { return }
+        body = page.stack
+        if tab == .products { productTiles = [:] }
+        UIView.performWithoutAnimation {
+            page.stack.removeAllArranged()
+            build(tab, brand, overview)
+            page.layoutIfNeeded()
+        }
+        builtSignature[tab] = lastSignature
+    }
+
+    private func ensureBuilt(_ tab: BrandTab) {
+        guard model.brand != nil, builtSignature[tab] != lastSignature else { return }
+        rebuild(tab)
+    }
+
+    /// The other tabs, built while the page is still, one per pass and nearest first (building
+    /// one as it came into view stalled the slide).
+    private func scheduleNeighbors() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self, !self.isPaging, self.model.brand != nil else { return }
+            let next = BrandTab.allCases
+                .filter { self.builtSignature[$0] != self.lastSignature }
+                .min { abs($0.rawValue - self.currentTab.rawValue) < abs($1.rawValue - self.currentTab.rawValue) }
+            guard let next else { return }
+            self.rebuild(next)
+            self.scheduleNeighbors()
+        }
     }
 
     private func build(_ tab: BrandTab, _ brand: Brand, _ overview: BrandOverview) {
@@ -894,17 +796,83 @@ final class BrandTabStrip: UIView {
     }
 }
 
-/// A tab's rows beside the page (laid by hand while it slides), with the product tiles it built.
-final class PageStack: UIStackView {
-    var tiles: [EntityID: UIView] = [:]
+/// The tabs' pager: asks before it takes a swipe (a swipe on the tab strip, or rightward on the
+/// first tab, is not its).
+final class BrandTabPager: UIScrollView, SwipeBackYielding {
+    var shouldBeginPaging: ((UIPanGestureRecognizer) -> Bool)?
+
+    /// On the first tab and still, a rightward swipe goes back a screen.
+    var yieldsSwipeBack: Bool { contentOffset.x <= 0.5 && !isDragging && !isDecelerating }
+
+    override func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+        if gestureRecognizer === panGestureRecognizer, let shouldBeginPaging {
+            return shouldBeginPaging(panGestureRecognizer)
+        }
+        return super.gestureRecognizerShouldBegin(gestureRecognizer)
+    }
+
+    /// A finger landing on a page still gliding from a flick stops it here, as the page would
+    /// itself, but before the page takes the touch: otherwise the page held it and a sideways
+    /// swipe right after a flick did not page.
+    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
+        if event?.type == .touches {
+            for case let page as BrandTabPage in subviews where page.isDecelerating {
+                page.stopGliding()
+            }
+        }
+        return super.hitTest(point, with: event)
+    }
+}
+
+/// One tab's page: its rows in a stack, scrolling on its own under the header.
+final class BrandTabPage: UIScrollView {
+    let stack = UIStackView.v([], spacing: 0)
+    private let container = UIView()
+    /// Weak on purpose: it only gives a short tab room below its rows; the rows' stack is not
+    /// tied to it (tying it stretched rows apart).
+    private lazy var minHeight: NSLayoutConstraint = {
+        let constraint = container.heightAnchor.constraint(equalToConstant: 0)
+        constraint.priority = .fittingSizeLevel
+        return constraint
+    }()
+
+    /// At least this tall, so the page can stand with the header scrolled away.
+    var minimumContentHeight: CGFloat {
+        get { minHeight.constant }
+        set { if abs(minHeight.constant - newValue) > 0.5 { minHeight.constant = newValue } }
+    }
 
     init() {
         super.init(frame: .zero)
-        axis = .vertical
-        spacing = 0
-        translatesAutoresizingMaskIntoConstraints = true
-        isUserInteractionEnabled = false
+        contentInsetAdjustmentBehavior = .never
+        alwaysBounceVertical = true
+        showsHorizontalScrollIndicator = false
+        topEdgeEffect.style = .soft
+        backgroundColor = IOSTheme.canvas
+        container.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(container)
+        container.addSubview(stack)
+        NSLayoutConstraint.activate([
+            container.topAnchor.constraint(equalTo: contentLayoutGuide.topAnchor),
+            container.leadingAnchor.constraint(equalTo: contentLayoutGuide.leadingAnchor),
+            container.trailingAnchor.constraint(equalTo: contentLayoutGuide.trailingAnchor),
+            container.bottomAnchor.constraint(equalTo: contentLayoutGuide.bottomAnchor),
+            container.widthAnchor.constraint(equalTo: frameLayoutGuide.widthAnchor),
+            minHeight,
+            stack.topAnchor.constraint(equalTo: container.topAnchor),
+            stack.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            stack.bottomAnchor.constraint(lessThanOrEqualTo: container.bottomAnchor),
+        ])
     }
 
-    required init(coder: NSCoder) { fatalError("not used") }
+    required init?(coder: NSCoder) { fatalError("not used") }
+
+    /// Stops a flick's glide where the page is (inside its bounds, if it was bouncing).
+    func stopGliding() {
+        let top = -adjustedContentInset.top
+        let bottom = max(top, contentSize.height + adjustedContentInset.bottom - bounds.height)
+        let y = min(max(contentOffset.y, top), bottom)
+        setContentOffset(CGPoint(x: contentOffset.x, y: y), animated: false)
+    }
 }
