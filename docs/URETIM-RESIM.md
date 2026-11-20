@@ -61,3 +61,22 @@ Reels ve hikâye sonra ayrı ele alınacak.
   `@post` ile devam ettirme.
 - **Faz 3 — SVG motoru.**
 - **Faz 4 — Kod motoru** (Python, kapalı alan).
+
+## Faz 0 arka ucu (yapıldı, 2026-11-20) — UI dalgaları için API
+
+- `ApprovalRequest`: `id, brandId, contentId|null, productId|null, conversationId|null, messageId|null,
+  kind (product_image|variant|product_photo_upgrade), assetIds[1–4], checkReport {passed, items[{aspect, ok, note}], summary}|null,
+  status (pending|approved|rejected|superseded), slotId, replacesAssetId, approvedAssetId, sourceJobId,
+  regenerateJobId, decisionNote, canRegenerate, createdAt, updatedAt, decidedAt`.
+- `GET /api/approvals?brandId&contentId&conversationId&status(pending varsayılan|all)&limit&cursor` → `{items, nextCursor}`.
+- `GET /api/approvals/{id}`; `POST …/approve {assetId?}`, `POST …/reject {note?}`,
+  `POST …/regenerate {preserveLabelComposite?, instructions?}` → `{approval, content|null, product|null, job|null}`.
+- Worker: `POST /api/worker/approvals` (`ApprovalCreate`).
+- `Content.pendingApprovals: number` (liste ve detay). Canlı güncelleme: `/api/jobs/stream` →
+  `{type: "approval.updated", approval}`.
+- Sohbet mesaj parçası: `{type: "approval_request", approvalId}`.
+- `@` adları: `Message.entityMentions [{kind: product|content, id, name, start, end}]` (UTF-16);
+  `BrandProduct.slug`; `GET /api/brands/{brandId}/mention-candidates` →
+  `{items: [{kind, id, slug, label, imageAssetId|null, detail, pendingApprovals}]}`.
+- Motor: `GenerationEngine = wecra|html|svg|code` (hazır: html); `Brand.defaultEngine|null`,
+  `Brand.imageStylePreset` (string).
