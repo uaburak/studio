@@ -8,8 +8,7 @@ import { ARTBOARDS, type ContentType } from "./content.ts";
  * The owner picks the engine that designs a post: `wecra` (Wecra's canvas tools), `html` (the
  * HTML/CSS pipeline), `svg` (vector, written by the agent) or `code` (Python in a closed
  * sandbox). Every engine delivers the same thing (1080×1350 pictures, caption + hashtags, the
- * engine's source). `html`, `wecra` and `svg` are ready; `code` fails clearly instead of falling
- * back.
+ * engine's source). All four run.
  */
 
 export const GenerationEngine = z
@@ -21,7 +20,12 @@ export type GenerationEngine = z.infer<typeof GenerationEngine>;
 export const DEFAULT_GENERATION_ENGINE: GenerationEngine = "html";
 
 /** Engines that run today. */
-export const READY_GENERATION_ENGINES: readonly GenerationEngine[] = ["wecra", "html", "svg"];
+export const READY_GENERATION_ENGINES: readonly GenerationEngine[] = [
+  "wecra",
+  "html",
+  "svg",
+  "code",
+];
 
 /**
  * The SVG engine stores each slide as an HTML document around one inline `<svg>` (the engine's
@@ -33,6 +37,79 @@ export const SVG_SLIDE_ATTR = "data-studio-engine";
 /** A slide made by the SVG engine (its HTML carries the engine mark on `<html>`). */
 export function isSvgSlideHtml(html: string | null | undefined): boolean {
   return typeof html === "string" && /<html\b[^>]*\sdata-studio-engine=["']?svg\b/i.test(html);
+}
+
+/**
+ * The code engine (Faz 4) stores each slide as a small HTML document that shows the slide's
+ * render (`<img src="/media/<assetId>.jpg">`), marked `<html data-studio-engine="code">`. Its
+ * `<meta name="studio:code-*">` tags carry the engine's source: the Python program (base64, on
+ * the first slide), the run's inputs (pictures, filled slots) and what the program drew on the
+ * slide (text boxes, pictures, image slots) for the checks. Edited only from the chat.
+ */
+export function isCodeSlideHtml(html: string | null | undefined): boolean {
+  return typeof html === "string" && /<html\b[^>]*\sdata-studio-engine=["']?code\b/i.test(html);
+}
+
+/** The chat-only engine that made these slides (`svg` / `code`), null for any other version. */
+export function chatOnlyEngineOf(
+  slides: ReadonlyArray<{ html: string }> | null | undefined,
+): "svg" | "code" | null {
+  if (!slides?.length) return null;
+  if (slides.every((s) => isSvgSlideHtml(s.html))) return "svg";
+  if (slides.every((s) => isCodeSlideHtml(s.html))) return "code";
+  return null;
+}
+
+/** `name="studio:code-record"` — what a code slide's program drew (JSON). */
+export const CODE_RECORD_META = "studio:code-record";
+
+function unescapeAttr(value: string): string {
+  return value
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&amp;/g, "&");
+}
+
+/** The content of `<meta name="<name>" content="…">` in a slide document (null: none). */
+export function slideMetaContent(html: string, name: string): string | null {
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const m = new RegExp(`<meta\\s+name="${escaped}"\\s+content="([^"]*)"`, "i").exec(html);
+  return m?.[1] !== undefined ? unescapeAttr(m[1]) : null;
+}
+
+export interface CodeSlotInfo {
+  id: string;
+  state: "empty" | "filled";
+  ratio: string | null;
+  label: string | null;
+}
+
+/** The image slots (`studio_brand.slot`) a code slide's program drew; [] for any other slide. */
+export function codeSlideSlots(html: string | null | undefined): CodeSlotInfo[] {
+  if (!isCodeSlideHtml(html)) return [];
+  const raw = slideMetaContent(html as string, CODE_RECORD_META);
+  if (!raw) return [];
+  try {
+    const record = JSON.parse(raw) as { slots?: unknown };
+    if (!Array.isArray(record.slots)) return [];
+    return record.slots.flatMap((s) => {
+      if (!s || typeof s !== "object") return [];
+      const o = s as Record<string, unknown>;
+      if (typeof o.id !== "string" || !o.id) return [];
+      return [
+        {
+          id: o.id,
+          state: o.state === "filled" ? ("filled" as const) : ("empty" as const),
+          ratio: typeof o.ratio === "string" ? o.ratio : null,
+          label: typeof o.label === "string" ? o.label : null,
+        },
+      ];
+    });
+  } catch {
+    return [];
+  }
 }
 
 /** What the owner sees when a not-yet-ready engine is asked for. */

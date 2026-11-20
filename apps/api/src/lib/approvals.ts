@@ -8,6 +8,7 @@ import {
   type ApprovalRequest,
   type ApprovalTarget,
   type BrandProduct,
+  codeSlideSlots,
   isSvgSlideHtml,
   type Job,
   MAX_PRODUCT_IMAGES,
@@ -274,9 +275,10 @@ export async function approveRequest(
     });
   } else if (row.contentId && row.slotId) {
     // An SVG engine version (Faz 3): the worker turns the SVG's slot marker into an <image> of
-    // the picture and renders a new version of exactly that version. An HTML version: the slot
-    // is filled by rendering the current version.
-    const svg = await svgSlot(db, row.contentId, row.slotId);
+    // the picture and renders a new version of exactly that version. A code engine version
+    // (Faz 4): the worker re-runs that version's program with the picture assigned to the slot.
+    // An HTML version: the slot is filled by rendering the current version.
+    const engine = await engineSlot(db, row.contentId, row.slotId);
     job = await ctx.createJob({
       type: "content.render",
       brandId: row.brandId,
@@ -284,9 +286,14 @@ export async function approveRequest(
       payload: {
         format: "jpeg",
         slotAssignments: { [row.slotId]: chosen },
-        ...(svg
-          ? { version: svg.version, note: "Onaylanan görsel SVG yuvasına yerleştirildi" }
-          : { note: "Onaylanan görsel yerleştirildi" }),
+        ...(engine?.engine === "svg"
+          ? { version: engine.version, note: "Onaylanan görsel SVG yuvasına yerleştirildi" }
+          : engine?.engine === "code"
+            ? {
+                version: engine.version,
+                note: "Onaylanan görsel kod motorunun yuvasına yerleştirildi",
+              }
+            : { note: "Onaylanan görsel yerleştirildi" }),
       },
     });
   }
@@ -332,14 +339,15 @@ export async function canvasSlot(
 }
 
 /**
- * The current version when it was made by the SVG engine and has the slot marker
- * (`data-slot="<slotId>"` in its SVG); null otherwise.
+ * The current version when a chat-only engine made it and it has the slot: the SVG engine's slot
+ * marker (`data-slot="<slotId>"` in its SVG) or a slot the code engine's program drew
+ * (`studio_brand.slot`, in the slide's record); null otherwise.
  */
-export async function svgSlot(
+export async function engineSlot(
   db: Db,
   contentId: string,
   slotId: string,
-): Promise<{ version: number } | null> {
+): Promise<{ version: number; engine: "svg" | "code" } | null> {
   const [current] = await db
     .select({ id: contentVersions.id, version: contentVersions.version })
     .from(contents)
@@ -351,9 +359,11 @@ export async function svgSlot(
     .from(contentVersionSlides)
     .where(eq(contentVersionSlides.versionId, current.id));
   const marker = `data-slot="${slotId.replace(/&/g, "&amp;").replace(/"/g, "&quot;")}"`;
-  return slides.some((s) => isSvgSlideHtml(s.html) && s.html.includes(marker))
-    ? { version: current.version }
-    : null;
+  if (slides.some((s) => isSvgSlideHtml(s.html) && s.html.includes(marker)))
+    return { version: current.version, engine: "svg" };
+  if (slides.some((s) => codeSlideSlots(s.html).some((slot) => slot.id === slotId)))
+    return { version: current.version, engine: "code" };
+  return null;
 }
 
 /**

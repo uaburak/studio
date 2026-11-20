@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
   allocateMentionSlugs,
+  chatOnlyEngineOf,
+  codeSlideSlots,
   engineNotReadyError,
+  isCodeSlideHtml,
   isSvgSlideHtml,
   mentionBase,
   productPhotoAngle,
@@ -68,12 +71,43 @@ describe("@product / @post mention names", () => {
 });
 
 describe("generation engines", () => {
-  it("HTML, Wecra and SVG are ready", () => {
+  it("every engine is ready (Kod since Faz 4)", () => {
     expect(engineNotReadyError("html")).toBeNull();
     expect(engineNotReadyError("wecra")).toBeNull();
     expect(engineNotReadyError("svg")).toBeNull();
-    expect(READY_GENERATION_ENGINES).toEqual(["wecra", "html", "svg"]);
-    expect(engineNotReadyError("code")).toBe("Bu motor henüz hazır değil (Kod)");
+    expect(engineNotReadyError("code")).toBeNull();
+    expect(READY_GENERATION_ENGINES).toEqual(["wecra", "html", "svg", "code"]);
+  });
+
+  it("recognises a code engine slide and reads its image slots", () => {
+    const record = JSON.stringify({
+      texts: [],
+      slots: [
+        { id: "ai-image", state: "empty", ratio: "4:3", label: "AI görsel" },
+        { id: "", state: "empty" },
+        { id: "photo", state: "filled", ratio: null, label: null },
+      ],
+    })
+      .replace(/&/g, "&amp;")
+      .replace(/"/g, "&quot;");
+    const html = `<!doctype html>\n<html lang="tr" data-studio-engine="code">\n<head>\n<meta name="studio:code-record" content="${record}">\n</head><body><img src="/media/a.jpg"></body></html>`;
+    expect(isCodeSlideHtml(html)).toBe(true);
+    expect(isSvgSlideHtml(html)).toBe(false);
+    expect(codeSlideSlots(html)).toEqual([
+      { id: "ai-image", state: "empty", ratio: "4:3", label: "AI görsel" },
+      { id: "photo", state: "filled", ratio: null, label: null },
+    ]);
+    expect(
+      codeSlideSlots(
+        '<html data-studio-engine="code"><meta name="studio:code-record" content="{bad">',
+      ),
+    ).toEqual([]);
+    expect(chatOnlyEngineOf([{ html }, { html }])).toBe("code");
+    expect(chatOnlyEngineOf([{ html }, { html: "<html><body></body></html>" }])).toBeNull();
+    expect(chatOnlyEngineOf([{ html: '<html data-studio-engine="svg"><svg></svg></html>' }])).toBe(
+      "svg",
+    );
+    expect(chatOnlyEngineOf([])).toBeNull();
   });
 
   it("recognises an SVG engine slide by its mark", () => {

@@ -54,6 +54,7 @@ import {
   type ReelEngineTestSeams,
 } from "../video/render-reel.ts";
 import { type BrandContext, loadBrandContext } from "./brand.ts";
+import { type CodeProgramRunner, isCodeRevision, runCodeGenerate } from "./code/engine.ts";
 import {
   type DesignRevision,
   exportIssues,
@@ -80,6 +81,8 @@ export interface ContentGenerateDeps extends AgentDeps {
   /** Template fills on the canvas: poll interval and wait for the canvas runner (N9). */
   canvasPollMs?: number;
   canvasTimeoutMs?: number;
+  /** Test seam: the code engine's program runner (default: the Python sandbox). */
+  codeRunner?: CodeProgramRunner;
 }
 
 /** Most user images a single design takes. */
@@ -139,8 +142,8 @@ async function runContentGenerate(
   const payload = parsed.payload;
   const { brandId, contentId } = payload;
 
-  // The design engine the owner picked: HTML, Wecra and SVG run today; the others fail clearly
-  // and never fall back to HTML (docs/URETIM-RESIM.md).
+  // The design engine the owner picked (all four run); one that is not ready fails clearly and
+  // never falls back to HTML (docs/URETIM-RESIM.md).
   const engineError = engineNotReadyError(payload.engine ?? DEFAULT_GENERATION_ENGINE);
   if (engineError) throw new Error(`${engineError}; post üretilmedi.`);
 
@@ -191,6 +194,17 @@ async function runContentGenerate(
   // SVG post (a base version + an instruction, no other engine named) is the SVG engine's too.
   if (payload.engine === "svg" || (await isSvgRevision(deps, payload, signal))) {
     return runSvgGenerate(ctx, deps, payload, {
+      requestedModel,
+      requestedEffort,
+      resolveMedia: (p) => resolveMedia(deps, p, signal),
+      check: (input) => checkGenerated(deps, ctx, input),
+    });
+  }
+
+  // The code engine (Faz 4): one Python program draws every slide in a sandbox (code/engine.ts).
+  // A chat revision of a code post (a base version + an instruction) is the code engine's too.
+  if (payload.engine === "code" || (await isCodeRevision(deps, payload, signal))) {
+    return runCodeGenerate(ctx, deps, payload, {
       requestedModel,
       requestedEffort,
       resolveMedia: (p) => resolveMedia(deps, p, signal),

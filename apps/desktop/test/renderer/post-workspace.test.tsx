@@ -847,6 +847,14 @@ describe("the canvas read only (E3)", () => {
       kind: "svg",
       message: expect.stringContaining("sohbetten"),
     });
+    // So is a version the code engine made (Faz 4).
+    const codeHtml =
+      '<!doctype html>\n<html lang="tr" data-studio-engine="code"><head></head><body><img src="/media/a.jpg"></body></html>';
+    const codeVersion = { ...v2, slides: v2.slides.map((s) => ({ ...s, html: codeHtml })) };
+    expect(editLock({ ...base, current: codeVersion, displayed: codeVersion })).toMatchObject({
+      kind: "code",
+      message: "Kod motoruyla üretildi; tuvalde düzenlenmez. Değişikliği sohbetten iste.",
+    });
     expect(editLock({ ...base, activity: { kind: "revising", message: "" } })).toMatchObject({
       kind: "busy",
     });

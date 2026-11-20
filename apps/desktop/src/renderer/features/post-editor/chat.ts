@@ -12,7 +12,7 @@ import {
   type ApiClient,
   type Content,
   type ContentVersion,
-  isSvgSlideHtml,
+  chatOnlyEngineOf,
 } from "@studio/contract";
 import { useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from "react";
 import { describeError, useApi } from "../../lib/api.ts";
@@ -81,6 +81,11 @@ export function svgNote(version: number): string {
   return `(v${version} SVG motoruyla üretildi: tasarım bu sürümün SVG'sidir ve yalnızca sohbetten düzenlenir. Değişikliği revise_post ile yap.)`;
 }
 
+/** The note a request about a code engine version carries: it is revised from its program. */
+export function codeNote(version: number): string {
+  return `(v${version} kod motoruyla üretildi: tasarım bu sürümün Python programıdır ve yalnızca sohbetten düzenlenir. Değişikliği revise_post ile yap.)`;
+}
+
 /**
  * What every message says about the post it is about (E17: the current version each time). A
  * version saved from the canvas adds that its Wecra document is the design (`canvasNote`).
@@ -92,8 +97,9 @@ export function postReference(
     | null,
 ): string {
   const head = `“${content.title}” postu (id: ${content.id}${version ? `, güncel sürüm v${version.version}` : ""}) için:`;
-  if (version?.slides?.some((s) => isSvgSlideHtml(s.html)))
-    return `${head}\n${svgNote(version.version)}`;
+  const chatOnly = chatOnlyEngineOf(version?.slides);
+  if (version && chatOnly === "svg") return `${head}\n${svgNote(version.version)}`;
+  if (version && chatOnly === "code") return `${head}\n${codeNote(version.version)}`;
   if (!version || !isCanvasVersion(version)) return head;
   return `${head}\n${canvasNote(version.version)}`;
 }

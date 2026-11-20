@@ -326,6 +326,8 @@ async function main() {
   mkdirSync(join(out, "bin"), { recursive: true });
   cpSync(join(desktop, "build", "node-shim.cjs"), join(out, "bin", "node-shim.cjs"));
   cpSync(join(repo, "agent", "skills"), join(out, "agent", "skills"), { recursive: true });
+  // The code engine's Python files (run.py, studio_brand.py, requirements.txt) beside main.js.
+  cpSync(join(workerDir, "code-engine"), join(out, "worker", "code-engine"), { recursive: true });
   log("studio-vision");
   const visionHelper = buildVisionHelper();
 

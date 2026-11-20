@@ -3,11 +3,11 @@
 // canvas opens locked and "Düzenle" says so first (listing the accounts) — then it unlocks.
 // Publishing and published posts never unlock (a published one can be duplicated); an older
 // version is looked at, not edited ("Bu sürüme dön" makes it current, explicitly: E19); while an
-// AI run or a job may make a new version the canvas waits. A version the SVG engine made is
-// edited only from the chat (docs/URETIM-RESIM.md, decision 3): the canvas only shows it.
+// AI run or a job may make a new version the canvas waits. A version the SVG or the code engine
+// made is edited only from the chat (docs/URETIM-RESIM.md, decision 3): the canvas only shows it.
 import {
   type ContentStatus,
-  isSvgSlideHtml,
+  chatOnlyEngineOf,
   isTerminalJobStatus,
   type Job,
 } from "@studio/contract";
@@ -24,7 +24,8 @@ export type EditLock =
   | { kind: "published"; message: string }
   | { kind: "old-version"; shown: number; current: number | null; message: string }
   | { kind: "busy"; message: string }
-  | { kind: "svg"; message: string };
+  | { kind: "svg"; message: string }
+  | { kind: "code"; message: string };
 
 /**
  * A job of this post that may make a new version (a revision, a render with edits, the agent's
@@ -82,11 +83,18 @@ export function editLock(
       message: `Eski bir sürüme (v${shown}) bakıyorsun; düzenlenmez.`,
     };
   }
-  // Made by the SVG engine (Faz 3): its SVG is the design, edited only from the chat.
-  if (activeVersion(s)?.slides.some((sl) => isSvgSlideHtml(sl.html)))
+  // Made by the SVG engine (Faz 3) or the code engine (Faz 4): its SVG / its Python program is
+  // the design, edited only from the chat.
+  const chatOnly = chatOnlyEngineOf(activeVersion(s)?.slides);
+  if (chatOnly === "svg")
     return {
       kind: "svg",
       message: "SVG motoruyla üretildi; tuvalde düzenlenmez. Değişikliği sohbetten iste.",
+    };
+  if (chatOnly === "code")
+    return {
+      kind: "code",
+      message: "Kod motoruyla üretildi; tuvalde düzenlenmez. Değişikliği sohbetten iste.",
     };
   if ((status === "approved" || status === "scheduled") && !o.unlocked)
     return {

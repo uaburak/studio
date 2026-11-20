@@ -372,15 +372,16 @@ describe("the Wecra engine (content.generate, engine: wecra)", () => {
     });
   });
 
-  it("is chosen only for engine wecra; engines that do not run fail clearly", async () => {
+  it("is chosen only for engine wecra; Reels are refused clearly", async () => {
     const { api, canvasJobs } = await setup();
     const runner: ClaudeRunner = async () => {
       throw new Error("no AI call expected");
     };
     const handler = createContentGenerateHandler(deps(api, runner));
-    const code = job({ engine: "code" });
+    // The code engine is another engine: it never reaches the canvas.
+    const code = job({ engine: "code", type: "reel" });
     await expect(handler.run(code.job.payload as never, code.ctx)).rejects.toThrow(
-      "Bu motor henüz hazır değil (Kod)",
+      "Kod motoru Reels üretmez",
     );
     const reel = job({ engine: "wecra", type: "reel" });
     await expect(handler.run(reel.job.payload as never, reel.ctx)).rejects.toThrow(/Reels/);

@@ -164,3 +164,68 @@ Reels ve hikâye sonra ayrı ele alınacak.
   `content.render {version, slotAssignments}` kuyruğa alır, worker işareti aynı kutuda
   `<image … preserveAspectRatio="xMidYMid slice">` yapar (yuvarlak köşe clipPath ile korunur), yeniden
   render eder, yeni sürüm. Reels SVG ile üretilmez.
+
+## Faz 4 — Kod motoru (yapıldı)
+
+- `READY_GENERATION_ENGINES = [wecra, html, svg, code]` (Mac ayarları ve iOS `GenerationEngine.ready` aynı;
+  dört motor da hazır). `content.generate` `engine: code` (`apps/worker/src/generate/code/`): diğer motorlarla
+  aynı marka girdileri (onaylı profil belirteçleri, renkler, marka yazı tipleri **dosya olarak**, logolar,
+  marka görselleri, facts/izinli sayılar, ses, skill'ler, @görseller, ürün fotoğrafları, internet). Model post
+  başına **tek bir Python 3 programı** yazar (Pillow, skia-python, numpy, OpenCV); program bütün slaytları
+  artboard ölçüsünde (1080×1350; story 1080×1920; "kare format" 1080×1080) çizip PNG olarak kaydeder; açıklama ve
+  hashtag'ler yapılandırılmış çıktıdadır.
+- Yardımcı modül `apps/worker/code-engine/studio_brand.py` (`import studio_brand as sb`): `sb.W/H`, güvenli
+  alan (`sb.SAFE_*`), renkler (`sb.color("ink")`), marka yazı tipleri (`sb.font(rol, boyut, ağırlık)`; değişken
+  font ağırlığı ayarlanır; latin / latin-ext alt kümelerine bölünmüş fontlarda her harf onu içeren dosyadan
+  çizilir), görseller adıyla (`sb.place(img, "logo/…" | "@image" | "product/…-1", …)`), `sb.text(...)` (sarar,
+  çizer ve **kaydeder**: kutu, font, boyut, renk, altındaki zemin), `sb.measure` / `sb.fit_size`,
+  `sb.slot(img, x, y, w, h, ratio, label="AI görsel", id="ai-image")`, efektler (doğrusal/radyal degrade,
+  yuvarlak maske, gren, gölge, vinyet, skia yüzeyi), `sb.canvas(n)` / `sb.save(img)`. Kayıt `out/record.json`.
+- **Kapalı alan** (`code/sandbox.ts`, karar 4): macOS `sandbox-exec` profili `(deny default)` ile başlar ve
+  yalnızca şunlara izin verir: okuma — venv, temel Python, işin `input/` klasörü (input.json, program.py,
+  fontlar, görseller, run.py + studio_brand.py kopyası), `out/` ve `tmp/`, sistem kütüphaneleri ve fontları
+  (`/System`, `/usr/lib`, `/usr/share`, `/Library/Fonts`); yazma — **yalnızca** işin `out/` ve `tmp/`
+  klasörleri; çalıştırma — yalnızca Python yorumlayıcısı (fork yok, başka program yok); ağ — yalnızca giden
+  (dinleme/gelen bağlantı yok). Kullanıcının ev klasörüne iş klasörü dışında erişim yok. Ortam değişkenleri
+  temizlenir (anahtar/jeton gitmez), 60 sn duvar saati sınırı (aşılırsa süreç grubu öldürülür), 2 GB bellek
+  tavanı (RSS izlenir), dosya başına 64 MB, `out/` toplam 200 MB, CPU sınırı. İkinci kat: statik denetim —
+  önce TypeScript'te (`code/check.ts`), sonra kapalı alanda `run.py` sözdizim ağacıyla: izinli modüller
+  PIL, skia, numpy, cv2, math, random, json, os.path, pathlib, studio_brand, colorsys, typing, dataclasses,
+  functools, itertools (+ collections, statistics, textwrap, unicodedata, string, re, enum, copy); `subprocess`,
+  `os.*` (os.path dışı), `ctypes`, soket, `eval/exec/compile/open/getattr`, dunder kaçışları, `Image.show`,
+  `cv2.VideoCapture` reddedilir.
+- Döngü: program → ön denetim → kapalı alanda çalıştırma → çıktı denetimi (slayt sayısı, ölçü, boş olmama) +
+  kayıttan lint (SVG motorunun kuralları: `text-outside-artboard`, `safe-area`, `min-font-size`,
+  `font-family`, `text-overlap`, `unverified-number`, `slot-empty`, `slot-ratio-mismatch`; ayrıca
+  kaydedilen zeminden `contrast` ve sarma genişliğini aşan `text-overflow-box`). Render'lar + rapor modele
+  gider; 1 + `designFixPasses` (en çok 3) turda program yeniden yazılır. Python hatası (traceback) ya da
+  reddedilen program da modele döner ve bir tur sayılır. En iyi sürüm yüklenir.
+- Sürüm: slaytlar render'ı gösteren küçük HTML belgeleridir (`<html data-studio-engine="code">`,
+  `<img src="/media/<assetId>.jpg">`); `<meta name="studio:code-record">` programın o slayta çizdiklerini,
+  ilk slaytta `studio:code-program` (base64 Python) ve `studio:code-inputs` (görseller, dolu yuvalar, ölçü,
+  güvenli alan, profil sürümü) taşır (`isCodeSlideHtml`, `codeSlideSlots`, `chatOnlyEngineOf` sözleşmede;
+  `readCodeSource` worker'da). Kontroller ve sonraki render'lar Python çalıştırmadan kayıttan lint eder.
+- Düzenleme yalnızca sohbetten: `revise_post` kod sürümünde `engine: code` gönderir (motorsuz
+  `baseVersion + instructions` de kod sürümünde koda gider); saklı program + render'lar + talimat → program
+  yeniden yazılır → `ai_edit`. Mac'te kod sürümü tuvalde salt okunur açılır ("Kod motoruyla üretildi;
+  tuvalde düzenlenmez…", SVG kilidiyle aynı `chatOnlyEngineOf`), sohbet notu `revise_post` der. Katman yaması
+  kod sürümünde reddedilir.
+- "AI görsel" yuvası: `sb.slot(...)` yer tutucu çizer ve kaydeder; izin varsa `queueSlotImageJobs` iş açar.
+  Onay (`approvals.ts` `engineSlot`) kod sürümünde `content.render {version, slotAssignments}` kuyruğa alır;
+  worker saklı programı görsel o yuvaya atanmış olarak **yeniden çalıştırır** (`executeCodeSlotFill`), yeni
+  `manual_edit` sürüm, kontroller. Varyantlar (1–4) ve plan üretimi `engine: code` ile çalışır; Reels reddedilir.
+
+### Kod motorunun Python ortamı (kurulum)
+
+- Ortam, worker'ın durum klasöründe proje-yerel bir virtualenv'dir: Mac uygulamasında
+  `~/Library/Application Support/Studio/worker/code-engine/venv` (genel olarak `<STUDIO_STATE_DIR>/code-engine/venv`).
+  Sabitlenmiş paketler `apps/worker/code-engine/requirements.txt` (Pillow 11.3.0, numpy 2.0.2 / 2.2.6,
+  opencv-python-headless 5.1.0.95, skia-python 144.1; yalnızca hazır wheel). Global kurulum ya da sudo yok.
+- Temel Python: `STUDIO_CODE_PYTHON`, yoksa Homebrew `python3`, yoksa Xcode Komut Satırı Araçları'nın
+  `/usr/bin/python3`'ü (3.9+; araçlar kurulu değilse kullanılmaz, kurulum penceresi açılmasın diye).
+- İlk kod işinde worker ortamı kendisi kurar (paketler bir kez indirilir, ~1 dk); iş bu sürede "Kod motoru
+  için Python ortamı hazırlanıyor" der. Kurulamazsa iş açık bir Türkçe hatayla biter.
+- Tek seferlik elle kurulum / onarım: proje klasöründe `pnpm -C apps/worker code-engine:setup` (önce
+  `STUDIO_STATE_DIR`, yoksa Mac uygulamasının worker klasörü). Ortamı kurar ve kapalı alanda küçük bir deneme
+  programı çalıştırır. `requirements.txt` değişirse ortam yeniden kurulur (`runtime.json` özeti).
+- Paketlenmiş uygulamada `code-engine/` klasörü `worker/main.js`'in yanına kopyalanır (`build-host.mjs`).

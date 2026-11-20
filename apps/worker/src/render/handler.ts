@@ -17,6 +17,8 @@ import {
   ApiError,
   ContentRenderPayload,
   type ContentVersion,
+  chatOnlyEngineOf,
+  isCodeSlideHtml,
   isSvgSlideHtml,
   type SlideInput,
   type SlideLayout,
@@ -46,6 +48,11 @@ import {
   type SlideReport,
 } from "../checks/pipeline.ts";
 import { loadBrandContext } from "../generate/brand.ts";
+import {
+  type CodeProgramRunner,
+  executeCodeSlotFill,
+  renderStoredCodeSlide,
+} from "../generate/code/run.ts";
 import { fillSvgSlot } from "../generate/svg/document.ts";
 import { renderSvgSlide, type SvgRenderer, svgRendererOf } from "../generate/svg/render.ts";
 import { extensionForMime } from "../media.ts";
@@ -67,6 +74,8 @@ export interface RenderCapable {
 export interface ContentRenderDeps extends AgentDeps {
   renderer: () => RenderCapable;
   reelSeams?: ReelEngineTestSeams;
+  /** Test seam: the code engine's program runner (default: the Python sandbox). */
+  codeRunner?: CodeProgramRunner;
 }
 
 function slug(text: string): string {
@@ -577,6 +586,25 @@ async function renderSvgForRender(input: {
   };
 }
 
+/** A code engine slide: its stored render and the lint of what its program recorded (Faz 4). */
+async function renderCodeForRender(input: {
+  html: string;
+  width: number;
+  height: number;
+  resolver: AssetResolver;
+  lint: NonNullable<RenderAndLintRequest["lint"]>;
+}): Promise<Awaited<ReturnType<typeof renderSingleSlideJpeg>>> {
+  const res = await renderStoredCodeSlide(input);
+  return {
+    jpeg: res.jpeg,
+    width: input.width,
+    height: input.height,
+    layout: layoutFromReport(res.report),
+    missingFonts: [],
+    report: res.report,
+  };
+}
+
 export interface ExecuteContentRenderOptions {
   deps: ContentRenderDeps;
   jobId?: string;
@@ -684,6 +712,49 @@ export async function executeContentRender(
     throw new Error(
       "Reels için PNG/PDF dışa aktarımı yok; videoyu (MP4) ya da kapak görselini dışa aktarın.",
     );
+  }
+
+  // A code engine version (Faz 4): its slides are its program's renders. A picture for one of its
+  // slots re-runs the program with the picture assigned (a new version); it has no layers to patch.
+  if (chatOnlyEngineOf(targetVersion.slides) === "code") {
+    if (payload.patches?.length)
+      throw new Error(
+        "Kod motoruyla üretilmiş bir sürüm katman yamasıyla düzenlenmez; değişikliği sohbetten iste (revise_post).",
+      );
+    if (payload.slotAssignments && Object.keys(payload.slotAssignments).length > 0) {
+      const out = await executeCodeSlotFill({
+        deps: {
+          ...deps,
+          checks: (input) =>
+            runContentChecks({
+              deps,
+              jobId: options.jobId ?? null,
+              trigger: "render",
+              contentId: input.contentId,
+              version: input.version,
+              brand: input.brand,
+              reports: input.reports,
+              lintMissing: false,
+              model: false,
+              fix: false,
+              signal,
+            }),
+        },
+        content,
+        version: targetVersion,
+        slotAssignments: payload.slotAssignments,
+        jobId: options.jobId,
+        note: payload.note,
+        signal,
+        progress,
+      });
+      const refreshed = await deps.api.client.contents.get(content.id, init);
+      if (refreshed.status === "draft")
+        await deps.api.client.contents
+          .transition(content.id, "in_review", init)
+          .catch(() => undefined);
+      return out;
+    }
   }
 
   progress(0.12, "Marka varlıkları hazırlanıyor");
@@ -836,27 +907,35 @@ export async function executeContentRender(
       // An SVG engine slide is measured by its own lint (the HTML contract linter would only
       // report the SVG as foreign markup).
       const svgRenderer = isSvgSlideHtml(slide.html) ? svgRendererOf(renderer) : null;
-      const rendered = svgRenderer
-        ? await renderSvgForRender({
-            renderer: svgRenderer,
+      const rendered = isCodeSlideHtml(slide.html)
+        ? await renderCodeForRender({
             html: slide.html,
             width: slide.width,
             height: slide.height,
             resolver,
-            signal,
             lint: lint ?? { systemFonts: brand.manifest.systemFontFamilies },
           })
-        : await renderSingleSlideJpeg({
-            renderer,
-            html: slide.html,
-            width: slide.width,
-            height: slide.height,
-            clampInstagramWidth: clampInstagram,
-            resolver,
-            signal,
-            systemFonts: brand.manifest.systemFontFamilies,
-            ...(lint ? { lint } : {}),
-          });
+        : svgRenderer
+          ? await renderSvgForRender({
+              renderer: svgRenderer,
+              html: slide.html,
+              width: slide.width,
+              height: slide.height,
+              resolver,
+              signal,
+              lint: lint ?? { systemFonts: brand.manifest.systemFontFamilies },
+            })
+          : await renderSingleSlideJpeg({
+              renderer,
+              html: slide.html,
+              width: slide.width,
+              height: slide.height,
+              clampInstagramWidth: clampInstagram,
+              resolver,
+              signal,
+              systemFonts: brand.manifest.systemFontFamilies,
+              ...(lint ? { lint } : {}),
+            });
       for (const family of rendered.missingFonts) missingFonts.add(family);
       if (rendered.report) {
         checkReports.set(i, { report: rendered.report, jpegBytes: rendered.jpeg.byteLength });

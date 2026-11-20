@@ -27,12 +27,12 @@ import {
   type ContentGeneratePayload,
   ContentStatus,
   ContentType,
+  chatOnlyEngineOf,
   checkPlanPeriod,
   computeContentHash,
   ESTIMATE_CONFIRM_THRESHOLD,
   engineNotReadyError,
   GenerationEngine,
-  isSvgSlideHtml,
   isTerminalJobStatus,
   type Job,
   MAX_GENERATION_VARIANTS,
@@ -363,7 +363,7 @@ export const STUDIO_TOOLS: readonly StudioToolDefinition[] = [
   {
     name: "generate_post",
     description:
-      "Post tasarım üretimini başlatır (`content.generate` işi kuyruğa alınır; tasarım burada yapılmaz). Ya kabul edilmiş bir plan kalemi (`planItemId`) ya da yeni bir brief ver. Çağırmadan önce kullanıcıya hangi motorla (`engine`) ve kaç varyant (`variants`, en çok 4) üretileceğini sor; kullanıcı söylediyse ya da markanın varsayılan motoru varsa sorma. `html`, `wecra` ve `svg` motorları çalışır (`wecra`: tasarım Mac'teki Wecra tuvalinde boş belgeden Wecra'nın kendi araçlarıyla yapılır, post tuvalde düzenlenebilir; Mac uygulaması açık olmalı. `svg`: her slayt vektör olarak yazılır; hızlı, ucuz, aynı sonuç; post yalnızca sohbetten `revise_post` ile düzenlenir, tuvalde açılmaz; Reels üretmez). Her varyant ayrı bir post ve ayrı bir iştir. Sonuç iş kimliklerini döner; bitmesini `wait_jobs` ile bekle. AI görsel yuvası (`imageSlot: ai_generate`) varsa araç, tasarımla birlikte görseli de üretmek için tek bir ücretli izin kartı gösterir; izin verilirse her postun tasarımı hazır olunca yuvası ürün görseli hattıyla (ürün fotoğraflarından birebir tarif → üretim → yapay zekâ kontrolü) üretilir, görsel sohbete onay kartı olarak düşer ve yuva ancak kullanıcı onaylayınca dolar. İzin verilmezse post yine üretilir, yuva boş kalır.",
+      "Post tasarım üretimini başlatır (`content.generate` işi kuyruğa alınır; tasarım burada yapılmaz). Ya kabul edilmiş bir plan kalemi (`planItemId`) ya da yeni bir brief ver. Çağırmadan önce kullanıcıya hangi motorla (`engine`) ve kaç varyant (`variants`, en çok 4) üretileceğini sor; kullanıcı söylediyse ya da markanın varsayılan motoru varsa sorma. `html`, `wecra`, `svg` ve `code` motorları çalışır (`wecra`: tasarım Mac'teki Wecra tuvalinde boş belgeden Wecra'nın kendi araçlarıyla yapılır, post tuvalde düzenlenebilir; Mac uygulaması açık olmalı. `svg`: her slayt vektör olarak yazılır; hızlı, ucuz, aynı sonuç. `code`: ajan bütün slaytları çizen tek bir Python programı yazar (Pillow, skia, numpy, OpenCV; degrade, doku, ışık, maske, gölge gibi efektler), program Mac'te kapalı bir alanda çalışır; ilk kullanımda Python ortamı birkaç dakikada kurulur. `svg` ve `code` postları yalnızca sohbetten `revise_post` ile düzenlenir, tuvalde açılmaz; Reels üretmezler). Her varyant ayrı bir post ve ayrı bir iştir. Sonuç iş kimliklerini döner; bitmesini `wait_jobs` ile bekle. AI görsel yuvası (`imageSlot: ai_generate`) varsa araç, tasarımla birlikte görseli de üretmek için tek bir ücretli izin kartı gösterir; izin verilirse her postun tasarımı hazır olunca yuvası ürün görseli hattıyla (ürün fotoğraflarından birebir tarif → üretim → yapay zekâ kontrolü) üretilir, görsel sohbete onay kartı olarak düşer ve yuva ancak kullanıcı onaylayınca dolar. İzin verilmezse post yine üretilir, yuva boş kalır.",
     inputSchema: {
       type: "object",
       properties: {
@@ -385,7 +385,7 @@ export const STUDIO_TOOLS: readonly StudioToolDefinition[] = [
           type: "string",
           enum: ["wecra", "html", "svg", "code"],
           description:
-            "Tasarım motoru: kullanıcının seçtiği (Wecra, HTML, SVG, Kod); boşsa markanın varsayılanı, o da yoksa html. html, wecra ve svg hazır; code 'Bu motor henüz hazır değil' hatası verir.",
+            "Tasarım motoru: kullanıcının seçtiği (Wecra, HTML, SVG, Kod); boşsa markanın varsayılanı, o da yoksa html. Dört motor da hazır.",
         },
         variants: {
           type: "integer",
@@ -517,7 +517,7 @@ export const STUDIO_TOOLS: readonly StudioToolDefinition[] = [
   {
     name: "revise_post",
     description:
-      "Var olan bir postu verilen talimatla HTML'den yeniden üretir (güncel sürümden başlayan `content.generate` işi kuyruğa alınır). Bitmesini `wait_jobs` ile bekle. SVG motoruyla üretilmiş postlarda değişikliği saklı SVG'den yapar (SVG postları yalnızca böyle düzenlenir). Tuvalde (Wecra) kaydedilmiş postlarda kullanma: onlar `canvas_edit` ile düzenlenir; yalnızca kullanıcı açıkça yeni bir tasarım isterse `newDesign: true` ile.",
+      "Var olan bir postu verilen talimatla HTML'den yeniden üretir (güncel sürümden başlayan `content.generate` işi kuyruğa alınır). Bitmesini `wait_jobs` ile bekle. SVG motoruyla üretilmiş postlarda değişikliği saklı SVG'den, kod motoruyla üretilmişlerde saklı Python programından yapar (SVG ve kod postları yalnızca böyle düzenlenir). Tuvalde (Wecra) kaydedilmiş postlarda kullanma: onlar `canvas_edit` ile düzenlenir; yalnızca kullanıcı açıkça yeni bir tasarım isterse `newDesign: true` ile.",
     inputSchema: {
       type: "object",
       required: ["contentId", "instruction"],
@@ -805,7 +805,7 @@ export const STUDIO_TOOLS: readonly StudioToolDefinition[] = [
   {
     name: "fill_post_slot",
     description:
-      "Bir postun görsel yuvasını (`data-layer`) sohbetteki @takma ad veya `assetId` ile doldurur ve yeni sürüm oluşturup JPEG olarak render eder (`content.render`). SVG motoruyla üretilmiş postlarda değişikliği saklı SVG'den yapar (SVG postları yalnızca böyle düzenlenir). Tuvalde (Wecra) kaydedilmiş postlarda kullanma: `canvas_edit` ile `place_image`.",
+      "Bir postun görsel yuvasını (`data-layer`) sohbetteki @takma ad veya `assetId` ile doldurur ve yeni sürüm oluşturup JPEG olarak render eder (`content.render`). SVG motoruyla üretilmiş postlarda değişikliği saklı SVG'den yapar; kod motoruyla üretilmişlerde programı görsel o yuvaya atanmış olarak yeniden çalıştırır (`studio_brand.slot`). Tuvalde (Wecra) kaydedilmiş postlarda kullanma: `canvas_edit` ile `place_image`.",
     inputSchema: {
       type: "object",
       required: ["contentId"],
@@ -3032,10 +3032,11 @@ export class StudioToolExecutor {
       const source = origin.kind === "none" ? null : origin.sourceVersion;
       baseVersion = source && source !== current ? source : undefined;
     }
-    // An SVG post (Faz 3) is revised by the SVG engine from its stored SVG.
-    const svg = !!shown?.slides.length && shown.slides.every((s) => isSvgSlideHtml(s.html));
+    // An SVG post (Faz 3) is revised by the SVG engine from its stored SVG, a code post (Faz 4)
+    // by the code engine from its stored program.
+    const chatOnly = chatOnlyEngineOf(shown?.slides);
     const payload: ContentGeneratePayload = {
-      ...(svg ? { engine: "svg" as const } : {}),
+      ...(chatOnly ? { engine: chatOnly } : {}),
       brandId: content.brandId,
       contentId: content.id,
       title: content.title,

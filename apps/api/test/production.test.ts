@@ -242,6 +242,46 @@ describe("approval requests", () => {
     });
   });
 
+  it("approving a code post's picture re-runs that version's program with the slot filled", async () => {
+    const brand = await createBrand();
+    const post = await createContent(brand.id);
+    const record = JSON.stringify({
+      texts: [],
+      images: [],
+      slots: [{ id: "ai-image", state: "empty", ratio: "4:3", label: "AI görsel" }],
+      fonts: [],
+    })
+      .replace(/&/g, "&amp;")
+      .replace(/"/g, "&quot;");
+    const v = await addVersion(post.id, {
+      origin: "generated",
+      slides: [
+        {
+          html: `<!doctype html>\n<html lang="tr" data-studio-engine="code">\n<head>\n<meta charset="utf-8">\n<meta name="studio:code-slide" content="1">\n<meta name="studio:code-record" content="${record}">\n</head>\n<body>\n<img src="/media/x.jpg" width="1080" height="1350" alt="">\n</body>\n</html>\n`,
+          width: 1080,
+          height: 1350,
+        },
+      ],
+    });
+    const picture = await upload(brand.id);
+    const req = await createApproval({
+      brandId: brand.id,
+      kind: "product_image",
+      contentId: post.id,
+      slotId: "ai-image",
+      assetIds: [picture.id],
+    });
+    const result = ApprovalActionResult.parse(
+      (await api("POST", `/api/approvals/${req.id}/approve`, {})).body,
+    );
+    expect(result.job).toMatchObject({ type: "content.render", contentId: post.id });
+    expect(result.job?.payload).toMatchObject({
+      version: v.version,
+      slotAssignments: { "ai-image": picture.id },
+      note: "Onaylanan görsel kod motorunun yuvasına yerleştirildi",
+    });
+  });
+
   it("approving a product photo upgrade replaces the photo and trashes the old one", async () => {
     const brand = await createBrand();
     const [front, back, better] = [
@@ -418,19 +458,25 @@ describe("brand engine and picture style", () => {
     );
   });
 
-  it("refuses a plan generation with an engine that is not ready", async () => {
+  it("generates a plan with any engine, the code engine too (Faz 4)", async () => {
     const brand = await createBrand();
     const planId = await seedPlan(brand.id, [{ title: "Hasat" }]);
     const accepted = await api("POST", `/api/plans/${planId}/accept`, { revision: 1 });
     expect(accepted.status, JSON.stringify(accepted.body)).toBe(200);
     Plan.parse(accepted.body);
-    const refused = expectError(
-      await api("POST", `/api/plans/${planId}/generate`, { engine: "code" }),
+    const unknown = expectError(
+      await api("POST", `/api/plans/${planId}/generate`, { engine: "pdf" }),
       400,
       "validation_error",
     );
-    expect(refused.message).toContain("Bu motor henüz hazır değil");
-    const ok = await api("POST", `/api/plans/${planId}/generate`, { engine: "wecra" });
+    expect(unknown.message).toBeTruthy();
+    const code = await api("POST", `/api/plans/${planId}/generate`, { engine: "code" });
+    expect(code.status, JSON.stringify(code.body)).toBe(200);
+    expect((code.body as { jobs: Job[] }).jobs[0]?.payload).toMatchObject({ engine: "code" });
+    // Another plan with Wecra: the engine goes on its items' jobs too.
+    const other = await seedPlan(brand.id, [{ title: "Kış" }]);
+    expect((await api("POST", `/api/plans/${other}/accept`, { revision: 1 })).status).toBe(200);
+    const ok = await api("POST", `/api/plans/${other}/generate`, { engine: "wecra" });
     expect(ok.status, JSON.stringify(ok.body)).toBe(200);
     const jobs = (ok.body as { jobs: Job[] }).jobs;
     expect(jobs[0]?.payload).toMatchObject({ engine: "wecra" });

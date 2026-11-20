@@ -49,8 +49,8 @@ describe("continuing an unfinished canvas design from the chat", () => {
     expect(rule).toContain("create_nodes");
     expect(rule).toContain("revise_post");
     expect(rule.indexOf("postu yeniden üretme")).toBeGreaterThan(0);
-    expect(CHAT_SYSTEM_PROMPT).toContain("HTML, Wecra ve SVG motorları çalışır");
-    expect(CHAT_SYSTEM_PROMPT).toContain("SVG postu tuvalde açılmaz");
+    expect(CHAT_SYSTEM_PROMPT).toContain("Dört motor da çalışır");
+    expect(CHAT_SYSTEM_PROMPT).toContain("SVG ve Kod postları tuvalde açılmaz");
     const generate = STUDIO_TOOLS.find((t) => t.name === "generate_post");
     expect(generate?.description).toContain("`wecra`");
     const edit = CANVAS_TOOLS.find((t) => t.name === "canvas_edit");

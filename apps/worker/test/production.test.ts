@@ -122,17 +122,21 @@ describe("generate_post: engine, variants and products", () => {
     expect(state.parts.filter((p) => p.type === "content_ref")).toHaveLength(2);
   });
 
-  it("fails clearly for an engine that is not ready, also when it is the brand's default", async () => {
+  it("passes the chosen engine (the code engine too) or the brand's default to every variant", async () => {
     const asked = executor();
-    const res = await asked.ex.execute("generate_post", { brief: "Hasat", engine: "code" });
-    expect(res.isError).toBe(true);
-    expect(String(res.data.error)).toContain("Bu motor henüz hazır değil (Kod)");
-    expect(asked.state.jobs).toHaveLength(0);
+    const res = await asked.ex.execute("generate_post", {
+      brief: "Hasat",
+      engine: "code",
+      variants: 3,
+    });
+    expect(res.isError).toBe(false);
+    expect(asked.state.jobs.map((j) => j.payload.engine)).toEqual(["code", "code", "code"]);
+    expect(asked.state.jobs.map((j) => j.payload.variantIndex)).toEqual([1, 2, 3]);
 
     const byBrand = executor({ brands: [fakeBrand({ id: "brand_1", defaultEngine: "code" })] });
     const res2 = await byBrand.ex.execute("generate_post", { brief: "Hasat" });
-    expect(res2.isError).toBe(true);
-    expect(String(res2.data.error)).toContain("Bu motor henüz hazır değil (Kod)");
+    expect(res2.isError).toBe(false);
+    expect(byBrand.state.jobs[0]?.payload.engine).toBe("code");
 
     // Wecra runs (Faz 2): the brand's default goes on every variant's job.
     const wecra = executor({ brands: [fakeBrand({ id: "brand_1", defaultEngine: "wecra" })] });

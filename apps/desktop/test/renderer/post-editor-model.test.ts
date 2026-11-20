@@ -8,6 +8,7 @@ import { parseSlide } from "@studio/design-kit/document";
 import { describe, expect, it } from "vitest";
 import {
   canvasNote,
+  codeNote,
   postReference,
   scopedInstruction,
   svgNote,
@@ -241,6 +242,24 @@ describe("the AI on a version saved from the canvas", () => {
     );
     expect(svg).toContain(svgNote(4));
     expect(svg).toContain("revise_post");
+    // A code engine version is revised from its Python program, from the chat (Faz 4).
+    const code = postReference(
+      { id: "p1", title: "Post" },
+      {
+        version: 5,
+        slides: [
+          {
+            html: '<!doctype html>\n<html lang="tr" data-studio-engine="code"><body><img src="/media/a.jpg"></body></html>',
+            width: 1080,
+            height: 1350,
+            renderedAssetId: "a",
+          },
+        ],
+      },
+    );
+    expect(code).toContain(codeNote(5));
+    expect(code).toContain("Python programı");
+    expect(code).not.toContain(svgNote(5));
   });
 });
 
