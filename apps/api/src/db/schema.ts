@@ -1111,6 +1111,8 @@ export const planItems = sqliteTable(
     productIds: text("product_ids", { mode: "json" }).$type<string[]>(),
     /** The products' side the AI picture shows (0025); null = any. */
     imageView: text("image_view"),
+    /** false: the user makes the post by hand; generation skips it by default (0026). */
+    generate: integer("generate", { mode: "boolean" }).notNull().default(true),
     status: text("status", { enum: ENUMS.planItemStatus }).notNull().default("planned"),
     contentId: text("content_id").references(() => contents.id, { onDelete: "set null" }),
     /** Latest content.generate job; its live status is read through a join. */

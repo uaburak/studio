@@ -199,9 +199,10 @@ export const planRoutes = createRouter()
         "Creates one `content.generate` job per item (payload: `ContentGeneratePayload`). Without " +
         "`itemIds`: only the items that still need a design (no successful generation yet, or " +
         "the last one failed or was stopped), never a post that is generating, in the trash, " +
-        "edited, approved, scheduled or published — those come back in `skipped`. Named items " +
+        "edited or uploaded, approved, scheduled or published, nor an item the user makes by " +
+        "hand (`generate: false`) — those come back in `skipped`. Named items " +
         "must be accepted, still have their post and not be generating; one that already has a " +
-        "design needs `force`, an edited or approved one also `overwriteEdits` (the user " +
+        "design or is made by hand needs `force`, an edited or approved one also `overwriteEdits` (the user " +
         "confirmed); published posts are never regenerated (409 with one issue per item).",
       request: { params: IdParams, body: jsonBody(PlanGenerate) },
       responses: {

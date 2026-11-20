@@ -4,6 +4,7 @@
 import {
   type Content,
   type ContentType,
+  isHandMadeItem,
   isTerminalJobStatus,
   type Plan,
   type PlanGenerateSkipReason,
@@ -23,6 +24,8 @@ export type ItemState =
   | "skipped"
   /** Accepted, no design yet, nothing running. */
   | "pending"
+  /** Accepted, made by the user (`generate: false`), nothing uploaded yet. */
+  | "manual"
   | "generating"
   | "generated"
   /** The last generation failed (or was stopped) and there is no design. */
@@ -37,6 +40,7 @@ export const ITEM_STATE_LABEL: Record<ItemState, string> = {
   planned: "Planlandı",
   skipped: "Atlandı",
   pending: "Bekliyor",
+  manual: "Elle yüklenecek",
   generating: "Üretiliyor",
   generated: "Üretildi",
   failed: "Başarısız",
@@ -50,6 +54,7 @@ export const ITEM_STATE_TONE: Record<ItemState, TagTone> = {
   planned: "neutral",
   skipped: "neutral",
   pending: "neutral",
+  manual: "neutral",
   generating: "accent",
   generated: "warning",
   failed: "danger",
@@ -83,7 +88,22 @@ export function itemState(item: PlanItem, content: Content | null | undefined): 
   if (content?.currentVersion) return "generated";
   if (gen && (gen.status === "failed" || gen.status === "cancelled")) return "failed";
   if (!content && gen?.status === "succeeded") return "generated";
-  return "pending";
+  return isHandMadeItem(item) ? "manual" : "pending";
+}
+
+/** Items Studio designs (not the ones the user makes by hand). */
+export function designedItems<T extends Pick<PlanItem, "generate">>(items: readonly T[]): T[] {
+  return items.filter((i) => !isHandMadeItem(i));
+}
+
+/**
+ * Whether accepting the plan should start the design by default. A plan whose every post the
+ * user makes by hand defaults to accepting only (generation would have nothing to do); any other
+ * plan defaults to "Onayla ve üret", the usual next step, and "Yalnızca onayla (üretme)" stays
+ * one click away. Generation itself never touches hand-made items or posts that have a version.
+ */
+export function acceptGeneratesByDefault(items: readonly Pick<PlanItem, "generate">[]): boolean {
+  return designedItems(items).length > 0;
 }
 
 /** The item's failure in Turkish (null unless it failed). */
@@ -142,7 +162,7 @@ export function planCounts(
     if (state === "pending") out.pending += 1;
     else if (state === "generating") out.generating += 1;
     else if (state === "failed") out.failed += 1;
-    else if (state !== "planned" && state !== "deleted") out.done += 1;
+    else if (state !== "planned" && state !== "deleted" && state !== "manual") out.done += 1;
   }
   return out;
 }
@@ -210,6 +230,7 @@ export const SKIP_REASON_LABEL: Record<PlanGenerateSkipReason, string> = {
   approved: "onaylı ya da zamanlanmış",
   published: "yayında",
   no_content: "postu silinmiş",
+  manual: "elle yüklenecek",
 };
 
 /** "3 post üretime alındı; 2 post atlandı (zaten üretilmiş)." */
@@ -239,6 +260,8 @@ export interface ItemDraft {
   platforms: Platform[];
   /** A brand template the post is made from (N9; null: designed anew). */
   templateId?: string | null;
+  /** The user makes the post (image and caption) by hand; Studio does not design it. */
+  handMade?: boolean;
 }
 
 export function draftOf(item: PlanItem): ItemDraft {
@@ -250,6 +273,7 @@ export function draftOf(item: PlanItem): ItemDraft {
     hook: item.hook ?? "",
     platforms: [...item.platforms],
     templateId: item.templateId ?? null,
+    handMade: isHandMadeItem(item),
   };
 }
 
@@ -298,5 +322,6 @@ export function draftPatch(item: PlanItem, draft: ItemDraft): PlanItemPatch {
   if (!same) patch.platforms = draft.platforms;
   if ((draft.templateId ?? null) !== (item.templateId ?? null))
     patch.templateId = draft.templateId ?? null;
+  if ((draft.handMade ?? false) !== isHandMadeItem(item)) patch.generate = !draft.handMade;
   return patch as PlanItemPatch;
 }

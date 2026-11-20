@@ -165,6 +165,7 @@ describe("A2: Onayla ve üret when the generation cannot start", () => {
     expect(generationNotStarted(started)).toBe(false);
     const stub = {
       acceptAndGenerate: vi.fn(),
+      acceptPlan: vi.fn(),
       generatePlan: vi.fn(),
       rejectPlan: vi.fn(),
       decideConsent: vi.fn(),
@@ -172,6 +173,82 @@ describe("A2: Onayla ve üret when the generation cannot start", () => {
     };
     render(<PlanProposalCard plan={started} busy={false} controller={stub} onEdit={() => {}} />);
     expect(screen.getByText(/Postlar üretime alındı/)).toBeInTheDocument();
+  });
+
+  const cardStub = () => ({
+    acceptAndGenerate: vi.fn(async () => undefined),
+    acceptPlan: vi.fn(async () => undefined),
+    generatePlan: vi.fn(async () => undefined),
+    rejectPlan: vi.fn(async () => undefined),
+    decideConsent: vi.fn(async () => undefined),
+    answer: vi.fn(async () => undefined),
+  });
+  const handMade = (p: Plan, generate = false): Plan => ({
+    ...p,
+    items: p.items.map((i) => ({ ...i, generate })),
+  });
+
+  it("offers accepting without generation next to Onayla ve üret", async () => {
+    const proposed = {
+      ...plan([{ contentId: "x", date: "2026-12-01" }]),
+      status: "proposed",
+    } as Plan;
+    const stub = cardStub();
+    render(<PlanProposalCard plan={proposed} busy={false} controller={stub} onEdit={() => {}} />);
+    expect(screen.getByRole("button", { name: "Onayla ve üret" })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Yalnızca onayla (üretme)" }));
+    expect(stub.acceptPlan).toHaveBeenCalledWith(proposed);
+    expect(stub.acceptAndGenerate).not.toHaveBeenCalled();
+  });
+
+  it("a plan of hand-made posts is accepted without generation (no Onayla ve üret)", async () => {
+    const proposed = handMade({
+      ...plan([
+        { contentId: "x", date: "2026-12-01" },
+        { contentId: "y", date: "2026-12-02" },
+      ]),
+      status: "proposed",
+    } as Plan);
+    const stub = cardStub();
+    render(<PlanProposalCard plan={proposed} busy={false} controller={stub} onEdit={() => {}} />);
+    expect(screen.queryByRole("button", { name: "Onayla ve üret" })).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: "Yalnızca onayla (üretme)" }));
+    expect(stub.acceptPlan).toHaveBeenCalledOnce();
+    expect(stub.acceptAndGenerate).not.toHaveBeenCalled();
+  });
+
+  it("acceptPlan accepts and never asks for generation", async () => {
+    const accept = vi.fn(async () => ({}));
+    const generate = vi.fn(async () => ({}));
+    const client = {
+      plans: { accept, generate, reject: vi.fn() },
+      conversations: { watch: vi.fn(() => ({ close: vi.fn() })) },
+    } as unknown as ApiClient;
+    const controller = new ConversationController("c1", client, deps);
+    const proposed = { ...plan([{ contentId: "x", date: "2026-12-01" }]), status: "proposed" };
+    await controller.acceptPlan(proposed as Plan);
+    expect(accept).toHaveBeenCalledWith("pl1", { revision: 1 });
+    expect(generate).not.toHaveBeenCalled();
+    expect(controller.getSnapshot().planErrors.pl1).toBeUndefined();
+  });
+
+  it("an accepted plan without generation offers Üret; a hand-made one does not", async () => {
+    const accepted = plan([{ contentId: "x", date: "2026-12-01" }]);
+    const stub = cardStub();
+    const view = render(
+      <PlanProposalCard plan={accepted} busy={false} controller={stub} onEdit={() => {}} />,
+    );
+    expect(screen.getByText(/üretim başlamadı/)).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: "Üret" }));
+    expect(stub.generatePlan).toHaveBeenCalledWith(accepted);
+    view.unmount();
+
+    const manual = handMade(accepted);
+    expect(generationNotStarted(manual)).toBe(false);
+    render(<PlanProposalCard plan={manual} busy={false} controller={stub} onEdit={() => {}} />);
+    expect(screen.getByText(/elle yüklenecek/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Üret" })).toBeNull();
   });
 
   it("transcript blocks carry the plan's failure", () => {
@@ -413,6 +490,7 @@ describe("question card (A10)", () => {
     const answer = vi.fn(async () => undefined);
     const actions = {
       acceptAndGenerate: vi.fn(),
+      acceptPlan: vi.fn(),
       generatePlan: vi.fn(),
       rejectPlan: vi.fn(),
       decideConsent: vi.fn(),

@@ -356,6 +356,15 @@ public actor SampleBackend: ConversationService, StudioDataService {
     }
 
     public func acceptAndGenerate(_ plan: Plan, model: AgentModel?, effort: AgentEffort?) async throws -> Plan {
+        try accept(plan, generate: true)
+    }
+
+    public func acceptPlan(_ plan: Plan) async throws -> Plan {
+        try accept(plan, generate: false)
+    }
+
+    /// Draft posts for the plan's items; with `generate` a queued job for each designed one.
+    private func accept(_ plan: Plan, generate: Bool) throws -> Plan {
         guard let index = data.plans.firstIndex(where: { $0.id == plan.id }) else {
             throw StudioAPIError.server(status: 404, code: .notFound, message: "plan not found", issues: [])
         }
@@ -374,10 +383,11 @@ public actor SampleBackend: ConversationService, StudioDataService {
                 id: nextId("post"), brandId: stored.brandId, type: item.contentType, title: item.title, brief: item.brief,
                 status: .draft, targetPlatforms: item.platforms, caption: "", currentVersion: nil, createdAt: now, updatedAt: now)
             data.contents.append(content)
-            let job = Job(id: nextId("job"), type: .contentGenerate, status: .queued, payload: ["title": .string(item.title)], brandId: stored.brandId, contentId: content.id, createdAt: now, updatedAt: now)
-            data.jobs.insert(job, at: 0)
             stored.items[i].status = .accepted
             stored.items[i].contentId = content.id
+            guard generate, !item.isHandMade else { continue }
+            let job = Job(id: nextId("job"), type: .contentGenerate, status: .queued, payload: ["title": .string(item.title)], brandId: stored.brandId, contentId: content.id, createdAt: now, updatedAt: now)
+            data.jobs.insert(job, at: 0)
             stored.items[i].generation = PlanItemGeneration(jobId: job.id, status: .queued)
         }
         data.plans[index] = stored

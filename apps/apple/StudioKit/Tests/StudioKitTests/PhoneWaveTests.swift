@@ -246,6 +246,24 @@ struct PhoneWaveTests {
         #expect(summary.hasPrefix("2 post atlandı: \(items[0]["title"] as! String) (tasarımı hazır)"))
     }
 
+    @Test func handMadeItemsAreAcceptedWithoutGeneration() throws {
+        let plans = try JSONSerialization.jsonObject(with: Fixture.data("plan-list")) as! [String: Any]
+        var plan = (plans["items"] as! [[String: Any]])[0]
+        var items = plan["items"] as! [[String: Any]]
+        // Older servers send no `generate`: every item is designed.
+        let old = try StudioJSON.decoder().decode(Plan.self, from: JSONSerialization.data(withJSONObject: plan))
+        #expect(old.items.allSatisfy { !$0.isHandMade })
+        #expect(old.acceptGeneratesByDefault)
+        for i in items.indices { items[i]["generate"] = false }
+        plan["items"] = items
+        let manual = try StudioJSON.decoder().decode(Plan.self, from: JSONSerialization.data(withJSONObject: plan))
+        #expect(manual.items.allSatisfy { $0.isHandMade })
+        #expect(manual.designedItems.isEmpty)
+        #expect(!manual.acceptGeneratesByDefault)
+        #expect(PlanGenerateSkipReason(rawValue: "manual") == .manual)
+        #expect(PlanGenerateSkipReason.manual.label == "elle yüklenecek")
+    }
+
     // MARK: "Üretilemedi"
 
     private func job(_ status: JobStatus, type: JobType = .contentGenerate, error: String? = nil, at: Date) -> Job {

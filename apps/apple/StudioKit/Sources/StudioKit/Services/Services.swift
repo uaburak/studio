@@ -35,6 +35,9 @@ public protocol ConversationService: PostChatSender {
     /// Accept the plan at the revision the user saw, then queue generation for its items
     /// with the given model / effort (nil = worker default).
     func acceptAndGenerate(_ plan: Plan, model: AgentModel?, effort: AgentEffort?) async throws -> Plan
+    /// "Yalnızca onayla (üretme)": accept at the revision the user saw; draft posts are made,
+    /// nothing is generated.
+    func acceptPlan(_ plan: Plan) async throws -> Plan
     func rejectPlan(_ planId: EntityID, reason: String?) async throws -> Plan
     /// Queue generation for an already accepted plan (items without a running job).
     func generatePlan(_ planId: EntityID, model: AgentModel?, effort: AgentEffort?) async throws -> Plan
@@ -496,6 +499,10 @@ public struct RemoteConversationService: ConversationService {
     public func acceptAndGenerateResult(_ plan: Plan, model: AgentModel?, effort: AgentEffort?) async throws -> PlanGenerateResult {
         let accepted = try await client.acceptPlan(plan.id, PlanAccept(revision: plan.revision))
         return try await client.generatePlan(accepted.id, PlanGenerate(model: model, effort: effort))
+    }
+
+    public func acceptPlan(_ plan: Plan) async throws -> Plan {
+        try await client.acceptPlan(plan.id, PlanAccept(revision: plan.revision))
     }
 
     public func generatePlanResult(_ planId: EntityID, model: AgentModel?, effort: AgentEffort?) async throws -> PlanGenerateResult {

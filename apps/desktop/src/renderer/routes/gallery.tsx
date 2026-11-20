@@ -290,6 +290,7 @@ const PRESENCE: WorkerPresence = {
 
 const stub: CardActions = {
   acceptAndGenerate: async () => undefined,
+  acceptPlan: async () => undefined,
   generatePlan: async () => undefined,
   rejectPlan: async () => undefined,
   decideConsent: async () => undefined,

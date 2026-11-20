@@ -1,0 +1,1 @@
+ALTER TABLE `plan_items` ADD `generate` integer DEFAULT true NOT NULL;

@@ -191,6 +191,21 @@ struct SampleBackendTests {
         }
     }
 
+    @Test func acceptingAPlanAloneQueuesNothing() async throws {
+        let backend = SampleBackend(uploadDelay: .zero)
+        let stream = backend.observe(SampleData.kasimConversation)
+        var iterator = stream.makeAsyncIterator()
+        _ = await iterator.next()
+        guard case .conversation(let state)? = await iterator.next(), let open = state.openPlan else {
+            Issue.record("open plan expected")
+            return
+        }
+        let accepted = try await backend.acceptPlan(open)
+        #expect(accepted.status == .accepted)
+        #expect(accepted.items.allSatisfy { $0.status == .accepted && $0.contentId != nil })
+        #expect(accepted.items.allSatisfy { $0.generation == nil })
+    }
+
     @Test func approvingNeedsTheCurrentHash() async throws {
         let backend = SampleBackend(uploadDelay: .zero)
         await #expect(throws: StudioAPIError.self) { _ = try await backend.approve(contentId: "post-02a", hash: "nope") }

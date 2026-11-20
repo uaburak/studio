@@ -13,7 +13,11 @@ import { useEffect, useState } from "react";
 import { SimilarMark } from "../../features/calendar/special-day-views.tsx";
 import { CONTENT_TYPE_LABEL } from "../../features/posts/board.ts";
 import { EstimateDialog, needsEstimate } from "../../features/posts/estimate.tsx";
-import { imageSlotsOf } from "../../features/posts/plan-model.ts";
+import {
+  acceptGeneratesByDefault,
+  designedItems,
+  imageSlotsOf,
+} from "../../features/posts/plan-model.ts";
 import { openPlanPage } from "../../features/posts/store.ts";
 import { formatDuration, shortDate } from "../../lib/format.ts";
 import { type StepGroup, type WorkingItem, workingLabel } from "../../lib/transcript.ts";
@@ -22,7 +26,7 @@ import type { ConversationController } from "../../state/conversation.ts";
 /** What the cards need from a conversation (the gallery passes a stub). */
 export type CardActions = Pick<
   ConversationController,
-  "acceptAndGenerate" | "generatePlan" | "rejectPlan" | "decideConsent" | "answer"
+  "acceptAndGenerate" | "acceptPlan" | "generatePlan" | "rejectPlan" | "decideConsent" | "answer"
 >;
 
 import { Button, cn, Spinner, TagPill, TextField, WorkingDots } from "../ui/controls.tsx";
@@ -203,14 +207,20 @@ const PLAN_STATUS: Record<
   superseded: { label: "Yenisi var", tone: "neutral" },
 };
 
-/** A content plan the agent proposed: items, then "Onayla ve üret" / "Reddet". */
 /**
- * An accepted plan whose accepted items never got a generation request (the generate step
- * failed after the accept, or the app closed in between).
+ * An accepted plan whose accepted items Studio designs never got a generation request: it was
+ * accepted without generation ("Yalnızca onayla"), or the generate step failed after the accept,
+ * or the app closed in between. Hand-made items do not count.
  */
 export function generationNotStarted(plan: Plan): boolean {
-  const items = plan.items.filter((i) => i.status === "accepted");
+  const items = designedItems(plan.items.filter((i) => i.status === "accepted"));
   return plan.status === "accepted" && items.length > 0 && items.every((i) => !i.generation);
+}
+
+/** An accepted plan whose every post the user makes by hand: nothing to generate. */
+function handMadeOnly(plan: Plan): boolean {
+  const items = plan.items.filter((i) => i.status === "accepted");
+  return items.length > 0 && designedItems(items).length === 0;
 }
 
 export function PlanProposalCard({
@@ -241,6 +251,13 @@ export function PlanProposalCard({
   const shown = expanded ? items : items.slice(0, 6);
   const status = PLAN_STATUS[plan.status];
   const open = plan.status === "draft" || plan.status === "proposed";
+  // Only the posts Studio designs are generated; a plan of hand-made posts defaults to
+  // accepting only (see acceptGeneratesByDefault).
+  const designed = designedItems(items);
+  const generatesByDefault = acceptGeneratesByDefault(items);
+  const acceptAndGenerate = () =>
+    needsEstimate(designed.length) ? setEstimating(true) : void controller.acceptAndGenerate(plan);
+  const acceptOnly = () => void controller.acceptPlan(plan);
   return (
     <div className="my-3.5 rounded-[12px] border border-hairline">
       <div className="flex items-start gap-3 px-4 pt-3 pb-2">
@@ -287,17 +304,21 @@ export function PlanProposalCard({
         <div className="flex items-center gap-2 border-t border-hairline px-3 py-2.5">
           {open ? (
             <>
-              <Button
-                variant="primary"
-                disabled={busy}
-                onClick={() =>
-                  needsEstimate(items.length)
-                    ? setEstimating(true)
-                    : void controller.acceptAndGenerate(plan)
-                }
-              >
-                {busy ? "Gönderiliyor…" : "Onayla ve üret"}
-              </Button>
+              {generatesByDefault ? (
+                <>
+                  <Button variant="primary" disabled={busy} onClick={acceptAndGenerate}>
+                    {busy ? "Gönderiliyor…" : "Onayla ve üret"}
+                  </Button>
+                  <Button variant="secondary" disabled={busy} onClick={acceptOnly}>
+                    Yalnızca onayla (üretme)
+                  </Button>
+                </>
+              ) : (
+                // Every post is made by hand: there is nothing to generate.
+                <Button variant="primary" disabled={busy} onClick={acceptOnly}>
+                  {busy ? "Gönderiliyor…" : "Yalnızca onayla (üretme)"}
+                </Button>
+              )}
               <Button
                 variant="ghost"
                 disabled={busy}
@@ -319,12 +340,10 @@ export function PlanProposalCard({
                 Reddet
               </Button>
             </>
-          ) : generateError || (!busy && generationNotStarted(plan)) ? (
+          ) : generateError ? (
             <>
               <span className="min-w-0 flex-1 px-1 text-footnote text-danger" role="alert">
-                {generateError
-                  ? `Plan onaylandı ama üretim başlatılamadı: ${generateError}`
-                  : "Plan onaylandı ama üretim başlamadı."}
+                Plan onaylandı ama üretim başlatılamadı: {generateError}
               </span>
               <Button
                 variant="secondary"
@@ -332,6 +351,27 @@ export function PlanProposalCard({
                 onClick={() => void controller.generatePlan(plan)}
               >
                 {busy ? "Gönderiliyor…" : "Yeniden dene"}
+              </Button>
+            </>
+          ) : !busy && handMadeOnly(plan) ? (
+            <span className="px-1 text-footnote text-fg-2">
+              Plan onaylandı; taslak postlar açıldı, içerikleri elle yüklenecek.
+            </span>
+          ) : !busy && generationNotStarted(plan) ? (
+            <>
+              <span className="min-w-0 flex-1 px-1 text-footnote text-fg-2">
+                Plan onaylandı; taslak postlar açıldı, üretim başlamadı.
+              </span>
+              <Button
+                variant="secondary"
+                disabled={busy}
+                onClick={() =>
+                  needsEstimate(designed.length)
+                    ? setEstimating(true)
+                    : void controller.generatePlan(plan)
+                }
+              >
+                Üret
               </Button>
             </>
           ) : busy ? (
@@ -346,14 +386,19 @@ export function PlanProposalCard({
       {/* Mounted only when asked: the card also renders without the API (tests, previews). */}
       {estimating && (
         <EstimateDialog
-          query={{ count: items.length, brandId: plan.brandId, imageSlots: imageSlotsOf(items) }}
+          query={{
+            count: designed.length,
+            brandId: plan.brandId,
+            imageSlots: imageSlotsOf(designed),
+          }}
           title="Üretim başlasın mı?"
-          what={`${items.length} post üretilecek.`}
-          confirmLabel="Onayla ve üret"
+          what={`${designed.length} post üretilecek.`}
+          confirmLabel={open ? "Onayla ve üret" : "Üret"}
           onClose={() => setEstimating(false)}
           onConfirm={async () => {
             setEstimating(false);
-            await controller.acceptAndGenerate(plan);
+            if (open) await controller.acceptAndGenerate(plan);
+            else await controller.generatePlan(plan);
           }}
         />
       )}

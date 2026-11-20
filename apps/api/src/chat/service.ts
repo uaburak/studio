@@ -838,6 +838,7 @@ function newItemRow(planId: string, position: number, input: ItemInput, now: Dat
     templateId: input.templateId ?? null,
     productIds: input.productIds?.length ? input.productIds : null,
     imageView: input.imageView ?? null,
+    generate: input.generate ?? true,
     status: "planned",
     contentId: null,
     generationJobId: null,
@@ -865,6 +866,7 @@ function itemFields(
     templateId?: string | null | undefined;
     productIds?: readonly string[] | null | undefined;
     imageView?: string | null | undefined;
+    generate?: boolean | undefined;
   },
 ) {
   return {
@@ -880,6 +882,7 @@ function itemFields(
     templateId: i.templateId ?? null,
     productIds: i.productIds?.length ? [...i.productIds] : null,
     imageView: i.imageView ?? null,
+    generate: i.generate ?? true,
   };
 }
 
@@ -1733,6 +1736,8 @@ async function updatePlan(
         // An edit that does not name the products (an older client) keeps them.
         productIds: item.productIds === undefined ? existing.productIds : fields.productIds,
         imageView: item.imageView === undefined ? existing.imageView : fields.imageView,
+        // An edit that does not say keeps whether the user makes the post by hand.
+        generate: item.generate ?? existing.generate,
         position,
         updatedAt: now,
       };
@@ -1991,6 +1996,11 @@ async function generatePlan(
           path,
           message: `${name} zaten üretilmiş; yeniden üretmek için onay gerekiyor (force).`,
         });
+      } else if (!item.generate && !input.force) {
+        issues.push({
+          path,
+          message: `${name} elle hazırlanacak bir post; üretmek için onay gerekiyor (force).`,
+        });
       } else if ((v.edited || v.approved) && !input.overwriteEdits) {
         issues.push({
           path,
@@ -2008,9 +2018,18 @@ async function generatePlan(
     for (const item of items) {
       if (item.status !== "accepted") continue;
       const v = verdictOf(item);
+      // A hand-made item is never designed by default, whatever its post looks like (U2).
       const reason: PlanGenerateSkip["reason"] | null =
         v.blocked ??
-        (v.approved ? "approved" : v.edited ? "edited" : v.generated ? "generated" : null);
+        (v.approved
+          ? "approved"
+          : v.edited
+            ? "edited"
+            : v.generated
+              ? "generated"
+              : !item.generate
+                ? "manual"
+                : null);
       if (reason) skipped.push({ itemId: item.id, reason });
       else targets.push(item);
     }
@@ -2269,6 +2288,7 @@ async function updatePlanItem(
       ? { productIds: input.productIds.length ? input.productIds : null }
       : {}),
     ...(input.imageView !== undefined ? { imageView: input.imageView } : {}),
+    ...(input.generate !== undefined ? { generate: input.generate } : {}),
   };
   const nextItem: PlanItemRow = { ...item, ...fields, updatedAt: now };
   if (fields.productIds) await assertPlanProducts(db, plan.brandId, [nextItem]);

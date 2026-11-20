@@ -40,6 +40,8 @@ import {
 } from "../../src/renderer/features/posts/estimate.tsx";
 import { failureText } from "../../src/renderer/features/posts/failure.ts";
 import {
+  acceptGeneratesByDefault,
+  designedItems,
   draftError,
   draftOf,
   draftPatch,
@@ -391,6 +393,36 @@ describe("plan page (N2)", () => {
     });
     expect(planCounts(p, of)).toEqual({ total: 3, pending: 1, generating: 0, failed: 1, done: 1 });
     expect(failedItemIds(p, of)).toEqual(["b"]);
+  });
+
+  it("keeps hand-made items out of generation and defaults their plan to accepting only", () => {
+    const manual = item({ id: "m", contentId: "c1", generate: false });
+    expect(itemState(manual, content({ id: "c1" }))).toBe("manual");
+    expect(itemAction("manual")).toBeNull();
+    // Once the user uploaded the post it is a post like any other.
+    expect(itemState(manual, { ...withVersion, id: "c1" })).toBe("generated");
+    expect(planCounts(plan([manual]), contentOf({ c1: content({ id: "c1" }) }))).toEqual({
+      total: 1,
+      pending: 0,
+      generating: 0,
+      failed: 0,
+      done: 0,
+    });
+    expect(acceptGeneratesByDefault([manual, { ...manual, id: "n" }])).toBe(false);
+    expect(acceptGeneratesByDefault([manual, item()])).toBe(true);
+    expect(acceptGeneratesByDefault([item()])).toBe(true);
+    expect(designedItems([manual, item({ id: "d" })]).map((i) => i.id)).toEqual(["d"]);
+    expect(generateSummary(0, [{ reason: "manual" }])).toBe(
+      "Üretilecek post yok; 1 post atlandı (elle yüklenecek).",
+    );
+    // The form flips the flag; an untouched form sends nothing.
+    expect(draftPatch(manual, draftOf(manual))).toEqual({});
+    expect(draftPatch(manual, { ...draftOf(manual), handMade: false })).toEqual({
+      generate: true,
+    });
+    expect(draftPatch(item(), { ...draftOf(item()), handMade: true })).toEqual({
+      generate: false,
+    });
   });
 
   it("groups plans by month, newest first, without superseded ones", () => {

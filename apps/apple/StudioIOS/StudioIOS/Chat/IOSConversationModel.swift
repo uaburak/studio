@@ -538,6 +538,20 @@ final class IOSConversationModel {
         }
     }
 
+    /// "Yalnızca onayla (üretme)": the draft posts are made, nothing is generated.
+    func acceptOnly(_ plan: Plan) async {
+        busyPlans.insert(plan.id)
+        defer { busyPlans.remove(plan.id) }
+        do {
+            _ = try await app.conversationService.acceptPlan(plan)
+            Haptics.success()
+            await app.posts.load()
+            error = nil
+        } catch {
+            self.error = IOSAppModel.describe(error)
+        }
+    }
+
     /// An accepted plan whose posts were never queued (or failed): start them.
     func generate(_ plan: Plan) async {
         busyPlans.insert(plan.id)
@@ -604,7 +618,11 @@ final class IOSConversationModel {
     /// Plan generation summary ("3 post üretiliyor").
     func generationSummary(_ plan: Plan) -> String? {
         let generations = plan.items.compactMap(\.generation)
-        guard !generations.isEmpty else { return "Üretim henüz başlatılmadı." }
+        guard !generations.isEmpty else {
+            return plan.designedItems.isEmpty
+                ? "Postlar elle yüklenecek; üretim yok."
+                : "Üretim henüz başlatılmadı."
+        }
         let active = generations.filter { $0.status.isActive }.count
         let done = generations.filter { $0.status == .succeeded }.count
         let failed = generations.filter { $0.status == .failed }.count
@@ -613,10 +631,10 @@ final class IOSConversationModel {
         return "\(done) post üretildi"
     }
 
-    /// Accepted, but nothing generating and something left to generate.
+    /// Accepted, but nothing generating and something left to generate (hand-made posts never are).
     func canStartGeneration(_ plan: Plan) -> Bool {
         guard plan.status == .accepted else { return false }
-        let accepted = plan.items.filter { $0.status == .accepted }
+        let accepted = plan.items.filter { $0.status == .accepted && !$0.isHandMade }
         guard !accepted.isEmpty, !accepted.contains(where: { $0.generation?.status.isActive == true }) else { return false }
         return accepted.contains { $0.generation == nil || $0.generation?.status == .failed }
     }

@@ -388,6 +388,7 @@ export function createFakeApi(init: Partial<FakeApiState> = {}): {
             imageBrief: item.imageBrief ?? null,
             productIds: item.productIds ?? [],
             imageView: item.imageView ?? null,
+            generate: item.generate ?? true,
             status: "planned",
             similar: [],
             contentId: null,
@@ -446,8 +447,13 @@ export function createFakeApi(init: Partial<FakeApiState> = {}): {
         if (!p) throw new ApiError("plan not found", 404, "not_found");
         state.planGenerates.push({ id, input });
         const targetIds = input.itemIds ? new Set(input.itemIds) : null;
+        // Like the API: without itemIds a hand-made item is left alone (`manual`).
+        const manual = targetIds
+          ? []
+          : p.items.filter((i) => i.status === "accepted" && i.generate === false);
         const acceptedItems = p.items.filter(
-          (i) => i.status === "accepted" && (!targetIds || targetIds.has(i.id)),
+          (i) =>
+            i.status === "accepted" && (!targetIds || targetIds.has(i.id)) && !manual.includes(i),
         );
         const jobs: Job[] = acceptedItems.map((item, idx) => ({
           id: `job_gen_${idx + 1}`,
@@ -463,7 +469,11 @@ export function createFakeApi(init: Partial<FakeApiState> = {}): {
           createdAt: NOW,
           updatedAt: NOW,
         }));
-        return { plan: p, jobs, skipped: [] };
+        return {
+          plan: p,
+          jobs,
+          skipped: manual.map((i) => ({ itemId: i.id, reason: "manual" as const })),
+        };
       },
     },
     brands: {

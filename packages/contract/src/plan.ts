@@ -130,6 +130,12 @@ export const PlanItemInput = z
     productIds: PlanItemProducts.optional(),
     /** The products' side the AI picture shows ("sol", "arka"…); null: any. Kept like `productIds`. */
     imageView: ImageView.nullable().optional(),
+    /**
+     * Whether Studio designs the post. `false`: the user brings the finished post (image and
+     * caption) and uploads it to the draft; a plain generation request skips it (`manual`).
+     * Absent: `true` for a new item; an edit keeps the item's value.
+     */
+    generate: z.boolean().optional(),
   })
   .meta({ id: "PlanItemInput" });
 export type PlanItemInput = z.input<typeof PlanItemInput>;
@@ -188,6 +194,11 @@ export const PlanItem = z
     productIds: z.array(EntityId).default([]),
     /** The products' side the AI picture shows (null: any; absent from older servers). */
     imageView: z.string().nullable().default(null),
+    /**
+     * `false`: the user brings the finished post; Studio does not design it unless asked for
+     * this item by name (`itemIds` + `force`). Absent from older servers: `true`.
+     */
+    generate: z.boolean().optional(),
     status: PlanItemStatus,
     /** Near-duplicates found when the item was written (absent from older servers). */
     similar: z.array(PlanItemSimilar).default([]),
@@ -200,6 +211,11 @@ export const PlanItem = z
   })
   .meta({ id: "PlanItem" });
 export type PlanItem = z.infer<typeof PlanItem>;
+
+/** The user makes this item's post by hand: Studio does not design it unless asked by name. */
+export function isHandMadeItem(item: { generate?: boolean | undefined }): boolean {
+  return item.generate === false;
+}
 
 export const Plan = z
   .object({
@@ -305,10 +321,11 @@ export type PlanReject = z.input<typeof PlanReject>;
  *
  * Without `itemIds` only the items that still need a design are queued: accepted items whose post
  * has no successful generation yet (no design), or whose last generation failed or was stopped —
- * and never a post the user edited or approved since. Everything else comes back in `skipped`.
+ * and never a post the user edited, uploaded or approved since, nor an item the user makes
+ * by hand (`generate: false`). Everything else comes back in `skipped`.
  *
  * With `itemIds` the named items are queued. An item whose post already has a design (its last
- * generation succeeded) needs `force`; a post with hand / AI edits or an approval (it would be
+ * generation succeeded) or that the user makes by hand (`generate: false`) needs `force`; a post with hand / AI edits or an approval (it would be
  * replaced by the new design, the approval revoked and pending schedules cancelled) needs
  * `overwriteEdits` as well, which a client sends only after the user confirmed. Published or
  * publishing posts are never regenerated.
@@ -323,7 +340,7 @@ export const PlanGenerate = z
     model: AgentModel.optional(),
     /** Reasoning effort for the generation jobs; copied into each job's payload. */
     effort: AgentEffort.optional(),
-    /** With `itemIds`: regenerate items whose post already has a design. */
+    /** With `itemIds`: regenerate items whose post already has a design, or design a hand-made one. */
     force: z.boolean().optional(),
     /** With `force`: the user confirmed replacing edited or approved posts. */
     overwriteEdits: z.boolean().optional(),
@@ -350,10 +367,11 @@ export type PlanGenerate = z.input<typeof PlanGenerate>;
  * - `edited`: its post was edited by hand or by the AI after generation;
  * - `approved`: its post is approved or scheduled;
  * - `published`: its post is publishing or published;
- * - `no_content`: its post was deleted (or the item was never accepted).
+ * - `no_content`: its post was deleted (or the item was never accepted);
+ * - `manual`: the user makes this post by hand (`generate: false`); it is never designed by default.
  */
 export const PlanGenerateSkipReason = z
-  .enum(["generating", "generated", "edited", "approved", "published", "no_content"])
+  .enum(["generating", "generated", "edited", "approved", "published", "no_content", "manual"])
   .meta({ id: "PlanGenerateSkipReason" });
 export type PlanGenerateSkipReason = z.infer<typeof PlanGenerateSkipReason>;
 
@@ -395,6 +413,7 @@ export const PlanItemPatch = z
     templateId: EntityId.nullable().optional(),
     productIds: PlanItemProducts.optional(),
     imageView: ImageView.nullable().optional(),
+    generate: z.boolean().optional(),
   })
   .refine((v) => Object.values(v).some((x) => x !== undefined), "at least one field is required")
   .meta({ id: "PlanItemPatch" });

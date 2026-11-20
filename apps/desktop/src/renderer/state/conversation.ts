@@ -532,7 +532,18 @@ export class ConversationController {
     });
   }
 
-  /** "Yeniden dene" after a failed start of the generation: only the generate step again. */
+  /** "Yalnızca onayla (üretme)": the plan's draft posts are made, nothing is generated. */
+  async acceptPlan(plan: Plan): Promise<void> {
+    await this.withPlan(plan.id, async () => {
+      if (plan.status !== "accepted")
+        await this.client.plans.accept(plan.id, { revision: plan.revision });
+    });
+  }
+
+  /**
+   * "Yeniden dene" after a failed start of the generation, or "Üret" on a plan accepted without
+   * it: only the generate step (the API leaves hand-made items and posts with a version alone).
+   */
   async generatePlan(plan: Plan): Promise<void> {
     await this.withPlan(plan.id, () => this.generate(plan.id));
   }

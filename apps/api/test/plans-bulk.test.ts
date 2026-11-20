@@ -77,6 +77,69 @@ describe("plan generation (U2)", () => {
     ]);
   });
 
+  it("accepts without generating and never designs hand-made or uploaded posts by default", async () => {
+    const brand = await createBrand();
+    // 0: Studio designs it; 1: the user brings it (generate: false); 2: designed, but the user
+    // uploaded a finished post to its draft before anything was generated.
+    const plan = await acceptedPlan(brand.id, [{}, { generate: false }, {}]);
+    expect(plan.items.map((i) => i.generate)).toEqual([true, false, true]);
+    // Accepting alone queued nothing.
+    expect(plan.items.every((i) => i.generation === null)).toBe(true);
+    const jobs = await api("GET", `/api/jobs?brandId=${brand.id}`);
+    expect(jobs.status).toBe(200);
+    expect((jobs.body as { items: unknown[] }).items).toEqual([]);
+
+    await addVersion(contentOf(plan, 2), {
+      origin: "manual_edit",
+      slides: [slide("<html><body>yüklendi</body></html>")],
+    });
+    const gen = await generateOk(plan.id);
+    expect(gen.jobs.map((j) => j.contentId)).toEqual([contentOf(plan, 0)]);
+    expect(gen.skipped).toEqual([
+      { itemId: itemOf(plan, 1), reason: "manual" },
+      { itemId: itemOf(plan, 2), reason: "edited" },
+    ]);
+
+    // Named: a hand-made item needs force; an uploaded post also overwriteEdits.
+    const manual = expectError(
+      await generate(plan.id, { itemIds: [itemOf(plan, 1)] }),
+      409,
+      "conflict",
+    );
+    expect(manual.message).toContain("force");
+    const uploaded = expectError(
+      await generate(plan.id, { itemIds: [itemOf(plan, 2)], force: true }),
+      409,
+      "conflict",
+    );
+    expect(uploaded.message).toContain("overwriteEdits");
+    const forced = await generateOk(plan.id, { itemIds: [itemOf(plan, 1)], force: true });
+    expect(forced.jobs.map((j) => j.contentId)).toEqual([contentOf(plan, 1)]);
+  });
+
+  it("keeps an item's hand-made flag through edits that do not mention it", async () => {
+    const brand = await createBrand();
+    const planId = await seedPlan(brand.id, [{ generate: false }, {}]);
+    const before = Plan.parse((await api("GET", `/api/plans/${planId}`)).body);
+    const res = await api("PATCH", `/api/plans/${planId}`, {
+      revision: before.revision,
+      items: before.items.map((i) => ({
+        id: i.id,
+        date: i.date,
+        platforms: i.platforms,
+        contentType: i.contentType,
+        title: `${i.title} (yeni)`,
+      })),
+    });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(Plan.parse(res.body).items.map((i) => i.generate)).toEqual([false, true]);
+    const patched = await api("PATCH", `/api/plans/${planId}/items/${before.items[1]?.id}`, {
+      generate: false,
+    });
+    expect(patched.status, JSON.stringify(patched.body)).toBe(200);
+    expect(Plan.parse(patched.body).items.map((i) => i.generate)).toEqual([false, false]);
+  });
+
   it("regenerates a made post only with force, an edited one only with overwriteEdits", async () => {
     const brand = await createBrand();
     const plan = await acceptedPlan(brand.id, [{}, {}]);

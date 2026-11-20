@@ -184,6 +184,7 @@ describe("plan similarity marks (N6)", () => {
   it("marks items on the chat's plan card", () => {
     const controller = {
       acceptAndGenerate: vi.fn(),
+      acceptPlan: vi.fn(),
       rejectPlan: vi.fn(),
       generatePlan: vi.fn(),
     } as unknown as Parameters<typeof PlanProposalCard>[0]["controller"];

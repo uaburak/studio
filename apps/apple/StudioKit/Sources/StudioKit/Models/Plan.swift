@@ -48,6 +48,9 @@ public struct PlanItem: Codable, Sendable, Hashable, Identifiable {
     public var pillar: String?
     public var imageSlot: ImageSlotExpectation
     public var imageBrief: String?
+    /// `false`: the user brings the finished post (image and caption); Studio does not design it
+    /// unless asked for it by name. Absent from older servers: designed.
+    public var generate: Bool?
     public var status: PlanItemStatus
     /// Draft content item created when the plan was accepted.
     public var contentId: EntityID?
@@ -55,10 +58,14 @@ public struct PlanItem: Codable, Sendable, Hashable, Identifiable {
     public var createdAt: Date
     public var updatedAt: Date
 
+    /// The user makes this post by hand: generation leaves it alone.
+    public var isHandMade: Bool { generate == false }
+
     public init(
         id: EntityID, planId: EntityID, position: Int, date: CalendarDay?, platforms: [Platform],
         contentType: ContentType = .post, title: String, brief: String = "", pillar: String? = nil,
-        imageSlot: ImageSlotExpectation = .none, imageBrief: String? = nil, status: PlanItemStatus = .planned,
+        imageSlot: ImageSlotExpectation = .none, imageBrief: String? = nil, generate: Bool? = nil,
+        status: PlanItemStatus = .planned,
         contentId: EntityID? = nil, generation: PlanItemGeneration? = nil, createdAt: Date, updatedAt: Date
     ) {
         self.id = id
@@ -72,6 +79,7 @@ public struct PlanItem: Codable, Sendable, Hashable, Identifiable {
         self.pillar = pillar
         self.imageSlot = imageSlot
         self.imageBrief = imageBrief
+        self.generate = generate
         self.status = status
         self.contentId = contentId
         self.generation = generation
@@ -122,6 +130,14 @@ public struct Plan: Codable, Sendable, Hashable, Identifiable {
 
     /// Items that leave an image slot for the user.
     public var userImageItemCount: Int { items.filter { $0.imageSlot == .userUpload }.count }
+
+    /// Items Studio designs (left out when accepting: not counted; hand-made: never designed).
+    public var designedItems: [PlanItem] { items.filter { $0.status != .skipped && !$0.isHandMade } }
+
+    /// Whether accepting should start the design by default. A plan whose every post the user
+    /// makes by hand is accepted without generation (there would be nothing to make); any other
+    /// plan defaults to "Onayla ve üret", with "Yalnızca onayla (üretme)" beside it.
+    public var acceptGeneratesByDefault: Bool { !designedItems.isEmpty }
 }
 
 public struct PlanAccept: Encodable, Sendable, Equatable {
@@ -156,7 +172,7 @@ public struct PlanGenerate: Encodable, Sendable, Equatable {
 
 /// Why `POST /api/plans/{id}/generate` left an accepted item alone (`PlanGenerateSkipReason`).
 public enum PlanGenerateSkipReason: String, OpenEnum {
-    case generating, generated, edited, approved, published
+    case generating, generated, edited, approved, published, manual
     case noContent = "no_content"
     case unknown
 
@@ -168,6 +184,7 @@ public enum PlanGenerateSkipReason: String, OpenEnum {
         case .approved: "onaylanmış"
         case .published: "yayınlanmış"
         case .noContent: "postu silinmiş"
+        case .manual: "elle yüklenecek"
         case .unknown: "atlandı"
         }
     }

@@ -42,7 +42,9 @@ import { useContents, useCurrentVersions, usePlans } from "./data.ts";
 import { localDate, shortDay } from "./dates.ts";
 import { EstimateDialog, needsEstimate } from "./estimate.tsx";
 import {
+  acceptGeneratesByDefault,
   CONTENT_TYPES,
+  designedItems,
   draftError,
   draftOf,
   draftPatch,
@@ -222,27 +224,38 @@ function PlanDetail({
     setEstimate({ query: { count, brandId: plan.brandId, imageSlots: slots }, what, run });
   };
 
+  // Hand-made items are never designed; a plan of only those defaults to accepting only.
+  const designed = designedItems(items);
+  const generatesByDefault = acceptGeneratesByDefault(items);
+
+  const accept = async (andGenerate: boolean) => {
+    setBusy(true);
+    try {
+      const accepted =
+        plan.status === "accepted"
+          ? plan
+          : await api.plans.accept(plan.id, { revision: plan.revision });
+      if (andGenerate) {
+        const result = await api.plans.generate(accepted.id, {});
+        toast({ message: generateSummary(result.jobs.length, result.skipped) });
+      } else {
+        const count = accepted.items.filter((i) => i.status === "accepted").length;
+        toast({ message: `Plan onaylandı; ${count} taslak post açıldı, üretim başlamadı.` });
+      }
+      await refresh();
+    } catch (e) {
+      toast({ message: describeError(e), tone: "danger" });
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const acceptAndGenerate = () =>
     withEstimate(
-      items.length,
-      imageSlotsOf(items),
-      `${items.length} post üretilecek.`,
-      async () => {
-        setBusy(true);
-        try {
-          const accepted =
-            plan.status === "accepted"
-              ? plan
-              : await api.plans.accept(plan.id, { revision: plan.revision });
-          const result = await api.plans.generate(accepted.id, {});
-          toast({ message: generateSummary(result.jobs.length, result.skipped) });
-          await refresh();
-        } catch (e) {
-          toast({ message: describeError(e), tone: "danger" });
-        } finally {
-          setBusy(false);
-        }
-      },
+      designed.length,
+      imageSlotsOf(designed),
+      `${designed.length} post üretilecek.`,
+      () => accept(true),
     );
 
   const pendingCount = counts.pending + counts.failed;
@@ -337,9 +350,21 @@ function PlanDetail({
               >
                 Reddet
               </Button>
-              <Button variant="primary" disabled={busy} onClick={acceptAndGenerate}>
-                Onayla ve üret
-              </Button>
+              {generatesByDefault ? (
+                <>
+                  <Button disabled={busy} onClick={() => void accept(false)}>
+                    Yalnızca onayla (üretme)
+                  </Button>
+                  <Button variant="primary" disabled={busy} onClick={acceptAndGenerate}>
+                    Onayla ve üret
+                  </Button>
+                </>
+              ) : (
+                // Every post is made by hand: there is nothing to generate.
+                <Button variant="primary" disabled={busy} onClick={() => void accept(false)}>
+                  Yalnızca onayla (üretme)
+                </Button>
+              )}
             </>
           )}
           {plan.status === "accepted" && failed.length > 0 && (
@@ -609,6 +634,7 @@ function ItemDialog({
           hook: draft.hook.trim() || null,
           platforms: draft.platforms,
           ...(draft.templateId ? { templateId: draft.templateId } : {}),
+          ...(draft.handMade ? { generate: false } : {}),
         });
       } else {
         const patch = draftPatch(editing, draft);
@@ -713,6 +739,9 @@ function ItemDialog({
               </Checkbox>
             ))}
           </div>
+          <Checkbox checked={draft.handMade ?? false} onChange={(on) => update({ handMade: on })}>
+            Postu ben yükleyeceğim (üretilmesin)
+          </Checkbox>
           {(error ?? problem) && <p className="text-footnote text-danger">{error ?? problem}</p>}
         </div>
       )}

@@ -96,6 +96,8 @@ export interface SeedItem {
   contentType?: "post" | "carousel" | "story" | "reel";
   title?: string;
   imageSlot?: "none" | "user_upload" | "ai_generate";
+  /** false: the user makes the post by hand. */
+  generate?: boolean;
 }
 
 /** A proposed December plan of `brandId` written straight into D1 (no conversation). */
@@ -110,7 +112,7 @@ export async function seedPlan(brandId: string, items: SeedItem[]): Promise<stri
   let position = 0;
   for (const item of items) {
     await env.DB.prepare(
-      "insert into plan_items (id, plan_id, position, date, platforms, content_type, title, brief, pillar, image_slot, image_brief, status, created_at, updated_at) values (?, ?, ?, ?, ?, ?, ?, ?, null, ?, null, 'planned', ?, ?)",
+      "insert into plan_items (id, plan_id, position, date, platforms, content_type, title, brief, pillar, image_slot, image_brief, generate, status, created_at, updated_at) values (?, ?, ?, ?, ?, ?, ?, ?, null, ?, null, ?, 'planned', ?, ?)",
     )
       .bind(
         crypto.randomUUID(),
@@ -122,6 +124,7 @@ export async function seedPlan(brandId: string, items: SeedItem[]): Promise<stri
         item.title ?? `Post ${position + 1}`,
         `Brief ${position + 1}`,
         item.imageSlot ?? "none",
+        item.generate === false ? 0 : 1,
         now,
         now,
       )

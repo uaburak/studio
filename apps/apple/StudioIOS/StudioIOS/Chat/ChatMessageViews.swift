@@ -706,12 +706,25 @@ enum ChatViews {
         switch plan.status {
         case .draft, .proposed:
             card.stack.addArrangedSubview(UILabel.studio("Planı onaylıyor musun?", size: 15, weight: .medium, style: .subheadline))
-            let accept = UIButton.studioPill(title: "Onayla ve üret", kind: .primary) {
-                Task { await model.acceptAndGenerate(plan) }
+            // A plan of hand-made posts is accepted without generation (nothing to make); any
+            // other plan offers "Onayla ve üret" first and accepting alone beside it.
+            let generates = plan.acceptGeneratesByDefault
+            let acceptOnly = UIButton.studioPill(title: "Yalnızca onayla (üretme)", kind: generates ? .secondary : .primary) {
+                Task { await model.acceptOnly(plan) }
+            }
+            acceptOnly.isEnabled = !busy
+            acceptOnly.accessibilityHint = "Planı onaylar ve taslak postları açar; post üretimi başlamaz"
+            let accept: UIButton
+            if generates {
+                accept = UIButton.studioPill(title: "Onayla ve üret", kind: .primary) {
+                    Task { await model.acceptAndGenerate(plan) }
+                }
+                accept.accessibilityHint = "Planı bu haliyle onaylar ve postların üretimini başlatır"
+            } else {
+                accept = acceptOnly
             }
             accept.configuration?.showsActivityIndicator = busy
             accept.isEnabled = !busy
-            accept.accessibilityHint = "Planı bu haliyle onaylar ve postların üretimini başlatır"
             let edit = UIButton.studioPill(title: "Düzenle", kind: .secondary) { context.onEditPlan(plan) }
             let more = UIButton.studioIcon("ellipsis", label: "Diğer plan işlemleri")
             more.showsMenuAsPrimaryAction = true
@@ -721,6 +734,9 @@ enum ChatViews {
                 },
             ])
             card.stack.addArrangedSubview(UIStackView.h([accept, edit, UIView.spacer(), more], spacing: 8))
+            if generates {
+                card.stack.addArrangedSubview(UIStackView.h([acceptOnly, UIView.spacer()], spacing: 0))
+            }
         case .accepted:
             let accepted = plan.items.filter { $0.status == .accepted }.count
             card.stack.addArrangedSubview(statusRow(symbol: "checkmark", text: "Plan onaylandı · \(accepted) post"))
@@ -769,6 +785,8 @@ enum ChatViews {
             let tint = generation.status.isActive || generation.status == .failed ? IOSTheme.accent : IOSTheme.textTertiary
             views.append(IOSStatusDotView(color: tint, size: 6))
             views.append(UILabel.studio(text, size: 12, color: IOSTheme.textSecondary, style: .caption1))
+        } else if item.isHandMade {
+            views.append(UILabel.studio("elle yüklenecek", size: 12, color: IOSTheme.textSecondary, style: .caption1))
         } else if item.imageSlot == .userUpload {
             views.append(IOSStatusDotView(color: IOSTheme.accent, size: 6))
             views.append(UILabel.studio("görsel", size: 12, color: IOSTheme.textSecondary, style: .caption1))

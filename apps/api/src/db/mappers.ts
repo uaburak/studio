@@ -403,6 +403,7 @@ export function toPlanItem(r: PlanItemRow, job: GenerationJobRef | null): PlanIt
     templateId: r.templateId ?? null,
     productIds: r.productIds ?? [],
     imageView: r.imageView ?? null,
+    generate: r.generate,
     status: r.status,
     similar: r.similar ?? [],
     contentId: r.contentId,

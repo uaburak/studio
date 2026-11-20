@@ -33,6 +33,7 @@ import {
   ESTIMATE_CONFIRM_THRESHOLD,
   engineNotReadyError,
   GenerationEngine,
+  isHandMadeItem,
   isStrongSimilarity,
   isTerminalJobStatus,
   type Job,
@@ -239,6 +240,11 @@ export const STUDIO_TOOLS: readonly StudioToolDefinition[] = [
                 type: "string",
                 description:
                   "Bu post markanın bir şablonuyla yapılacaksa şablon id'si (list_templates; aynı tür). Yerleşim aynen kalır, AI alanları brief'ten doldurur.",
+              },
+              generate: {
+                type: "boolean",
+                description:
+                  "false: postu kullanıcı hazır getirecek (kendi görseli ve metni); Studio tasarlamaz, plan kabul edilince yalnızca taslağı açılır. Varsayılan true (Studio tasarlar).",
               },
             },
           },
@@ -572,7 +578,7 @@ export const STUDIO_TOOLS: readonly StudioToolDefinition[] = [
   {
     name: "accept_and_generate_plan",
     description:
-      "Açık içerik planını kabul eder ve post tasarımlarının üretimini başlatır. Kullanıcıya izin (consent) kartı gösterir ve yanıtını bekler.",
+      "Açık içerik planını kabul eder (her kalem için taslak post açılır) ve istenirse post tasarımlarının üretimini başlatır. `generate: false` ile yalnızca kabul eder, hiçbir şey üretilmez. Kullanıcıya izin (consent) kartı gösterir ve yanıtını bekler.",
     inputSchema: {
       type: "object",
       properties: {
@@ -594,6 +600,11 @@ export const STUDIO_TOOLS: readonly StudioToolDefinition[] = [
         instructions: {
           type: "string",
           description: "Tasarım üretimi için ek yönerge.",
+        },
+        generate: {
+          type: "boolean",
+          description:
+            "false: planı yalnızca kabul et, üretim başlatma (kullanıcı postları kendisi yükleyecekse ya da üretimi sonraya bırakmak istiyorsa). Boşsa: bütün kalemler elle hazırlanacaksa (generate: false) üretim yok, değilse üretim başlar. Üretimde elle hazırlanacak kalemler ve tasarımı / yüklenmiş içeriği olan postlar hiçbir zaman yeniden üretilmez.",
         },
         force: {
           type: "boolean",
@@ -908,6 +919,7 @@ const ProposePlanInput = z.object({
         templateId: z.string().trim().min(1).max(128).optional(),
         products: z.array(z.string().trim().min(1)).max(8).default([]),
         imageView: trimmed(80).optional(),
+        generate: z.boolean().optional(),
       }),
     )
     .min(1),
@@ -1042,6 +1054,7 @@ const AcceptGeneratePlanInput = z.object({
   skipItemIds: z.array(z.string().min(1)).default([]),
   itemIds: z.array(z.string().min(1)).optional(),
   instructions: z.string().max(4_000).optional(),
+  generate: z.boolean().optional(),
   force: z.boolean().optional(),
   aiImages: z.boolean().default(false),
 });
@@ -3153,8 +3166,7 @@ export class StudioToolExecutor {
     args: Record<string, unknown>,
   ): Promise<StudioToolExecutionResult> {
     const tool = "accept_and_generate_plan";
-    const runningLabel = "Plan onayı ve üretim bekleniyor…";
-    const doneLabel = "Plan onaylandı ve üretim başlatıldı";
+    const runningLabel = "Plan onayı bekleniyor…";
     const stepIndex = await this.options.writer.setPart({
       type: "tool_step",
       id: stepId,
@@ -3175,23 +3187,39 @@ export class StudioToolExecutor {
         throw new Error(`Plan durumu onay için uygun değil: ${plan.status}`);
       }
       const skipSet = new Set(parsed.skipItemIds);
-      const count = plan.items.filter((i) => !skipSet.has(i.id)).length;
-      // What will be generated (N4): named items, else what still needs a design (the API
-      // decides; failed / stopped and never generated items).
-      const toGenerate = parsed.itemIds?.length
-        ? plan.items.filter((i) => parsed.itemIds?.includes(i.id))
-        : plan.items.filter((i) =>
-            plan.status === "accepted"
-              ? i.status === "accepted" &&
-                (i.generation === null ||
-                  i.generation.status === "failed" ||
-                  i.generation.status === "cancelled")
-              : !skipSet.has(i.id),
-          );
-      let detail = `${plan.title || `${plan.periodStart} – ${plan.periodEnd}`} (${count} post kabul edilecek ve tasarım üretimi kuyruğa alınacak)`;
-      if (plan.status === "accepted") {
-        detail = `${plan.title || `${plan.periodStart} – ${plan.periodEnd}`} (${toGenerate.length} post için tasarım üretimi kuyruğa alınacak)`;
+      const kept = plan.items.filter((i) => !skipSet.has(i.id));
+      const count = kept.length;
+      // Accepting never has to generate: a plan whose posts the user makes by hand defaults to
+      // accepting only; otherwise the agent says (`generate`), else the design is made.
+      const generate =
+        parsed.generate ?? (plan.status === "accepted" || !kept.every((i) => isHandMadeItem(i)));
+      if (!generate && plan.status === "accepted") {
+        throw new Error("Plan zaten onaylı; üretim istenmediği için yapılacak bir şey yok.");
       }
+      // What will be generated (N4): named items, else what still needs a design (the API
+      // decides; failed / stopped and never generated items, never hand-made ones).
+      const toGenerate = !generate
+        ? []
+        : parsed.itemIds?.length
+          ? plan.items.filter((i) => parsed.itemIds?.includes(i.id))
+          : plan.items.filter(
+              (i) =>
+                !isHandMadeItem(i) &&
+                (plan.status === "accepted"
+                  ? i.status === "accepted" &&
+                    (i.generation === null ||
+                      i.generation.status === "failed" ||
+                      i.generation.status === "cancelled")
+                  : !skipSet.has(i.id)),
+            );
+      const name = plan.title || `${plan.periodStart} – ${plan.periodEnd}`;
+      let detail = generate
+        ? `${name} (${count} post kabul edilecek ve ${toGenerate.length} post için tasarım üretimi kuyruğa alınacak)`
+        : `${name} (${count} post taslak olarak açılacak; tasarım üretimi başlamayacak)`;
+      if (plan.status === "accepted") {
+        detail = `${name} (${toGenerate.length} post için tasarım üretimi kuyruğa alınacak)`;
+      }
+      const doneLabel = generate ? "Plan onaylandı ve üretim başlatıldı" : "Plan onaylandı";
       if (toGenerate.length > ESTIMATE_CONFIRM_THRESHOLD) {
         try {
           const estimate = await this.options.api.client.estimates.generation(
@@ -3240,7 +3268,9 @@ export class StudioToolExecutor {
 
       const decision = await this.awaitConsent({
         tool,
-        title: "Planı onayla ve post üretimini başlat",
+        title: generate
+          ? "Planı onayla ve post üretimini başlat"
+          : "Planı onayla (üretim başlamaz)",
         detail,
         stepId,
         stepIndex,
@@ -3256,6 +3286,32 @@ export class StudioToolExecutor {
           { revision: plan.revision, skipItemIds: parsed.skipItemIds },
           { signal: this.options.signal },
         );
+      }
+      if (!generate) {
+        this.openPlan = plan;
+        await this.options.writer.setPart(
+          {
+            type: "tool_step",
+            id: stepId,
+            name: tool,
+            label: doneLabel,
+            state: "done",
+            summary: `${plan.items.filter((i) => i.status === "accepted").length} taslak post açıldı; üretim yok`,
+          },
+          stepIndex,
+        );
+        return {
+          data: {
+            allowed: true,
+            ok: true,
+            planId: plan.id,
+            status: plan.status,
+            generated: false,
+            queuedJobs: 0,
+            contentIds: plan.items.flatMap((i) => (i.contentId ? [i.contentId] : [])),
+          },
+          isError: false,
+        };
       }
       const choice = this.options.generationChoice;
       const gen = await this.options.api.client.plans.generate(
