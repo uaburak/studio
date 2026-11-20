@@ -30,6 +30,7 @@ export function versionJobRunning(jobs: readonly Job[], contentId: string): bool
       !isTerminalJobStatus(j.status) &&
       (j.type === "content.generate" ||
         j.type === "canvas.apply" ||
+        j.type === "canvas.create" ||
         (j.type === "content.render" &&
           Array.isArray((j.payload as { patches?: unknown } | null)?.patches))),
   );

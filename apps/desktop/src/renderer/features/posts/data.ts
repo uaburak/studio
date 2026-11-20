@@ -465,6 +465,10 @@ const CONTENT_JOBS = new Set<Job["type"]>([
   "content.check",
   // The agent's edit of a canvas document (any conversation, the iPhone): a new version.
   "canvas.apply",
+  // A blank canvas (the Wecra engine, "Boş tuvalden yeni post"): the post's first version.
+  "canvas.create",
+  // "Bilgileri üret": the caption, title and publish details (never a version).
+  "content.details",
 ]);
 
 /**

@@ -12,6 +12,8 @@ export const JOB_LABELS: Record<string, string> = {
   "content.check": "Kontroller",
   "canvas.read": "Tuval okuma",
   "canvas.apply": "Tuval düzenlemesi",
+  "canvas.create": "Boş tuval",
+  "content.details": "Post bilgileri",
   "image.generate": "AI görsel üretimi",
   "schedule.publish": "Zamanlı yayın",
   "chat.turn": "Sohbet yanıtı",
@@ -78,6 +80,7 @@ export function noticeRoute(job: JobLike): string | undefined {
       return "calendar";
     case "content.generate":
     case "content.render":
+    case "content.details":
       return "posts";
     case "image.generate":
       return "media";

@@ -664,6 +664,11 @@ export const TurnContent = z
   .object({
     mention: z.string(),
     content: Content,
+    /**
+     * Its current version was saved on the canvas (a Wecra document: edited and continued with
+     * the canvas tools). Absent from older servers.
+     */
+    canvas: z.boolean().optional(),
   })
   .meta({ id: "TurnContent" });
 export type TurnContent = z.infer<typeof TurnContent>;

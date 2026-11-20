@@ -43,7 +43,24 @@ function base64(bytes: Uint8Array): string {
   return btoa(binary);
 }
 
-/** An image argument (`{assetId, scaleMode}`) as Wecra takes it (`{data, scaleMode, name}`). */
+/** The asset is an SVG (a brand logo): its text, else null. */
+export function svgText(bytes: Uint8Array): string | null {
+  const head = new TextDecoder()
+    .decode(bytes.subarray(0, 512))
+    .replace(/^﻿/, "")
+    .trimStart();
+  if (!/^<(\?xml|svg|!--|!DOCTYPE svg)/i.test(head)) return null;
+  const text = new TextDecoder().decode(bytes);
+  return /<svg[\s>]/i.test(text) ? text : null;
+}
+
+const SVG = Symbol("svg");
+
+/**
+ * An image argument (`{assetId, scaleMode}`) as Wecra takes it (`{data, scaleMode, name}`). An
+ * SVG asset (a brand logo) is not a picture to Wecra: it comes back marked, and the layer becomes
+ * the SVG's vector layers (create_nodes `svg`).
+ */
 async function imageArg(value: unknown, deps: OperationDeps, at: string): Promise<unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) return value;
   const v = value as Record<string, unknown>;
@@ -51,6 +68,8 @@ async function imageArg(value: unknown, deps: OperationDeps, at: string): Promis
   if (typeof v.assetId !== "string" || !v.assetId) return value;
   const { assetId, ...rest } = v;
   const bytes = await deps.fetchAsset(assetId);
+  const svg = svgText(bytes);
+  if (svg !== null) return { [SVG]: svg };
   return { name: "Görsel", ...rest, data: base64(bytes) };
 }
 
@@ -64,7 +83,12 @@ export async function resolveImages(
     if ("path" in args) throw new Error("place_image: dosya yolu kullanılamaz; assetId ver.");
     if (typeof args.assetId === "string" && args.assetId) {
       const { assetId, ...rest } = args;
-      return { name: "Görsel", ...rest, data: base64(await deps.fetchAsset(assetId)) };
+      const bytes = await deps.fetchAsset(assetId);
+      if (svgText(bytes) !== null)
+        throw new Error(
+          'place_image: bu görsel bir SVG (logo); create_nodes {nodes: [{image: {assetId}, x, y, width}]} ile vektör katman olarak ekle.',
+        );
+      return { name: "Görsel", ...rest, data: base64(bytes) };
     }
     return args;
   }
@@ -75,8 +99,18 @@ export async function resolveImages(
       specs.map(async (spec, i) => {
         if (!spec || typeof spec !== "object" || Array.isArray(spec)) return spec;
         const out = { ...(spec as Record<string, unknown>) };
-        if (out.image !== undefined)
-          out.image = await imageArg(out.image, deps, `${at}[${i}].image`);
+        if (out.image !== undefined) {
+          const image = await imageArg(out.image, deps, `${at}[${i}].image`);
+          const svg = (image as { [SVG]?: string } | null)?.[SVG];
+          if (typeof svg === "string" && list === "nodes") {
+            // Wecra's createNodeFromSvg: a frame the SVG's size holding its vectors.
+            delete out.image;
+            delete out.type;
+            out.svg = svg;
+          } else if (typeof svg === "string") {
+            throw new Error(`${at}[${i}].image: SVG bir dolgu olamaz; create_nodes ile ekle.`);
+          } else out.image = image;
+        }
         if (Array.isArray(out.children))
           out.children = await walk(out.children, `${at}[${i}].children`);
         return out;

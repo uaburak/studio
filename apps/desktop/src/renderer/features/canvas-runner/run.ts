@@ -12,20 +12,31 @@
 // `canvas.read`: the version's slides as an outline (`@studio/design-kit/canvas canvasOutline`
 // over facts read from the live document — for versions saved before the facts), and Wecra's
 // `get_design_context` for named layers.
+//
+// `canvas.create` (Faz 2): a blank Wecra document — one white frame per slide, "Kare 1" … side by
+// side as an imported post has them — optionally designed at once with Wecra's operations (the
+// Wecra engine's first pass; `"frame:N"` names the N-th frame), stored as the post's version the
+// same way (renders, facts, the bundle, checks). "Boş tuvalden yeni post" is one with no
+// operations.
 import {
   type ApiClient,
   type CanvasApplyOutput,
   CanvasApplyPayload,
+  type CanvasCreateOutput,
+  CanvasCreatePayload,
   CanvasReadPayload,
   type Content,
   type ContentVersion,
   type Job,
+  resolveCanvasFrameRefs,
 } from "@studio/contract";
 import { canvasOutline } from "@studio/design-kit/canvas";
-import { runTool } from "@/editor/agents/mcpTools";
+import { runTool, type ToolEnv } from "@/editor/agents/mcpTools";
 import type { EditorController } from "@/editor/controller";
+import { pageFrames } from "@/editor/exporting";
+import { EMPTY_DOCUMENT } from "@/editor/fixtures";
 import type { Message } from "@/engine/codec";
-import { type BundleImages, loadBundle } from "../post-editor/wecra/bundle.ts";
+import { BundleImages, loadBundle } from "../post-editor/wecra/bundle.ts";
 import { slideFacts } from "../post-editor/wecra/facts.ts";
 import { canvasFrames, frameBlocker, postFormat } from "../post-editor/wecra/frames.ts";
 import { documentHash } from "../post-editor/wecra/hash.ts";
@@ -247,12 +258,139 @@ export async function readCanvasJob(
   }
 }
 
+/** Space between slides on the canvas (as an imported post has them). */
+const FRAME_GAP = 120;
+
+/** The blank slide frames on the editor's page (outside the undo history: where it starts). */
+async function blankFrames(
+  ed: EditorController,
+  count: number,
+  size: { width: number; height: number },
+): Promise<string[]> {
+  const env: ToolEnv = { ed, write: (_label, fn) => ed.engine.ignoringUndo(fn) };
+  // The last slide first: the first is on top in Layers ("Kare 1" first, as the post reads).
+  const nodes = Array.from({ length: count }, (_, i) => ({
+    type: "FRAME",
+    name: `Kare ${i + 1}`,
+    x: i * (size.width + FRAME_GAP),
+    y: 0,
+    width: size.width,
+    height: size.height,
+    fills: "#FFFFFF",
+    clipsContent: true,
+  })).reverse();
+  const result = await runTool(env, "create_nodes", { parentId: ed.store.page, nodes });
+  if (result.isError) {
+    const text = result.content
+      .filter((c): c is { type: "text"; text: string } => c.type === "text")
+      .map((c) => c.text)
+      .join(" ");
+    throw new CanvasJobError(`Boş kareler oluşturulamadı: ${text.slice(0, 300)}`);
+  }
+  return pageFrames(ed).map((f) => f.ref);
+}
+
+/** `canvas.create` (see the top). */
+export async function createCanvasJob(
+  job: Job,
+  deps: CanvasRunnerDeps,
+): Promise<CanvasCreateOutput> {
+  const payload = CanvasCreatePayload.parse(job.payload);
+  const contentId = job.contentId;
+  if (!contentId) throw new CanvasJobError("canvas.create işi için contentId gerekli.");
+  const content = await deps.api.contents.get(contentId);
+  if (LOCKED.has(content.status))
+    throw new CanvasJobError(`“${content.title}” yayında ya da yayınlanıyor; değiştirilemez.`);
+  const current = content.currentVersion?.version ?? null;
+  if (current !== (payload.baseVersion ?? null))
+    throw new CanvasJobError(
+      current === null
+        ? `Post değişti: henüz sürümü yok, iş v${payload.baseVersion} için yazıldı. Hiçbir şey değişmedi.`
+        : `Post değişti: güncel sürüm v${current}${payload.baseVersion ? `, iş v${payload.baseVersion} için yazıldı` : "; boş tuval yalnızca sürümü olmayan bir posta kurulur"}. Hiçbir şey değişmedi.`,
+    );
+  const size = { width: payload.width, height: payload.height };
+  const blocker0 = frameBlocker(
+    content.type,
+    Array.from({ length: payload.slides }, (_, i) => ({
+      guid: String(i),
+      name: `Kare ${i + 1}`,
+      visible: true,
+      ...size,
+    })),
+    postFormat(content.type, size),
+  );
+  if (blocker0) throw new CanvasJobError(`Boş tuval kurulamadı: ${blocker0}`);
+  check(deps.signal);
+  deps.progress?.(0.1, "Boş tuval hazırlanıyor");
+  await deps.prepareFonts(content.brandId);
+  const images = new BundleImages();
+  const editor = await deps.openEditor(structuredClone(EMPTY_DOCUMENT), images, content.title);
+  const { ed } = editor;
+  try {
+    const frameIds = await blankFrames(ed, payload.slides, size);
+    if (frameIds.length !== payload.slides)
+      throw new CanvasJobError(
+        `Boş kareler oluşturulamadı (${frameIds.length}/${payload.slides}).`,
+      );
+    let results: CanvasCreateOutput["results"] = [];
+    if (payload.operations.length) {
+      deps.progress?.(0.3, "Wecra işlemleri uygulanıyor");
+      const operations = payload.operations.map((op) => ({
+        tool: op.tool,
+        args: resolveCanvasFrameRefs(op.args, frameIds),
+      }));
+      results = await applyOperations(ed, operations, { fetchAsset: deps.fetchAsset });
+      check(deps.signal);
+      if (results.every((r) => !r.ok))
+        throw new CanvasJobError(
+          `Hiçbir işlem uygulanamadı; sürüm oluşmadı. ${results.map((r) => r.summary).join(" | ")}`.slice(
+            0,
+            4_000,
+          ),
+        );
+    }
+    const blocker = frameBlocker(content.type, canvasFrames(ed), postFormat(content.type, size));
+    if (blocker) throw new CanvasJobError(`Sürüm oluşmadı: ${blocker}`);
+    await deps.settle(ed);
+    check(deps.signal);
+    deps.progress?.(0.6, "Kareler dışa aktarılıyor");
+    const capture = captureDocument(ed);
+    const created = await createCanvasVersion({
+      api: deps.api,
+      content,
+      ed,
+      capture,
+      images,
+      sourceVersion: null,
+      origin: payload.origin,
+      note:
+        payload.note?.trim() ||
+        (payload.operations.length ? "Wecra ile tasarlandı." : "Boş tuval."),
+      jobId: job.id,
+    });
+    const checkJob = await created.check;
+    deps.progress?.(1, "Tamamlandı");
+    return {
+      contentId,
+      version: created.version.version,
+      frameIds: slideFrames(ed).map((s) => s.guid),
+      results,
+      slides: capture.slides.length,
+      checkJobId: checkJob?.id ?? null,
+    };
+  } finally {
+    editor.close();
+  }
+}
+
 /** One job of the canvas runner. */
 export async function runCanvasJob(
   job: Job,
   deps: CanvasRunnerDeps,
 ): Promise<Record<string, unknown>> {
   switch (job.type) {
+    case "canvas.create":
+      return { ...(await createCanvasJob(job, deps)) };
     case "canvas.apply":
       return { ...(await applyCanvasJob(job, deps)) };
     case "canvas.read":

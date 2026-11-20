@@ -22,6 +22,7 @@ import { BUNDLED_FACES, fonts } from "@/engine/fonts";
 import {
   applyCanvasJob,
   type CanvasRunnerDeps,
+  createCanvasJob,
   readCanvasJob,
   runCanvasJob,
 } from "../../src/renderer/features/canvas-runner/run.ts";
@@ -183,8 +184,10 @@ async function canvasBundle(): Promise<{ bundle: Uint8Array; ids: Record<string,
 
 interface FakeState {
   status: Content["status"];
+  /** 0: the post has no version yet. */
   current: number;
   versions: Map<number, ContentVersion>;
+  type: Content["type"];
 }
 
 function fakeRunner(bundle: Uint8Array, options: Partial<FakeState> = {}) {
@@ -196,6 +199,7 @@ function fakeRunner(bundle: Uint8Array, options: Partial<FakeState> = {}) {
   const state: FakeState = {
     status: options.status ?? "draft",
     current: options.current ?? 2,
+    type: options.type ?? "post",
     versions:
       options.versions ??
       new Map([
@@ -225,10 +229,10 @@ function fakeRunner(bundle: Uint8Array, options: Partial<FakeState> = {}) {
     ({
       id: "p1",
       brandId: "b1",
-      type: "post",
+      type: state.type,
       title: "Hasat",
       status: state.status,
-      currentVersion: { version: state.current },
+      currentVersion: state.current ? { version: state.current } : null,
     }) as never;
   const api = {
     contents: {
@@ -586,5 +590,109 @@ describe("the canvas runner's canvas.read", () => {
     });
     expect(out.design).toContain(ids.headline);
     await expect(runCanvasJob(job("content.check", {}), deps)).rejects.toThrow(/yapmaz/);
+  });
+});
+
+const LOGO_SVG = new TextEncoder().encode(
+  '<svg xmlns="http://www.w3.org/2000/svg" width="200" height="80" viewBox="0 0 200 80"><rect width="200" height="80" fill="#2f5d2b"/></svg>',
+);
+
+describe("the canvas runner's canvas.create (a blank Wecra document, Faz 2)", () => {
+  it("makes one white frame per slide and stores a blank canvas version (no AI)", async () => {
+    const { bundle } = await canvasBundle();
+    const { deps, calls, opened } = fakeRunner(bundle, { current: 0, type: "carousel" });
+    const out = await createCanvasJob(
+      job("canvas.create", { slides: 3, width: 1080, height: 1080, origin: "manual_edit" }),
+      deps,
+    );
+    expect(out).toMatchObject({ contentId: "p1", version: 1, slides: 3, results: [] });
+    expect(out.frameIds).toHaveLength(3);
+    expect(opened[0]?.close).toHaveBeenCalled();
+    const version = calls.find((c) => c.type === "version")?.input as Record<string, unknown>;
+    expect(version).toMatchObject({
+      origin: "manual_edit",
+      note: "Boş tuval.",
+      editorDocument: { kind: "wecra", format: 2 },
+    });
+    const slides = version.slides as { width: number; height: number; html: string }[];
+    expect(slides.map((s) => [s.width, s.height])).toEqual([
+      [1080, 1080],
+      [1080, 1080],
+      [1080, 1080],
+    ]);
+    // The frames are the slides, in reading order, named as an imported post's are.
+    const names = slides.map((s) => {
+      const c = readCanvas(s.html);
+      return c.kind === "facts" ? c.facts.frame.name : null;
+    });
+    expect(names).toEqual(["Kare 1", "Kare 2", "Kare 3"]);
+    expect(calls.find((c) => c.type === "job")?.input).toMatchObject({ type: "content.check" });
+  });
+
+  it("designs the blank frames at once with Wecra's operations on `frame:N` (a logo SVG as vectors)", async () => {
+    const { bundle } = await canvasBundle();
+    const { deps, calls, assets } = fakeRunner(bundle, { current: 0 });
+    assets.set("logo-svg", LOGO_SVG);
+    const out = await createCanvasJob(
+      job("canvas.create", {
+        slides: 1,
+        width: 1080,
+        height: 1350,
+        note: "Wecra ile üretildi",
+        operations: [
+          {
+            tool: "update_nodes",
+            args: { updates: [{ nodeId: "frame:1", fills: "#F4EFE4" }] },
+          },
+          {
+            tool: "create_nodes",
+            args: {
+              parentId: "frame:1",
+              nodes: [
+                {
+                  type: "TEXT",
+                  name: "Başlık",
+                  characters: "Hasat zamanı",
+                  x: 80,
+                  y: 160,
+                  fontFamily: "Inter",
+                  fontStyle: "Bold",
+                  fontSize: 72,
+                  fills: "#1D2A1B",
+                },
+                { name: "Logo", image: { assetId: "logo-svg" }, x: 80, y: 1200, width: 200 },
+              ],
+            },
+          },
+        ],
+      }),
+      deps,
+    );
+    expect(out.results.map((r) => [r.tool, r.ok])).toEqual([
+      ["update_nodes", true],
+      ["create_nodes", true],
+    ]);
+    const version = calls.find((c) => c.type === "version")?.input as Record<string, unknown>;
+    expect(version).toMatchObject({ origin: "generated", note: "Wecra ile üretildi" });
+    const facts = factsOf(version);
+    expect(facts.frame.name).toBe("Kare 1");
+    expect(facts.nodes.find((n) => n.name === "Başlık")?.text).toMatchObject({
+      characters: "Hasat zamanı",
+      size: 72,
+    });
+    expect(facts.nodes.find((n) => n.name === "Logo")).toBeTruthy();
+  });
+
+  it("refuses a post that already has another version, and a frame count the type can't take", async () => {
+    const { bundle } = await canvasBundle();
+    const stale = fakeRunner(bundle);
+    await expect(
+      createCanvasJob(job("canvas.create", { slides: 1, width: 1080, height: 1350 }), stale.deps),
+    ).rejects.toThrow(/Post değişti/);
+    const single = fakeRunner(bundle, { current: 0 });
+    await expect(
+      createCanvasJob(job("canvas.create", { slides: 2, width: 1080, height: 1350 }), single.deps),
+    ).rejects.toThrow(/tek kare/);
+    expect(single.calls.filter((c) => c.type === "version")).toHaveLength(0);
   });
 });

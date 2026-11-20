@@ -102,6 +102,8 @@ const STOPPED_ON_DELETE = [
   "content.check",
   "canvas.read",
   "canvas.apply",
+  "canvas.create",
+  "content.details",
 ];
 
 /** True when the stored approval still covers the current version. */

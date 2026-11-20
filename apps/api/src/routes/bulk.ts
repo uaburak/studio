@@ -45,7 +45,7 @@ import { createJob } from "./jobs.ts";
 type ReviseSkip = z.output<typeof ContentReviseResult>["skipped"][number];
 
 /** Jobs that make a new version: a post with one of these running is busy. */
-const VERSION_JOB_TYPES = ["content.generate", "content.render", "canvas.apply"];
+const VERSION_JOB_TYPES = ["content.generate", "content.render", "canvas.apply", "canvas.create"];
 
 /** The chat message that hands canvas posts to the agent (its canvas tools keep the hand edits). */
 export function canvasReviseMessage(

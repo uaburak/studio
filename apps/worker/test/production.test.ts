@@ -129,10 +129,17 @@ describe("generate_post: engine, variants and products", () => {
     expect(String(res.data.error)).toContain("Bu motor henüz hazır değil (SVG)");
     expect(asked.state.jobs).toHaveLength(0);
 
-    const byBrand = executor({ brands: [fakeBrand({ id: "brand_1", defaultEngine: "wecra" })] });
+    const byBrand = executor({ brands: [fakeBrand({ id: "brand_1", defaultEngine: "code" })] });
     const res2 = await byBrand.ex.execute("generate_post", { brief: "Hasat" });
     expect(res2.isError).toBe(true);
-    expect(String(res2.data.error)).toContain("Bu motor henüz hazır değil (Wecra)");
+    expect(String(res2.data.error)).toContain("Bu motor henüz hazır değil (Kod)");
+
+    // Wecra runs (Faz 2): the brand's default goes on every variant's job.
+    const wecra = executor({ brands: [fakeBrand({ id: "brand_1", defaultEngine: "wecra" })] });
+    const res3 = await wecra.ex.execute("generate_post", { brief: "Hasat", variants: 2 });
+    expect(res3.isError).toBe(false);
+    expect(wecra.state.jobs.map((j) => j.payload.engine)).toEqual(["wecra", "wecra"]);
+    expect(new Set(wecra.state.jobs.map((j) => j.contentId)).size).toBe(2);
 
     // A single HTML post without an engine keeps the old payload (absent = html).
     const plain = executor();

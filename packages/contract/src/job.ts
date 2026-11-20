@@ -12,6 +12,7 @@ import {
   pageOf,
   Timestamp,
 } from "./common.ts";
+import { ContentVersionOrigin, MAX_ARTBOARD_PX, SLIDE_LIMITS } from "./content.ts";
 import { ContentCheckPayload } from "./content-check.ts";
 import { CommentsSuggestPayload, CommentsSyncPayload, InsightsSyncPayload } from "./engagement.ts";
 import { ApprovalTarget, MAX_GENERATION_VARIANTS } from "./generation.ts";
@@ -37,7 +38,11 @@ export type JobId = z.infer<typeof JobId>;
  *   request (`ContentCheckPayload`, roadmap 13).
  * - `canvas.read` / `canvas.apply` read and edit a canvas version's Wecra document (S1) with
  *   Wecra's own design operations. They run in the Mac app's hidden canvas runner (Wecra's
- *   engine, in an Electron page), not in the worker: `CANVAS_JOB_TYPES`.
+ *   engine, in an Electron page), not in the worker: `CANVAS_JOB_TYPES`. `canvas.create` makes a
+ *   post's version from a blank Wecra document (one frame per slide), optionally designed at once
+ *   with the same operations (the Wecra engine's first pass, "Boş tuvalden yeni post").
+ * - `content.details` ("Bilgileri üret") writes a post's caption, hashtags, title and publish
+ *   details from its rendered design, never touching the design (no version).
  * - `media.analyze` tags uploaded pictures on the Mac with Apple's Vision (N12,
  *   `MediaAnalyzePayload`); the API queues it after an upload and for the backfill.
  * - `insights.sync` reads published posts' statistics and follower counts (N15),
@@ -57,10 +62,12 @@ export const JobType = z
     "content.check",
     "canvas.read",
     "canvas.apply",
+    "canvas.create",
     "media.analyze",
     "insights.sync",
     "comments.sync",
     "comments.suggest",
+    "content.details",
   ])
   .meta({ id: "JobType" });
 export type JobType = z.infer<typeof JobType>;
@@ -83,10 +90,12 @@ export const JOB_TYPE_REQUIREMENTS = {
   "content.check": { brand: true, content: true },
   "canvas.read": { brand: true, content: true },
   "canvas.apply": { brand: true, content: true },
+  "canvas.create": { brand: true, content: true },
   "media.analyze": { brand: false, content: false },
   "insights.sync": { brand: false, content: false },
   "comments.sync": { brand: false, content: false },
   "comments.suggest": { brand: true, content: false },
+  "content.details": { brand: true, content: true },
 } as const satisfies Record<JobType, { brand: boolean; content: boolean }>;
 
 export const MAX_JOB_PAYLOAD_BYTES = 100_000;
@@ -341,6 +350,7 @@ export type SchedulePublishPayload = z.infer<typeof SchedulePublishPayload>;
 export const CANVAS_JOB_TYPES = [
   "canvas.read",
   "canvas.apply",
+  "canvas.create",
 ] as const satisfies readonly JobType[];
 
 /**
@@ -435,6 +445,129 @@ export const CanvasReadPayload = z
   .meta({ id: "CanvasReadPayload" });
 export type CanvasReadPayload = z.infer<typeof CanvasReadPayload>;
 
+// --- canvas.create (Faz 2: the Wecra engine, "Boş tuvalden yeni post") ----------------------
+//
+// A post's version from a blank Wecra document: one top-level frame per slide ("Kare 1", "Kare 2"
+// …, the slide size, white, side by side), then — optionally — Wecra's design operations as in
+// `canvas.apply`. Frames are not known by id before they exist, so an operation names the N-th
+// frame as `"frame:N"` (1-based) in `parentId`, `nodeId` or `nodeIds`; the runner puts the frame's
+// id there. The version is stored exactly as the canvas saves one (renders, facts, the bundle as
+// `editorDocument`, checks), so the post opens on the canvas and is editable there.
+
+/** `"frame:N"`: the N-th slide frame (1-based) of a `canvas.create` document. */
+export const CANVAS_FRAME_REF = /^frame:(\d{1,2})$/;
+
+export function canvasFrameRef(slide: number): string {
+  return `frame:${slide}`;
+}
+
+const FRAME_REF_KEYS = new Set(["parentId", "nodeId", "nodeIds"]);
+
+/**
+ * `args` with every `"frame:N"` in `parentId` / `nodeId` / `nodeIds` (at any depth: nested
+ * `nodes`, `updates`) replaced by the N-th frame's id. Unknown frames stay as they are (Wecra then
+ * says the layer does not exist).
+ */
+export function resolveCanvasFrameRefs(
+  args: Record<string, unknown>,
+  frameIds: readonly string[],
+): Record<string, unknown> {
+  const swap = (v: unknown): unknown => {
+    if (typeof v !== "string") return v;
+    const m = CANVAS_FRAME_REF.exec(v);
+    return m ? (frameIds[Number(m[1]) - 1] ?? v) : v;
+  };
+  const walk = (value: unknown): unknown => {
+    if (Array.isArray(value)) return value.map(walk);
+    if (value && typeof value === "object") {
+      const out: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+        if (!FRAME_REF_KEYS.has(k)) out[k] = walk(v);
+        else out[k] = Array.isArray(v) ? v.map(swap) : swap(v);
+      }
+      return out;
+    }
+    return value;
+  };
+  return walk(args) as Record<string, unknown>;
+}
+
+const CanvasPx = z.number().int().min(1).max(MAX_ARTBOARD_PX);
+
+export const CanvasCreatePayload = z
+  .object({
+    /**
+     * The post's current version the blank document replaces (null / absent: the post has no
+     * version yet). A different current version fails the job without a change.
+     */
+    baseVersion: z.number().int().min(1).nullable().optional(),
+    slides: z.number().int().min(1).max(SLIDE_LIMITS.carousel.max),
+    width: CanvasPx,
+    height: CanvasPx,
+    /** Design operations on the blank frames (`"frame:N"` names a frame); none: a blank post. */
+    operations: z.array(CanvasOperation).max(MAX_CANVAS_OPERATIONS).default([]),
+    /** The version's origin: `generated` (the Wecra engine) or `manual_edit` (the owner's blank). */
+    origin: ContentVersionOrigin.exclude(["ai_edit"]).default("generated"),
+    note: z.string().trim().max(500).optional(),
+    conversationId: EntityId.optional(),
+    /** The `content.generate` job this is part of (logs). */
+    generateJobId: JobId.optional(),
+  })
+  .meta({ id: "CanvasCreatePayload" });
+export type CanvasCreatePayload = z.infer<typeof CanvasCreatePayload>;
+export type CanvasCreatePayloadInput = z.input<typeof CanvasCreatePayload>;
+
+export const CanvasCreateOutput = z
+  .object({
+    contentId: EntityId,
+    version: z.number().int().min(1),
+    /** The slide frames' ids, in reading order (what `"frame:N"` became). */
+    frameIds: z.array(z.string()).max(SLIDE_LIMITS.carousel.max),
+    results: z.array(CanvasOperationResult).max(MAX_CANVAS_OPERATIONS),
+    slides: z.number().int().min(1),
+    checkJobId: JobId.nullable(),
+  })
+  .meta({ id: "CanvasCreateOutput" });
+export type CanvasCreateOutput = z.infer<typeof CanvasCreateOutput>;
+
+// --- content.details ("Bilgileri üret", Faz 2) ------------------------------------------------
+
+/** What "Bilgileri üret" may write. */
+export const CONTENT_DETAIL_FIELDS = ["title", "caption", "altText", "firstComment"] as const;
+export type ContentDetailField = (typeof CONTENT_DETAIL_FIELDS)[number];
+
+export const ContentDetailsPayload = z
+  .object({
+    /** The version whose design is read (default: the current one). */
+    version: z.number().int().min(1).optional(),
+    /** Default: all of them. */
+    fields: z.array(z.enum(CONTENT_DETAIL_FIELDS)).min(1).max(4).optional(),
+    /** The owner's note for this round ("daha kısa", "soru ile bitsin"). */
+    instructions: z.string().trim().max(2_000).optional(),
+    model: AgentModel.optional(),
+    effort: AgentEffort.optional(),
+  })
+  .meta({ id: "ContentDetailsPayload" });
+export type ContentDetailsPayload = z.infer<typeof ContentDetailsPayload>;
+export type ContentDetailsPayloadInput = z.input<typeof ContentDetailsPayload>;
+
+export const ContentDetailsOutput = z
+  .object({
+    contentId: EntityId,
+    /** The version that was read; the design is never changed (no new version). */
+    version: z.number().int().min(1),
+    written: z.array(z.enum(CONTENT_DETAIL_FIELDS)),
+    title: z.string().nullable(),
+    caption: z.string().nullable(),
+    hashtags: z.array(z.string()),
+    altTexts: z.array(z.string().nullable()),
+    firstComment: z.string().nullable(),
+    /** What was left as it was, and why ("onaylı post: açıklama değişmedi"). */
+    notes: z.array(z.string()).max(10),
+  })
+  .meta({ id: "ContentDetailsOutput" });
+export type ContentDetailsOutput = z.infer<typeof ContentDetailsOutput>;
+
 /** Job types only the API itself creates; `POST /api/jobs` refuses them. */
 export const INTERNAL_JOB_TYPES = ["chat.turn"] as const satisfies readonly JobType[];
 
@@ -454,6 +587,8 @@ export const RETRYABLE_JOB_TYPES = [
   "content.check",
   "canvas.read",
   "canvas.apply",
+  "canvas.create",
+  "content.details",
 ] as const satisfies readonly JobType[];
 
 /** A finished job the user may queue again ("Yeniden dene"): failed or cancelled, of a retryable type. */
@@ -479,6 +614,8 @@ export const JOB_PAYLOAD_SCHEMAS: Partial<Record<JobType, z.ZodType>> = {
   "insights.sync": InsightsSyncPayload,
   "comments.sync": CommentsSyncPayload,
   "comments.suggest": CommentsSuggestPayload,
+  "canvas.create": CanvasCreatePayload,
+  "content.details": ContentDetailsPayload,
 };
 
 // --- Live updates and worker presence (F1-6) --------------------------------

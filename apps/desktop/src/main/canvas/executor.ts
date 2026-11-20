@@ -1,5 +1,5 @@
 // The Mac app's canvas runner on the hub (S1): a worker connection of its own that announces only
-// the canvas job types (`canvas.read`, `canvas.apply`) — the hub gives it those jobs and nothing
+// the canvas job types (`canvas.read`, `canvas.apply`, `canvas.create`) — the hub gives it those jobs and nothing
 // else, and does not count it as "the Mac worker" (presence `online`, Claude / Gemini commands).
 // The main process holds the connection and the worker token; each job runs in the hidden runner
 // page (runner-window.ts) and its result goes back as the worker protocol says: ack, progress and

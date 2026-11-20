@@ -309,8 +309,8 @@ export const PlanGenerate = z
     /** With `force`: the user confirmed replacing edited or approved posts. */
     overwriteEdits: z.boolean().optional(),
     /**
-     * Design engine for these posts (default: the brand's `defaultEngine`, else `html`). Only
-     * `html` runs today; others are refused with "Bu motor henüz hazır değil".
+     * Design engine for these posts (default: the brand's `defaultEngine`, else `html`). `html`
+     * and `wecra` run today; others are refused with "Bu motor henüz hazır değil".
      */
     engine: GenerationEngine.optional(),
   })
@@ -457,7 +457,8 @@ export const ContentGeneratePayload = z
     /** Convert a post (N10): its texts and pictures become a story or a Reels. */
     repurpose: RepurposeSpec.optional(),
     /**
-     * Design engine (docs/URETIM-RESIM.md). Absent = `html`. Only `html` runs today; the worker
+     * Design engine (docs/URETIM-RESIM.md). Absent = `html`. `html` and `wecra` (a blank Wecra
+     * document designed with Wecra's operations by the Mac's canvas runner) run today; the worker
      * fails the job with "Bu motor henüz hazır değil" for the others (never falls back).
      */
     engine: GenerationEngine.optional(),

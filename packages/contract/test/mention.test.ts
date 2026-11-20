@@ -66,8 +66,9 @@ describe("@product / @post mention names", () => {
 });
 
 describe("generation engines", () => {
-  it("only HTML is ready", () => {
+  it("HTML and Wecra are ready", () => {
     expect(engineNotReadyError("html")).toBeNull();
+    expect(engineNotReadyError("wecra")).toBeNull();
     expect(engineNotReadyError("svg")).toBe("Bu motor henüz hazır değil (SVG)");
     expect(engineNotReadyError("code")).toBe("Bu motor henüz hazır değil (Kod)");
   });

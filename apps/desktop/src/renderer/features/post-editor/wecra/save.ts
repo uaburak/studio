@@ -153,7 +153,8 @@ export async function createCanvasVersion(o: {
   images: BundleImages;
   /** The HTML version the document was first imported from. */
   sourceVersion: number | null;
-  origin: Extract<ContentVersionOrigin, "manual_edit" | "ai_edit">;
+  /** `generated`: the Wecra engine's design on a blank canvas (canvas-runner `canvas.create`). */
+  origin: ContentVersionOrigin;
   note: string;
   jobId?: string;
 }): Promise<CreatedCanvasVersion> {

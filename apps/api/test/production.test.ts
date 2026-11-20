@@ -341,10 +341,10 @@ describe("brand engine and picture style", () => {
       "validation_error",
     );
     expect(refused.message).toContain("Bu motor henüz hazır değil");
-    const ok = await api("POST", `/api/plans/${planId}/generate`, { engine: "html" });
+    const ok = await api("POST", `/api/plans/${planId}/generate`, { engine: "wecra" });
     expect(ok.status, JSON.stringify(ok.body)).toBe(200);
     const jobs = (ok.body as { jobs: Job[] }).jobs;
-    expect(jobs[0]?.payload).toMatchObject({ engine: "html" });
+    expect(jobs[0]?.payload).toMatchObject({ engine: "wecra" });
   });
 });
 

@@ -17,6 +17,7 @@ import {
   assets,
   brandProducts,
   contents,
+  contentVersionDocuments,
   contentVersionSlides,
   contentVersions,
 } from "../db/schema.ts";
@@ -213,9 +214,17 @@ export async function mentionedEntities(
   const contentsOut: TurnContent[] = [];
   if (contentIds.length > 0) {
     const rows = await db
-      .select({ row: contents, current: currentVersionColumns })
+      .select({
+        row: contents,
+        current: currentVersionColumns,
+        documentKind: contentVersionDocuments.kind,
+      })
       .from(contents)
       .leftJoin(contentVersions, eq(contents.currentVersionId, contentVersions.id))
+      .leftJoin(
+        contentVersionDocuments,
+        eq(contentVersionDocuments.versionId, contents.currentVersionId),
+      )
       .where(and(eq(contents.brandId, brandId), inArray(contents.id, contentIds)));
     const pending = await pendingCounts(db, contentIds);
     for (const id of contentIds) {
@@ -223,6 +232,8 @@ export async function mentionedEntities(
       if (!hit) continue;
       contentsOut.push({
         mention: firstName.get(id) ?? names.contents.get(id) ?? "",
+        // A canvas post (Wecra document): the agent edits and continues it with its canvas tools.
+        canvas: hit.documentKind === "wecra",
         content: toContent(hit.row, hit.current, pending.get(id) ?? 0),
       });
     }

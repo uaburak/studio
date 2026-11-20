@@ -104,7 +104,7 @@ describe("canvas runner on the hub", () => {
       type: "hello",
       protocolVersion: 1,
       workerId: "studio-canvas",
-      capabilities: ["canvas.read", "canvas.apply"],
+      capabilities: ["canvas.read", "canvas.apply", "canvas.create"],
       workerVersion: "0.1.0",
       concurrency: 1,
       activeJobIds: [],
