@@ -2048,6 +2048,17 @@ async function generatePlan(
       ...(input.model ? { model: input.model } : {}),
       ...(input.effort ? { effort: input.effort } : {}),
       engine,
+      // The owner's consented AI picture goes only to the posts that have an AI image slot.
+      ...(input.slotImage && item.imageSlot === "ai_generate"
+        ? {
+            slotImage: {
+              ...input.slotImage,
+              ...(!input.slotImage.conversationId && plan.conversationId
+                ? { conversationId: plan.conversationId }
+                : {}),
+            },
+          }
+        : {}),
     });
     const job: JobRow = {
       id: newId(),

@@ -600,6 +600,8 @@ describe("happy path", () => {
       instructions: "sade",
       model: "sonnet",
       effort: "high",
+      // The owner consented to the paid "AI görsel": only the ai_generate item carries it.
+      slotImage: { consented: true, style: "retro" },
     });
     expect(gen.status, JSON.stringify(gen.body)).toBe(200);
     const generated = PlanGenerateResult.parse(gen.body);
@@ -620,6 +622,11 @@ describe("happy path", () => {
         model: "sonnet",
         effort: "high",
       });
+      expect(payload.slotImage).toEqual(
+        item?.imageSlot === "ai_generate"
+          ? { consented: true, style: "retro", conversationId: conv.id }
+          : undefined,
+      );
     }
     expect(generated.plan.items.map((i) => i.generation?.status)).toEqual(["queued", "queued"]);
     // Nothing left to generate while they are queued; a named busy item is a conflict.

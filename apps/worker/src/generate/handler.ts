@@ -66,6 +66,7 @@ import {
 } from "./pipeline.ts";
 import type { DesignBrief } from "./prompt.ts";
 import { loadRepurpose, reelSpecFromPost, repurposeMedia, storyBrief } from "./repurpose.ts";
+import { queueSlotImageJobs } from "./slot-images.ts";
 import { runTemplateGenerate, type TemplateAiCaller } from "./template.ts";
 
 export interface ContentGenerateDeps extends AgentDeps {
@@ -142,8 +143,10 @@ async function runContentGenerate(
   if (engineError) throw new Error(`${engineError}; post üretilmedi.`);
 
   // `@ürün` mentions: the products' own facts go to the designer with the instructions.
-  if (payload.productIds?.length) {
-    const facts = await productFacts(api, brandId, payload.productIds, signal);
+  // A plan item's consented slot picture names its products too.
+  const factIds = payload.productIds?.length ? payload.productIds : payload.slotImage?.productIds;
+  if (factIds?.length) {
+    const facts = await productFacts(api, brandId, factIds, signal);
     if (facts) {
       payload.instructions = [payload.instructions ?? "", facts].filter(Boolean).join("\n\n");
     }
@@ -193,6 +196,14 @@ async function runContentGenerate(
       logger.info(
         `[job ${ctx.jobId}] version ${existing.version} already stored by an earlier attempt`,
       );
+      // The slot picture the earlier attempt may not have queued yet (never twice).
+      const slotImages = await queueSlotImageJobs(deps, {
+        jobId: ctx.jobId,
+        payload,
+        slides: full.slides,
+        imageSlot: payload.imageSlot ?? "none",
+        signal,
+      });
       return {
         contentId,
         version: full.version,
@@ -200,6 +211,7 @@ async function runContentGenerate(
         contentHash: full.contentHash,
         renderedAssetIds: full.slides.map((s) => s.renderedAssetId),
         reused: true,
+        ...(slotImages ? { slotImages } : {}),
       };
     }
 
@@ -553,6 +565,15 @@ async function runContentGenerate(
     });
     const fixed = checked?.fixedVersion ?? null;
 
+    // The consented "AI görsel": the product-image line fills the slot after approval.
+    const slotImages = await queueSlotImageJobs(deps, {
+      jobId: ctx.jobId,
+      payload,
+      slides: final.slides,
+      imageSlot: brief.imageSlot,
+      signal,
+    });
+
     ctx.progress(1, "Tamamlandı");
     const u = result.usage;
     return {
@@ -565,6 +586,7 @@ async function runContentGenerate(
       ...(fixed ? { generatedVersion: version.version } : {}),
       renderedAssetIds: fixed ? fixed.slides.map((s) => s.renderedAssetId) : renderedAssetIds,
       checks: checked?.brief ?? null,
+      ...(slotImages ? { slotImages } : {}),
       slides: final.slides.length,
       preset: brief.preset.id,
       lintClean: final.errors === 0,
