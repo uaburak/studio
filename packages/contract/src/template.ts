@@ -9,6 +9,7 @@ import {
   Timestamp,
 } from "./common.ts";
 import { Content, ContentType, EditorDocument, Slide } from "./content.ts";
+import { SlotImageRequest } from "./generation.ts";
 import { Job } from "./job.ts";
 
 /*
@@ -269,6 +270,15 @@ export const TemplateUse = z
     conversationId: EntityId.optional(),
     model: AgentModel.optional(),
     effort: AgentEffort.optional(),
+    /** What an AI picture of an empty image slot shows (default: the title and brief). */
+    imageBrief: z.string().max(4_000).optional(),
+    /**
+     * Fill the template's empty image slots (unlocked slot fields without a picture in `images`)
+     * through the product-image line, after the owner consented to the paid generation (the
+     * client's own consent prompt; the chat's card). Absent = no paid picture; the slots stay
+     * empty. Its `productIds` also give the AI fill the products' facts.
+     */
+    slotImage: SlotImageRequest.optional(),
   })
   .meta({ id: "TemplateUse" });
 export type TemplateUse = z.input<typeof TemplateUse>;

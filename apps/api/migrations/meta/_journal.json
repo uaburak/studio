@@ -176,6 +176,13 @@
       "when": 1795176688852,
       "tag": "0024_production_basics",
       "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "6",
+      "when": 1795193529402,
+      "tag": "0025_plan_item_products",
+      "breakpoints": true
     }
   ]
 }

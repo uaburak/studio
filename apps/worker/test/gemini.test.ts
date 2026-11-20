@@ -130,6 +130,8 @@ function openPlanFixture(): Plan {
         hook: null,
         imageSlot: "none",
         imageBrief: null,
+        productIds: [],
+        imageView: null,
         status: "planned",
         similar: [],
         contentId: null,

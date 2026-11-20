@@ -36,6 +36,7 @@ import {
   isTerminalJobStatus,
   type Job,
   MAX_GENERATION_VARIANTS,
+  MAX_PLAN_ITEM_PRODUCTS,
   type Plan,
   type PlanningContext,
   type PlanProposalPut,
@@ -222,6 +223,16 @@ export const STUDIO_TOOLS: readonly StudioToolDefinition[] = [
                 type: "array",
                 items: { type: "string" },
                 description: "Kullanıcının istediği @takma adlar (@ olmadan).",
+              },
+              products: {
+                type: "array",
+                items: { type: "string" },
+                description:
+                  "Postun konusu olan ürünler (@ürün; slug, ad ya da id; en çok 4): kullanıcının @ile andığı ya da brief'in anlattığı ürünler. Ürün bilgileri tasarıma, fotoğrafları AI görsele (birebir tarif) gider.",
+              },
+              imageView: {
+                type: "string",
+                description: "AI görselde ürünün hangi yüzü (sol, arka, önden…); boşsa fark etmez.",
               },
               templateId: {
                 type: "string",
@@ -894,6 +905,8 @@ const ProposePlanInput = z.object({
         imageBrief: trimmed(3_800).optional(),
         imageAliases: z.array(z.string()).default([]),
         templateId: z.string().trim().min(1).max(128).optional(),
+        products: z.array(z.string().trim().min(1)).max(8).default([]),
+        imageView: trimmed(80).optional(),
       }),
     )
     .min(1),
@@ -1471,7 +1484,7 @@ export class StudioToolExecutor {
           name,
           "Şablonla post başlatılıyor…",
           "Şablonla post kuyruğa alındı",
-          () => this.onceThenRef(name, args, rawCallId, generateFromTemplateTool),
+          () => this.onceThenRef(name, args, rawCallId, generateFromTemplateTool, stepId),
         );
       case "repurpose_content":
         return this.runSafe(
@@ -1502,7 +1515,7 @@ export class StudioToolExecutor {
   }
 
   /** What the template tools use of this turn (template-tools.ts). */
-  private templateEnv(): TemplateToolEnv {
+  private templateEnv(stepId?: string): TemplateToolEnv {
     return {
       api: this.options.api,
       signal: this.options.signal,
@@ -1510,6 +1523,12 @@ export class StudioToolExecutor {
       brandId: this.brandId,
       resolveAlias: (alias) => this.resolveAliasToAssetId(alias),
       ...this.generationPayloadExtras(),
+      ...(stepId
+        ? {
+            slotImageConsent: (input) =>
+              this.slotImageConsent(stepId, { ...input, posts: 1 }, "generate_from_template"),
+          }
+        : {}),
     };
   }
 
@@ -1525,6 +1544,8 @@ export class StudioToolExecutor {
       env: TemplateToolEnv,
       args: Record<string, unknown>,
     ) => Promise<{ data: Record<string, unknown>; summary: string; contentId: string }>,
+    /** The tool's step: a paid-consent card it may show goes next to it. */
+    stepId?: string,
   ) {
     const { repeat, ...rest } = args;
     const key = toolCallKey(tool, { ...rest, brandId: this.brandId });
@@ -1539,7 +1560,7 @@ export class StudioToolExecutor {
         summary: "zaten kuyrukta",
       };
     }
-    const out = await run(this.templateEnv(), rest);
+    const out = await run(this.templateEnv(stepId), rest);
     await this.ledger.put({ key, tool, callId: callId ?? null, data: out.data });
     await this.options.writer
       .setPart({ type: "content_ref", contentId: out.contentId, version: null, note: "Üretiliyor" })
@@ -1731,6 +1752,24 @@ export class StudioToolExecutor {
       aliases: this.options.aliases,
       ...(explicitBrandId ? { brandId: explicitBrandId } : {}),
     });
+    // The items' products (`@ürün`): named by the agent, or @slug mentions in the item's texts.
+    const planBrand = explicitBrandId ?? this.brandId;
+    if (planBrand) {
+      const known = await this.productsOf(planBrand).catch((error: unknown) => {
+        this.options.signal.throwIfAborted();
+        this.logger.warn(`plan products not resolved: ${(error as Error).message}`);
+        return null;
+      });
+      if (known) {
+        plan.items.forEach((item, i) => {
+          const given = input.items[i];
+          if (!given) return;
+          const picked = planItemProducts(known, given, notes, i);
+          if (picked.length) item.productIds = picked;
+          if (given.imageView) item.imageView = given.imageView;
+        });
+      }
+    }
     if (notes.length > 0) {
       this.logger.info(`plan fixes (${this.options.runId}): ${notes.join("; ")}`);
     }
@@ -2265,6 +2304,7 @@ export class StudioToolExecutor {
         ? await this.engineFor(plan.brandId, input.engine)
         : undefined;
       // The item's "AI görsel" slot: one paid-consent card, the picture after the design.
+      // The item's own products (and side) unless the call names others.
       const planSlot =
         item.imageSlot === "ai_generate" && item.contentType !== "reel" && input.aiImage
           ? await this.slotImageConsent(stepId, {
@@ -2272,8 +2312,8 @@ export class StudioToolExecutor {
               posts: 1,
               title: item.title,
               imageBrief: item.imageBrief ?? null,
-              products: input.products,
-              view: input.imageView,
+              products: input.products.length ? input.products : (item.productIds ?? []),
+              view: input.imageView ?? item.imageView ?? undefined,
               style: input.imageStyle,
             })
           : null;
@@ -2429,11 +2469,11 @@ export class StudioToolExecutor {
       view?: string | undefined;
       style?: string | undefined;
     },
+    tool: "generate_post" | "generate_from_template" = "generate_post",
   ): Promise<{
     request: SlotImageRequest | null;
     result: { consented: boolean; note: string; products?: string[] };
   }> {
-    const tool = "generate_post";
     const id = `${stepId}-image`.slice(0, 64);
     const runningLabel = "AI görsel için izin bekleniyor…";
     const doneLabel = "AI görsel izni";
@@ -3167,12 +3207,29 @@ export class StudioToolExecutor {
         ? toGenerate.filter((i) => i.imageSlot === "ai_generate" && i.contentType !== "reel").length
         : 0;
       if (slotPosts > 0) {
+        // The pictures show each item's own products (`productIds`, from its @ürün mentions).
+        const slotItems = toGenerate.filter(
+          (i) => i.imageSlot === "ai_generate" && i.contentType !== "reel",
+        );
+        const wanted = new Set(slotItems.flatMap((i) => i.productIds ?? []));
+        const named =
+          wanted.size > 0
+            ? (await this.productsOf(plan.brandId).catch(() => [] as BrandProduct[])).filter((p) =>
+                wanted.has(p.id),
+              )
+            : [];
+        const photos = new Map(named.map((p) => [p.id, Math.min(3, p.imageAssetIds.length)]));
         detail = `${detail}\n${slotImageConsentDetail({
           model: this.options.imageModel ?? "gemini-nano-banana-2.1",
           posts: slotPosts,
-          products: [],
+          products: named.map((p) => p.name),
           prompt: plan.title || "plan görselleri",
-          references: 0,
+          references: Math.round(
+            slotItems.reduce(
+              (n, i) => n + (i.productIds ?? []).reduce((m, id) => m + (photos.get(id) ?? 0), 0),
+              0,
+            ) / slotPosts,
+          ),
         })}`;
       }
 
@@ -4177,4 +4234,47 @@ export function aiImageConsentDetail(input: {
   ]
     .filter(Boolean)
     .join("\n");
+}
+
+/**
+ * A proposed plan item's products (at most MAX_PLAN_ITEM_PRODUCTS): the ones the agent named
+ * (`products`: slug, name or id) and the products whose `@slug` its texts mention. Unknown names
+ * are left out with a note.
+ */
+export function planItemProducts(
+  known: readonly Pick<BrandProduct, "id" | "slug" | "name">[],
+  item: {
+    products?: readonly string[] | undefined;
+    title?: string | undefined;
+    brief?: string | undefined;
+    hook?: string | undefined;
+    imageBrief?: string | undefined;
+  },
+  notes: string[],
+  index: number,
+): string[] {
+  const out: string[] = [];
+  const add = (id: string) => {
+    if (!out.includes(id)) out.push(id);
+  };
+  for (const raw of item.products ?? []) {
+    const cleaned = raw.trim().replace(/^@/, "");
+    const lower = cleaned.toLocaleLowerCase("tr-TR");
+    const hit =
+      known.find((p) => p.id === cleaned) ??
+      known.find((p) => p.slug === lower) ??
+      known.find((p) => p.name.toLocaleLowerCase("tr-TR") === lower);
+    if (hit) add(hit.id);
+    else notes.push(`item ${index + 1}: unknown product @${cleaned} dropped`);
+  }
+  const text = [item.title, item.brief, item.hook, item.imageBrief].filter(Boolean).join("\n");
+  for (const m of text.matchAll(/(?:^|[^\p{L}\p{N}_@.-])@([a-z0-9][a-z0-9-]*)/gu)) {
+    const slug = m[1]?.toLowerCase();
+    const hit = slug ? known.find((p) => p.slug === slug) : undefined;
+    if (hit) add(hit.id);
+  }
+  if (out.length > MAX_PLAN_ITEM_PRODUCTS) {
+    notes.push(`item ${index + 1}: products cut to ${MAX_PLAN_ITEM_PRODUCTS}`);
+  }
+  return out.slice(0, MAX_PLAN_ITEM_PRODUCTS);
 }

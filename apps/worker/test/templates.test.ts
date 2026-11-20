@@ -9,10 +9,13 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
+  type Asset,
+  type BrandProduct,
   type CanvasApplyOutput,
   type Content,
   type ContentTemplateDetail,
   type ContentVersion,
+  ImageGeneratePayload,
   type Job,
   type JobCreate,
   readReelVersionInfo,
@@ -33,7 +36,13 @@ import type { ClaudeCallOptions, ClaudeCallResult, ClaudeRunner } from "../src/c
 import { type ContentGenerateDeps, createContentGenerateHandler } from "../src/generate/handler.ts";
 import type { SlideRenderer } from "../src/generate/pipeline.ts";
 import { reelSpecFromPost, storyBrief } from "../src/generate/repurpose.ts";
-import { aiFillSchema, overflowingFields, readAiFill } from "../src/generate/template.ts";
+import {
+  aiFillSchema,
+  overflowingFields,
+  readAiFill,
+  templateCanvasSlots,
+  templateHtmlSlots,
+} from "../src/generate/template.ts";
 import { silentLogger } from "../src/log.ts";
 import type { JobContext } from "../src/registry.ts";
 import type { FfmpegRunner } from "../src/video/ffmpeg.ts";
@@ -96,6 +105,63 @@ function canvasTemplate(): ContentTemplateDetail {
     slides: slides.map((s) => ({ ...s, renderedAssetId: "asset_render", layers: null })),
   };
 }
+
+/** The HTML template with its picture slot left empty (the source post had no picture there). */
+function emptySlotTemplate(): ContentTemplateDetail {
+  const html = templateSlide()
+    .replace('data-slot-state="filled"', 'data-slot-state="empty"')
+    .replace(/<img data-slot-image[^>]*>/, "");
+  const slides = [{ html, width: 1080, height: 1350 }];
+  return {
+    ...htmlTemplate(),
+    fields: asFields(slides),
+    slides: slides.map((s) => ({ ...s, renderedAssetId: "asset_render", layers: null })),
+  };
+}
+
+const boro: BrandProduct = {
+  id: "prod_boro",
+  brandId: "brand_1",
+  name: "Boro",
+  slug: "boro",
+  description: "Sıvı bor gübresi",
+  category: "Gübre",
+  tags: [],
+  notes: "",
+  imageAssetIds: ["asset_front", "asset_left"],
+  createdAt: NOW,
+  updatedAt: NOW,
+};
+
+function seedBoro(state: ReturnType<typeof createFakeApi>["state"]) {
+  state.products.push(boro);
+  for (const [id, name] of [
+    ["asset_front", "boro-on.png"],
+    ["asset_left", "boro-sol.png"],
+  ] as const) {
+    const record: Asset = {
+      id,
+      brandId: "brand_1",
+      kind: "image",
+      source: "upload",
+      objectKey: `k/${id}`,
+      mimeType: "image/png",
+      bytes: 1,
+      sha256: "0".repeat(64),
+      width: 1600,
+      height: 1600,
+      durationMs: null,
+      originalFilename: name,
+      createdAt: NOW,
+    };
+    state.assetRecords.push(record);
+  }
+}
+
+const imageJobsOf = (state: ReturnType<typeof createFakeApi>["state"]) =>
+  state.jobs
+    .filter((j) => j.type === "image.generate")
+    .map((j) => ImageGeneratePayload.parse(j.payload));
 
 function draft(overrides: Partial<Content> = {}): Content {
   return {
@@ -418,6 +484,88 @@ describe("template fill: HTML", () => {
     expect(renders).toHaveLength(1);
   });
 
+  it("fills an empty slot through the product-image line only with the owner's consent", async () => {
+    const template = emptySlotTemplate();
+    const payloadOf = (slotImage?: Record<string, unknown>) => ({
+      brandId: "brand_1",
+      contentId: "content_1",
+      title: "Kış bakımı",
+      brief: "Boro ile kışa hazırlık",
+      type: "post",
+      conversationId: "conv_1",
+      template: { templateId: "tpl_html", values: { headline: "Kışa hazır" } },
+      ...(slotImage ? { imageSlot: "ai_generate", slotImage } : {}),
+    });
+
+    // No consent: the post is made, the slot stays empty, nothing is paid.
+    const plain = fakeApiWith(template);
+    seedBoro(plain.state);
+    const h0 = createContentGenerateHandler(
+      makeDeps(plain.api, async () => result({}), measuringRenderer([])),
+    );
+    const j0 = jobFor(payloadOf());
+    const out0 = (await h0.run(j0.payload as never, ctxFor(j0).ctx)) as Record<string, unknown>;
+    expect(out0.slotImages).toBeUndefined();
+    expect(imageJobsOf(plain.state)).toEqual([]);
+
+    const { api, state } = fakeApiWith(template);
+    seedBoro(state);
+    const handler = createContentGenerateHandler(
+      makeDeps(api, async () => result({}), measuringRenderer([])),
+    );
+    const job = jobFor(
+      payloadOf({ consented: true, productIds: ["prod_boro"], view: "sol", style: "" }),
+    );
+    const out = (await handler.run(job.payload as never, ctxFor(job).ctx)) as Record<
+      string,
+      unknown
+    >;
+    const jobs = imageJobsOf(state);
+    expect(jobs).toHaveLength(1);
+    expect(jobs[0]).toMatchObject({
+      aspectRatio: "4:5",
+      productIds: ["prod_boro"],
+      referenceAssetIds: ["asset_left"],
+      style: "",
+      approval: {
+        kind: "product_image",
+        contentId: "content_1",
+        slotId: "photo",
+        conversationId: "conv_1",
+        productId: "prod_boro",
+      },
+    });
+    expect(jobs[0]?.targetContentId).toBeUndefined();
+    expect(out.slotImages).toMatchObject({ jobs: [{ slotId: "photo" }] });
+
+    // A retry of the same job reuses the version and does not pay again.
+    const again = (await handler.run(job.payload as never, ctxFor(job).ctx)) as Record<
+      string,
+      unknown
+    >;
+    expect(again).toMatchObject({ reused: true, slotImages: { jobs: [{ slotId: "photo" }] } });
+    expect(imageJobsOf(state)).toHaveLength(1);
+  });
+
+  it("pays nothing for a slot the request fills with a picture", async () => {
+    const { api, state } = fakeApiWith(emptySlotTemplate());
+    const handler = createContentGenerateHandler(
+      makeDeps(api, async () => result({}), measuringRenderer([])),
+    );
+    const job = jobFor({
+      brief: "",
+      imageSlot: "ai_generate",
+      slotImage: { consented: true },
+      template: { templateId: "tpl_html", values: {}, images: { slot: "asset_new" } },
+    });
+    const out = (await handler.run(job.payload as never, ctxFor(job).ctx)) as Record<
+      string,
+      unknown
+    >;
+    expect(imageJobsOf(state)).toEqual([]);
+    expect(String((out.slotImages as { note: string }).note)).toContain("boş görsel yuvası");
+  });
+
   it("lets the AI write the unlocked fields and the caption from the brief", async () => {
     const template = htmlTemplate();
     const { api, state } = fakeApiWith(template);
@@ -661,9 +809,89 @@ describe("template fill: canvas", () => {
       if (!fills) expect(out.reused).toBe(true);
     }
   });
+
+  it("queues the consented picture for the canvas slot's Wecra layer", async () => {
+    const template = canvasTemplate();
+    const { api, state } = fakeApiWith(template);
+    seedBoro(state);
+    withRunner(api, state, () => canvasFacts());
+    const handler = createContentGenerateHandler(
+      makeDeps(api, async () => result({}), measuringRenderer([])),
+    );
+    const job = jobFor({
+      brief: "Boro",
+      conversationId: "conv_1",
+      imageSlot: "ai_generate",
+      slotImage: { consented: true, productIds: ["prod_boro"] },
+      template: { templateId: "tpl_canvas", values: { headline: "Ekim" }, autoFit: false },
+    });
+    const out = (await handler.run(job.payload as never, ctxFor(job).ctx)) as Record<
+      string,
+      unknown
+    >;
+    const jobs = imageJobsOf(state);
+    expect(jobs).toHaveLength(1);
+    // The slot's Wecra id: the approval places the picture with `place_image` on that layer.
+    expect(jobs[0]).toMatchObject({
+      aspectRatio: "4:5",
+      approval: { kind: "product_image", contentId: "content_1", slotId: "7:4" },
+    });
+    expect(out.slotImages).toMatchObject({ jobs: [{ slotId: "7:4" }] });
+  });
 });
 
 describe("template helpers", () => {
+  it("names the empty slots a consented AI picture fills", () => {
+    const html = emptySlotTemplate();
+    expect(templateHtmlSlots(html, html.slides)).toEqual([
+      { slide: 0, slotId: "photo", ratio: { w: 4, h: 5 }, label: "Ürün" },
+    ]);
+    const locked = {
+      fields: html.fields.map((f) => (f.key === "slot" ? { ...f, locked: true } : f)),
+    };
+    expect(templateHtmlSlots(locked, html.slides)).toEqual([]);
+    // A filled slot is not empty.
+    const filled = htmlTemplate();
+    expect(templateHtmlSlots(filled, filled.slides)).toEqual([]);
+
+    const canvas = canvasTemplate();
+    expect(templateCanvasSlots(canvas, [canvasFacts()], {})).toEqual([
+      { slide: 0, slotId: "7:4", ratio: { w: 4, h: 5 }, label: expect.any(String) },
+    ]);
+    // Given a picture, or its layer already shows one: nothing to generate.
+    expect(templateCanvasSlots(canvas, [canvasFacts()], { slot: "asset_new" })).toEqual([]);
+    const pictured = canvasFacts((nodes) =>
+      nodes.map((n) =>
+        n.id === "7:4"
+          ? {
+              ...n,
+              fills: [
+                { type: "image", image: "c".repeat(40), fit: "fill", size: null, opacity: 1 },
+              ],
+            }
+          : n,
+      ),
+    );
+    expect(templateCanvasSlots(canvas, [pictured], {})).toEqual([]);
+    // A Wecra-engine "AI görsel" area without a picture counts too.
+    const area = canvasFacts((nodes) => [
+      ...nodes,
+      {
+        ...(nodes[0] as (typeof nodes)[number]),
+        id: "9:1",
+        name: "AI görsel",
+        type: "shape",
+        text: undefined,
+        mark: null,
+        fills: [],
+        bounds: { x: 0, y: 0, w: 1080, h: 600 },
+      },
+    ]);
+    expect(templateCanvasSlots(canvas, [area], { slot: "asset_new" })).toEqual([
+      { slide: 0, slotId: "9:1", ratio: { w: 1080, h: 600 }, label: "AI görsel" },
+    ]);
+  });
+
   it("reads the model's fill defensively", () => {
     const fields = htmlTemplate().fields;
     expect(
@@ -1003,6 +1231,7 @@ describe("chat tools: templates and repurposing", () => {
         items: brandId === "brand_1" ? [summary] : [],
         nextCursor: null,
       }),
+      get: async (id: string) => (id === "tpl_empty" ? emptySlotTemplate() : htmlTemplate()),
       use: async (id: string, input: Record<string, unknown>) => {
         uses.push({ id, input });
         return made(`cnt_tpl_${uses.length}`, "post");
@@ -1025,10 +1254,83 @@ describe("chat tools: templates and repurposing", () => {
       aliases: [],
       signal,
       jobPollIntervalMs: 10,
+      consentPollIntervalMs: 5,
       generationChoice: { model: "sonnet" },
     });
     return { ex, state, writer, uses, repurposes };
   }
+
+  /** Answers every pending consent card with `allow`. */
+  function answer(state: ReturnType<typeof createFakeApi>["state"], allow: boolean) {
+    const timer = setInterval(() => {
+      for (const p of state.parts)
+        if (p.type === "consent" && p.state === "pending") state.decideConsent(p.consentId, allow);
+    }, 5);
+    return () => clearInterval(timer);
+  }
+
+  it("asks the paid-picture consent for a template's empty slot and sends it with the request", async () => {
+    const { ex, state, writer, uses } = executor();
+    seedBoro(state);
+    const stop = answer(state, true);
+    try {
+      const res = await ex.execute("generate_from_template", {
+        templateId: "tpl_empty",
+        brief: "Boro ile kışa hazırlık",
+        products: ["@boro"],
+        imageView: "sol",
+        imageBrief: "Tarlada Boro şişesi",
+      });
+      expect(res.isError, JSON.stringify(res.data)).toBe(false);
+      await writer.flush();
+      const cards = state.parts.filter((p) => p.type === "consent");
+      expect(cards).toHaveLength(1);
+      const card = cards[0];
+      expect(card?.type === "consent" ? card.title : "").toBe(
+        "Ürün görseli de üreteyim mi? (ücretli)",
+      );
+      expect(card?.type === "consent" ? card.tool : "").toBe("generate_from_template");
+      expect(uses[0]?.input).toMatchObject({
+        imageBrief: "Tarlada Boro şişesi",
+        slotImage: {
+          consented: true,
+          productIds: ["prod_boro"],
+          view: "sol",
+          conversationId: "conv_1",
+        },
+      });
+      expect(res.data).toMatchObject({ emptySlots: 1, slotImage: { consented: true } });
+    } finally {
+      stop();
+    }
+  });
+
+  it("makes the template post without a picture when the owner says no or the slot is filled", async () => {
+    const { ex, state, writer, uses } = executor();
+    const stop = answer(state, false);
+    try {
+      const res = await ex.execute("generate_from_template", { templateId: "tpl_empty" });
+      expect(res.isError, JSON.stringify(res.data)).toBe(false);
+      expect(uses[0]?.input.slotImage).toBeUndefined();
+      expect(res.data).toMatchObject({ slotImage: { consented: false } });
+      // A picture given for the slot: no card at all.
+      await ex.execute("generate_from_template", {
+        templateId: "tpl_empty",
+        title: "Başka",
+        images: [{ key: "slot", alias: "urun" }],
+      });
+      await ex.execute("generate_from_template", {
+        templateId: "tpl_empty",
+        title: "Görselsiz",
+        aiImage: false,
+      });
+      await writer.flush();
+      expect(state.parts.filter((p) => p.type === "consent")).toHaveLength(1);
+      expect(uses.map((u) => u.input.slotImage)).toEqual([undefined, undefined, undefined]);
+    } finally {
+      stop();
+    }
+  });
 
   it("are offered to every provider", () => {
     const names = STUDIO_TOOLS.map((t) => t.name);

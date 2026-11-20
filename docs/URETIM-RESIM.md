@@ -229,3 +229,28 @@ Reels ve hikâye sonra ayrı ele alınacak.
   `STUDIO_STATE_DIR`, yoksa Mac uygulamasının worker klasörü). Ortamı kurar ve kapalı alanda küçük bir deneme
   programı çalıştırır. `requirements.txt` değişirse ortam yeniden kurulur (`runtime.json` özeti).
 - Paketlenmiş uygulamada `code-engine/` klasörü `worker/main.js`'in yanına kopyalanır (`build-host.mjs`).
+
+## Kapanan boşluklar (2026-11-20)
+
+- **Şablondan post → AI görsel yuvası.** Şablonla üretilen postta boş kalan görsel yuvası (resim
+  verilmemiş, kilitsiz `slot` alanı; tuval şablonunda ayrıca resimsiz "AI görsel" katmanı) motorlarla
+  aynı hattan dolar: izin varsa sürüm kaydedilince `queueSlotImageJobs` iş açar (`template.ts`
+  `templateHtmlSlots` / `templateCanvasSlots`; tuvalde `slotId` = Wecra katman id'si, onay `canvas.apply
+  place_image` ile yerleştirir). Sohbette `generate_from_template` boş yuva varsa `generate_post` gibi tek
+  ücretli izin kartı gösterir (yeni argümanlar `products`, `imageView`, `imageStyle`, `imageBrief`,
+  `aiImage`; sonuçta `emptySlots`, `slotImage`). API'de `TemplateUse` yeni alanlar: `slotImage`
+  (`SlotImageRequest`, açıkça verilmezse ücretli görsel yok; verilince iş `imageSlot: ai_generate` olur,
+  `conversationId` istekten tamamlanır) ve `imageBrief`. Ürünler markanın olmalı (400).
+- **Plan kalemleri ürünlerini tutar.** `PlanItem.productIds: string[]` (eski kalemler `[]`) ve
+  `imageView: string|null`; `PlanItemInput` / `PlanItemPatch` isteğe bağlı aynı alanlar (en çok 4,
+  tekrarsız, markanın ürünü; alanı içermeyen toplu düzenleme mevcut ürünleri korur). Migration
+  `0025_plan_item_products` (`plan_items.product_ids`, `image_view`). `propose_plan` kalemi `products`
+  (slug/ad/id) ve metinlerdeki `@slug`'lardan doldurur, `imageView` alır. `plans.generate` her kalemin
+  (hâlâ var olan) ürünlerini `ContentGeneratePayload.productIds`'e ve istek ürün söylemiyorsa
+  `slotImage.productIds` / `view`'e koyar; `accept_and_generate_plan` izin kartında ürün adlarını yazar.
+- **Reddedilen adaylar çöpe.** Onay isteği reddedilince, yerine yenisi gelince (`supersedesId`,
+  "Yeniden üret") ya da çok adaylı istekte seçilmeyen adaylar için: başka yerde kullanılmayan aday
+  görseller `deletedAt` ile 30 günlük çöpe gider (`trashUnusedCandidates`). Korunanlar: onaylanan görsel,
+  sürümde/üründe/şablonda/marka kitinde kullanılan, başka bekleyen istekte aday olan, onaylanmış bir
+  istekte seçilen, ya da bekleyen/reddedilmiş bir isteğin (kendisininki dahil) saklı `request`
+  yükünde geçen görseller — "Yeniden üret" referanslarla çalışmaya devam eder.

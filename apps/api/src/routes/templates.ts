@@ -48,7 +48,13 @@ import { newId } from "../lib/ids.ts";
 import { toPage } from "../lib/pagination.ts";
 import { deleteAssetForGood } from "../lib/purge.ts";
 import { createRouter, errors, IdParams, json, jsonBody } from "../lib/router.ts";
-import { findTemplate, type TemplateRow, templateUseCounts, toTemplate } from "../lib/templates.ts";
+import {
+  existingProducts,
+  findTemplate,
+  type TemplateRow,
+  templateUseCounts,
+  toTemplate,
+} from "../lib/templates.ts";
 import { requireBrand } from "./brands.ts";
 import { assertNotTrashed, loadContent } from "./contents.ts";
 import { createJob } from "./jobs.ts";
@@ -591,6 +597,16 @@ export const templateRoutes = createRouter()
             ]);
         }
       }
+      const slotProducts = input.slotImage?.productIds ?? [];
+      if (slotProducts.length) {
+        const found = await existingProducts(db, row.brandId, slotProducts);
+        slotProducts.forEach((id, i) => {
+          if (!found.has(id))
+            throw badRequest(`slotImage.productIds.${i}: not a product of the brand`, [
+              { path: `slotImage.productIds.${i}`, message: "unknown product of this brand" },
+            ]);
+        });
+      }
       const source = row.sourceContentId
         ? await db.query.contents.findFirst({ where: eq(contents.id, row.sourceContentId) })
         : undefined;
@@ -627,6 +643,19 @@ export const templateRoutes = createRouter()
         ...(input.model ? { model: input.model } : {}),
         ...(input.effort ? { effort: input.effort } : {}),
         ...(profileVersion ? { brandProfileVersion: profileVersion } : {}),
+        ...(input.imageBrief?.trim() ? { imageBrief: input.imageBrief.trim() } : {}),
+        // The owner's consented AI picture for the template's empty image slots (never implied).
+        ...(input.slotImage
+          ? {
+              imageSlot: "ai_generate",
+              slotImage: {
+                ...input.slotImage,
+                ...(!input.slotImage.conversationId && input.conversationId
+                  ? { conversationId: input.conversationId }
+                  : {}),
+              },
+            }
+          : {}),
       });
       const job = await queueFor(c.env, db, contentId, row.brandId, payload);
       return c.json({ content: await contentView(db, contentId), job }, 201);

@@ -15,7 +15,7 @@ import {
 } from "@studio/contract";
 // The slide HTML reader only (the canvas index also brings the in-page linter, DOM types).
 import { readCanvas } from "@studio/design-kit/canvas/html";
-import { and, asc, count, eq, inArray, isNull, ne } from "drizzle-orm";
+import { and, asc, count, eq, inArray, isNull, like, ne, or } from "drizzle-orm";
 import type { z } from "zod";
 import { createDb, type Db } from "../db/client.ts";
 import { type ApprovalRow, toApproval, toBrandProduct } from "../db/mappers.ts";
@@ -30,6 +30,7 @@ import {
   conversations,
   messages,
 } from "../db/schema.ts";
+import { assetHeld } from "./asset-usage.ts";
 import { badRequest, conflict, notFound } from "./errors.ts";
 import { newId } from "./ids.ts";
 import { productSlugs } from "./mentions.ts";
@@ -195,7 +196,10 @@ export async function createApproval(
         ),
       )
       .returning();
-    if (old) await ctx.announce(toApproval(old));
+    if (old) {
+      await trashUnusedCandidates(ctx.env, old);
+      await ctx.announce(toApproval(old));
+    }
   }
   const view = toApproval(row);
   await ctx.announce(view);
@@ -245,6 +249,7 @@ export async function approveRequest(
   if (row.kind === "product_photo_upgrade") {
     const product = await upgradeProductPhoto(db, row, chosen);
     const updated = await decide(db, row, { status: "approved", approvedAssetId: chosen });
+    await trashUnusedCandidates(ctx.env, updated);
     const view = toApproval(updated);
     await ctx.announce(view);
     return { approval: view, content: null, product, job: null };
@@ -298,6 +303,8 @@ export async function approveRequest(
     });
   }
   const updated = await decide(db, row, { status: "approved", approvedAssetId: chosen });
+  // The candidates not chosen (a multi-picture request) leave the media library.
+  await trashUnusedCandidates(ctx.env, updated);
   const view = toApproval(updated);
   await ctx.announce(view);
   const content = row.contentId ? await ctx.loadContent(row.contentId) : null;
@@ -424,6 +431,7 @@ export async function rejectRequest(
     status: "rejected",
     decisionNote: input.note ? input.note : null,
   });
+  await trashUnusedCandidates(ctx.env, updated);
   const view = toApproval(updated);
   await ctx.announce(view);
   return { approval: view, content: null, product: null, job: null };
@@ -492,7 +500,85 @@ export async function regenerateRequest(
     "pending",
     "rejected",
   ]);
+  // The new job's payload is the stored request: products' photos and the owner's own pictures,
+  // never this request's candidates, so they can go.
+  await trashUnusedCandidates(ctx.env, updated);
   const view = toApproval(updated);
   await ctx.announce(view);
   return { approval: view, content: null, product: null, job };
+}
+
+/**
+ * The pictures of a decided request (rejected, superseded, or approved with another picture
+ * chosen) that nothing else uses go to the trash: `deletedAt` now, restorable from "Silinenler"
+ * for TRASH_RETENTION_DAYS, then the Hub's purge removes them. Kept: the approved picture, and
+ * any picture a post version (render, canvas document, slide), a product, a template, the brand
+ * kit, another pending request, an approved request (its placement may still be queued) or the
+ * stored request of a request that can still be generated again (pending / rejected) uses. Never
+ * fails the decision: a problem is logged and the pictures stay. Returns the trashed ids.
+ */
+export async function trashUnusedCandidates(env: Env, row: ApprovalRow): Promise<string[]> {
+  // A picture the request's own stored payload names (a reference) stays: "Yeniden üret" runs it.
+  const own = JSON.stringify(row.request ?? null);
+  const ids = row.assetIds.filter(
+    (id) => id !== row.approvedAssetId && id !== row.replacesAssetId && !own.includes(id),
+  );
+  if (ids.length === 0 || row.status === "pending") return [];
+  const trashed: string[] = [];
+  try {
+    const db = createDb(env.DB);
+    const candidates = await db
+      .select({ id: assets.id, brandId: assets.brandId })
+      .from(assets)
+      .where(
+        and(eq(assets.brandId, row.brandId), inArray(assets.id, ids), isNull(assets.deletedAt)),
+      );
+    const now = new Date();
+    for (const asset of candidates) {
+      if (await heldByApprovals(db, row, asset.id)) continue;
+      if (await assetHeld(db, env.MEDIA, asset)) continue;
+      const [done] = await db
+        .update(assets)
+        .set({ deletedAt: now })
+        .where(and(eq(assets.id, asset.id), isNull(assets.deletedAt)))
+        .returning({ id: assets.id });
+      if (done) trashed.push(done.id);
+    }
+  } catch (error) {
+    console.warn(`api: could not trash the candidates of approval ${row.id}`, error);
+  }
+  return trashed;
+}
+
+/** Another request of the brand still needs the picture (see trashUnusedCandidates). */
+async function heldByApprovals(db: Db, row: ApprovalRow, assetId: string): Promise<boolean> {
+  const others = await db
+    .select({
+      status: approvalRequests.status,
+      assetIds: approvalRequests.assetIds,
+      approvedAssetId: approvalRequests.approvedAssetId,
+      replacesAssetId: approvalRequests.replacesAssetId,
+      request: approvalRequests.request,
+    })
+    .from(approvalRequests)
+    .where(
+      and(
+        eq(approvalRequests.brandId, row.brandId),
+        ne(approvalRequests.id, row.id),
+        or(
+          like(approvalRequests.assetIds, `%"${assetId}"%`),
+          eq(approvalRequests.approvedAssetId, assetId),
+          eq(approvalRequests.replacesAssetId, assetId),
+          like(approvalRequests.request, `%${assetId}%`),
+        ),
+      ),
+    );
+  return others.some(
+    (o) =>
+      (o.status === "pending" && o.assetIds.includes(assetId)) ||
+      (o.status === "approved" && o.approvedAssetId === assetId) ||
+      (o.status === "pending" && o.replacesAssetId === assetId) ||
+      ((o.status === "pending" || o.status === "rejected") &&
+        JSON.stringify(o.request ?? null).includes(assetId)),
+  );
 }

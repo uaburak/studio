@@ -1,7 +1,7 @@
 import type { ContentTemplate, ContentType, TemplateField } from "@studio/contract";
-import { count, eq, inArray } from "drizzle-orm";
+import { and, count, eq, inArray } from "drizzle-orm";
 import type { Db } from "../db/client.ts";
-import { contents, contentTemplates } from "../db/schema.ts";
+import { brandProducts, contents, contentTemplates } from "../db/schema.ts";
 import { badRequest } from "./errors.ts";
 
 /*
@@ -97,4 +97,43 @@ export async function findTemplate(db: Db, id: string): Promise<TemplateRow | nu
   return (
     (await db.query.contentTemplates.findFirst({ where: eq(contentTemplates.id, id) })) ?? null
   );
+}
+
+/** The brand's products among `ids` (id -> name); products are hard-deleted, so some may be gone. */
+export async function existingProducts(
+  db: Db,
+  brandId: string,
+  ids: readonly string[],
+): Promise<Map<string, string>> {
+  const unique = [...new Set(ids)];
+  const out = new Map<string, string>();
+  for (let i = 0; i < unique.length; i += 50) {
+    const rows = await db
+      .select({ id: brandProducts.id, name: brandProducts.name })
+      .from(brandProducts)
+      .where(
+        and(eq(brandProducts.brandId, brandId), inArray(brandProducts.id, unique.slice(i, i + 50))),
+      );
+    for (const r of rows) out.set(r.id, r.name);
+  }
+  return out;
+}
+
+/** Plan items naming products: each must be a product of the plan's brand (400 otherwise). */
+export async function assertPlanProducts(
+  db: Db,
+  brandId: string,
+  items: ReadonlyArray<{ productIds?: readonly string[] | null | undefined }>,
+): Promise<void> {
+  const ids = items.flatMap((i) => i.productIds ?? []);
+  if (ids.length === 0) return;
+  const found = await existingProducts(db, brandId, ids);
+  items.forEach((item, i) => {
+    (item.productIds ?? []).forEach((id, j) => {
+      if (!found.has(id))
+        throw badRequest(`product ${id} is not a product of the plan's brand`, [
+          { path: `items.${i}.productIds.${j}`, message: "unknown product of this brand" },
+        ]);
+    });
+  });
 }

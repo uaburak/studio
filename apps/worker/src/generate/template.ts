@@ -13,6 +13,11 @@
  *   operations (`update_nodes` characters / font size, `place_image`). Auto-fit is planned from
  *   the source layout and corrected once from what Wecra laid out (a second `canvas.apply`).
  *   The canvas runner checks every version it makes.
+ * - Empty image slots (an unlocked slot field given no picture, a canvas "AI görsel" area): when
+ *   the owner consented to the paid picture (`slotImage`, the chat's card or the API request),
+ *   the same slot-image line as the engines (slot-images.ts) queues one product-image job per
+ *   slot once the version is stored; the approval places the picture (HTML: a render of the
+ *   slot; canvas: Wecra's `place_image` on the slot's layer).
  */
 import {
   CanvasApplyOutput,
@@ -27,7 +32,7 @@ import {
   type TemplateFill,
 } from "@studio/contract";
 import { brandPatchContext } from "@studio/design-kit/brand";
-import { type CanvasFacts, readCanvas } from "@studio/design-kit/canvas";
+import { type CanvasFacts, type CanvasNode, readCanvas } from "@studio/design-kit/canvas";
 import type { LintReport } from "@studio/design-kit/lint";
 import { applyPatch, type PatchContext } from "@studio/design-kit/patch";
 import { combineResolvers } from "@studio/design-kit/render";
@@ -51,6 +56,13 @@ import { layoutFromReport } from "../render/layout.ts";
 import { createApiAssetPathResolver } from "../video/render-reel.ts";
 import type { BrandContext } from "./brand.ts";
 import type { SlideRenderer } from "./pipeline.ts";
+import {
+  type EmptyImageSlot,
+  emptyImageSlots,
+  MAX_SLOT_IMAGES,
+  queueSlotImageJobs,
+} from "./slot-images.ts";
+import { AI_PICTURE_LAYER } from "./wecra/prompt.ts";
 
 /** Most render passes of the HTML auto-fit (the first is the plain fill). */
 export const MAX_FIT_PASSES = 6;
@@ -597,6 +609,104 @@ async function fillCanvas(
   return { version, jobIds, pending: false, fit, reused: false };
 }
 
+// --- empty image slots (the consented AI picture) -------------------------------------------
+
+/** `"4:5"` → `{w: 4, h: 5}` (null when it is not a ratio). */
+function parseRatio(ratio: string | null): { w: number; h: number } | null {
+  const m = ratio ? /^(\d+(?:\.\d+)?):(\d+(?:\.\d+)?)$/.exec(ratio.trim()) : null;
+  if (!m) return null;
+  const w = Number(m[1]);
+  const h = Number(m[2]);
+  return w > 0 && h > 0 ? { w, h } : null;
+}
+
+/**
+ * The HTML fill's empty slots: what the stored slides still show empty, without the slots of
+ * locked fields (they keep the template's own look).
+ */
+export function templateHtmlSlots(
+  template: Pick<ContentTemplateDetail, "fields">,
+  slides: ReadonlyArray<{ html: string }>,
+): EmptyImageSlot[] {
+  const locked = new Set(
+    template.fields
+      .filter((f) => f.kind === "image" && f.locked)
+      .map((f) => `${f.slide}:${f.layer}`),
+  );
+  return emptyImageSlots(slides).filter((s) => !locked.has(`${s.slide}:${s.slotId}`));
+}
+
+const hasImage = (node: Pick<CanvasNode, "fills">) => node.fills.some((p) => p.type === "image");
+
+/**
+ * The canvas fill's empty slots, named by their Wecra layer (what the approval's `place_image`
+ * takes): unlocked slot fields given no picture whose layer has none, and areas named
+ * "AI görsel" without a picture. `facts` are the version's slides (null: not readable — the
+ * field's layer is taken as empty, Wecra itself says when it is not there).
+ */
+export function templateCanvasSlots(
+  template: Pick<ContentTemplateDetail, "fields">,
+  facts: ReadonlyArray<CanvasFacts | null>,
+  images: Readonly<Record<string, string>>,
+): EmptyImageSlot[] {
+  const out: EmptyImageSlot[] = [];
+  const seen = new Set<string>();
+  for (const f of template.fields) {
+    if (f.kind !== "image" || f.layerType !== "slot" || f.locked || !f.nodeId) continue;
+    if (images[f.key] !== undefined || seen.has(f.nodeId)) continue;
+    const node = facts[f.slide]?.nodes.find((n) => n.id === f.nodeId) ?? null;
+    if (node && hasImage(node)) continue;
+    seen.add(f.nodeId);
+    out.push({
+      slide: f.slide,
+      slotId: f.nodeId,
+      ratio:
+        parseRatio(f.ratio) ??
+        (node && node.bounds.w > 0 && node.bounds.h > 0
+          ? { w: Math.round(node.bounds.w), h: Math.round(node.bounds.h) }
+          : null),
+      label: f.label,
+    });
+  }
+  const aiName = AI_PICTURE_LAYER.toLocaleLowerCase("tr");
+  facts.forEach((slide, index) => {
+    for (const node of slide?.nodes ?? []) {
+      if (node.name.trim().toLocaleLowerCase("tr") !== aiName) continue;
+      if (hasImage(node) || seen.has(node.id)) continue;
+      seen.add(node.id);
+      out.push({
+        slide: index,
+        slotId: node.id,
+        ratio:
+          node.bounds.w > 0 && node.bounds.h > 0
+            ? { w: Math.round(node.bounds.w), h: Math.round(node.bounds.h) }
+            : null,
+        label: AI_PICTURE_LAYER,
+      });
+    }
+  });
+  return out.slice(0, MAX_SLOT_IMAGES);
+}
+
+/** The consented AI pictures of a filled template's empty slots (null: none asked for). */
+async function queueTemplateSlotImages(
+  input: TemplateRunInput,
+  slides: ReadonlyArray<{ html: string }>,
+  slots: readonly EmptyImageSlot[],
+) {
+  const { payload } = input;
+  if (!payload.slotImage) return null;
+  return queueSlotImageJobs(input.deps, {
+    jobId: input.ctx.jobId,
+    payload,
+    slides,
+    slots,
+    // The request itself is the AI slot's intent (a template has no `imageSlot` of its own).
+    imageSlot: payload.imageSlot ?? "ai_generate",
+    signal: input.ctx.signal,
+  });
+}
+
 // --- the job --------------------------------------------------------------------------------
 
 export async function runTemplateGenerate(
@@ -628,8 +738,20 @@ export async function runTemplateGenerate(
       content.currentVersion.version,
       { signal },
     );
-    if (existing.jobId === ctx.jobId)
-      return { contentId: content.id, version: existing.version, reused: true };
+    if (existing.jobId === ctx.jobId) {
+      // The slot pictures the earlier attempt may not have queued yet (never twice).
+      const slotImages = await queueTemplateSlotImages(
+        input,
+        existing.slides,
+        templateHtmlSlots(template, existing.slides),
+      );
+      return {
+        contentId: content.id,
+        version: existing.version,
+        reused: true,
+        ...(slotImages ? { slotImages } : {}),
+      };
+    }
   }
 
   const { values, caption, provider } = await fieldValues(input, template);
@@ -653,6 +775,11 @@ export async function runTemplateGenerate(
   if (template.kind === "html") {
     const out = await fillHtml(input, template, values);
     await storeCaption();
+    const slotImages = await queueTemplateSlotImages(
+      input,
+      out.version.slides,
+      templateHtmlSlots(template, out.version.slides),
+    );
     ctx.progress(1, "Tamamlandı");
     return {
       ...base,
@@ -662,10 +789,23 @@ export async function runTemplateGenerate(
       renderedAssetIds: out.renderedAssetIds,
       fit: out.fit,
       checks: out.checks ?? null,
+      ...(slotImages ? { slotImages } : {}),
     };
   }
   const out = await fillCanvas(input, template, values);
   await storeCaption();
+  const slotImages = await queueTemplateSlotImages(
+    input,
+    out.version.slides,
+    templateCanvasSlots(
+      template,
+      out.version.slides.map((s) => {
+        const c = readCanvas(s.html);
+        return c.kind === "facts" ? c.facts : null;
+      }),
+      payload.template.images,
+    ),
+  );
   ctx.progress(1, out.pending ? "Tuval çalıştırıcısında sürüyor" : "Tamamlandı");
   return {
     ...base,
@@ -681,5 +821,6 @@ export async function runTemplateGenerate(
         }
       : {}),
     ...(out.reused ? { reused: true } : {}),
+    ...(slotImages ? { slotImages } : {}),
   };
 }

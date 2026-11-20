@@ -123,7 +123,8 @@ approvalRoutes
         "`product_image` / `variant`: the picture fills the post's slot (`slotId`) in a new " +
         "rendered version (`job` is the `content.render`; no slot = nothing placed, `job` null). " +
         "`product_photo_upgrade`: the picture replaces the product's photo; the old photo goes " +
-        "to the trash for TRASH_RETENTION_DAYS. 409 unless pending.",
+        "to the trash for TRASH_RETENTION_DAYS. The pictures not chosen go to the trash too " +
+        "(unless something else uses them). 409 unless pending.",
       request: { params: IdParams, body: jsonBody(ApprovalApprove) },
       responses: {
         200: json(ApprovalActionResult, "Approved."),
@@ -147,7 +148,10 @@ approvalRoutes
       path: "/api/approvals/{id}/reject",
       tags,
       summary: "Reject: do not use the pictures",
-      description: "The pictures stay in the media library. 409 unless pending.",
+      description:
+        "The request's pictures go to the trash (restorable for TRASH_RETENTION_DAYS) unless " +
+        "something else uses them (a post version, a product, another pending request…). " +
+        "409 unless pending.",
       request: { params: IdParams, body: jsonBody(ApprovalReject) },
       responses: {
         200: json(ApprovalActionResult, "Rejected."),
@@ -175,8 +179,9 @@ approvalRoutes
         "Queues the request's generation again (`job`) and marks the request `superseded`; the " +
         'new pictures arrive as a new request. `preserveLabelComposite: true` ("Etiketi birebir ' +
         'koruyarak yerleştir") places the real product photo into the scene instead of letting ' +
-        "the model redraw it (picture generations only). 409 for decided requests or when the " +
-        "original request is unknown.",
+        "the model redraw it (picture generations only). The old request's pictures go to the " +
+        "trash unless something else uses them. 409 for decided requests or when the original " +
+        "request is unknown.",
       request: { params: IdParams, body: jsonBody(ApprovalRegenerate) },
       responses: {
         200: json(ApprovalActionResult, "Queued."),

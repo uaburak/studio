@@ -9,12 +9,13 @@ import {
   ContentGeneratePayload,
   ImageGeneratePayload,
   type Job,
+  type Plan,
 } from "@studio/contract";
 import type { LintReport } from "@studio/design-kit/lint";
 import sharp from "sharp";
 import { describe, expect, it } from "vitest";
 import { loadAgentSettings } from "../src/agent.ts";
-import { StudioToolExecutor } from "../src/chat/tools.ts";
+import { planItemProducts, StudioToolExecutor } from "../src/chat/tools.ts";
 import { TurnWriter } from "../src/chat/writer.ts";
 import { ClaudeGate } from "../src/claude/gate.ts";
 import type { ClaudeCallResult, ClaudeRunner } from "../src/claude/runner.ts";
@@ -521,6 +522,164 @@ describe("generate_post: the paid slot picture", () => {
       await c.writer.flush();
       expect(c.state.parts.filter((p) => p.type === "consent")).toEqual([]);
       expect(generated(c.state).map((p) => p.slotImage)).toEqual([undefined, undefined]);
+    } finally {
+      c.stop();
+    }
+  });
+});
+
+// --- plan items keep their products --------------------------------------------------------------
+
+function planWith(status: "proposed" | "accepted"): Plan {
+  const item = (n: number, extra: Partial<Plan["items"][number]>): Plan["items"][number] => ({
+    id: `item_${n}`,
+    planId: "plan_p",
+    position: n - 1,
+    date: null,
+    platforms: ["instagram"],
+    contentType: "post",
+    title: `Post ${n}`,
+    brief: "Brief",
+    pillar: null,
+    hook: null,
+    imageSlot: "ai_generate",
+    imageBrief: "Tarlada şişe",
+    templateId: null,
+    productIds: [],
+    imageView: null,
+    status: status === "accepted" ? "accepted" : "planned",
+    similar: [],
+    contentId: status === "accepted" ? `content_plan_${n}` : null,
+    generation: null,
+    createdAt: NOW,
+    updatedAt: NOW,
+    ...extra,
+  });
+  return {
+    id: "plan_p",
+    brandId: "brand_1",
+    conversationId: "conv_1",
+    runId: "run_0",
+    title: "Kasım",
+    periodStart: "2026-11-01",
+    periodEnd: "2026-11-30",
+    status,
+    summary: "",
+    revision: 1,
+    decidedAt: null,
+    rejectionReason: null,
+    items: [item(1, { productIds: ["prod_boro"], imageView: "sol" }), item(2, {})],
+    createdAt: NOW,
+    updatedAt: NOW,
+  };
+}
+
+describe("plan items: products", () => {
+  it("propose_plan names each item's products from the agent's list and @slug mentions", () => {
+    const notes: string[] = [];
+    const known = [
+      product(),
+      product({ id: "prod_venta", slug: "venta-boro", name: "Venta Boro" }),
+    ];
+    expect(planItemProducts(known, { products: ["Boro", "@yok"] }, notes, 0)).toEqual([
+      "prod_boro",
+    ]);
+    expect(notes).toEqual(["item 1: unknown product @yok dropped"]);
+    expect(
+      planItemProducts(
+        known,
+        { brief: "Yeni @venta-boro ve (@boro) birlikte; mail@boro değil" },
+        [],
+        1,
+      ),
+    ).toEqual(["prod_venta", "prod_boro"]);
+    expect(planItemProducts(known, { brief: "Ürünsüz post" }, [], 2)).toEqual([]);
+  });
+
+  it("propose_plan stores the products and the side with the items", async () => {
+    const c = chat(true);
+    try {
+      seedProduct(c.state);
+      const res = await c.ex.execute("propose_plan", {
+        title: "Kasım",
+        periodStart: "2026-11-01",
+        periodEnd: "2026-11-30",
+        summary: "Özet",
+        items: [
+          {
+            platforms: ["instagram"],
+            contentType: "post",
+            title: "Boro tarlada",
+            brief: "Boro'yu tanıt",
+            imageSlot: "ai_generate",
+            products: ["@boro"],
+            imageView: "sol",
+          },
+          {
+            platforms: ["instagram"],
+            contentType: "post",
+            title: "Kış ipuçları",
+            brief: "@boro ile kışa hazırlık",
+            imageSlot: "ai_generate",
+          },
+          {
+            platforms: ["instagram"],
+            contentType: "post",
+            title: "Marka hikâyesi",
+            brief: "Kuruluş",
+          },
+        ],
+      });
+      expect(res.isError, JSON.stringify(res.data)).toBe(false);
+      const items = c.state.plans.at(-1)?.items ?? [];
+      expect(items.map((i) => i.productIds)).toEqual([["prod_boro"], ["prod_boro"], undefined]);
+      expect(items.map((i) => i.imageView)).toEqual(["sol", undefined, undefined]);
+    } finally {
+      c.stop();
+    }
+  });
+
+  it("accept_and_generate_plan names the items' products on the paid-picture card", async () => {
+    const c = chat(true);
+    try {
+      seedProduct(c.state);
+      c.state.storedPlans.set("plan_p", planWith("proposed"));
+      const res = await c.ex.execute("accept_and_generate_plan", {
+        planId: "plan_p",
+        aiImages: true,
+      });
+      expect(res.isError, JSON.stringify(res.data)).toBe(false);
+      await c.writer.flush();
+      const card = c.state.parts.find((p) => p.type === "consent");
+      const detail = card?.type === "consent" ? (card.detail ?? "") : "";
+      expect(detail).toContain("2 görsel");
+      expect(detail).toContain("ürün: Boro");
+      // The API puts each item's products into its own payload (see the API's plan tests).
+      expect(c.state.planGenerates[0]?.input.slotImage).toEqual({
+        consented: true,
+        conversationId: "conv_1",
+      });
+    } finally {
+      c.stop();
+    }
+  });
+
+  it("generate_post for a plan item uses the item's products and side for its picture", async () => {
+    const c = chat(true);
+    try {
+      seedProduct(c.state);
+      c.state.storedPlans.set("plan_p", planWith("accepted"));
+      const res = await c.ex.execute("generate_post", { planItemId: "item_1" });
+      expect(res.isError, JSON.stringify(res.data)).toBe(false);
+      expect(c.state.planGenerates[0]?.input.slotImage).toEqual({
+        consented: true,
+        productIds: ["prod_boro"],
+        view: "sol",
+        conversationId: "conv_1",
+      });
+      await c.writer.flush();
+      const card = c.state.parts.find((p) => p.type === "consent");
+      expect(card?.type === "consent" ? card.detail : "").toContain("ürün: Boro");
     } finally {
       c.stop();
     }

@@ -386,6 +386,8 @@ export function createFakeApi(init: Partial<FakeApiState> = {}): {
             hook: item.hook ?? null,
             imageSlot: item.imageSlot ?? "none",
             imageBrief: item.imageBrief ?? null,
+            productIds: item.productIds ?? [],
+            imageView: item.imageView ?? null,
             status: "planned",
             similar: [],
             contentId: null,
@@ -410,6 +412,12 @@ export function createFakeApi(init: Partial<FakeApiState> = {}): {
       },
     },
     plans: {
+      list: async (query: { conversationId?: string } = {}) => ({
+        items: [...state.storedPlans.values()].filter(
+          (p) => !query.conversationId || p.conversationId === query.conversationId,
+        ),
+        nextCursor: null,
+      }),
       get: async (id: string) => {
         const p = state.storedPlans.get(id);
         if (!p) throw new ApiError("plan not found", 404, "not_found");
@@ -455,7 +463,7 @@ export function createFakeApi(init: Partial<FakeApiState> = {}): {
           createdAt: NOW,
           updatedAt: NOW,
         }));
-        return { plan: p, jobs };
+        return { plan: p, jobs, skipped: [] };
       },
     },
     brands: {

@@ -177,3 +177,29 @@ export const ApprovalTarget = z
   })
   .meta({ id: "ApprovalTarget" });
 export type ApprovalTarget = z.infer<typeof ApprovalTarget>;
+
+/**
+ * A design's AI image slot filled through the product-image line (docs/URETIM-RESIM.md Faz 1):
+ * once the HTML design version is stored, the worker queues one `image.generate` job per empty
+ * slot with these products (exact description → generation → AI check) and an approval target
+ * (`product_image`, the post, the slot, the chat); the picture fills the slot only when the owner
+ * approves. Sent only after the owner said yes to the paid generation (the chat's consent card):
+ * `consented: true` is required, and without this field no picture is generated.
+ */
+export const SlotImageRequest = z
+  .object({
+    /** The owner allowed the paid generation for this post's slot(s). */
+    consented: z.literal(true),
+    /** Products the picture shows (exact description + check); none = a scene without one. */
+    productIds: z.array(EntityId).max(4).optional(),
+    /** The product's side to show ("sol", "arka", "önden"…); picks the reference photos. */
+    view: z.string().trim().max(80).optional(),
+    /** Picture style; absent = the brand's `imageStylePreset`, "" = no style. */
+    style: z.string().trim().max(500).optional(),
+    /** What the picture shows; absent = the post's `imageBrief` (else its title and brief). */
+    prompt: z.string().trim().max(4_000).optional(),
+    /** The chat the approval card goes to (default: the generation's `conversationId`). */
+    conversationId: EntityId.optional(),
+  })
+  .meta({ id: "SlotImageRequest" });
+export type SlotImageRequest = z.infer<typeof SlotImageRequest>;

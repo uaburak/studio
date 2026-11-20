@@ -401,6 +401,8 @@ export function toPlanItem(r: PlanItemRow, job: GenerationJobRef | null): PlanIt
     imageSlot: r.imageSlot,
     imageBrief: r.imageBrief,
     templateId: r.templateId ?? null,
+    productIds: r.productIds ?? [],
+    imageView: r.imageView ?? null,
     status: r.status,
     similar: r.similar ?? [],
     contentId: r.contentId,

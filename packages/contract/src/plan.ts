@@ -9,7 +9,7 @@ import {
   Timestamp,
 } from "./common.ts";
 import { ContentType } from "./content.ts";
-import { GenerationEngine, GenerationVariants } from "./generation.ts";
+import { GenerationEngine, GenerationVariants, SlotImageRequest } from "./generation.ts";
 import { Job, JobStatus } from "./job.ts";
 import { ReelGenerateOptions } from "./reel.ts";
 import { RepurposeSpec, TemplateFill } from "./template.ts";
@@ -90,6 +90,13 @@ const Pillar = z.string().trim().min(1).max(120);
 /** The post's planned opening line (N6); compared with earlier hooks so they do not repeat. */
 const Hook = z.string().trim().min(1).max(300);
 const ImageBrief = z.string().max(4_000);
+/** Most products one plan item names (the picture line takes at most 4). */
+export const MAX_PLAN_ITEM_PRODUCTS = 4;
+const PlanItemProducts = z
+  .array(EntityId)
+  .max(MAX_PLAN_ITEM_PRODUCTS)
+  .refine((list) => new Set(list).size === list.length, "products must be unique");
+const ImageView = z.string().trim().max(80);
 const ItemPlatforms = z
   .array(Platform)
   .min(1)
@@ -115,6 +122,14 @@ export const PlanItemInput = z
     imageBrief: ImageBrief.nullable().default(null),
     /** A brand template (N9) the post is made from: its layout stays, the AI fills its fields. */
     templateId: EntityId.nullable().optional(),
+    /**
+     * Products of the brand the post is about (`@ürün` mentions): their facts go to the designer
+     * and an AI picture shows them (reference photos, exact description, check). Editing an
+     * existing item without the field keeps its products.
+     */
+    productIds: PlanItemProducts.optional(),
+    /** The products' side the AI picture shows ("sol", "arka"…); null: any. Kept like `productIds`. */
+    imageView: ImageView.nullable().optional(),
   })
   .meta({ id: "PlanItemInput" });
 export type PlanItemInput = z.input<typeof PlanItemInput>;
@@ -169,6 +184,10 @@ export const PlanItem = z
     imageBrief: z.string().nullable(),
     /** The brand template the post is made from (null: designed anew; absent from older servers). */
     templateId: EntityId.nullable().optional(),
+    /** Products the post is about (`@ürün`); empty for older items and servers. */
+    productIds: z.array(EntityId).default([]),
+    /** The products' side the AI picture shows (null: any; absent from older servers). */
+    imageView: z.string().nullable().default(null),
     status: PlanItemStatus,
     /** Near-duplicates found when the item was written (absent from older servers). */
     similar: z.array(PlanItemSimilar).default([]),
@@ -282,32 +301,6 @@ export const PlanReject = z
 export type PlanReject = z.input<typeof PlanReject>;
 
 /**
- * A design's AI image slot filled through the product-image line (docs/URETIM-RESIM.md Faz 1):
- * once the HTML design version is stored, the worker queues one `image.generate` job per empty
- * slot with these products (exact description → generation → AI check) and an approval target
- * (`product_image`, the post, the slot, the chat); the picture fills the slot only when the owner
- * approves. Sent only after the owner said yes to the paid generation (the chat's consent card):
- * `consented: true` is required, and without this field no picture is generated.
- */
-export const SlotImageRequest = z
-  .object({
-    /** The owner allowed the paid generation for this post's slot(s). */
-    consented: z.literal(true),
-    /** Products the picture shows (exact description + check); none = a scene without one. */
-    productIds: z.array(EntityId).max(4).optional(),
-    /** The product's side to show ("sol", "arka", "önden"…); picks the reference photos. */
-    view: z.string().trim().max(80).optional(),
-    /** Picture style; absent = the brand's `imageStylePreset`, "" = no style. */
-    style: z.string().trim().max(500).optional(),
-    /** What the picture shows; absent = the post's `imageBrief` (else its title and brief). */
-    prompt: z.string().trim().max(4_000).optional(),
-    /** The chat the approval card goes to (default: the generation's `conversationId`). */
-    conversationId: EntityId.optional(),
-  })
-  .meta({ id: "SlotImageRequest" });
-export type SlotImageRequest = z.infer<typeof SlotImageRequest>;
-
-/**
  * `POST /api/plans/{id}/generate` (U2, N3).
  *
  * Without `itemIds` only the items that still need a design are queued: accepted items whose post
@@ -342,7 +335,8 @@ export const PlanGenerate = z
     /**
      * Fill the AI image slots of these posts through the product-image line (the owner consented
      * to the paid generation); copied into the payload of every item whose `imageSlot` is
-     * `ai_generate`.
+     * `ai_generate`. Each item's own `productIds` / `imageView` fill `productIds` / `view` when
+     * the request names none.
      */
     slotImage: SlotImageRequest.optional(),
   })
@@ -399,6 +393,8 @@ export const PlanItemPatch = z
     imageSlot: ImageSlotExpectation.optional(),
     imageBrief: ImageBrief.nullable().optional(),
     templateId: EntityId.nullable().optional(),
+    productIds: PlanItemProducts.optional(),
+    imageView: ImageView.nullable().optional(),
   })
   .refine((v) => Object.values(v).some((x) => x !== undefined), "at least one field is required")
   .meta({ id: "PlanItemPatch" });

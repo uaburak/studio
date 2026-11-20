@@ -1107,6 +1107,10 @@ export const planItems = sqliteTable(
     templateId: text("template_id").references((): AnySQLiteColumn => contentTemplates.id, {
       onDelete: "set null",
     }),
+    /** Products the post is about (`string[]` JSON; 0025); null = none (older items). */
+    productIds: text("product_ids", { mode: "json" }).$type<string[]>(),
+    /** The products' side the AI picture shows (0025); null = any. */
+    imageView: text("image_view"),
     status: text("status", { enum: ENUMS.planItemStatus }).notNull().default("planned"),
     contentId: text("content_id").references(() => contents.id, { onDelete: "set null" }),
     /** Latest content.generate job; its live status is read through a join. */

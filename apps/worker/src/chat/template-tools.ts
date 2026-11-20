@@ -5,7 +5,10 @@
  *   fillable fields — what `generate_from_template` and a plan item's `templateId` name;
  * - `generate_from_template`: a new post from a template (`POST /api/templates/{id}/use`): the
  *   layout stays exactly, the fields get the given texts / pictures or the AI writes them from
- *   the brief; texts that do not fit shrink within limits;
+ *   the brief; texts that do not fit shrink within limits. A template with an empty image slot
+ *   asks the same paid-consent card as `generate_post` ("AI görsel de üreteyim mi?"); with a
+ *   yes the request carries `slotImage` and the worker fills the slot through the product-image
+ *   line (an approval card in the chat);
  * - `repurpose_content`: a post becomes a story (1080×1920, same brand design, safe areas) or a
  *   Reels (motion graphics from its slides, its pictures as scenes), linked to its source.
  *
@@ -15,9 +18,12 @@ import {
   type AgentEffort,
   type AgentModel,
   type ContentTemplate,
+  type ContentTemplateDetail,
   REPURPOSE_LABEL,
+  type SlotImageRequest,
   TemplateFillMode,
 } from "@studio/contract";
+import { readCanvas } from "@studio/design-kit/canvas";
 import { z } from "zod";
 import type { StudioApi } from "../api.ts";
 import { asData } from "../prompt-data.ts";
@@ -45,7 +51,7 @@ export const TEMPLATE_TOOLS: readonly StudioToolDefinition[] = [
   {
     name: "generate_from_template",
     description:
-      "Markanın bir şablonuyla yeni post üretir (`content.generate` işi kuyruğa alınır). Yerleşim aynen kalır; yalnızca alanların metinleri ve görselleri değişir. Ya `values` ile alan metinlerini ver, ya da `brief` ver ve AI alanları ve açıklamayı yazsın (verdiğin values aynen kalır). Görseller `images` ile: alan anahtarı → sohbetteki @takma-ad ya da markanın görsel assetId'si; verilmeyen görsel şablondaki gibi kalır. Sığmayan metinler sınırlar içinde küçültülür (autoFit), yine sığmayanı kontroller söyler. Bitmesini wait_jobs ile bekle.",
+      'Markanın bir şablonuyla yeni post üretir (`content.generate` işi kuyruğa alınır). Yerleşim aynen kalır; yalnızca alanların metinleri ve görselleri değişir. Ya `values` ile alan metinlerini ver, ya da `brief` ver ve AI alanları ve açıklamayı yazsın (verdiğin values aynen kalır). Görseller `images` ile: alan anahtarı → sohbetteki @takma-ad ya da markanın görsel assetId\'si; verilmeyen görsel şablondaki gibi kalır. Şablonda boş bir görsel yuvası kalıyorsa (images ile doldurmadıysan) generate_post gibi tek bir ücretli izin kartı çıkar ("AI görsel de üreteyim mi?"; ayrıca ask_user ile sorma): izinle yuva, post hazır olunca ürün görseli hattıyla üretilir ve onay kartı olarak bu sohbete düşer. Ürün varsa `products` ver (açı `imageView`, stil `imageStyle`), görselin ne göstereceği `imageBrief`. Kullanıcı görsel istemediyse `aiImage: false`. Sığmayan metinler sınırlar içinde küçültülür (autoFit), yine sığmayanı kontroller söyler. Bitmesini wait_jobs ile bekle.',
     inputSchema: {
       type: "object",
       required: ["templateId"],
@@ -90,6 +96,19 @@ export const TEMPLATE_TOOLS: readonly StudioToolDefinition[] = [
           items: { type: "string", enum: ["instagram", "facebook", "linkedin"] },
         },
         instructions: { type: "string", description: "AI doldururken ek talimat." },
+        aiImage: {
+          type: "boolean",
+          description:
+            "Boş görsel yuvası için AI görsel teklif edilsin mi (varsayılan: evet, izin kartıyla).",
+        },
+        products: {
+          type: "array",
+          items: { type: "string" },
+          description: "AI görselin göstereceği ürünler (@slug, ad ya da id; en çok 4).",
+        },
+        imageView: { type: "string", description: "Ürünün hangi yüzü (sol, arka, önden…)." },
+        imageStyle: { type: "string", description: "Görsel stili (boş: markanın ön ayarı)." },
+        imageBrief: { type: "string", description: "AI görselin ne göstereceği." },
         repeat: {
           type: "boolean",
           description: "Aynı istek bu sohbette yapıldıysa bilerek bir tane daha üret.",
@@ -127,6 +146,21 @@ export interface TemplateToolEnv {
   resolveAlias(alias: string): Promise<string>;
   model?: AgentModel;
   effort?: AgentEffort;
+  /**
+   * The paid "AI görsel" consent card (the chat's, as `generate_post` shows it); absent: no
+   * picture is offered.
+   */
+  slotImageConsent?: (input: {
+    brandId: string;
+    title: string;
+    imageBrief: string | null;
+    products: readonly string[];
+    view?: string | undefined;
+    style?: string | undefined;
+  }) => Promise<{
+    request: SlotImageRequest | null;
+    result: { consented: boolean; note: string; products?: string[] };
+  }>;
 }
 
 const ListInput = z.object({
@@ -160,6 +194,11 @@ const UseInput = z.object({
     .max(3)
     .optional(),
   instructions: z.string().max(4_000).optional(),
+  aiImage: z.boolean().default(true),
+  products: z.array(z.string().trim().min(1)).max(4).default([]),
+  imageView: z.string().trim().max(80).optional(),
+  imageStyle: z.string().trim().max(500).optional(),
+  imageBrief: z.string().trim().max(4_000).optional(),
 });
 
 const RepurposeInput = z.object({
@@ -196,6 +235,36 @@ export function templateForAgent(t: ContentTemplate) {
           : { ...(f.ratio ? { ratio: f.ratio } : {}) }),
       })),
   };
+}
+
+/**
+ * How many image slots a post from the template leaves empty (unlocked slot fields without a
+ * picture in the template nor in `images`; on a canvas template also "AI görsel" areas).
+ */
+export function emptyTemplateSlots(
+  template: Pick<ContentTemplateDetail, "fields" | "kind" | "slides">,
+  images: Readonly<Record<string, string>>,
+): number {
+  let n = template.fields.filter(
+    (f) =>
+      f.kind === "image" &&
+      f.layerType === "slot" &&
+      !f.locked &&
+      !f.example.trim() &&
+      images[f.key] === undefined,
+  ).length;
+  if (template.kind === "canvas") {
+    for (const s of template.slides) {
+      const c = readCanvas(s.html);
+      if (c.kind !== "facts") continue;
+      n += c.facts.nodes.filter(
+        (node) =>
+          node.name.trim().toLocaleLowerCase("tr") === "ai görsel" &&
+          !node.fills.some((p) => p.type === "image"),
+      ).length;
+    }
+  }
+  return n;
 }
 
 export async function listTemplatesTool(env: TemplateToolEnv, args: Record<string, unknown>) {
@@ -238,6 +307,23 @@ export async function generateFromTemplateTool(
     images[img.key] = assetId;
   }
   const values = Object.fromEntries((input.values ?? []).map((v) => [v.key, v.text]));
+  // An empty image slot: the same paid-consent card as generate_post (never a silent charge).
+  let slot: Awaited<ReturnType<NonNullable<TemplateToolEnv["slotImageConsent"]>>> | null = null;
+  let emptySlots = 0;
+  if (input.aiImage && env.slotImageConsent) {
+    const template = await env.api.client.templates.get(input.templateId, { signal: env.signal });
+    emptySlots = emptyTemplateSlots(template, images);
+    if (emptySlots > 0 && template.contentType !== "reel") {
+      slot = await env.slotImageConsent({
+        brandId: template.brandId,
+        title: input.title ?? template.name,
+        imageBrief: input.imageBrief ?? input.brief ?? null,
+        products: input.products,
+        view: input.imageView,
+        style: input.imageStyle,
+      });
+    }
+  }
   const res = await env.api.client.templates.use(
     input.templateId,
     {
@@ -249,6 +335,8 @@ export async function generateFromTemplateTool(
       ...(input.autoFit !== undefined ? { autoFit: input.autoFit } : {}),
       ...(input.platforms ? { targetPlatforms: input.platforms } : {}),
       ...(input.instructions ? { instructions: input.instructions } : {}),
+      ...(input.imageBrief ? { imageBrief: input.imageBrief } : {}),
+      ...(slot?.request ? { slotImage: slot.request } : {}),
       conversationId: env.conversationId,
       ...(env.model ? { model: env.model } : {}),
       ...(env.effort ? { effort: env.effort } : {}),
@@ -261,6 +349,8 @@ export async function generateFromTemplateTool(
       contentId: res.content.id,
       jobIds: [res.job.id],
       title: asData(res.content.title),
+      ...(emptySlots > 0 ? { emptySlots } : {}),
+      ...(slot ? { slotImage: slot.result } : {}),
     },
     summary: `${res.content.title} · şablondan · 1 iş`,
     contentId: res.content.id,

@@ -101,7 +101,7 @@ import { ApiProblem, badRequest, conflict, invalidTransition, notFound } from ".
 import { newId } from "../lib/ids.ts";
 import { brandMentions } from "../lib/mentions.ts";
 import { marksChanged, similarityMarks, storedMarks } from "../lib/planning.ts";
-import { assertPlanTemplates } from "../lib/templates.ts";
+import { assertPlanProducts, assertPlanTemplates, existingProducts } from "../lib/templates.ts";
 import {
   activeRunOf,
   assistantMessageOf,
@@ -836,6 +836,8 @@ function newItemRow(planId: string, position: number, input: ItemInput, now: Dat
     imageSlot: input.imageSlot,
     imageBrief: input.imageBrief,
     templateId: input.templateId ?? null,
+    productIds: input.productIds?.length ? input.productIds : null,
+    imageView: input.imageView ?? null,
     status: "planned",
     contentId: null,
     generationJobId: null,
@@ -859,7 +861,11 @@ function itemFields(
     | "hook"
     | "imageSlot"
     | "imageBrief"
-  > & { templateId?: string | null | undefined },
+  > & {
+    templateId?: string | null | undefined;
+    productIds?: readonly string[] | null | undefined;
+    imageView?: string | null | undefined;
+  },
 ) {
   return {
     date: i.date,
@@ -872,6 +878,8 @@ function itemFields(
     imageSlot: i.imageSlot,
     imageBrief: i.imageBrief,
     templateId: i.templateId ?? null,
+    productIds: i.productIds?.length ? [...i.productIds] : null,
+    imageView: i.imageView ?? null,
   };
 }
 
@@ -1503,6 +1511,7 @@ async function putPlan(
   }
   await requireActiveBrand(db, brandId);
   await assertPlanTemplates(db, brandId, input.items);
+  await assertPlanProducts(db, brandId, input.items);
   const periodProblem = checkPlanPeriod(
     input.periodStart,
     input.periodEnd,
@@ -1710,15 +1719,20 @@ async function updatePlan(
   let nextItems = items;
   if (input.items) {
     await assertPlanTemplates(db, plan.brandId, input.items);
+    await assertPlanProducts(db, plan.brandId, input.items);
     const ids = input.items.map((i) => i.id).filter((id): id is string => id !== undefined);
     if (new Set(ids).size !== ids.length) throw badRequest("item ids must be unique");
     nextItems = input.items.map((item, position) => {
       if (item.id === undefined) return newItemRow(planId, position, item, now);
       const existing = items.find((i) => i.id === item.id);
       if (!existing) throw notFound(`plan ${planId} item`, item.id);
+      const fields = itemFields(newItemRow(planId, position, item, now));
       return {
         ...existing,
-        ...itemFields(newItemRow(planId, position, item, now)),
+        ...fields,
+        // An edit that does not name the products (an older client) keeps them.
+        productIds: item.productIds === undefined ? existing.productIds : fields.productIds,
+        imageView: item.imageView === undefined ? existing.imageView : fields.imageView,
         position,
         updatedAt: now,
       };
@@ -2018,9 +2032,21 @@ async function generatePlan(
     ]);
   }
 
+  // The items' products that still exist (products are hard-deleted; a gone one is left out).
+  const productIds = new Set(
+    (
+      await existingProducts(
+        db,
+        plan.brandId,
+        targets.flatMap((i) => i.productIds ?? []),
+      )
+    ).keys(),
+  );
+
   const created: JobRow[] = [];
   const nextItems = items.map((item) => {
     if (!targets.includes(item)) return item;
+    const itemProducts = (item.productIds ?? []).filter((id) => productIds.has(id));
     const post = item.contentId ? posts.get(item.contentId) : undefined;
     if (!post) throw conflict(`item ${item.id} has no content item any more (it was deleted)`);
     const content = post.row;
@@ -2048,11 +2074,18 @@ async function generatePlan(
       ...(input.model ? { model: input.model } : {}),
       ...(input.effort ? { effort: input.effort } : {}),
       engine,
-      // The owner's consented AI picture goes only to the posts that have an AI image slot.
+      // The item's products: their facts go to the designer, their photos to the AI picture.
+      ...(itemProducts.length ? { productIds: itemProducts } : {}),
+      // The owner's consented AI picture goes only to the posts that have an AI image slot; it
+      // shows the item's products (and side) unless the request names its own.
       ...(input.slotImage && item.imageSlot === "ai_generate"
         ? {
             slotImage: {
               ...input.slotImage,
+              ...(!input.slotImage.productIds?.length && itemProducts.length
+                ? { productIds: itemProducts }
+                : {}),
+              ...(!input.slotImage.view && item.imageView ? { view: item.imageView } : {}),
               ...(!input.slotImage.conversationId && plan.conversationId
                 ? { conversationId: plan.conversationId }
                 : {}),
@@ -2187,6 +2220,7 @@ async function addPlanItem(
   }
   assertItemDate(plan, input.date);
   await assertPlanTemplates(db, plan.brandId, [input]);
+  await assertPlanProducts(db, plan.brandId, [input]);
   const position = items.reduce((max, i) => Math.max(max, i.position + 1), 0);
   let row = newItemRow(planId, position, input, now);
   if (plan.status === "accepted") {
@@ -2231,8 +2265,13 @@ async function updatePlanItem(
     ...(input.imageSlot !== undefined ? { imageSlot: input.imageSlot } : {}),
     ...(input.imageBrief !== undefined ? { imageBrief: input.imageBrief } : {}),
     ...(input.templateId !== undefined ? { templateId: input.templateId } : {}),
+    ...(input.productIds !== undefined
+      ? { productIds: input.productIds.length ? input.productIds : null }
+      : {}),
+    ...(input.imageView !== undefined ? { imageView: input.imageView } : {}),
   };
   const nextItem: PlanItemRow = { ...item, ...fields, updatedAt: now };
+  if (fields.productIds) await assertPlanProducts(db, plan.brandId, [nextItem]);
   if (fields.templateId !== undefined || fields.contentType !== undefined)
     await assertPlanTemplates(db, plan.brandId, [nextItem]);
   if (fields.date !== undefined) assertItemDate(plan, nextItem.date);
