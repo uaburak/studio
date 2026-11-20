@@ -255,9 +255,17 @@ export function brandFontFamilies(t: BrandTokens): string[] {
   return [...new Set(Object.values(t.font).map((f) => f.family))];
 }
 
-/** Families that come from fonts installed on the rendering Mac (`system: true`). */
+/**
+ * Families that come from fonts installed on the rendering Mac: `system: true`, and a role with
+ * no files (brand.css declares no @font-face for it, so the name can only reach an installed
+ * font — the neutral default's Helvetica Neue). Such a family is never "loaded" by the page.
+ */
 export function brandSystemFontFamilies(t: BrandTokens): string[] {
-  return [...new Set(Object.values(t.font).flatMap((f) => (f.system ? [f.family] : [])))];
+  return [
+    ...new Set(
+      Object.values(t.font).flatMap((f) => (f.system || f.files.length === 0 ? [f.family] : [])),
+    ),
+  ];
 }
 
 /** Family name brand.css gives a system role's fallback files: `Avenir Next Fallback`. */

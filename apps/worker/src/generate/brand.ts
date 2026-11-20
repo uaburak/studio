@@ -93,12 +93,14 @@ export const NEUTRAL_TOKENS = {
   font: {
     display: {
       family: "Helvetica Neue",
+      system: true,
       files: [],
       fallback: "sans-serif",
       default: { weight: 700, leading: 1.0 },
     },
     text: {
       family: "Helvetica Neue",
+      system: true,
       files: [],
       fallback: "sans-serif",
       default: { weight: 400, leading: 1.38 },

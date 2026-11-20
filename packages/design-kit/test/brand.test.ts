@@ -233,6 +233,10 @@ describe("brand.css", () => {
     expect(manifest.systemFontFamilies).toEqual(["Avenir Next", "Helvetica Neue"]);
     expect(fallbackFamilyName("Avenir Next")).toBe("Avenir Next Fallback");
     expect(brandSystemFontFamilies(parseBrandTokens(ventaBrandJson()))).toEqual([]);
+    // A role without files has no @font-face: its family can only be an installed font.
+    const noFiles = structuredClone(ventaBrandJson()) as { font: Record<string, unknown> };
+    noFiles.font.text = { family: "Helvetica Neue", files: [] };
+    expect(brandSystemFontFamilies(parseBrandTokens(noFiles))).toEqual(["Helvetica Neue"]);
   });
 
   it("works for a minimal brand with defaults", () => {

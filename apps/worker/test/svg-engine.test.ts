@@ -27,7 +27,7 @@ import { sanitizeFindings } from "@studio/design-kit/sanitize";
 import sharp from "sharp";
 import { afterAll, describe, expect, it } from "vitest";
 import { loadAgentSettings } from "../src/agent.ts";
-import { runContentChecks } from "../src/checks/pipeline.ts";
+import { checkLintConfig, presetForVersion, runContentChecks } from "../src/checks/pipeline.ts";
 import { ClaudeGate } from "../src/claude/gate.ts";
 import type { ClaudeCallOptions, ClaudeCallResult, ClaudeRunner } from "../src/claude/runner.ts";
 import { buildBrandContext } from "../src/generate/brand.ts";
@@ -282,6 +282,48 @@ describe.skipIf(!chromium || process.env.STUDIO_SKIP_RENDER === "1")(
       expect(b).toBeGreaterThan(140);
       expect(r).toBeLessThan(80);
       expect(g).toBeLessThan(120);
+    });
+
+    it("re-checks a stored neutral-default SVG slide without false font-load failures (real run)", async () => {
+      // A brand without an approved profile: the neutral default's Helvetica Neue has no files
+      // (no @font-face, so `document.fonts` never lists it as loaded) — it is an installed font.
+      const { api } = createFakeApi({ brands: [fakeBrand()] });
+      const brand = buildBrandContext({
+        brand: fakeBrand(),
+        profile: null,
+        api,
+        cacheDir: mkdtempSync(path.join(tmpdir(), "svg-neutral-")),
+      });
+      expect(brand.mode).toBe("neutral");
+      expect(brand.manifest.systemFontFamilies).toEqual(["Helvetica Neue"]);
+      // The slide a real SVG generation stored (content.check reported 7 font-load fails on it).
+      const html = readFileSync(
+        fileURLToPath(new URL("./fixtures/svg-neutral-slide.txt", import.meta.url)),
+        "utf8",
+      );
+      const resolver = combineResolvers(
+        brand.resolver,
+        createMemoryResolver({
+          "/media/01a1f126-31fe-7000-a9a2-677ce9736a1a.jpg": await color("#C8D8C0", 540, 565),
+        }),
+      );
+      const preset = presetForVersion(
+        { type: "post", targetPlatforms: ["instagram"] },
+        { width: 1080, height: 1350 },
+      );
+      const out = await renderSvgSlide(renderer, {
+        html,
+        width: 1080,
+        height: 1350,
+        resolver,
+        lint: checkLintConfig(brand, preset, "post", 1),
+      });
+      const rules = out.report.issues.map((i) => `${i.rule}:${i.layer}`);
+      expect(rules.filter((r) => r.startsWith("font-"))).toEqual([]);
+      expect(out.report.layers.find((l) => l.id === "headline")?.text?.family).toBe(
+        "Helvetica Neue",
+      );
+      expect(out.report.issues.some((i) => i.rule === "network-request")).toBe(false);
     });
   },
 );
