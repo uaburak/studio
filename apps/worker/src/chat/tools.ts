@@ -42,6 +42,7 @@ import {
   ProductPosition,
   planItemSimilarities,
   productPhotoAngle,
+  type SlotImageRequest,
   slugify,
 } from "@studio/contract";
 import { readCanvas } from "@studio/design-kit/canvas";
@@ -361,7 +362,7 @@ export const STUDIO_TOOLS: readonly StudioToolDefinition[] = [
   {
     name: "generate_post",
     description:
-      "Post tasarım üretimini başlatır (`content.generate` işi kuyruğa alınır; tasarım burada yapılmaz). Ya kabul edilmiş bir plan kalemi (`planItemId`) ya da yeni bir brief ver. Çağırmadan önce kullanıcıya hangi motorla (`engine`) ve kaç varyant (`variants`, en çok 4) üretileceğini sor; kullanıcı söylediyse ya da markanın varsayılan motoru varsa sorma. Şimdilik yalnızca `html` motoru çalışır. Her varyant ayrı bir post ve ayrı bir iştir. Sonuç iş kimliklerini döner; bitmesini `wait_jobs` ile bekle.",
+      "Post tasarım üretimini başlatır (`content.generate` işi kuyruğa alınır; tasarım burada yapılmaz). Ya kabul edilmiş bir plan kalemi (`planItemId`) ya da yeni bir brief ver. Çağırmadan önce kullanıcıya hangi motorla (`engine`) ve kaç varyant (`variants`, en çok 4) üretileceğini sor; kullanıcı söylediyse ya da markanın varsayılan motoru varsa sorma. Şimdilik yalnızca `html` motoru çalışır. Her varyant ayrı bir post ve ayrı bir iştir. Sonuç iş kimliklerini döner; bitmesini `wait_jobs` ile bekle. AI görsel yuvası (`imageSlot: ai_generate`) varsa araç, tasarımla birlikte görseli de üretmek için tek bir ücretli izin kartı gösterir; izin verilirse her postun tasarımı hazır olunca yuvası ürün görseli hattıyla (ürün fotoğraflarından birebir tarif → üretim → yapay zekâ kontrolü) üretilir, görsel sohbete onay kartı olarak düşer ve yuva ancak kullanıcı onaylayınca dolar. İzin verilmezse post yine üretilir, yuva boş kalır.",
     inputSchema: {
       type: "object",
       properties: {
@@ -394,7 +395,22 @@ export const STUDIO_TOOLS: readonly StudioToolDefinition[] = [
           type: "array",
           items: { type: "string" },
           description:
-            "Postun konusu olan ürünler: @ad (ör. 'boro', '@venta-boro') ya da ürün id'si. Ürünlerin bilgileri tasarıma gider.",
+            "Postun konusu olan ürünler: @ad (ör. 'boro', '@venta-boro') ya da ürün id'si. Ürünlerin bilgileri tasarıma gider; AI görsel yuvası varsa görsel bu ürünlerin fotoğraflarıyla, birebir üretilir.",
+        },
+        aiImage: {
+          type: "boolean",
+          description:
+            "AI görsel yuvası (imageSlot ai_generate) olan postlarda yuvanın ürün görseli hattıyla doldurulması. Varsayılan true: araç tek bir ücretli izin kartı gösterir ('Ürün görseli de üreteyim mi? Ücretli: …'), kart bütün varyantların yuvalarını kapsar. Kullanıcı görsel istemediğini zaten söylediyse false ver (kart çıkmaz, yuva boş kalır).",
+        },
+        imageView: {
+          type: "string",
+          description:
+            "AI görseli için ürünün hangi yüzü (ör. 'sola bakan', 'arka', 'önden'); uygun ürün fotoğrafları referans seçilir.",
+        },
+        imageStyle: {
+          type: "string",
+          description:
+            "AI görselinin stili (ör. 'vintage', 'retro'); boşsa markanın görsel stili ön ayarı, '' = stil yok.",
         },
       },
     },
@@ -570,6 +586,11 @@ export const STUDIO_TOOLS: readonly StudioToolDefinition[] = [
           type: "boolean",
           description:
             "itemIds ile: tasarımı zaten olan kalemleri yeniden üret. Yalnızca kullanıcı üretilmiş postların yeniden üretilmesini açıkça isterse. Elle ya da yapay zekâyla düzenlenmiş ve onaylı postlar yine korunur (onları Studio'da kullanıcı onaylar).",
+        },
+        aiImages: {
+          type: "boolean",
+          description:
+            "true: AI görsel yuvası (ai_generate) olan kalemlerin görselleri de ürün görseli hattıyla üretilir (ücretli; izin kartında tutarıyla yazar, her görsel onay kartıyla gelir, yuva onaylanınca dolar). Yalnızca kullanıcı görselleri de istediyse.",
         },
       },
     },
@@ -935,6 +956,9 @@ const GeneratePostInput = z
     engine: GenerationEngine.optional(),
     variants: z.coerce.number().int().min(1).max(MAX_GENERATION_VARIANTS).default(1),
     products: z.array(z.string().trim().min(1)).max(8).default([]),
+    aiImage: z.boolean().default(true),
+    imageView: trimmed(80).optional(),
+    imageStyle: z.string().trim().max(500).optional(),
   })
   .refine((v) => Boolean(v.planItemId || v.brief), "planItemId ya da brief gerekli");
 
@@ -1004,6 +1028,7 @@ const AcceptGeneratePlanInput = z.object({
   itemIds: z.array(z.string().min(1)).optional(),
   instructions: z.string().max(4_000).optional(),
   force: z.boolean().optional(),
+  aiImages: z.boolean().default(false),
 });
 
 const ApproveContentInput = z.object({
@@ -1312,7 +1337,7 @@ export class StudioToolExecutor {
           name,
           "Post üretimi başlatılıyor…",
           "Post üretimi kuyruğa alındı",
-          () => this.generatePost(args, rawCallId),
+          () => this.generatePost(args, rawCallId, stepId),
         );
       case "list_products":
         return this.runSafe(stepId, name, "Ürünler listeleniyor…", "Ürünler listelendi", () =>
@@ -2210,7 +2235,7 @@ export class StudioToolExecutor {
     };
   }
 
-  private async generatePost(args: Record<string, unknown>, callId?: string) {
+  private async generatePost(args: Record<string, unknown>, callId?: string, stepId = "step") {
     const parsed = GeneratePostInput.safeParse(args);
     if (!parsed.success) {
       throw new Error(`Geçersiz üretim isteği: ${z.prettifyError(parsed.error).slice(0, 300)}`);
@@ -2235,13 +2260,30 @@ export class StudioToolExecutor {
           "Plan henüz kabul edilmedi; önce accept_and_generate_plan ile (izin kartıyla) planı kabul et.",
         );
       }
+      const planEngine = input.engine
+        ? await this.engineFor(plan.brandId, input.engine)
+        : undefined;
+      // The item's "AI görsel" slot: one paid-consent card, the picture after the design.
+      const planSlot =
+        item.imageSlot === "ai_generate" && item.contentType !== "reel" && input.aiImage
+          ? await this.slotImageConsent(stepId, {
+              brandId: plan.brandId,
+              posts: 1,
+              title: item.title,
+              imageBrief: item.imageBrief ?? null,
+              products: input.products,
+              view: input.imageView,
+              style: input.imageStyle,
+            })
+          : null;
       const gen = await this.options.api.client.plans.generate(
         plan.id,
         {
           itemIds: [input.planItemId],
           ...(input.instructions ? { instructions: input.instructions } : {}),
           ...this.generationPayloadExtras(),
-          ...(input.engine ? { engine: await this.engineFor(plan.brandId, input.engine) } : {}),
+          ...(planEngine ? { engine: planEngine } : {}),
+          ...(planSlot?.request ? { slotImage: planSlot.request } : {}),
         },
         { signal: this.options.signal },
       );
@@ -2254,6 +2296,7 @@ export class StudioToolExecutor {
           jobIds: gen.jobs.map((j) => j.id),
           note:
             gen.jobs.length === 0 ? "Bu kalemin üretimi zaten sürüyor ya da sırada." : undefined,
+          ...(planSlot ? { slotImage: planSlot.result } : {}),
         },
         summary: `${item.title} · ${gen.jobs.length} iş`,
       };
@@ -2281,6 +2324,8 @@ export class StudioToolExecutor {
       ...(engine ? { engine } : {}),
       ...(input.variants > 1 ? { variants: input.variants } : {}),
       ...(productIds.length ? { productIds } : {}),
+      ...(input.imageView ? { imageView: input.imageView } : {}),
+      ...(input.imageStyle !== undefined ? { imageStyle: input.imageStyle } : {}),
     });
     const earlier = await this.earlierCall("generate_post", key, input.repeat);
     if (earlier) {
@@ -2293,6 +2338,20 @@ export class StudioToolExecutor {
         summary: `${title} · zaten üretimde`,
       };
     }
+    // The "AI görsel" slot: one paid-consent card for every variant's picture (asked with the
+    // post request); declined, the posts are made with the slot left empty.
+    const slot =
+      input.imageSlot === "ai_generate" && input.aiImage
+        ? await this.slotImageConsent(stepId, {
+            brandId,
+            posts: input.variants,
+            title,
+            imageBrief: input.imageBrief ?? null,
+            products: input.products,
+            view: input.imageView,
+            style: input.imageStyle,
+          })
+        : null;
     // Each variant is its own post and job; they arrive in the chat one by one.
     const contentIds: string[] = [];
     const jobIds: string[] = [];
@@ -2324,6 +2383,7 @@ export class StudioToolExecutor {
         ...(engine ? { engine } : {}),
         ...(input.variants > 1 ? { variants: input.variants, variantIndex: index } : {}),
         ...(productIds.length ? { productIds } : {}),
+        ...(slot?.request ? { slotImage: slot.request } : {}),
       };
       const job = await this.options.api.client.jobs.create(
         { type: "content.generate", brandId, contentId: content.id, payload },
@@ -2342,11 +2402,105 @@ export class StudioToolExecutor {
       contentId: contentIds[0],
       jobIds,
       ...(input.variants > 1 ? { contentIds, variants: input.variants } : {}),
+      ...(slot ? { slotImage: slot.result } : {}),
     };
     await this.ledger.put({ key, tool: "generate_post", callId: callId ?? null, data });
     return {
       data,
       summary: `${title} · ${jobIds.length} iş`,
+    };
+  }
+
+  /**
+   * The paid "AI görsel" of a post's slot (docs/URETIM-RESIM.md §11): one consent card, asked
+   * with the post request, covers every variant's slot picture. Allowed: the `slotImage` request
+   * the generation carries (the worker queues the product-image job once the design exists);
+   * declined or expired: null, and the slot stays empty.
+   */
+  private async slotImageConsent(
+    stepId: string,
+    input: {
+      brandId: string;
+      posts: number;
+      title: string;
+      imageBrief: string | null;
+      products: readonly string[];
+      view?: string | undefined;
+      style?: string | undefined;
+    },
+  ): Promise<{
+    request: SlotImageRequest | null;
+    result: { consented: boolean; note: string; products?: string[] };
+  }> {
+    const tool = "generate_post";
+    const id = `${stepId}-image`.slice(0, 64);
+    const runningLabel = "AI görsel için izin bekleniyor…";
+    const doneLabel = "AI görsel izni";
+    const products: BrandProduct[] = [];
+    for (const ref of input.products) {
+      const product = await this.productRef(ref, input.brandId);
+      if (!products.some((p) => p.id === product.id)) products.push(product);
+    }
+    const shown = products.slice(0, 4);
+    const stepIndex = await this.options.writer.setPart({
+      type: "tool_step",
+      id,
+      name: tool,
+      label: runningLabel,
+      state: "running",
+      summary: null,
+    });
+    const model = this.options.imageModel ?? "gemini-nano-banana-2.1";
+    const decision = await this.awaitConsent({
+      tool,
+      title:
+        shown.length > 0
+          ? "Ürün görseli de üreteyim mi? (ücretli)"
+          : "Post için AI görsel de üreteyim mi? (ücretli)",
+      detail: slotImageConsentDetail({
+        model,
+        posts: input.posts,
+        products: shown.map((p) => p.name),
+        prompt: input.imageBrief || input.title,
+        references: shown.reduce((n, p) => n + Math.min(3, p.imageAssetIds.length), 0),
+      }),
+      stepId: id,
+      stepIndex,
+      doneLabel,
+    });
+    if (!decision.allowed) {
+      return {
+        request: null,
+        result: { consented: false, note: SLOT_IMAGE_DECLINED_NOTE },
+      };
+    }
+    await this.options.writer.setPart(
+      {
+        type: "tool_step",
+        id,
+        name: tool,
+        label: doneLabel,
+        state: "done",
+        summary:
+          input.posts > 1
+            ? `${input.posts} görsel, tasarımlar hazır olunca üretilecek`
+            : "Görsel, tasarım hazır olunca üretilecek",
+      },
+      stepIndex,
+    );
+    return {
+      request: {
+        consented: true,
+        ...(shown.length > 0 ? { productIds: shown.map((p) => p.id) } : {}),
+        ...(input.view ? { view: input.view } : {}),
+        ...(input.style !== undefined ? { style: input.style } : {}),
+        conversationId: this.options.conversationId,
+      },
+      result: {
+        consented: true,
+        note: SLOT_IMAGE_ALLOWED_NOTE,
+        ...(shown.length > 0 ? { products: shown.map((p) => p.name) } : {}),
+      },
     };
   }
 
@@ -2714,6 +2868,7 @@ export class StudioToolExecutor {
       // The plan path creates the job; the recipe travels in the instructions.
       return this.generatePost({
         planItemId: input.planItemId,
+        aiImage: false,
         instructions: [input.recipe ? recipeWords[input.recipe] : "", input.instructions ?? ""]
           .filter(Boolean)
           .join(" "),
@@ -3002,6 +3157,19 @@ export class StudioToolExecutor {
           // An estimate never blocks the card.
         }
       }
+      // The items' "AI görsel" slots, when the owner wants the pictures too (paid, same card).
+      const slotPosts = parsed.aiImages
+        ? toGenerate.filter((i) => i.imageSlot === "ai_generate" && i.contentType !== "reel").length
+        : 0;
+      if (slotPosts > 0) {
+        detail = `${detail}\n${slotImageConsentDetail({
+          model: this.options.imageModel ?? "gemini-nano-banana-2.1",
+          posts: slotPosts,
+          products: [],
+          prompt: plan.title || "plan görselleri",
+          references: 0,
+        })}`;
+      }
 
       const decision = await this.awaitConsent({
         tool,
@@ -3031,6 +3199,9 @@ export class StudioToolExecutor {
           ...(parsed.instructions ? { instructions: parsed.instructions } : {}),
           ...(choice?.model ? { model: choice.model } : {}),
           ...(choice?.effort ? { effort: choice.effort } : {}),
+          ...(slotPosts > 0
+            ? { slotImage: { consented: true, conversationId: this.options.conversationId } }
+            : {}),
         },
         { signal: this.options.signal },
       );
@@ -3056,6 +3227,9 @@ export class StudioToolExecutor {
           jobIds: gen.jobs.map((j) => j.id),
           // generated / edited / approved posts are kept (not regenerated); generating = busy.
           skipped: gen.skipped,
+          ...(slotPosts > 0
+            ? { slotImage: { consented: true, posts: slotPosts, note: SLOT_IMAGE_ALLOWED_NOTE } }
+            : {}),
         },
         isError: false,
       };
@@ -3921,6 +4095,44 @@ export class StudioToolExecutor {
     }
     return `step-${seq}`;
   }
+}
+
+/** What the agent tells the owner after a yes to the slot picture (Turkish). */
+const SLOT_IMAGE_ALLOWED_NOTE =
+  "Her postun tasarımı hazır olunca AI görsel yuvası ürün görseli hattıyla üretilecek (ürün fotoğraflarından birebir tarif → üretim → yapay zekâ kontrolü). Görsel kontrol raporuyla bu sohbete onay kartı olarak düşer (Onayla / Reddet / Yeniden üret); yuva ancak onaylanınca dolar. O sürede post Postlar'da 'Onay bekliyor' görünür. wait_jobs sonucu `slotImages` alanında görsel işlerini verir.";
+
+/** What the agent tells the owner after a no (Turkish): how to fill the slot later. */
+const SLOT_IMAGE_DECLINED_NOTE =
+  "Kullanıcı ücretli AI görseline izin vermedi: post üretiliyor, görsel yuvası boş kalacak. Sonra doldurmak için: kendi fotoğrafıyla fill_post_slot, ya da istediğinde (yeni izin kartıyla) generate_ai_image (targetContentId + targetSlotId, ürün varsa referenceProducts).";
+
+/**
+ * The consent card's detail for the slot pictures of a post request: how many (one per post /
+ * variant), which products, and the cost of them all.
+ */
+export function slotImageConsentDetail(input: {
+  model: string;
+  posts: number;
+  products: readonly string[];
+  prompt: string;
+  references: number;
+}): string {
+  const count = Math.max(1, input.posts);
+  const head =
+    `Tasarım hazır olunca AI görsel yuvası ürün görseli hattıyla doldurulur: ${count > 1 ? `${count} görsel (her varyanta bir)` : "1 görsel"}` +
+    `${input.products.length > 0 ? `, ürün: ${input.products.join(", ")} (fotoğraflarından birebir)` : ", ürünsüz sahne"}.` +
+    " Her görsel kontrol raporuyla onay kartı olarak gelir; yuva onaylayınca dolar.";
+  return [
+    head,
+    aiImageConsentDetail({
+      model: input.model,
+      prompt: input.prompt,
+      aspectRatio: "4:5",
+      imageSize: "2K",
+      references: input.references,
+      preserveLabel: false,
+      variants: count,
+    }),
+  ].join("\n");
 }
 
 /** Typical image output tokens of one generated picture (Gemini image models, 1K–2K). */

@@ -101,3 +101,13 @@ Reels ve hikâye sonra ayrı ele alınacak.
   varyant ayrı iş ve ayrı onay kartı, tür `variant`), `get_product` (foto başına `quality`,
   `lowQualityPhotos`), `upgrade_product_photo` (beyaz zemin stüdyo çekimi →
   `product_photo_upgrade`, `replacesAssetId`).
+- HTML postun "AI görsel" yuvası (`generate/slot-images.ts`): `generate_post` (`imageSlot: ai_generate`)
+  tek bir ücretli izin kartı gösterir ("Ürün görseli de üreteyim mi?", bütün varyantları kapsar;
+  `aiImage: false` ile sorulmaz). İzinle `ContentGeneratePayload.slotImage {consented: true,
+  productIds?, view?, style?, prompt?, conversationId?}` gider (plan kalemleri: `PlanGenerate.slotImage`,
+  yalnızca `ai_generate` kalemlere kopyalanır; `accept_and_generate_plan {aiImages: true}`). Tasarım
+  sürümü kaydedilince worker her boş yuva için bir `image.generate` işi açar: ürün fotoğrafları
+  (açıya göre), `approval {kind: product_image, contentId, slotId, conversationId, productId}`, yuva
+  oranına en yakın en-boy, varyant postlarda `variant {index, count}`. Yuva yalnızca onayla dolar.
+  İzin yoksa iş açılmaz; aynı üretim işinin yeniden denemesi ikinci kez ücret ödetmez
+  (`stateDir/slot-images/<jobId>.json`).
