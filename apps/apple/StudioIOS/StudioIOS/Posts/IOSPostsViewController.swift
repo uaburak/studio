@@ -356,7 +356,9 @@ final class IOSPostsViewController: UIViewController, UICollectionViewDelegate, 
         let dx = pan.translation(in: view).x
         switch pan.state {
         case .began:
-            panBase = interruptPaging()
+            // The distance the finger went before the pan was recognised is not applied at
+            // once (the page jumped by it): the page follows from here.
+            panBase = interruptPaging() - dx
             pageTarget = nil
         case .changed:
             var offset = panBase + dx

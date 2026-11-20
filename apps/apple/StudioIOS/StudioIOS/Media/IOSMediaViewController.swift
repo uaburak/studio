@@ -356,7 +356,9 @@ final class IOSMediaViewController: UIViewController, UICollectionViewDelegate, 
         switch pan.state {
         case .began:
             // Catch the page wherever it is (the slide stops there, no waiting for it to end).
-            panBase = interruptPaging()
+            // The distance the finger went before the pan was recognised is not applied at
+            // once (the page jumped by it): the page follows from here.
+            panBase = interruptPaging() - dx
             pillByTap = false
         case .changed:
             var offset = panBase + dx

@@ -167,7 +167,9 @@ final class BrandProfileViewController: UIViewController, UIGestureRecognizerDel
         let dx = pan.translation(in: view).x
         switch pan.state {
         case .began:
-            panBase = interruptPaging()
+            // The distance the finger went before the pan was recognised is not applied at
+            // once (the page jumped by it): the page follows from here.
+            panBase = interruptPaging() - dx
             pageTarget = nil
         case .changed:
             var offset = panBase + dx
@@ -207,12 +209,29 @@ final class BrandProfileViewController: UIViewController, UIGestureRecognizerDel
         tabs.follow(CGFloat(currentTab.rawValue) - offset / max(span, 1) * max(steps, 1))
     }
 
-    /// Builds `tab`'s rows into a stack laid beside the page, on `side`.
-    private func showNeighbor(_ tab: BrandTab?, side: CGFloat) {
-        dropNeighbor()
-        neighborTab = tab
-        neighborSide = side
-        guard let tab, let brand = model.brand, let overview = model.overview, let column = pageBody.superview else { return }
+    /// The tabs beside the current one, built while the page is still (building one when the
+    /// finger first moves stalled the slide for a few frames).
+    private var preparedPages: [BrandTab: UIStackView] = [:]
+
+    private func prepareNeighbors() {
+        guard !isPaging else { return }
+        for tab in [BrandTab(rawValue: currentTab.rawValue - 1), BrandTab(rawValue: currentTab.rawValue + 1)].compactMap({ $0 })
+        where preparedPages[tab] == nil {
+            if let stack = makePage(tab) {
+                stack.isHidden = true
+                preparedPages[tab] = stack
+            }
+        }
+    }
+
+    private func dropPrepared() {
+        preparedPages.values.forEach { $0.removeFromSuperview() }
+        preparedPages = [:]
+    }
+
+    /// `tab`'s rows in their own stack, laid where the page is (hidden until used).
+    private func makePage(_ tab: BrandTab) -> UIStackView? {
+        guard let brand = model.brand, let overview = model.overview, let column = pageBody.superview else { return nil }
         let stack = UIStackView.v([], spacing: 0)
         stack.translatesAutoresizingMaskIntoConstraints = true
         stack.isUserInteractionEnabled = false
@@ -226,11 +245,31 @@ final class BrandProfileViewController: UIViewController, UIGestureRecognizerDel
         stack.frame = CGRect(x: pageBody.frame.minX, y: pageBody.frame.minY, width: width, height: size.height)
         column.addSubview(stack)
         stack.layoutIfNeeded()
-        neighborPage = stack
+        return stack
+    }
+
+    private func showNeighbor(_ tab: BrandTab?, side: CGFloat) {
+        dropNeighbor()
+        neighborTab = tab
+        neighborSide = side
+        guard let tab else { return }
+        if let prepared = preparedPages.removeValue(forKey: tab) {
+            prepared.isHidden = false
+            neighborPage = prepared
+        } else {
+            neighborPage = makePage(tab)
+        }
     }
 
     private func dropNeighbor() {
-        neighborPage?.removeFromSuperview()
+        // A neighbour still beside the current tab goes back to wait for the next swipe.
+        if let page = neighborPage, let tab = neighborTab, abs(tab.rawValue - currentTab.rawValue) == 1, preparedPages[tab] == nil {
+            page.isHidden = true
+            page.transform = .identity
+            preparedPages[tab] = page
+        } else {
+            neighborPage?.removeFromSuperview()
+        }
         neighborPage = nil
         neighborTab = nil
         neighborSide = 0
@@ -261,7 +300,10 @@ final class BrandProfileViewController: UIViewController, UIGestureRecognizerDel
         currentTab = tab
         dropNeighbor()
         lastSignature = nil
+        // Now, even under a finger that caught the slide: this is the tab switch itself.
+        forceRender = true
         render()
+        forceRender = false
         view.layoutIfNeeded()
     }
 
@@ -284,6 +326,7 @@ final class BrandProfileViewController: UIViewController, UIGestureRecognizerDel
                 self.pageTarget = nil
                 self.dropNeighbor()
                 self.tabs.select(self.currentTab, animated: false)
+                if self.renderWaits { self.render() }
             }
             pageAnimator = back
             back.startAnimation()
@@ -348,7 +391,20 @@ final class BrandProfileViewController: UIViewController, UIGestureRecognizerDel
         return hasher.finalize()
     }
 
+    /// A render that came while the pages slide: done when they stop (rebuilding the page under
+    /// the finger made it jump; the neighbour's build itself starts loads that change the model).
+    private var renderWaits = false
+    private var forceRender = false
+    private var isPaging: Bool {
+        pageAnimator != nil || pagePan.state == .began || pagePan.state == .changed
+    }
+
     private func render() {
+        if isPaging, !forceRender {
+            renderWaits = true
+            return
+        }
+        renderWaits = false
         model.jobsChanged(app.jobBoard.jobs)
         let signature = signature()
         guard signature != lastSignature else { return }
@@ -377,6 +433,9 @@ final class BrandProfileViewController: UIViewController, UIGestureRecognizerDel
         productTiles = [:]
         body.removeAllArranged()
         build(currentTab, brand, overview)
+        // The neighbours again, from the new data, once this pass is over.
+        dropPrepared()
+        DispatchQueue.main.async { [weak self] in self?.prepareNeighbors() }
     }
 
     private func build(_ tab: BrandTab, _ brand: Brand, _ overview: BrandOverview) {
@@ -677,11 +736,11 @@ final class BrandTabStrip: UIView {
     func follow(_ position: CGFloat) {
         let last = CGFloat(BrandTab.allCases.count - 1)
         self.position = min(max(position, 0), last)
-        if let nearest = BrandTab(rawValue: Int(self.position.rounded())), nearest != selected { select(nearest, animated: false, keepPosition: true) }
+        if let nearest = BrandTab(rawValue: Int(self.position.rounded())), nearest != selected { select(nearest, animated: false, keepPosition: true, reveal: false) }
         placeUnderline()
     }
 
-    func select(_ tab: BrandTab, animated: Bool = true, keepPosition: Bool = false) {
+    func select(_ tab: BrandTab, animated: Bool = true, keepPosition: Bool = false, reveal: Bool = true) {
         let changed = tab != selected
         selected = tab
         if !keepPosition { position = CGFloat(tab.rawValue) }
@@ -703,7 +762,9 @@ final class BrandTabStrip: UIView {
                 self.placeUnderline()
             }
         }
-        // The picked word comes fully into view when the strip scrolls.
+        // The picked word comes fully into view when the strip scrolls (not under a dragging
+        // finger: the strip would slide on its own as the page moves).
+        guard reveal else { return }
         let button = buttons[tab.rawValue]
         scroll.scrollRectToVisible(button.convert(button.bounds, to: scroll).insetBy(dx: -24, dy: 0), animated: true)
     }
