@@ -9218,6 +9218,10 @@
             "items": {
               "$ref": "#/components/schemas/TurnContent"
             }
+          },
+          "brandNotes": {
+            "type": "string",
+            "maxLength": 5000
           }
         },
         "required": [
