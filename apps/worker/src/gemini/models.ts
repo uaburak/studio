@@ -93,9 +93,12 @@ function hasTierPrice(model: GeminiTextModel): boolean {
 }
 
 function compareCandidates(a: GeminiTextModel, b: GeminiTextModel): number {
-  if (a.preview !== b.preview) return a.preview ? 1 : -1; // stable first
-  if (a.version[0] !== b.version[0]) return b.version[0] - a.version[0]; // newest first
+  // Newest generation first, then stable before preview within it: Google closes older stable
+  // models to new keys (2.5 Pro was "no longer available to new users" while 3.1 Pro was still
+  // a preview), so a stable-first order could pick a model the key cannot call.
+  if (a.version[0] !== b.version[0]) return b.version[0] - a.version[0];
   if (a.version[1] !== b.version[1]) return b.version[1] - a.version[1];
+  if (a.preview !== b.preview) return a.preview ? 1 : -1;
   if (a.pinned !== b.pinned) return a.pinned ? 1 : -1;
   return a.id.localeCompare(b.id);
 }

@@ -248,7 +248,7 @@ export async function describeReference(
         content: [
           {
             type: "text",
-            text: `Ürün: ${input.productName ?? "bilinmiyor"}\nApple Vision'ın okuduğu satırlar (harf harf doğru):\n${ocrLines.length > 0 ? ocrLines.map((l) => `| ${l}`).join("\n") : "(okunamadı)"}`,
+            text: `Ürün: ${input.productName ?? "bilinmiyor"}\nApple Vision'ın okuduğu satırlar (düz yazıda harf harf doğru; küçük ve stilize logo yazılarında yanılabilir — görselde gerçekte ne yazıyorsa onu yaz):\n${ocrLines.length > 0 ? ocrLines.map((l) => `| ${l}`).join("\n") : "(okunamadı)"}`,
           },
           await modelPicture(input.bytes),
         ],

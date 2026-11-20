@@ -241,12 +241,12 @@ describe("Gemini model resolution", () => {
     "text-embedding-004",
   ];
 
-  it("picks the newest priced, stable model of each tier the key lists", () => {
+  it("picks the newest priced model of each tier the key lists, stable first within a version", () => {
     expect(pickGeminiModel("gemini-flash-lite", listed)).toBe("gemini-3.5-flash-lite");
     expect(pickGeminiModel("gemini-flash", listed)).toBe("gemini-3.8-flash");
-    // Stable 2.5 Pro before the 3.1 preview.
-    expect(pickGeminiModel("gemini-pro", listed)).toBe("gemini-2.5-pro");
-    // A preview only when the tier has no stable priced model.
+    // The 3.1 preview before the older stable 2.5 Pro (Google closed 2.5 Pro to new keys).
+    expect(pickGeminiModel("gemini-pro", listed)).toBe("gemini-3.1-pro-preview");
+    // Within a version a stable model wins; an unpriced newer one is skipped.
     expect(pickGeminiModel("gemini-pro", ["gemini-3.1-pro-preview", "gemini-9-pro"])).toBe(
       "gemini-3.1-pro-preview",
     );

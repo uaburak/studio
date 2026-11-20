@@ -468,6 +468,35 @@ describe("AI check report", () => {
     expect(compareLabelLines(["Gübre"], ["Gubre"]).findings[0]?.kind).toBe("changed");
   });
 
+  it("a stylised line without numbers that the model sees unchanged is a note, not a fault", () => {
+    const report = shapeCheckReport({
+      model: allOk(),
+      label: {
+        findings: [
+          { expected: "ITM AGRE", found: "MTW AORO", kind: "changed" },
+          { expected: "Bor %11", found: "Bor %1", kind: "changed" },
+        ],
+        expected: 3,
+        ocr: true,
+      },
+    });
+    const label = report.items[0];
+    expect(label?.ok).toBe(false);
+    expect(label?.note).toContain("'Bor %11' yazısı 'Bor %1' olmuş");
+    expect(label?.note).toContain("elle bak: 'ITM AGRE' yazısı 'MTW AORO' olmuş");
+
+    const logoOnly = shapeCheckReport({
+      model: allOk(),
+      label: {
+        findings: [{ expected: "ITM AGRE", found: "MTW AORO", kind: "changed" }],
+        expected: 2,
+        ocr: true,
+      },
+    });
+    expect(logoOnly.passed).toBe(true);
+    expect(logoOnly.items[0]?.note).toContain("elle bak");
+  });
+
   it("passes only when every aspect is right", () => {
     const pass = shapeCheckReport({
       model: allOk(),

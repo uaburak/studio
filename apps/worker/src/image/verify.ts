@@ -164,9 +164,21 @@ export function shapeCheckReport(input: {
     if (aspect === LABEL_ASPECT && input.label?.ocr) {
       const changed = input.label.findings.filter((f) => f.kind === "changed");
       if (changed.length > 0) {
-        const notes = changed.map(findingNote);
-        item.ok = false;
-        item.note = [...notes, item.note && !m?.ok ? item.note : ""].filter(Boolean).join("; ");
+        // OCR misreads small and stylised lettering (a logo's "MTM AGRO" read as "ITM AGRE" on
+        // the reference itself): a line without numbers that the model, looking at both
+        // pictures, sees unchanged is shown for a look, not counted as a fault. A changed
+        // number ("Bor %11" → "Bor %1") always fails: the model can miss it, OCR reads digits well.
+        const soft = m?.ok ? changed.filter((f) => !/\d/.test(f.expected)) : [];
+        const hard = changed.filter((f) => !soft.includes(f));
+        const notes = hard.map(findingNote);
+        if (hard.length > 0) {
+          item.ok = false;
+          item.note = [...notes, item.note && !m?.ok ? item.note : ""].filter(Boolean).join("; ");
+        }
+        if (soft.length > 0) {
+          const look = `OCR şu satırları farklı okudu (yapay zekâ aynı gördü), elle bak: ${soft.map(findingNote).join("; ")}`;
+          item.note = [item.note, look].filter(Boolean).join("; ");
+        }
       }
     }
     item.note = clip(item.note, 1_000);
