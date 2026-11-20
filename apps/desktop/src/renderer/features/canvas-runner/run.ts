@@ -43,6 +43,7 @@ import { documentHash } from "../post-editor/wecra/hash.ts";
 import {
   captureDocument,
   createCanvasVersion,
+  SLIDE_EXPORT,
   slideFrames,
   type VersionApi,
 } from "../post-editor/wecra/save.ts";
@@ -85,6 +86,44 @@ function check(signal: AbortSignal | undefined): void {
   if (signal?.aborted) throw new CanvasJobError("İptal edildi.");
 }
 
+/**
+ * The document's pictures for the engine, from the document's own images (the bundle's, and those
+ * the operations placed), at full size, as the engine asks for them (REQUEST_IMAGE) — Wecra's way
+ * for an engine with no editor window (its version history, presentation, viewer). The post
+ * editor's window answers through Wecra's ImageService (EditorApp attaches it and releases its
+ * uploads after the first paint); this page never paints, so without this the engine had only
+ * the paint's ThumbHash and the export, after waiting, drew that blur in place of the picture.
+ */
+export function servePictures(ed: EditorController): void {
+  const store = ed.images.store;
+  ed.engine.setImageSource((hash) => (store ? store.get(hash) : Promise.resolve(null)));
+}
+
+/** How long the slides' pictures may take to load and decode before the export goes on. */
+const PICTURES_TIMEOUT_MS = 20_000;
+
+/**
+ * Every slide can be drawn with its pictures (the full images in the engine, not their
+ * placeholders): the engine is asked what each slide's export lacks (which requests it) and the
+ * loads are awaited, so the capture's synchronous export draws the pictures.
+ */
+export async function picturesReady(
+  ed: EditorController,
+  timeoutMs = PICTURES_TIMEOUT_MS,
+): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    ed.engine.pump();
+    const waiting = slideFrames(ed).filter(
+      (s) => ed.engine.exportInfo([s.guid], SLIDE_EXPORT)?.ready === false,
+    );
+    if (!waiting.length) return true;
+    if (ed.engine.destroyed || Date.now() >= deadline) return false;
+    await Promise.all([ed.images.settled(), ed.engine.imagesSettled()]);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+  }
+}
+
 /** The post, its version and the version's Wecra document. */
 async function openVersion(
   deps: CanvasRunnerDeps,
@@ -115,6 +154,7 @@ async function openVersion(
   check(deps.signal);
   await deps.prepareFonts(content.brandId);
   const editor = await deps.openEditor(bundle.message, bundle.images, content.title);
+  servePictures(editor.ed);
   return {
     content,
     version,
@@ -177,6 +217,7 @@ export async function applyCanvasJob(job: Job, deps: CanvasRunnerDeps): Promise<
     );
     if (blocker) throw new CanvasJobError(`Sürüm oluşmadı: ${blocker}`);
     await deps.settle(ed);
+    await picturesReady(ed);
     check(deps.signal);
     deps.progress?.(0.6, "Kareler dışa aktarılıyor");
     const capture = captureDocument(ed);
@@ -326,6 +367,7 @@ export async function createCanvasJob(
   const images = new BundleImages();
   const editor = await deps.openEditor(structuredClone(EMPTY_DOCUMENT), images, content.title);
   const { ed } = editor;
+  servePictures(ed);
   try {
     const frameIds = await blankFrames(ed, payload.slides, size);
     if (frameIds.length !== payload.slides)
@@ -352,6 +394,7 @@ export async function createCanvasJob(
     const blocker = frameBlocker(content.type, canvasFrames(ed), postFormat(content.type, size));
     if (blocker) throw new CanvasJobError(`Sürüm oluşmadı: ${blocker}`);
     await deps.settle(ed);
+    await picturesReady(ed);
     check(deps.signal);
     deps.progress?.(0.6, "Kareler dışa aktarılıyor");
     const capture = captureDocument(ed);

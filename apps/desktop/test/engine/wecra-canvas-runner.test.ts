@@ -39,16 +39,25 @@ import {
   slideSpec,
 } from "../../src/renderer/features/post-editor/wecra/import.ts";
 
-// PNG encoding needs an OffscreenCanvas (the browser's): the engine's pixels, as raw bytes here.
-// A frame with a picture waits for its decoded pixels (Wecra's waiting export): jsdom decodes
-// none, so that export answers with stand-in bytes too.
+// PNG encoding needs an OffscreenCanvas (the browser's): the engine's pixels, as raw bytes here
+// (and kept, to read what the engine drew). A frame the engine could not draw at once goes
+// through Wecra's waiting export: stand-in bytes here, counted.
+const exported = vi.hoisted(() => ({
+  pixels: [] as { width: number; height: number; pixels: Uint8Array }[],
+  waited: 0,
+}));
 vi.mock("@/editor/exporting", async (importOriginal) => {
   const original = await importOriginal<typeof import("@/editor/exporting")>();
   return {
     ...original,
-    encodePixels: async (p: { width: number; height: number }) =>
-      new TextEncoder().encode(`png ${p.width}x${p.height}`),
-    renderExport: async () => ({ bytes: new TextEncoder().encode("png (waited)") }),
+    encodePixels: async (p: { width: number; height: number; pixels: Uint8Array }) => {
+      exported.pixels.push(p);
+      return new TextEncoder().encode(`png ${p.width}x${p.height}`);
+    },
+    renderExport: async () => {
+      exported.waited++;
+      return { bytes: new TextEncoder().encode("png (waited)") };
+    },
   };
 });
 
@@ -681,6 +690,80 @@ describe("the canvas runner's canvas.create (a blank Wecra document, Faz 2)", ()
       size: 72,
     });
     expect(facts.nodes.find((n) => n.name === "Logo")).toBeTruthy();
+  });
+
+  it("exports a placed picture drawn from the full image, never its placeholder", async () => {
+    // A product photo (400 × 500). Headless, the engine draws no pixels (no GPU): what it was
+    // given and how it drew are what is checked — the photo's full pixels went in before the
+    // slide was exported, and the export drew at once (never "draw what there is", which is the
+    // picture's blurred ThumbHash in the app).
+    const W = 400;
+    const H = 500;
+    const photo = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 9, 9, 9, 9]);
+    const rgba = new Uint8Array(W * H * 4).fill(200);
+    // The browser's decoder (jsdom has none): the photo's bytes become its pixels in the engine.
+    const original = Engine.prototype.addImageBytes;
+    const decode = vi.spyOn(Engine.prototype, "addImageBytes").mockImplementation(async function (
+      this: Engine,
+      hash: string,
+      bytes: Uint8Array,
+    ) {
+      if (bytes.length === photo.length && bytes.every((b, i) => b === photo[i]))
+        return this.addImageRgba(hash, W, H, rgba);
+      return original.call(this, hash, bytes);
+    });
+    const added = vi.spyOn(Engine.prototype, "addImageRgba");
+    const exports = vi.spyOn(Engine.prototype, "exportNodes");
+    try {
+      const { bundle } = await canvasBundle();
+      const { deps, calls, assets } = fakeRunner(bundle, { current: 0 });
+      assets.set("venta-boro", photo);
+      exported.pixels.length = 0;
+      exported.waited = 0;
+      const out = await createCanvasJob(
+        job("canvas.create", {
+          slides: 1,
+          width: 1080,
+          height: 1350,
+          operations: [
+            {
+              tool: "create_nodes",
+              args: {
+                parentId: "frame:1",
+                nodes: [
+                  {
+                    type: "RECTANGLE",
+                    name: "Ürün görseli",
+                    image: { assetId: "venta-boro", scaleMode: "FILL" },
+                    x: 340,
+                    y: 400,
+                    width: W,
+                    height: H,
+                  },
+                ],
+              },
+            },
+          ],
+        }),
+        deps,
+      );
+      expect(out.results.map((r) => r.ok)).toEqual([true]);
+      // The engine asked for the picture and got the photo itself, at its full size.
+      expect(decode).toHaveBeenCalledWith(expect.stringMatching(/^[0-9a-f]{40}$/), photo);
+      expect(added.mock.calls.map((c) => [c[1], c[2]])).toEqual([[W, H]]);
+      // The slide was exported at once with every picture in: no export drew what there was.
+      const slideExports = exports.mock.results.filter((r) => r.type === "return");
+      expect(slideExports.length).toBeGreaterThan(0);
+      expect(slideExports.map((r) => (r.value as { status: string }).status)).not.toContain("busy");
+      expect(exports.mock.calls.some((c) => c[2]?.allowPending)).toBe(false);
+      expect(exported.waited).toBe(0);
+      expect(exported.pixels.map((p) => [p.width, p.height])).toContainEqual([1080, 1350]);
+      expect(calls.find((c) => c.type === "version")).toBeTruthy();
+    } finally {
+      decode.mockRestore();
+      added.mockRestore();
+      exports.mockRestore();
+    }
   });
 
   it("refuses a post that already has another version, and a frame count the type can't take", async () => {

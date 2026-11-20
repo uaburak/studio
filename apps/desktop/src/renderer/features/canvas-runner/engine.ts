@@ -46,6 +46,9 @@ export async function openEditor(
   let engine: Engine | null = null;
   try {
     engine = await Engine.create(canvas, { sessionID });
+    // The pictures at full size as the engine asks (before the document: no request is missed);
+    // run.ts servePictures says why.
+    engine.setImageSource((hash) => images.get(hash));
     const status = engine.load(await source.load());
     if (status !== 0) throw new Error(`Wecra belgesi açılamadı (durum ${status}).`);
     const live = engine;
