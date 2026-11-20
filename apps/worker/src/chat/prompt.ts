@@ -10,6 +10,7 @@ import {
   type Message,
   type Plan,
   similarLabel,
+  TURN_BRAND_NOTES_MAX,
   type TurnAlias,
   type TurnContext,
 } from "@studio/contract";
@@ -289,6 +290,15 @@ export function brandProductionLines(brand: Brand): string {
   return `${engine}\n${style}`;
 }
 
+/**
+ * The brand kit notes (`TurnContext.brandNotes`: posting rhythm, features, caption pattern) as
+ * a `notlar:` line of the `<marka>` block, as data; empty without notes.
+ */
+export function brandNotesLines(context: TurnContext): string {
+  const notes = context.brandNotes?.trim();
+  return notes ? `\nnotlar:\n${asData(clip(notes, TURN_BRAND_NOTES_MAX))}` : "";
+}
+
 /** `<anilan_urunler>` / `<anilan_postlar>`: products and posts the latest user message named. */
 export function mentionBlocks(context: TurnContext): string[] {
   const blocks: string[] = [];
@@ -370,7 +380,7 @@ export function buildConversationMetadataBlock(input: ChatPromptInput): string {
 
   if (context.brand) {
     blocks.push(
-      `<marka>\n${asData(`ad: ${context.brand.name}\nslug: ${context.brand.slug}`)}\nid: ${context.brand.id}\ndil: ${context.brand.defaultLanguage}\n${brandProductionLines(context.brand)}\n</marka>`,
+      `<marka>\n${asData(`ad: ${context.brand.name}\nslug: ${context.brand.slug}`)}\nid: ${context.brand.id}\ndil: ${context.brand.defaultLanguage}\n${brandProductionLines(context.brand)}${brandNotesLines(context)}\n</marka>`,
     );
   } else {
     const list = asData(
@@ -459,7 +469,13 @@ export function buildIncrementalChatPrompt(input: {
   if (context.openPlan) {
     blocks.push(`<acik_plan>\n${planSummary(context.openPlan)}\n</acik_plan>`);
   }
-  if (context.planning) blocks.push(planningBlocks(context.planning));
+  if (context.planning) {
+    // A planning turn follows the rhythm in the brand notes; they may have changed since the
+    // session started, so they come again (the rest of `<marka>` the session already has).
+    const notes = brandNotesLines(context);
+    if (notes) blocks.push(`<marka>\nGüncel marka notları:${notes}\n</marka>`);
+    blocks.push(planningBlocks(context.planning));
+  }
   const trigger = context.messages.find((m) => m.id === context.run.triggerMessageId);
   if (trigger && trigger.role !== "user") {
     // An answered question of the last turn started this one.

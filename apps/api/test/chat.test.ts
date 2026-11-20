@@ -29,6 +29,7 @@ import {
   PlanStatus,
   type ProtocolMessage,
   QuestionAnswerResult,
+  TURN_BRAND_NOTES_MAX,
   TurnContext,
   type TurnOps,
   TurnWriteResult,
@@ -705,6 +706,38 @@ describe("rules and edge cases", () => {
     const plain = await newConversation();
     expect((await sendOk(plain.id)).run).toMatchObject({ model: null, effort: null });
     w.ws.close(1000);
+  });
+
+  it("sends the brand kit notes in the turn context (trimmed, clipped), none without notes", async () => {
+    const brand = await createBrand({ name: "Ritimli" });
+    const rhythm = "Yayın ritmi: Pazartesi Özellik, Salı İpucu, Çarşamba Bu haftanın şarkısı";
+    const put = await api("PUT", `/api/brands/${brand.id}/kit`, { notes: `  ${rhythm}\n` });
+    expect(put.status, JSON.stringify(put.body)).toBe(200);
+    const run = await startedRun((await newConversation(brand.id)).id);
+    expect(run.context.brandNotes).toBe(rhythm);
+    // The context endpoint sends them too.
+    const again = await worker("GET", `/api/worker/runs/${run.run.id}/context`);
+    expect(TurnContext.parse(again.body).brandNotes).toBe(rhythm);
+    await finishTurn(run);
+
+    // Long notes are clipped to the contract's limit.
+    const long = `${rhythm}\n${"x".repeat(TURN_BRAND_NOTES_MAX + 2_000)}`;
+    expect((await api("PUT", `/api/brands/${brand.id}/kit`, { notes: long })).status).toBe(200);
+    const clipped = await startedRun((await newConversation(brand.id)).id, undefined, run.worker);
+    expect(clipped.context.brandNotes?.length).toBeLessThanOrEqual(TURN_BRAND_NOTES_MAX);
+    expect(clipped.context.brandNotes).toMatch(/^Yayın ritmi: Pazartesi Özellik/);
+    expect(clipped.context.brandNotes).toMatch(/notlar kısaltıldı\]$/);
+    await finishTurn(clipped);
+
+    // A brand without kit notes, and a conversation without a brand: no field.
+    const bare = await createBrand({ name: "Notsuz" });
+    const none = await startedRun((await newConversation(bare.id)).id, undefined, run.worker);
+    expect(none.context).not.toHaveProperty("brandNotes");
+    await finishTurn(none);
+    const brandless = await startedRun((await newConversation()).id, undefined, run.worker);
+    expect(brandless.context).not.toHaveProperty("brandNotes");
+    await finishTurn(brandless);
+    run.worker.ws.close(1000);
   });
 
   it("allows one active run per conversation", async () => {

@@ -14,7 +14,7 @@ import {
   TurnWriteResult,
 } from "@studio/contract";
 import { runChat } from "../chat/command.ts";
-import { turnContext, turnMessage } from "../chat/read.ts";
+import { turnContext, turnMessage, withBrandNotes } from "../chat/read.ts";
 import { createDb } from "../db/client.ts";
 import { createRouter, errors, json, jsonBody } from "../lib/router.ts";
 import { requireWorkerToken } from "../middleware/worker-auth.ts";
@@ -76,7 +76,7 @@ workerRunRoutes
         runId: c.req.valid("param").runId,
         attempt: c.req.valid("json").attempt,
       });
-      return c.json(TurnContext.parse(context), 200);
+      return c.json(TurnContext.parse(await withBrandNotes(c.env.MEDIA, context)), 200);
     },
   )
   .openapi(
@@ -96,7 +96,7 @@ workerRunRoutes
     }),
     async (c) => {
       const context = await turnContext(createDb(c.env.DB), c.req.valid("param").runId);
-      return c.json(context, 200);
+      return c.json(await withBrandNotes(c.env.MEDIA, context), 200);
     },
   )
   .openapi(

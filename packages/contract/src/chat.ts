@@ -673,6 +673,9 @@ export const TurnContent = z
   .meta({ id: "TurnContent" });
 export type TurnContent = z.infer<typeof TurnContent>;
 
+/** At most this many characters of the brand kit notes go into a turn context. */
+export const TURN_BRAND_NOTES_MAX = 5_000;
+
 /** Everything the agent needs for one turn. */
 export const TurnContext = z
   .object({
@@ -721,6 +724,12 @@ export const TurnContext = z
     mentionedProducts: z.array(TurnProduct).optional(),
     /** Posts `@mentioned` in the turn's user message. Always sent by this server. */
     mentionedContents: z.array(TurnContent).optional(),
+    /**
+     * The free notes of the conversation brand's kit (`BrandKit.notes`: posting rhythm,
+     * features, caption pattern...), trimmed and clipped to `TURN_BRAND_NOTES_MAX` characters.
+     * Absent without a brand or when the kit has no notes.
+     */
+    brandNotes: z.string().max(TURN_BRAND_NOTES_MAX).optional(),
   })
   .meta({ id: "TurnContext" });
 export type TurnContext = z.infer<typeof TurnContext>;

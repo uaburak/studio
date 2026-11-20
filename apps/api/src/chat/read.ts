@@ -12,6 +12,7 @@ import {
   nextMonthPeriod,
   type Plan,
   type PlanningContext,
+  TURN_BRAND_NOTES_MAX,
   TURN_CONTEXT_MESSAGES,
   type TurnContext,
   type TurnMessageResult,
@@ -51,6 +52,7 @@ import {
 import { notFound } from "../lib/errors.ts";
 import { mentionedEntities } from "../lib/mentions.ts";
 import { planningContext } from "../lib/planning.ts";
+import { readBrandKit } from "../routes/brand-kits.ts";
 import { enabledBrandSkills } from "../routes/brand-skills.ts";
 
 /*
@@ -232,6 +234,31 @@ export async function turnContext(db: Db, runId: string): Promise<TurnContext> {
     mentionedProducts: mentioned.products,
     mentionedContents: mentioned.contents,
   };
+}
+
+/**
+ * Adds the brand kit's notes (`BrandKit.notes`, stored in R2) to a turn context: the posting
+ * rhythm, features and caption pattern the user wrote there (the plan rule follows a rhythm
+ * written in them). Trimmed and clipped to `TURN_BRAND_NOTES_MAX`; left out without a brand,
+ * without notes, or when the kit cannot be read (the turn still runs).
+ */
+export async function withBrandNotes(bucket: R2Bucket, context: TurnContext): Promise<TurnContext> {
+  const brandId = context.brand?.id;
+  if (!brandId) return context;
+  try {
+    const notes = (await readBrandKit(bucket, brandId)).notes.trim();
+    if (!notes) return context;
+    return { ...context, brandNotes: clipNotes(notes) };
+  } catch (error) {
+    console.warn(`turn context: brand kit of ${brandId} could not be read`, error);
+    return context;
+  }
+}
+
+function clipNotes(notes: string): string {
+  if (notes.length <= TURN_BRAND_NOTES_MAX) return notes;
+  const marker = "\n[... notlar kısaltıldı]";
+  return `${notes.slice(0, TURN_BRAND_NOTES_MAX - marker.length).trimEnd()}${marker}`;
 }
 
 /**
