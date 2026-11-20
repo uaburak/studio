@@ -18,7 +18,7 @@ import {
 } from "@studio/design-kit/lint";
 import sharp from "sharp";
 import { lintSvgInspection, type SvgInspection } from "../svg/render.ts";
-import type { CodeSlideRecord } from "./document.ts";
+import type { CodeSlideRecord, CodeTextRecord } from "./document.ts";
 
 function parseRgb(css: string): { rgb: number[]; a: number } | null {
   const m = /^rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*(?:,\s*([\d.]+)\s*)?\)$/.exec(css.trim());
@@ -45,7 +45,7 @@ export function inspectionOf(
       color: t.color,
       lines: t.lines,
       legal: t.legal,
-      allowOverlap: false,
+      allowOverlap: t.allowOverlap === true,
       runs: [{ color: t.color, fontSize: t.fontSize, weight: t.weight, rects: [t.rect] }],
     })),
     images: r.images.map((m) => ({
@@ -65,6 +65,50 @@ export function inspectionOf(
   };
 }
 
+/** Line boxes may touch; a collision deeper than this (px) is reported. */
+const LINE_BOX_TOLERANCE = 1;
+
+/**
+ * Text blocks whose line boxes collide: one is set inside the other's line spacing (a paragraph
+ * that wrapped to one more line than planned runs into the heading under it). The ink boxes may
+ * not touch — the glyphs sit a few pixels apart — but the two read as one block. Pairs whose ink
+ * overlap is already reported are left out.
+ */
+export function lineBoxOverlaps(texts: CodeTextRecord[], reported: LintIssue[] = []): LintIssue[] {
+  const seen = new Set(
+    reported
+      .filter((i) => i.rule === "text-overlap")
+      .map((i) => `${i.layer}|${String(i.data?.other ?? "")}`),
+  );
+  const out: LintIssue[] = [];
+  for (let i = 0; i < texts.length; i++) {
+    const a = texts[i] as CodeTextRecord;
+    if (!a.lineBox || a.allowOverlap) continue;
+    for (let j = i + 1; j < texts.length; j++) {
+      const b = texts[j] as CodeTextRecord;
+      if (!b.lineBox || b.allowOverlap) continue;
+      if (seen.has(`${a.id}|${b.id}`) || seen.has(`${b.id}|${a.id}`)) continue;
+      const w =
+        Math.min(a.lineBox.x + a.lineBox.w, b.lineBox.x + b.lineBox.w) -
+        Math.max(a.lineBox.x, b.lineBox.x);
+      const h =
+        Math.min(a.lineBox.y + a.lineBox.h, b.lineBox.y + b.lineBox.h) -
+        Math.max(a.lineBox.y, b.lineBox.y);
+      if (w <= LINE_BOX_TOLERANCE || h <= LINE_BOX_TOLERANCE) continue;
+      const [upper, lower] = a.lineBox.y <= b.lineBox.y ? [a, b] : [b, a];
+      out.push(
+        issue(
+          "text-overlap",
+          upper.id,
+          `“${upper.text.slice(0, 30)}” (${upper.lines} lines) runs into “${lower.text.slice(0, 30)}”: their line boxes overlap by ${Math.round(h)}px. Start the lower block at the upper one's next_y (sb.text returns it) plus a gap, or shorten the text.`,
+          { other: lower.id, overlap: Math.round(h) },
+        ),
+      );
+    }
+  }
+  return out;
+}
+
 /** The lint report of one code slide. */
 export function lintCodeSlide(
   record: CodeSlideRecord | null,
@@ -74,6 +118,7 @@ export function lintCodeSlide(
   const base = lintSvgInspection(inspectionOf(record, size), config);
   const issues: LintIssue[] = [...base.issues];
   const layers = base.layers.map((l) => ({ ...l }));
+  issues.push(...lineBoxOverlaps(record?.texts ?? [], issues));
   for (const t of record?.texts ?? []) {
     if (t.maxWidth && t.rect.w > t.maxWidth + 2)
       issues.push(

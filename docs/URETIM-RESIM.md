@@ -197,7 +197,10 @@ Reels ve hikâye sonra ayrı ele alınacak.
 - Döngü: program → ön denetim → kapalı alanda çalıştırma → çıktı denetimi (slayt sayısı, ölçü, boş olmama) +
   kayıttan lint (SVG motorunun kuralları: `text-outside-artboard`, `safe-area`, `min-font-size`,
   `font-family`, `text-overlap`, `unverified-number`, `slot-empty`, `slot-ratio-mismatch`; ayrıca
-  kaydedilen zeminden `contrast` ve sarma genişliğini aşan `text-overflow-box`). Render'lar + rapor modele
+  kaydedilen zeminden `contrast` ve sarma genişliğini aşan `text-overflow-box`). `sb.text` mürekkep kutusunun
+  yanında satır kutularını da kaydeder (`lineBox`: ilk satırın üstünden son satırın satır aralığına; `next_y` döner);
+  iki metnin satır kutuları 1 px'ten fazla çakışırsa `text-overlap` (harfler birbirine değmese de, örn. bir satır
+  fazla saran paragraf alttaki başlığa biniyor). `allow_overlap=True` bilerek üst üste binen metni işaretler. Render'lar + rapor modele
   gider; 1 + `designFixPasses` (en çok 3) turda program yeniden yazılır. Python hatası (traceback) ya da
   reddedilen program da modele döner ve bir tur sayılır. En iyi sürüm yüklenir.
 - Sürüm: slaytlar render'ı gösteren küçük HTML belgeleridir (`<html data-studio-engine="code">`,

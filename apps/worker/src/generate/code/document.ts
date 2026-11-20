@@ -46,6 +46,13 @@ export interface CodeTextRecord {
   /** RGB of the background under the text before it was drawn (5/50/95 % luminance). */
   background: { median: number[]; dark: number[]; light: number[] } | null;
   maxWidth?: number | null;
+  /**
+   * The block's line boxes (top of the first line to the last line's advance), the space it takes
+   * with its line spacing. `rect` is the ink. Absent in records written before it was recorded.
+   */
+  lineBox?: Box | null;
+  /** `sb.text(..., allow_overlap=True)`: meant to sit on other text. */
+  allowOverlap?: boolean;
 }
 
 export interface CodeImageRecord {
@@ -141,6 +148,8 @@ function parseSlideRecord(raw: unknown, fonts: { family: string; status: string 
         legal: t.legal === true,
         background: median && dark && light ? { median, dark, light } : null,
         maxWidth: typeof t.maxWidth === "number" ? t.maxWidth : null,
+        lineBox: t.lineBox && typeof t.lineBox === "object" ? box(t.lineBox) : null,
+        allowOverlap: t.allowOverlap === true,
       };
     });
   const images: CodeImageRecord[] = arr(o.images)

@@ -49,7 +49,9 @@ const HELPER = `The helper module (import studio_brand as sb) — use it for eve
   sb.font_path(role, weight) → its file (for OpenCV); sb.skia_typeface(role, weight) → a skia Typeface.
 - sb.canvas(n, background="background") → a new W×H RGBA image for slide n (1-based); starts that slide.
 - sb.text(img, x, y, text, role="text", size=40, weight=None, color="text", max_width=None, align="left",
-  line_height=None, tracking=0, id=None, uppercase=False, opacity=1.0, shadow=None, legal=False) → {x, y, w, h, lines}.
+  line_height=None, tracking=0, id=None, uppercase=False, opacity=1.0, shadow=None, legal=False, allow_overlap=False)
+  → {x, y, w, h, lines, next_y}. next_y is the bottom of its last line box: start the next block below it (plus a gap),
+  never at a y you guessed — a paragraph can wrap to one more line than planned.
   x is the left edge (align "left"), the centre ("center") or the right edge ("right"); y is the top of the first line;
   wraps at max_width and "\\n"; tracking in em; shadow=(dx, dy, blur, colour). It draws AND records the box, font,
   size, colour and the background under it for the checks. EVERY piece of copy must be drawn with sb.text.

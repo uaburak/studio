@@ -547,11 +547,14 @@ def text(
     opacity=1.0,
     shadow=None,
     legal=False,
+    allow_overlap=False,
 ):
     """Draw (and record) a text block. `x` is the left edge (align="left"), the centre ("center")
     or the right edge ("right"); `y` is the top of the first line. Lines wrap at `max_width`
     (and at "\\n"). `tracking` in em (0.02) or "0.02em". `shadow` = (dx, dy, blur, colour).
-    Returns {x, y, w, h, lines} of the drawn text."""
+    `allow_overlap=True` marks text meant to sit on other text (a large background numeral).
+    Returns {x, y, w, h, lines, next_y}: the ink box of the drawn text and `next_y`, the bottom of
+    its last line box (y + every line's advance), where the next text block may start."""
     r = _role(role)
     weight = int(weight or _default_weight(r))
     f = _Face(r, size, weight, italic)
@@ -580,12 +583,18 @@ def text(
                 boxes.append((b[0], b[1], max(b[2], cx + _line_width(part, f, tp)), b[3]))
             cx += _line_width(part, f, tp) + (tp if tp else 0)
     if not boxes:
-        return {"x": int(x), "y": int(y), "w": 0, "h": 0, "lines": 0}
+        return {"x": int(x), "y": int(y), "w": 0, "h": 0, "lines": 0, "next_y": int(y)}
     bx0 = min(b[0] for b in boxes)
     by0 = min(b[1] for b in boxes)
     bx1 = max(b[2] for b in boxes)
     by1 = max(b[3] for b in boxes)
     stats = _background_stats(img, (bx0, by0, bx1, by1))
+    # The line boxes: the space the wrapped block takes with its line spacing, every line's
+    # advance (and at least the font's ascent + descent for the last one). Another block set
+    # inside it collides with this text even when the glyphs themselves do not touch.
+    asc, desc = f.primary.getmetrics()
+    line_top = min(float(y), by0)
+    line_bottom = max(float(y) + adv * (len(lines) - 1) + max(adv, float(asc + desc)), by1)
 
     pad = int(size) + (int(shadow[2]) * 3 + int(abs(shadow[0]) + abs(shadow[1])) if shadow else 0)
     ox, oy = int(math.floor(bx0)) - pad, int(math.floor(by0)) - pad
@@ -630,9 +639,18 @@ def text(
             "legal": bool(legal),
             "background": stats,
             "maxWidth": max_width,
+            "lineBox": {"x": bx0, "y": line_top, "w": bx1 - bx0, "h": line_bottom - line_top},
+            "allowOverlap": bool(allow_overlap),
         }
     )
-    return {"x": int(bx0), "y": int(by0), "w": int(math.ceil(bx1 - bx0)), "h": int(math.ceil(by1 - by0)), "lines": len(lines)}
+    return {
+        "x": int(bx0),
+        "y": int(by0),
+        "w": int(math.ceil(bx1 - bx0)),
+        "h": int(math.ceil(by1 - by0)),
+        "lines": len(lines),
+        "next_y": int(math.ceil(line_bottom)),
+    }
 
 
 def _composite(img, layer, pos):

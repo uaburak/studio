@@ -21,12 +21,14 @@ import {
   isEngineReady,
   type Job,
 } from "@studio/contract";
+import { colorValue } from "@studio/design-kit/brand";
 import sharp from "sharp";
 import { describe, expect, it } from "vitest";
 import { loadAgentSettings } from "../src/agent.ts";
 import { runContentChecks } from "../src/checks/pipeline.ts";
 import { ClaudeGate } from "../src/claude/gate.ts";
 import type { ClaudeCallOptions, ClaudeCallResult, ClaudeRunner } from "../src/claude/runner.ts";
+import { buildBrandContext } from "../src/generate/brand.ts";
 import { ALLOWED_MODULES, precheckProgram } from "../src/generate/code/check.ts";
 import {
   type CodeInputs,
@@ -368,6 +370,96 @@ describe.skipIf(!realRuntime)("studio_brand in the real runtime", () => {
     expect(res.status).toBe("error");
     expect(res.traceback).toContain('File "program.py", line 3');
     expect(res.traceback).toContain("unknown font role 'nope'");
+  });
+
+  it("reports a paragraph that wrapped into the heading under it (real generated program)", async () => {
+    // The program a real code generation stored (neutral default brand): the lead paragraph
+    // wrapped to four lines, its last line ("destekler.") sits on "İÇERİK VE FORMÜL" — the ink
+    // boxes are 11 px apart, the line boxes collide. The lint passed it before.
+    const { api } = createFakeApi({ brands: [fakeBrand()] });
+    const brand = buildBrandContext({
+      brand: fakeBrand(),
+      profile: null,
+      api,
+      cacheDir: mkdtempSync(path.join(tmpdir(), "code-neutral-")),
+    });
+    const root = mkdtempSync(path.join(tmpdir(), "code-real-"));
+    const jobDir = await createJobDir(root, "job");
+    const product = path.join(jobDir, "input", "pictures", "1-product.png");
+    writeFileSync(
+      product,
+      await sharp({ create: { width: 600, height: 750, channels: 3, background: "#DDDDDD" } })
+        .png()
+        .toBuffer(),
+    );
+    const fonts: Record<string, unknown> = {};
+    for (const [role, spec] of Object.entries(brand.tokens.font))
+      fonts[role] = {
+        family: spec.family,
+        files: [],
+        system: spec.system === true,
+        defaultWeight: spec.default?.weight ?? null,
+      };
+    const colors: Record<string, string> = {};
+    for (const [name, token] of Object.entries(brand.tokens.color))
+      colors[name] = colorValue(token);
+    const safeArea = { top: 64, right: 64, bottom: 64, left: 64 };
+    const res = await runInSandbox({
+      runtime: realRuntime as CodeRuntime,
+      jobDir,
+      program: readFileSync(
+        fileURLToPath(new URL("./fixtures/code-overlap-program.py", import.meta.url)),
+        "utf8",
+      ),
+      input: {
+        version: 1,
+        artboard: { width: 1080, height: 1350 },
+        safeArea,
+        slides: { min: 1, max: 1 },
+        language: "tr",
+        colors,
+        usage: brand.tokens.usage ?? {},
+        type: brand.tokens.type,
+        fonts,
+        pictures: [
+          {
+            name: "product/venta-boro-1",
+            kind: "ürün: Venta Boro",
+            label: "Venta Boro (kapak)",
+            width: null,
+            height: null,
+            note: null,
+            path: product,
+          },
+        ],
+        slots: {},
+        allowedNumbers: [],
+        seed: 7,
+      },
+      timeoutMs: 60_000,
+    });
+    expect(res.status, res.stderr).toBe("ok");
+    const s1 = parseRunRecord(res.record).slides.get(1) ?? null;
+    const lead = s1?.texts.find((t) => t.text.startsWith("Çiçeklenme ve döllenme"));
+    const heading = s1?.texts.find((t) => t.text === "İÇERİK VE FORMÜL");
+    expect(lead?.lines).toBe(4);
+    // The recorded line boxes follow the wrapped lines and the line spacing (28 px × 1.38).
+    expect(lead?.lineBox?.y).toBeCloseTo(368, 0);
+    expect(lead?.lineBox?.h).toBeGreaterThanOrEqual(4 * 28 * 1.38 - 0.5);
+    // The ink alone does not touch …
+    expect((lead?.rect.y ?? 0) + (lead?.rect.h ?? 0)).toBeLessThan(heading?.rect.y ?? 0);
+    const report = lintCodeSlide(s1, {
+      width: 1080,
+      height: 1350,
+      safeArea,
+      brandFonts: brand.fontFamilies,
+      systemFonts: brand.manifest.systemFontFamilies,
+    });
+    // … but the lint reports the collision, and only that one (the feature blocks are spaced).
+    const overlaps = report.issues.filter((i) => i.rule === "text-overlap");
+    expect(overlaps.map((i) => [i.layer, i.data?.other])).toEqual([[lead?.id, heading?.id]]);
+    expect(overlaps[0]?.severity).toBe("error");
+    expect(report.issues.filter((i) => i.rule.startsWith("font-"))).toEqual([]);
   });
 });
 
