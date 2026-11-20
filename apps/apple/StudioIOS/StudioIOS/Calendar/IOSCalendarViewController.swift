@@ -22,6 +22,33 @@ final class IOSCalendarModel {
 
     var brandId: EntityID? { app?.currentBrandId }
 
+    /// Special days by date (as the Mac's month grid shows them), loaded per month.
+    private(set) var specialDays: [CalendarDay: [String]] = [:]
+    @ObservationIgnored private var specialMonths: Set<MonthKey> = []
+
+    func loadSpecialDays(_ month: MonthKey) async {
+        guard let app, !specialMonths.contains(month) else { return }
+        specialMonths.insert(month)
+        let first = CalendarDay(year: month.year, month: month.month, day: 1)
+        let next = month.next
+        let last = CalendarDay(Calendar(identifier: .gregorian).date(byAdding: .day, value: -1, to: CalendarDay(year: next.year, month: next.month, day: 1).date()) ?? Date())
+        do {
+            let days = try await app.dataService.specialDays(from: first.description, to: last.description)
+            var found = specialDays
+            for special in days {
+                guard let start = CalendarDay(special.date) else { continue }
+                for offset in 0..<max(special.days, 1) {
+                    let date = Calendar(identifier: .gregorian).date(byAdding: .day, value: offset, to: start.date()) ?? start.date()
+                    let day = CalendarDay(date)
+                    if !(found[day]?.contains(special.name) ?? false) { found[day, default: []].append(special.name) }
+                }
+            }
+            specialDays = found
+        } catch {
+            specialMonths.remove(month)
+        }
+    }
+
     func reset() {
         schedules = []
         contents = []
@@ -119,16 +146,17 @@ final class IOSCalendarModel {
     }
 }
 
-/// Month grid (or list) with the day's schedules; reschedule, cancel, open the post.
+/// Month grid (or list) with the day's schedules; reschedule, cancel, open the post. The month
+/// is the page's title (centred in the bar); the grid runs edge to edge in square days, as on the
+/// Mac; the bottom toolbar moves between months and back to today.
 final class IOSCalendarViewController: UIViewController, UITableViewDataSource, UITableViewDelegate {
     private unowned let app: IOSAppModel
     private var model: IOSCalendarModel { app.calendar }
     private let tableView = UITableView(frame: .zero, style: .insetGrouped)
     private let grid = MonthGridView()
-    private let modeControl = UISegmentedControl(items: ["Ay", "Liste"])
+    private let modeItem = UIBarButtonItem()
     private let headerContainer = UIView()
     private var sections: [(day: CalendarDay, entries: [CalendarEntry])] = []
-    private var navToken: IOSObservationToken?
     private var observation: IOSObservationToken?
     private var lastBrandId: EntityID?
     private var lastError: String?
@@ -143,34 +171,46 @@ final class IOSCalendarViewController: UIViewController, UITableViewDataSource, 
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        view.backgroundColor = IOSTheme.groupedBackground
-        let today = UIBarButtonItem(title: "Bugün", primaryAction: UIAction { [weak self] _ in self?.model.goToday() })
-        navToken = StudioNavBarItems.install(on: self, app: app, extraRight: [today])
+        view.backgroundColor = IOSTheme.canvas
+        navigationItem.largeTitleDisplayMode = .never
+
+        // Top right: month grid or the month's list.
+        modeItem.primaryAction = UIAction { [weak self] _ in
+            guard let self else { return }
+            self.model.mode = self.model.mode == .month ? .list : .month
+            Haptics.selection()
+        }
+        navigationItem.rightBarButtonItem = modeItem
+
+        // Bottom toolbar: the months either side, today in the middle.
+        let previous = UIBarButtonItem(image: UIImage(systemName: "chevron.left"), primaryAction: UIAction { [weak self] _ in self?.step(-1) })
+        previous.accessibilityLabel = "Önceki ay"
+        let next = UIBarButtonItem(image: UIImage(systemName: "chevron.right"), primaryAction: UIAction { [weak self] _ in self?.step(1) })
+        next.accessibilityLabel = "Sonraki ay"
+        let today = UIBarButtonItem(title: "Bugün", primaryAction: UIAction { [weak self] _ in
+            self?.model.goToday()
+            Haptics.selection()
+        })
+        setToolbarItems([previous, .flexibleSpace(), today, .flexibleSpace(), next], animated: false)
 
         tableView.translatesAutoresizingMaskIntoConstraints = false
-        tableView.backgroundColor = IOSTheme.groupedBackground
+        tableView.backgroundColor = IOSTheme.canvas
         tableView.dataSource = self
         tableView.delegate = self
         tableView.register(UITableViewCell.self, forCellReuseIdentifier: "entry")
         view.addSubview(tableView)
         tableView.pin(to: view)
+        // The bar's soft edge at the top and the toolbar's at the bottom.
+        setContentScrollView(tableView, for: [.top, .bottom])
+        tableView.bottomEdgeEffect.style = .soft
 
-        modeControl.selectedSegmentIndex = 0
-        modeControl.addAction(UIAction { [weak self] _ in
-            guard let self else { return }
-            self.model.mode = IOSCalendarModel.Mode(rawValue: self.modeControl.selectedSegmentIndex) ?? .month
-            Haptics.selection()
-        }, for: .valueChanged)
-        grid.onPrevious = { [weak self] in self?.model.showPrevious() }
-        grid.onNext = { [weak self] in self?.model.showNext() }
         grid.onSelect = { [weak self] day in
             self?.model.selectedDay = day
             Haptics.selection()
         }
-
-        let header = UIStackView.v([modeControl, grid], spacing: 12)
-        headerContainer.addSubview(header)
-        header.pin(to: headerContainer, insets: UIEdgeInsets(top: 8, left: IOSTheme.gutter, bottom: 4, right: IOSTheme.gutter))
+        grid.onSwipe = { [weak self] direction in self?.step(direction) }
+        headerContainer.addSubview(grid)
+        grid.pin(to: headerContainer, insets: UIEdgeInsets(top: 4, left: 0, bottom: 8, right: 0))
 
         let refresh = UIRefreshControl()
         refresh.addAction(UIAction { [weak self, weak refresh] _ in
@@ -185,9 +225,22 @@ final class IOSCalendarViewController: UIViewController, UITableViewDataSource, 
         observation = observeIOS { [weak self] in self?.render() }
     }
 
+    private func step(_ direction: Int) {
+        direction < 0 ? model.showPrevious() : model.showNext()
+        Haptics.selection()
+    }
+
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
+        navigationController?.setToolbarHidden(false, animated: animated)
         Task { await model.load() }
+    }
+
+    override func viewWillDisappear(_ animated: Bool) {
+        super.viewWillDisappear(animated)
+        if navigationController?.topViewController?.toolbarItems?.isEmpty ?? true {
+            navigationController?.setToolbarHidden(true, animated: animated)
+        }
     }
 
     override func viewDidLayoutSubviews() {
@@ -198,6 +251,10 @@ final class IOSCalendarViewController: UIViewController, UITableViewDataSource, 
     private func sizeHeader() {
         let width = tableView.bounds.width
         guard width > 0 else { return }
+        guard model.mode == .month else {
+            if tableView.tableHeaderView != nil { tableView.tableHeaderView = nil }
+            return
+        }
         let size = headerContainer.systemLayoutSizeFitting(CGSize(width: width, height: 0), withHorizontalFittingPriority: .required, verticalFittingPriority: .fittingSizeLevel)
         if headerContainer.frame.size != CGSize(width: width, height: size.height) || tableView.tableHeaderView == nil {
             headerContainer.frame = CGRect(x: 0, y: 0, width: width, height: size.height)
@@ -205,16 +262,31 @@ final class IOSCalendarViewController: UIViewController, UITableViewDataSource, 
         }
     }
 
+    private var shownMonth: MonthKey?
+
     private func render() {
         if app.currentBrandId != lastBrandId {
             lastBrandId = app.currentBrandId
             Task { await model.load() }
         }
-        modeControl.selectedSegmentIndex = model.mode.rawValue
+        title = TurkishFormat.monthTitle(model.month, currentYear: CalendarDay(Date()).year)
+        if shownMonth != model.month {
+            shownMonth = model.month
+            let month = model.month
+            Task { await model.loadSpecialDays(month) }
+        }
+        let isMonth = model.mode == .month
+        modeItem.image = UIImage(systemName: isMonth ? "list.bullet" : "calendar")
+        modeItem.accessibilityLabel = isMonth ? "Liste olarak göster" : "Ay olarak göster"
         let entries = model.monthEntries
-        var dots: [CalendarDay: [CalendarEntry.Kind]] = [:]
-        for entry in entries { dots[entry.day, default: []].append(entry.kind) }
-        grid.configure(month: model.month, selected: model.mode == .month ? model.selectedDay : nil, dots: dots, loading: model.isLoading)
+        var lines: [CalendarDay: [MonthGridView.Line]] = [:]
+        for (day, names) in model.specialDays where day.monthKey == model.month {
+            lines[day, default: []] += names.map { MonthGridView.Line(text: $0, color: IOSTheme.textTertiary) }
+        }
+        for entry in entries.sorted(by: { $0.date < $1.date }) {
+            lines[entry.day, default: []].append(MonthGridView.Line(text: entry.title, color: IOSTheme.textSecondary, dot: Self.color(entry.kind)))
+        }
+        grid.configure(month: model.month, selected: isMonth ? model.selectedDay : nil, lines: lines)
         sections = model.listedDays
         tableView.reloadData()
         sizeHeader()
@@ -225,6 +297,7 @@ final class IOSCalendarViewController: UIViewController, UITableViewDataSource, 
             lastError = nil
         }
         _ = model.busyIds
+        _ = model.isLoading
     }
 
     // MARK: Table
@@ -356,87 +429,126 @@ final class IOSCalendarViewController: UIViewController, UITableViewDataSource, 
     }
 }
 
-/// Monday-first month grid with status dots.
+/// Monday-first month grid, edge to edge in square days with hairlines between them (as the
+/// Mac's): the number at the top left (today in an orange circle), then the day's special days
+/// and posts in small type. Swipe sideways for the next or previous month.
 final class MonthGridView: UIView {
-    var onPrevious: (() -> Void)?
-    var onNext: (() -> Void)?
+    struct Line: Equatable {
+        var text: String
+        var color: UIColor
+        var dot: UIColor?
+    }
+
     var onSelect: ((CalendarDay) -> Void)?
-    private let titleLabel = UILabel.studio("", size: 20, weight: .bold, style: .title3)
-    private let spinner = UIActivityIndicatorView(style: .medium)
-    private let rows = UIStackView.v([], spacing: 2)
-    private var rendered: (MonthKey, CalendarDay?, [CalendarDay: [CalendarEntry.Kind]])?
+    /// -1: the previous month, 1: the next.
+    var onSwipe: ((Int) -> Void)?
+    private let weekdays = UIStackView()
+    private let rows = UIStackView.v([], spacing: 0.5)
+    private var rendered: (MonthKey, CalendarDay?, [CalendarDay: [Line]])?
 
     override init(frame: CGRect) {
         super.init(frame: frame)
         translatesAutoresizingMaskIntoConstraints = false
-        titleLabel.accessibilityTraits = .header
-        spinner.hidesWhenStopped = true
-        let previous = UIButton.studioIcon("chevron.left", label: "Önceki ay") { [weak self] in self?.onPrevious?() }
-        let next = UIButton.studioIcon("chevron.right", label: "Sonraki ay") { [weak self] in self?.onNext?() }
-        let header = UIStackView.h([titleLabel, spinner, UIView.spacer(), previous, next], spacing: 4)
-        let weekdays = UIStackView.h(CalendarAgenda.weekdaySymbols.map { symbol in
+        weekdays.axis = .horizontal
+        weekdays.distribution = .fillEqually
+        for symbol in CalendarAgenda.weekdaySymbols {
             let label = UILabel.studio(symbol, size: 12, weight: .medium, color: IOSTheme.textTertiary, style: .caption1)
             label.textAlignment = .center
-            return label
-        }, spacing: 0)
-        weekdays.distribution = .fillEqually
-        let card = IOSCardView(padding: 10, spacing: 6)
-        card.stack.addArrangedSubview(weekdays)
-        card.stack.addArrangedSubview(rows)
-        let stack = UIStackView.v([header, card], spacing: 8)
+            weekdays.addArrangedSubview(label)
+        }
+        weekdays.heightAnchor.constraint(equalToConstant: 24).isActive = true
+        // The hairlines are the background showing between the days.
+        rows.backgroundColor = IOSTheme.border
+        rows.isLayoutMarginsRelativeArrangement = true
+        rows.directionalLayoutMargins = NSDirectionalEdgeInsets(top: 0.5, leading: 0, bottom: 0.5, trailing: 0)
+        let stack = UIStackView.v([weekdays, rows], spacing: 4)
         addSubview(stack)
         stack.pin(to: self)
+        for (direction, value) in [(UISwipeGestureRecognizer.Direction.left, 1), (.right, -1)] {
+            let swipe = UISwipeGestureRecognizer(target: self, action: #selector(swiped(_:)))
+            swipe.direction = direction
+            swipe.name = "\(value)"
+            addGestureRecognizer(swipe)
+        }
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
 
-    func configure(month: MonthKey, selected: CalendarDay?, dots: [CalendarDay: [CalendarEntry.Kind]], loading: Bool) {
-        titleLabel.text = TurkishFormat.monthTitle(month, currentYear: CalendarDay(Date()).year)
-        loading ? spinner.startAnimating() : spinner.stopAnimating()
-        if let rendered, rendered.0 == month, rendered.1 == selected, rendered.2 == dots { return }
-        rendered = (month, selected, dots)
+    @objc private func swiped(_ swipe: UISwipeGestureRecognizer) {
+        onSwipe?(swipe.direction == .left ? 1 : -1)
+    }
+
+    func configure(month: MonthKey, selected: CalendarDay?, lines: [CalendarDay: [Line]]) {
+        if let rendered, rendered.0 == month, rendered.1 == selected, rendered.2 == lines { return }
+        rendered = (month, selected, lines)
         rows.removeAllArranged()
         let cells = CalendarAgenda.monthGrid(month)
         let today = CalendarDay(Date())
         for week in stride(from: 0, to: cells.count, by: 7) {
-            let row = UIStackView.h(cells[week..<min(week + 7, cells.count)].map { dayCell($0, selected: selected, today: today, kinds: $0.flatMap { dots[$0] } ?? []) }, spacing: 2)
+            let row = UIStackView.h(cells[week..<min(week + 7, cells.count)].map {
+                dayCell($0, selected: selected, today: today, lines: $0.flatMap { lines[$0] } ?? [])
+            }, spacing: 0.5)
             row.distribution = .fillEqually
             rows.addArrangedSubview(row)
         }
     }
 
-    private func dayCell(_ day: CalendarDay?, selected: CalendarDay?, today: CalendarDay, kinds: [CalendarEntry.Kind]) -> UIView {
+    private func dayCell(_ day: CalendarDay?, selected: CalendarDay?, today: CalendarDay, lines: [Line]) -> UIView {
         let control = UIControl()
         control.translatesAutoresizingMaskIntoConstraints = false
-        control.heightAnchor.constraint(equalToConstant: 46).isActive = true
+        control.backgroundColor = IOSTheme.canvas
+        // Square: as tall as a seventh of the width.
+        control.heightAnchor.constraint(equalTo: control.widthAnchor).isActive = true
         guard let day else { return control }
         let isSelected = day == selected
         let isToday = day == today
-        let number = UILabel.studio("\(day.day)", size: 15, weight: isToday || isSelected ? .bold : .regular, color: isSelected ? IOSTheme.onInk : (isToday ? IOSTheme.accent : IOSTheme.textPrimary), style: .subheadline)
+        if isSelected { control.backgroundColor = IOSTheme.elevated }
+
+        let number = UILabel.studio("\(day.day)", size: 13, weight: isToday ? .semibold : .regular, color: isToday ? .white : IOSTheme.textPrimary, style: .footnote)
         number.textAlignment = .center
-        let circle = UIView()
-        circle.translatesAutoresizingMaskIntoConstraints = false
-        circle.backgroundColor = isSelected ? IOSTheme.ink : .clear
-        circle.layer.cornerRadius = 15
-        circle.isUserInteractionEnabled = false
-        circle.addSubview(number)
-        number.pin(to: circle)
-        let dotRow = UIStackView.h(Array(kinds.prefix(3)).map { IOSStatusDotView(color: IOSCalendarViewController.color($0), size: 5) }, spacing: 3)
-        dotRow.isUserInteractionEnabled = false
-        control.addSubview(circle)
-        control.addSubview(dotRow)
+        let badge = UIView()
+        badge.translatesAutoresizingMaskIntoConstraints = false
+        badge.backgroundColor = isToday ? IOSTheme.accent : .clear
+        badge.layer.cornerRadius = 11
+        badge.isUserInteractionEnabled = false
+        badge.addSubview(number)
+        number.pin(to: badge)
+
+        let shown = lines.count > 2 ? Array(lines.prefix(1)) : lines
+        var labels: [UIView] = shown.map { line in
+            let label = UILabel()
+            label.font = IOSTheme.font(9, .medium)
+            label.lineBreakMode = .byTruncatingTail
+            let text = NSMutableAttributedString()
+            if let dot = line.dot {
+                text.append(NSAttributedString(string: "● ", attributes: [.foregroundColor: dot, .font: IOSTheme.font(6)]))
+            }
+            text.append(NSAttributedString(string: line.text, attributes: [.foregroundColor: line.color]))
+            label.attributedText = text
+            return label
+        }
+        if lines.count > 2 {
+            labels.append(UILabel.studio("+\(lines.count - 1)", size: 9, weight: .semibold, color: IOSTheme.textTertiary, style: .caption2))
+        }
+        let column = UIStackView.v(labels, spacing: 1)
+        column.isUserInteractionEnabled = false
+        control.addSubview(badge)
+        control.addSubview(column)
         NSLayoutConstraint.activate([
-            circle.centerXAnchor.constraint(equalTo: control.centerXAnchor),
-            circle.topAnchor.constraint(equalTo: control.topAnchor, constant: 2),
-            circle.widthAnchor.constraint(equalToConstant: 30),
-            circle.heightAnchor.constraint(equalToConstant: 30),
-            dotRow.centerXAnchor.constraint(equalTo: control.centerXAnchor),
-            dotRow.topAnchor.constraint(equalTo: circle.bottomAnchor, constant: 4),
-            dotRow.heightAnchor.constraint(equalToConstant: 5),
+            badge.leadingAnchor.constraint(equalTo: control.leadingAnchor, constant: 4),
+            badge.topAnchor.constraint(equalTo: control.topAnchor, constant: 4),
+            badge.widthAnchor.constraint(equalToConstant: 22),
+            badge.heightAnchor.constraint(equalToConstant: 22),
+            column.topAnchor.constraint(equalTo: badge.bottomAnchor, constant: 2),
+            column.leadingAnchor.constraint(equalTo: control.leadingAnchor, constant: 4),
+            column.trailingAnchor.constraint(equalTo: control.trailingAnchor, constant: -3),
+            column.bottomAnchor.constraint(lessThanOrEqualTo: control.bottomAnchor, constant: -2),
         ])
+        control.clipsToBounds = true
         control.addAction(UIAction { [weak self] _ in self?.onSelect?(day) }, for: .touchUpInside)
         control.isAccessibilityElement = true
-        control.accessibilityLabel = "\(TurkishFormat.longDay(day))\(kinds.isEmpty ? "" : ", \(kinds.count) gönderi")"
+        let detail = lines.map(\.text).joined(separator: ", ")
+        control.accessibilityLabel = "\(TurkishFormat.longDay(day))\(detail.isEmpty ? "" : ", \(detail)")"
         control.accessibilityTraits = isSelected ? [.button, .selected] : .button
         return control
     }
