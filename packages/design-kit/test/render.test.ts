@@ -281,6 +281,66 @@ describe.skipIf(!enabled)("renderer (Chromium)", () => {
       ).toEqual(["text-occluded:badge-b-letter", "text-occluded:badge-zn-letter"]);
     });
 
+    it("HTML engine trial: the hexagon badge cuts into the eyebrow (text-element-overlap)", async () => {
+      // The stored slide of a real HTML-engine run (Venta Boro): the badge at left 72 is 104px
+      // wide, the eyebrow starts at left 164, so the hexagon sits under its first letter.
+      const html = readFileSync(fixturePath("regressions/html-badge-overlap.html"), "utf8");
+      const { report } = await run(html);
+      const hits = report.issues.filter((i) => i.rule === "text-element-overlap");
+      expect(hits.map((i) => `${i.layer}:${i.data?.element}`)).toEqual([
+        "eyebrow-text:element-badge-shape",
+      ]);
+      expect(hits[0]?.severity).toBe("error");
+      expect(report.ok).toBe(false);
+      // Nudged clear of the badge, the same slide has no collision: the badge's own letter on
+      // its shape and the card texts on their panel are intended overlays.
+      const moved = await run(
+        html.replace("left:164px;top:98px;width:844px", "left:200px;top:98px;width:808px"),
+      );
+      expect(moved.report.issues.filter((i) => i.rule === "text-element-overlap")).toEqual([]);
+    });
+
+    it("a shape painted over part of a headline, or text straddling a photo's edge, collides", async () => {
+      const head =
+        '<h1 data-layer="headline" data-type="text" class="ts-display-l" style="position:absolute; left:72px; top:200px; width:936px; color:var(--color-ink)">Bor ve çinko</h1>';
+      const over = await run(
+        doc(
+          `${head}<div data-layer="dot" data-type="shape" data-role="decoration" style="position:absolute; left:120px; top:230px; width:60px; height:60px; border-radius:50%; background:var(--color-green)"></div>`,
+        ),
+        undefined,
+        { rules: { "large-void": "off" } },
+      );
+      expect(
+        over.report.issues.filter((i) => i.rule === "text-element-overlap").map((i) => i.layer),
+      ).toEqual(["headline"]);
+      const edge = await run(
+        doc(
+          `<img data-layer="photo" data-type="image" src="/brand/assets/product-venta-borinc.png" alt="" style="position:absolute; left:540px; top:150px; width:540px; height:540px; object-fit:contain">${head}`,
+        ),
+        undefined,
+        { rules: { "large-void": "off" } },
+      );
+      expect(edge.report.issues.map((i) => i.rule)).toContain("text-element-overlap");
+      // A panel that holds the whole text behind it is a backdrop, not a collision; so is an
+      // overlap the design marks as intended.
+      const panel = await run(
+        doc(
+          `<div data-layer="panel" data-type="shape" data-role="decoration" style="position:absolute; left:48px; top:170px; width:984px; height:260px; background:var(--color-mist)"></div>${head}`,
+        ),
+        undefined,
+        { rules: { "large-void": "off" } },
+      );
+      expect(panel.report.issues.filter((i) => i.rule === "text-element-overlap")).toEqual([]);
+      const allowed = await run(
+        doc(
+          `${head.replace('data-type="text"', 'data-type="text" data-allow-overlap')}<div data-layer="dot" data-type="shape" data-role="decoration" style="position:absolute; left:120px; top:230px; width:60px; height:60px; border-radius:50%; background:var(--color-green)"></div>`,
+        ),
+        undefined,
+        { rules: { "large-void": "off" } },
+      );
+      expect(allowed.report.issues.filter((i) => i.rule === "text-element-overlap")).toEqual([]);
+    });
+
     it("a slot filled by the patch engine renders without the empty-slot notice", async () => {
       const filled = applyPatch(slide("image-slot"), {
         op: "fillSlot",
@@ -455,6 +515,11 @@ describe.skipIf(!enabled)("renderer (Chromium)", () => {
       "logo-clear-space": {
         html: doc(
           `${LOGO}<p data-layer="web" data-type="text" class="ts-body" style="position:absolute; left:330px; top:1236px">www.mtmagro.com</p>`,
+        ),
+      },
+      "text-element-overlap": {
+        html: doc(
+          `${FILL}<div data-layer="dot" data-type="shape" data-role="decoration" style="position:absolute; left:40px; top:60px; width:80px; height:80px; border-radius:50%; background:var(--color-green)"></div>`,
         ),
       },
       "large-void": { html: doc(P("t", "left:72px; top:72px; width:936px")) },

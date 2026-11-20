@@ -20,6 +20,11 @@ export interface MediaImage {
   mimeType: string;
   /** Shown to the model as an attached image in the generate call. */
   attached: boolean;
+  /**
+   * A photo of a product the post is about (`productIds`), not a chat @image: its product's
+   * name and which photo it is ("Venta Boro (kapak)"). It is a provided picture, never an AI slot.
+   */
+  product?: { name: string; label: string } | undefined;
 }
 
 export interface DesignBrief {
@@ -130,11 +135,31 @@ ${brand.facts ? asData(json(brand.facts)) : '{ "allowedNumbers": [], "note": "No
 </facts_json>${brand.skillsBlock ? `\n\n${brand.skillsBlock}` : ""}`;
 }
 
+/** The product photos of the brief, as a requirement (none: no line). */
+function productPhotoRequirement(brief: DesignBrief): string[] {
+  const photos = brief.media.filter((m) => m.product);
+  if (photos.length === 0) return [];
+  const list = photos.map(
+    (m) => `${m.path} (${asData(m.product?.label ?? m.alias)}, ${m.width}x${m.height})`,
+  );
+  return [
+    `Product photos (the brand's own photos of the product(s) this post is about): ${list.join(", ")}. ` +
+      "They are real pictures you may place: when the brief asks for the product's photo (e.g. " +
+      '"ürünün fotoğrafı", "kendi fotoğrafını kullan") place one; otherwise use one when the product should be seen. ' +
+      'Put it into an image slot in the FILLED state (`data-slot-state="filled"` with exactly one ' +
+      '`<img data-slot-image src="/media/…" alt="…">`) or a `data-type="image"` layer. Pick the photo that suits the ' +
+      "layout (look at the attached cover photo), show the whole pack (object-fit: contain on a calm surface, cover only " +
+      "when the crop keeps the label readable), and never draw, retype or imitate the pack. These photos are not an AI image slot.",
+  ];
+}
+
 function slotRequirement(brief: DesignBrief): string[] {
-  const used = brief.media.map((m) => `${m.path} (@${m.alias}, ${m.width}x${m.height})`);
+  const userMedia = brief.media.filter((m) => !m.product);
+  const hasProductPhotos = userMedia.length < brief.media.length;
+  const used = userMedia.map((m) => `${m.path} (@${m.alias}, ${m.width}x${m.height})`);
   switch (brief.imageSlot) {
     case "user_upload":
-      if (brief.media.length > 0) {
+      if (userMedia.length > 0) {
         return [
           `Use the user's image(s) ${used.join(", ")} as the photo of this post: put each into an image slot in the FILLED state ` +
             '(`data-slot-state="filled"` with exactly one `<img data-slot-image src="/media/…" alt="…">` inside), with a ' +
@@ -155,9 +180,11 @@ function slotRequirement(brief: DesignBrief): string[] {
       ];
     default:
       return [
-        brief.media.length > 0
+        userMedia.length > 0
           ? `Use the user's image(s) ${used.join(", ")} in an image slot (filled state) if it serves the idea.`
-          : "No photo: a typographic/graphic design built from type, colour fields and brand components. No image slot.",
+          : hasProductPhotos
+            ? "No uploaded or AI photo, so no empty image slot: the listed product photos are the only pictures."
+            : "No photo: a typographic/graphic design built from type, colour fields and brand components. No image slot.",
       ];
   }
 }
@@ -170,6 +197,7 @@ export function briefBlock(brief: DesignBrief): string {
   const requirements = [
     `Artboard ${brief.preset.width}x${brief.preset.height} (${brief.preset.label}, ratio ${brief.preset.ratio}); safe area ${json(brief.preset.safeArea).replace(/\s+/g, " ")} px.`,
     ...slotRequirement(brief),
+    ...productPhotoRequirement(brief),
     ...(brief.contentType === "carousel"
       ? [
           "Carousel: a cover slide that stops the scroll, content slides that each make one point, a closing slide. " +

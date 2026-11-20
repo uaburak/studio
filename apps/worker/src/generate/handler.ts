@@ -70,7 +70,7 @@ import { loadRepurpose, reelSpecFromPost, repurposeMedia, storyBrief } from "./r
 import { queueSlotImageJobs } from "./slot-images.ts";
 import { isSvgRevision, runSvgGenerate } from "./svg/engine.ts";
 import { runTemplateGenerate, type TemplateAiCaller } from "./template.ts";
-import { runWecraGenerate } from "./wecra/engine.ts";
+import { productPictures, runWecraGenerate } from "./wecra/engine.ts";
 
 export interface ContentGenerateDeps extends AgentDeps {
   /** Shared Chromium renderer (lazily launched). */
@@ -367,6 +367,16 @@ async function runContentGenerate(
       payload.instructions = story.instructions;
       repurposeNote = `“${repurposed.source.title}” v${repurposed.version.version} postundan dönüştürüldü.`;
     }
+    // The named products' own photos (like the Wecra, SVG and code engines): pictures the design
+    // may place under `/media/<assetId>.<ext>`, the covers shown to the model. Provided pictures,
+    // not the AI slot: `imageSlot` is unchanged by them.
+    const productPhotos = await productMedia(
+      deps,
+      brandId,
+      payload.productIds?.length ? payload.productIds : (payload.slotImage?.productIds ?? []),
+      media.files,
+      signal,
+    );
 
     const platforms = payload.targetPlatforms?.length
       ? payload.targetPlatforms
@@ -421,7 +431,7 @@ async function runContentGenerate(
       slides: revision
         ? revisionBounds(contentType, revision.slides.length)
         : slideBounds(contentType, `${payload.brief}\n${payload.instructions ?? ""}`),
-      media: media.files.map(({ bytes: _bytes, ...m }) => m),
+      media: [...media.files, ...productPhotos].map(({ bytes: _bytes, ...m }) => m),
       language: brand.brand.defaultLanguage.split("-")[0] ?? "tr",
     };
 
@@ -441,7 +451,7 @@ async function runContentGenerate(
     const result = await runDesignPipeline({
       brand,
       brief,
-      media: media.files,
+      media: [...media.files, ...productPhotos],
       gate: deps.gate,
       ...(useCustomCaller
         ? {
@@ -636,6 +646,7 @@ async function runContentGenerate(
       exportIssues: exportIssues(brief.preset, final.slides),
       emptySlots,
       media: media.files.map((m) => `@${m.alias}`),
+      ...(productPhotos.length ? { productPhotos: productPhotos.map((m) => m.path) } : {}),
       unresolvedAliases: media.unresolved,
       brandSkills: skillsUsed,
       ...(missingFonts.length > 0 ? { missingFonts } : {}),
@@ -851,6 +862,58 @@ async function resolveMedia(
     }
   }
   return { files, videoAssetId, audioAssetId, unresolved };
+}
+
+/**
+ * The named products' photos as pictures the HTML design may place (`/media/<assetId>.<ext>`,
+ * served from memory by the renderer): the first few of each product (`productPictures`), the
+ * cover attached for the model to see. A photo that is already an @image, unreadable or not a
+ * raster picture is skipped.
+ */
+export async function productMedia(
+  deps: ContentGenerateDeps,
+  brandId: string,
+  productIds: readonly string[],
+  already: readonly MediaFile[],
+  signal: AbortSignal,
+): Promise<MediaFile[]> {
+  if (productIds.length === 0) return [];
+  const taken = new Set(already.map((m) => assetIdFromMediaPath(m.path)));
+  const out: MediaFile[] = [];
+  for (const p of await productPictures(deps, brandId, productIds, signal)) {
+    const assetId = p.picture.assetId;
+    if (taken.has(assetId)) continue;
+    taken.add(assetId);
+    try {
+      const bytes =
+        p.bytes ??
+        (
+          await deps.api.downloadAsset(assetId, {
+            maxBytes: deps.settings.imageMaxBytes,
+            signal,
+          })
+        ).bytes;
+      const info = await imageInfo(bytes);
+      const format = info.format === "jpeg" ? "jpg" : info.format;
+      if (!["jpg", "png", "webp", "avif", "gif"].includes(format)) continue;
+      const name = p.picture.kind.replace(/^ürün:\s*/, "");
+      out.push({
+        alias: p.picture.label,
+        path: `/media/${encodeURIComponent(assetId)}.${format}`,
+        width: info.width,
+        height: info.height,
+        mimeType: `image/${info.format}`,
+        // The cover is shown to the model; the other photos are listed by path.
+        attached: p.bytes !== null,
+        product: { name, label: p.picture.label },
+        bytes,
+      });
+    } catch (error) {
+      signal.throwIfAborted();
+      deps.logger.warn(`could not load product photo ${assetId}: ${(error as Error).message}`);
+    }
+  }
+  return out;
 }
 
 /** `/media/<assetId>.<ext>` → asset id. */

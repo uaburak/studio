@@ -150,6 +150,12 @@ export const LINT_RULES = {
   widow: r("warning", "layout", "Large text does not end on a lone short word."),
   "text-overlap": r("error", "layout", "Text layers do not overlap (unless data-allow-overlap)."),
   "text-logo-overlap": r("error", "layout", "Text never overlaps a logo."),
+  "text-element-overlap": r(
+    "error",
+    "layout",
+    "No shape, picture or slot cuts into text (a backdrop holding the whole text is fine).",
+    "0.1",
+  ),
   "diacritic-collision": r(
     "warning",
     "layout",
