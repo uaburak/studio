@@ -106,6 +106,16 @@ final class BrandProfileViewController: UIViewController, UIGestureRecognizerDel
         Task { await model.load() }
     }
 
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        // Room below a short tab, so a page can always stand at the top of the screen (a tab
+        // switched to while scrolled down starts there instead of jumping back up).
+        let safeBottom = scroll.safeAreaInsets.bottom
+        let needed = pageBody.frame.minY - scroll.adjustedContentInset.top + scroll.bounds.height - scroll.contentSize.height - safeBottom
+        let bottom = max(40, needed.rounded(.up))
+        if abs(scroll.contentInset.bottom - bottom) > 0.5 { scroll.contentInset.bottom = bottom }
+    }
+
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
         model.flushKit()
@@ -124,7 +134,7 @@ final class BrandProfileViewController: UIViewController, UIGestureRecognizerDel
     private var pageOffset: CGFloat = 0
     private var panBase: CGFloat = 0
     /// The neighbouring tab's rows beside the page while it slides.
-    private var neighborPage: UIStackView?
+    private var neighborPage: PageStack?
     private var neighborTab: BrandTab?
     /// -1: the neighbour is to the right (the next tab), 1: to the left, 0: none.
     private var neighborSide: CGFloat = 0
@@ -215,7 +225,7 @@ final class BrandProfileViewController: UIViewController, UIGestureRecognizerDel
 
     /// The tabs beside the current one, built while the page is still (building one when the
     /// finger first moves stalled the slide for a few frames).
-    private var preparedPages: [BrandTab: UIStackView] = [:]
+    private var preparedPages: [BrandTab: PageStack] = [:]
 
     private func prepareNeighbors() {
         guard !isPaging else { return }
@@ -228,25 +238,36 @@ final class BrandProfileViewController: UIViewController, UIGestureRecognizerDel
         }
     }
 
+    /// Once the current pass (and any slide) is over.
+    private func schedulePrepare() {
+        DispatchQueue.main.async { [weak self] in self?.prepareNeighbors() }
+    }
+
     private func dropPrepared() {
         preparedPages.values.forEach { $0.removeFromSuperview() }
         preparedPages = [:]
     }
 
+    /// Where a page coming in from the side starts: the page's own top, or (scrolled further
+    /// down) the top of the screen, so it never comes in as an empty stretch.
+    private var incomingTop: CGFloat {
+        max(pageBody.frame.minY, scroll.contentOffset.y + scroll.adjustedContentInset.top)
+    }
+
     /// `tab`'s rows in their own stack, laid where the page is (hidden until used).
-    private func makePage(_ tab: BrandTab) -> UIStackView? {
+    private func makePage(_ tab: BrandTab) -> PageStack? {
         guard let brand = model.brand, let overview = model.overview, let column = pageBody.superview else { return nil }
-        let stack = UIStackView.v([], spacing: 0)
-        stack.translatesAutoresizingMaskIntoConstraints = true
-        stack.isUserInteractionEnabled = false
+        let stack = PageStack()
         let savedTiles = productTiles
+        productTiles = [:]
         body = stack
         UIView.performWithoutAnimation { build(tab, brand, overview) }
         body = pageBody
+        stack.tiles = productTiles
         productTiles = savedTiles
         let width = pageBody.bounds.width
         let size = stack.systemLayoutSizeFitting(CGSize(width: width, height: 0), withHorizontalFittingPriority: .required, verticalFittingPriority: .fittingSizeLevel)
-        stack.frame = CGRect(x: pageBody.frame.minX, y: pageBody.frame.minY, width: width, height: size.height)
+        stack.frame = CGRect(x: pageBody.frame.minX, y: incomingTop, width: width, height: size.height)
         column.addSubview(stack)
         stack.layoutIfNeeded()
         return stack
@@ -258,6 +279,13 @@ final class BrandProfileViewController: UIViewController, UIGestureRecognizerDel
         neighborSide = side
         guard let tab else { return }
         if let prepared = preparedPages.removeValue(forKey: tab) {
+            prepared.frame.origin = CGPoint(x: pageBody.frame.minX, y: incomingTop)
+            if abs(prepared.frame.width - pageBody.bounds.width) > 0.5 {
+                let width = pageBody.bounds.width
+                let size = prepared.systemLayoutSizeFitting(CGSize(width: width, height: 0), withHorizontalFittingPriority: .required, verticalFittingPriority: .fittingSizeLevel)
+                prepared.frame.size = CGSize(width: width, height: size.height)
+                prepared.layoutIfNeeded()
+            }
             prepared.isHidden = false
             neighborPage = prepared
         } else {
@@ -296,19 +324,68 @@ final class BrandProfileViewController: UIViewController, UIGestureRecognizerDel
                 setPage(offset: onScreen)
             }
         }
+        pageTarget = nil
         tabs.select(currentTab, animated: false)
         return pageOffset
     }
 
     private func switchTab(to tab: BrandTab) {
-        currentTab = tab
-        dropNeighbor()
-        lastSignature = nil
-        // Now, even under a finger that caught the slide: this is the tab switch itself.
-        forceRender = true
-        render()
-        forceRender = false
+        if let page = neighborPage, neighborTab == tab, !renderWaits {
+            adopt(page, as: tab)
+        } else {
+            currentTab = tab
+            dropNeighbor()
+            lastSignature = nil
+            // Now, even under a finger that caught the slide: this is the tab switch itself.
+            forceRender = true
+            render()
+            forceRender = false
+        }
         view.layoutIfNeeded()
+        // Scrolled further down than the page's top: the new page starts at the top of the
+        // screen, where it came in.
+        let pageTopOffset = pageBody.frame.minY - scroll.adjustedContentInset.top
+        if scroll.contentOffset.y > pageTopOffset {
+            scroll.contentOffset.y = pageTopOffset
+        }
+        schedulePrepare()
+    }
+
+    /// The page that slid in becomes the page as it is (its pictures already shown); rebuilding
+    /// it blanked the pictures for a moment. The page that left waits beside, for a swipe back.
+    private func adopt(_ page: PageStack, as tab: BrandTab) {
+        let previous = currentTab
+        let leaving = PageStack()
+        leaving.tiles = productTiles
+        let height = pageBody.bounds.height
+        for row in pageBody.arrangedSubviews {
+            pageBody.removeArrangedSubview(row)
+            leaving.addArrangedSubview(row)
+        }
+        for row in page.arrangedSubviews {
+            page.removeArrangedSubview(row)
+            pageBody.addArrangedSubview(row)
+        }
+        productTiles = page.tiles
+        page.removeFromSuperview()
+        neighborPage = nil
+        neighborTab = nil
+        neighborSide = 0
+        currentTab = tab
+        lastSignature = signature()
+        if abs(previous.rawValue - tab.rawValue) == 1, let column = pageBody.superview {
+            preparedPages.removeValue(forKey: previous)?.removeFromSuperview()
+            leaving.frame = CGRect(x: pageBody.frame.minX, y: pageBody.frame.minY, width: pageBody.bounds.width, height: height)
+            leaving.isHidden = true
+            column.addSubview(leaving)
+            leaving.layoutIfNeeded()
+            preparedPages[previous] = leaving
+        }
+        // Prepared pages two steps away are no longer neighbours.
+        for (key, stack) in preparedPages where abs(key.rawValue - tab.rawValue) != 1 {
+            stack.removeFromSuperview()
+            preparedPages.removeValue(forKey: key)
+        }
     }
 
     /// To `target`: both pages slide together, side by side, until the other fills the screen;
@@ -331,6 +408,7 @@ final class BrandProfileViewController: UIViewController, UIGestureRecognizerDel
                 self.dropNeighbor()
                 self.tabs.select(self.currentTab, animated: false)
                 if self.renderWaits { self.render() }
+                self.schedulePrepare()
             }
             pageAnimator = back
             back.startAnimation()
@@ -439,7 +517,7 @@ final class BrandProfileViewController: UIViewController, UIGestureRecognizerDel
         build(currentTab, brand, overview)
         // The neighbours again, from the new data, once this pass is over.
         dropPrepared()
-        DispatchQueue.main.async { [weak self] in self?.prepareNeighbors() }
+        schedulePrepare()
     }
 
     private func build(_ tab: BrandTab, _ brand: Brand, _ overview: BrandOverview) {
@@ -814,4 +892,19 @@ final class BrandTabStrip: UIView {
         let w = a.width + (b.width - a.width) * t
         underline.frame = CGRect(x: x + 8, y: bounds.height - 2, width: max(w - 16, 0), height: 2)
     }
+}
+
+/// A tab's rows beside the page (laid by hand while it slides), with the product tiles it built.
+final class PageStack: UIStackView {
+    var tiles: [EntityID: UIView] = [:]
+
+    init() {
+        super.init(frame: .zero)
+        axis = .vertical
+        spacing = 0
+        translatesAutoresizingMaskIntoConstraints = true
+        isUserInteractionEnabled = false
+    }
+
+    required init(coder: NSCoder) { fatalError("not used") }
 }

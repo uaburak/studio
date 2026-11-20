@@ -549,6 +549,9 @@ final class IOSAssetImageView: UIImageView {
         translatesAutoresizingMaskIntoConstraints = false
         self.contentMode = contentMode
         clipsToBounds = true
+        // A picture drawn smaller than its pixels, moving sideways, had its fine print (a
+        // product's label) flicker from frame to frame; mipmaps keep it steady.
+        layer.minificationFilter = .trilinear
         backgroundColor = IOSTheme.fill
         if cornerRadius > 0 {
             layer.cornerRadius = cornerRadius
