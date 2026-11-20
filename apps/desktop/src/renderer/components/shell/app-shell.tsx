@@ -7,6 +7,7 @@
 import { lazy, Suspense, useEffect } from "react";
 import type { MenuCommand } from "../../../shared/ipc.ts";
 import { useApprovalStream } from "../../features/approvals/approvals-data.ts";
+import { openApprovalNoticeRoute } from "../../features/approvals/notice-route.ts";
 import { requestNewBrand } from "../../features/brand/new-brand-request.ts";
 import { OnboardingSheet } from "../../features/onboarding/onboarding-sheet.tsx";
 import { openOnboarding } from "../../features/onboarding/store.ts";
@@ -159,6 +160,8 @@ export function openNoticeRoute(route: string): void {
     openSettings(isSectionId(section) ? section : undefined);
     return;
   }
+  // An approval request's notice: its chat card, or the brand's "Onay bekleyenler".
+  if (openApprovalNoticeRoute(route)) return;
   useAppStore.getState().navigate(parseRoute(route));
 }
 

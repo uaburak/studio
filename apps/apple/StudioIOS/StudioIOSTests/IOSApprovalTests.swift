@@ -141,4 +141,39 @@ struct IOSApprovalTests {
         #expect(BrandProfileViewController.styleValue(String(repeating: "a", count: 40)).count == 24)
         _ = app
     }
+
+    @Test func newPendingRequestNotifiesOnce() async throws {
+        let (app, _) = await makeApp()
+        // What the list loaded is not news.
+        #expect(!app.notifier.posted.contains { $0.kind == .approvalPending })
+
+        let tarla = try #require(app.approvals.records["apr-tarla"])
+        #expect(await app.approvals.regenerate(tarla, preserveLabel: false, instructions: nil) == nil)
+        await waitFor { app.notifier.posted.contains { $0.kind == .approvalPending } }
+        let notices = app.notifier.posted.filter { $0.kind == .approvalPending }
+        #expect(notices.count == 1)
+        let notice = try #require(notices.first)
+        let fresh = try #require(app.approvals.pending.first { $0.contentId == "post-06" && $0.id != "apr-tarla" })
+        #expect(notice.id == "approval:\(fresh.id)")
+        #expect(notice.body.hasSuffix("Kontrol temiz"))
+        // Tapping opens the chat at its card.
+        let info = IOSNotifier.request(for: notice).content.userInfo
+        let conversationId = try #require(fresh.conversationId)
+        let messageId = try #require(fresh.messageId)
+        #expect(IOSNotifier.route(from: info) == .conversationMessage(conversationId, messageId: messageId))
+
+        // Deciding here, and the feed repeating it, stays quiet.
+        #expect(await app.approvals.reject(fresh, note: nil) == nil)
+        try? await Task.sleep(for: .milliseconds(100))
+        #expect(app.notifier.posted.filter { $0.kind == .approvalPending }.count == 1)
+        // Announced before (another launch, the background check): not again.
+        #expect(!IOSAppModel.markAnnounced(notice.id, defaults: app.settings.defaults))
+    }
+
+    @Test func approvalNoticeRoutes() {
+        let base = ["kind": ActivityNotice.Kind.approvalPending.rawValue, "contentId": "c1"]
+        #expect(IOSNotifier.route(from: base) == .approvals(contentId: nil))
+        #expect(IOSNotifier.route(from: base.merging(["conversationId": "conv"]) { $1 }) == .conversation("conv"))
+        #expect(IOSNotifier.route(from: base.merging(["conversationId": "conv", "messageId": "m"]) { $1 }) == .conversationMessage("conv", messageId: "m"))
+    }
 }

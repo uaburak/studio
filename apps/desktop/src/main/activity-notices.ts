@@ -10,8 +10,16 @@
 // Also from here, whether the window is open or not: Claude's limit waiting for an answer in
 // "Sor" mode (presence `claude.limit`), and social accounts whose token is invalid or runs out
 // within 7 days (read on connect and every few hours; one notice per account and day).
+//
+// New approval requests (`approval.updated` with status pending, never seen before): "Onay
+// bekleyen görsel" with the post's or product's name and the AI check; a click opens the chat at
+// its card (or the brand's "Onay bekleyenler"). Quiet when the user is in that conversation with
+// the window in front, for requests decided meanwhile, and for ones created long ago.
 import type { NoticeInput } from "../shared/ipc.ts";
 import {
+  APPROVAL_FRESH_MS,
+  type ApprovalLike,
+  approvalNotice,
   claudeLimitNotice,
   conversationIdOf,
   finishedNotice,
@@ -51,6 +59,8 @@ export interface ActivityDeps {
   post(notice: NoticeInput): void;
   /** The user is looking at the window: the page shows the change itself. */
   windowFocused(): boolean;
+  /** The page's current route key (`c:<id>` in a conversation; the saved session's). */
+  currentRoute?(): string | null;
   log?(message: string): void;
   retryMs?: number;
   /** How often the accounts' tokens are looked at (default 6 h; also on connect, 1 h apart). */
@@ -91,6 +101,26 @@ function asJob(value: unknown): JobFrame | null {
   };
 }
 
+function asApproval(value: unknown): ApprovalLike | null {
+  const a = value as Record<string, unknown> | null;
+  if (!a || typeof a !== "object") return null;
+  if (typeof a.id !== "string" || typeof a.brandId !== "string") return null;
+  if (typeof a.status !== "string") return null;
+  const id = (key: string) => (typeof a[key] === "string" && a[key] ? (a[key] as string) : null);
+  return {
+    id: a.id,
+    brandId: a.brandId,
+    kind: typeof a.kind === "string" ? a.kind : "product_image",
+    status: a.status,
+    contentId: id("contentId"),
+    productId: id("productId"),
+    conversationId: id("conversationId"),
+    messageId: id("messageId"),
+    checkReport: a.checkReport ?? null,
+    ...(typeof a.createdAt === "string" ? { createdAt: a.createdAt } : {}),
+  };
+}
+
 function parse(data: unknown): Record<string, unknown> | null {
   try {
     const text = typeof data === "string" ? data : Buffer.from(data as ArrayBuffer).toString();
@@ -116,6 +146,8 @@ export class ActivityNotices {
   /** Last status of each job seen (null until the first snapshot: nothing is announced). */
   private known: Map<string, string> | null = null;
   private readonly conversations = new Map<string, Watched>();
+  /** Last status of each approval request seen (a request rings once, when first seen pending). */
+  private readonly approvals = new Map<string, string>();
   private tokenTimer: unknown;
   private lastTokenCheck = Number.NEGATIVE_INFINITY;
   private readonly setTimer: (fn: () => void, ms: number) => unknown;
@@ -253,6 +285,10 @@ export class ActivityNotices {
       }
       return;
     }
+    if (frame.type === "approval.updated") {
+      this.onApproval(target, frame.approval);
+      return;
+    }
     if (frame.type === "job.updated") {
       const job = asJob(frame.job);
       if (!job || this.known === null) return;
@@ -299,6 +335,60 @@ export class ActivityNotices {
       this.deps.post(notice);
     } catch (error) {
       this.deps.log?.(`notice failed: ${(error as Error).message}`);
+    }
+  }
+
+  // --- approval requests ------------------------------------------------------------------------
+
+  private onApproval(target: ActivityTarget, value: unknown): void {
+    const approval = asApproval(value);
+    if (!approval) return;
+    const previous = this.approvals.get(approval.id);
+    this.approvals.set(approval.id, approval.status);
+    if (this.approvals.size > 2_000) {
+      const oldest = this.approvals.keys().next().value as string;
+      this.approvals.delete(oldest);
+    }
+    // Seen before (a re-check, or decided here or elsewhere and repeated): not news.
+    if (previous !== undefined || approval.status !== "pending") return;
+    const now = (this.deps.now?.() ?? new Date()).getTime();
+    const created = approval.createdAt ? Date.parse(approval.createdAt) : Number.NaN;
+    if (Number.isFinite(created) && created < now - APPROVAL_FRESH_MS) return;
+    if (
+      approval.conversationId &&
+      this.deps.windowFocused() &&
+      this.deps.currentRoute?.() === `c:${approval.conversationId}`
+    ) {
+      return;
+    }
+    void this.approvalSubject(target, approval).then((subject) => {
+      // Decided while the name was read: nothing to announce.
+      if (this.approvals.get(approval.id) !== "pending") return;
+      const notice = approvalNotice(approval, subject);
+      if (notice) this.post(notice);
+    });
+  }
+
+  /** The post's title or the product's name (null when it cannot be read). */
+  private async approvalSubject(
+    target: ActivityTarget,
+    approval: ApprovalLike,
+  ): Promise<string | null> {
+    const path = approval.contentId
+      ? `/api/contents/${encodeURIComponent(approval.contentId)}`
+      : approval.productId
+        ? `/api/brands/${encodeURIComponent(approval.brandId)}/products/${encodeURIComponent(approval.productId)}`
+        : null;
+    if (!path) return null;
+    try {
+      const value = (await this.deps.getJson(target, path)) as {
+        title?: unknown;
+        name?: unknown;
+      } | null;
+      const name = approval.contentId ? value?.title : value?.name;
+      return typeof name === "string" && name.trim() ? name : null;
+    } catch {
+      return null;
     }
   }
 

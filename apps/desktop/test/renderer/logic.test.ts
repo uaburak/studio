@@ -42,6 +42,7 @@ import { choiceFor, lastChoice, saveChoicePatch } from "../../src/renderer/lib/m
 import { ScrollFollower, showJumpToLatest } from "../../src/renderer/lib/scroll-follow.ts";
 import { jobsBoard, ringMeter, usageMeters } from "../../src/renderer/lib/usage.ts";
 import { parseRoute, routeKey, useAppStore } from "../../src/renderer/state/app-store.ts";
+import { useFocusRequests } from "../../src/renderer/state/focus-requests.ts";
 import { renderTokensCss, type TokenDoc } from "../../src/shared/tokens.ts";
 import { conversation, T } from "./fixtures.ts";
 
@@ -341,6 +342,22 @@ describe("window state", () => {
     useAppStore.getState().setSettingsOpen(false);
     openNoticeRoute("calendar");
     expect(useAppStore.getState().route).toEqual({ kind: "calendar" });
+    // A new approval request's notice: the chat scrolled to its card…
+    openNoticeRoute("m:conv1/m1");
+    expect(useAppStore.getState().route).toEqual({ kind: "conversation", id: "conv1" });
+    expect(useFocusRequests.getState().message).toMatchObject({
+      conversationId: "conv1",
+      messageId: "m1",
+    });
+    // …or, without a chat, the brand's "Onay bekleyenler" in the details panel.
+    openNoticeRoute("approvals:b2");
+    expect(useAppStore.getState().route).toEqual({ kind: "new" });
+    expect(useAppStore.getState().currentBrandId).toBe("b2");
+    expect(useAppStore.getState().panelPresented).toBe(true);
+    expect(useAppStore.getState().panelPane).toBe("details");
+    // Already open on Ayrıntılar: stays open.
+    openNoticeRoute("approvals:b2");
+    expect(useAppStore.getState().panelPresented).toBe(true);
     expect(
       shortcutCommand({ key: "n", metaKey: false, altKey: false, ctrlKey: false, shiftKey: false }),
     ).toBeNull();

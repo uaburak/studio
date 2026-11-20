@@ -19,11 +19,13 @@ public struct ActivityNotice: Sendable, Hashable, Identifiable {
         case brandProfileReady
         /// Any other job failed.
         case jobFailed
+        /// A generated picture waits for "Onayla / Reddet / Yeniden üret" (an approval request).
+        case approvalPending
 
         /// Settings group the notice belongs to.
         public var category: Category {
             switch self {
-            case .waitingOnYou: .waiting
+            case .waitingOnYou, .approvalPending: .waiting
             case .published, .publishFailed: .publishing
             case .replyReady: .replies
             case .postReady, .postFailed, .imageReady, .brandProfileReady, .jobFailed: .production
@@ -53,10 +55,13 @@ public struct ActivityNotice: Sendable, Hashable, Identifiable {
     public var brandId: EntityID?
     public var contentId: EntityID?
     public var conversationId: EntityID?
+    /// The chat message to scroll to (an approval request's card).
+    public var messageId: EntityID?
 
     public init(
         id: String, kind: Kind, title: String, body: String,
-        brandId: EntityID? = nil, contentId: EntityID? = nil, conversationId: EntityID? = nil
+        brandId: EntityID? = nil, contentId: EntityID? = nil, conversationId: EntityID? = nil,
+        messageId: EntityID? = nil
     ) {
         self.id = id
         self.kind = kind
@@ -65,6 +70,7 @@ public struct ActivityNotice: Sendable, Hashable, Identifiable {
         self.brandId = brandId
         self.contentId = contentId
         self.conversationId = conversationId
+        self.messageId = messageId
     }
 }
 
@@ -76,6 +82,8 @@ public struct ActivityNotice: Sendable, Hashable, Identifiable {
 public struct ActivityNoticeTracker: Sendable {
     private var known: [EntityID: JobStatus] = [:]
     private var delivered: Set<String> = []
+    /// Approval requests already handled here: announced, listed, or decided on this device.
+    private var settledApprovals: Set<EntityID> = []
     public private(set) var hasBaseline = false
 
     public init() {}
@@ -141,6 +149,73 @@ public struct ActivityNoticeTracker: Sendable {
         let waiting = limit.waiting > 0 ? "\(limit.waiting) iş bekliyor. " : ""
         let choice = limit.geminiReady ? "Gemini ile devam et ya da sınırı bekle." : "Sınırın dolmasını bekle ya da Gemini anahtarı ekle."
         return ActivityNotice(id: limit.noticeKey, kind: .waitingOnYou, title: "Claude sınırı doldu", body: waiting + choice)
+    }
+
+    // MARK: Approval requests ("Onay bekleyenler")
+
+    /// Key prefix of approval notices (`approval:<id>`).
+    public static let approvalPrefix = "approval:"
+
+    /// How old a pending request may be and still count as new (older ones were listed long ago).
+    public static let approvalFreshness: TimeInterval = 30 * 60
+
+    public static func approvalKey(_ id: EntityID) -> String { approvalPrefix + id }
+
+    /// A new pending request from the live feed: announced once. Requests the app already listed
+    /// or the user decided on this device (`settleApprovals`) and old ones stay quiet.
+    /// `subject` names the post or product.
+    public mutating func approvalNotices(for approval: ApprovalRequest, subject: String? = nil, now: Date = Date()) -> [ActivityNotice] {
+        guard approval.isPending else {
+            settledApprovals.insert(approval.id)
+            return []
+        }
+        guard !settledApprovals.contains(approval.id), approval.createdAt > now.addingTimeInterval(-Self.approvalFreshness) else { return [] }
+        settledApprovals.insert(approval.id)
+        guard let notice = Self.approvalNotice(for: approval, subject: subject) else { return [] }
+        return deliver([notice])
+    }
+
+    /// Requests that must not be announced: the list the app loaded, a decision made here.
+    public mutating func settleApprovals(_ ids: some Sequence<EntityID>) {
+        let ids = Array(ids)
+        settledApprovals.formUnion(ids)
+        delivered.formUnion(ids.map(Self.approvalKey))
+    }
+
+    /// The notice for a pending request (nil once decided).
+    public static func approvalNotice(for approval: ApprovalRequest, subject: String? = nil) -> ActivityNotice? {
+        guard approval.isPending else { return nil }
+        let title: String = switch approval.kind {
+        case .productPhotoUpgrade: "Ürün fotoğrafı iyileştirildi"
+        case .variant: "Onay bekleyen varyant"
+        case .productImage, .unknown: "Onay bekleyen görsel"
+        }
+        let name = subject?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let lead = name.flatMap { $0.isEmpty ? nil : $0 } ?? approval.kind.label
+        return ActivityNotice(
+            id: approvalKey(approval.id), kind: .approvalPending, title: title,
+            body: "\(lead) · \(checkSummary(approval.checkReport))",
+            brandId: approval.brandId, contentId: approval.contentId,
+            conversationId: approval.conversationId, messageId: approval.messageId)
+    }
+
+    /// The AI check for a notice: "Kontrol temiz", "2 sorun: Etiket yazısı, Kapak".
+    public static func checkSummary(_ report: ApprovalCheckReport?) -> String {
+        guard let report else { return "Kontrol yapılmadı" }
+        let failed = report.failed
+        if !failed.isEmpty { return "\(failed.count) sorun: " + failed.map(\.aspect).joined(separator: ", ") }
+        if report.passed { return "Kontrol temiz" }
+        let summary = report.summary.trimmingCharacters(in: .whitespacesAndNewlines)
+        return summary.isEmpty ? "Kontrol sorun buldu" : String(summary.prefix(140))
+    }
+
+    /// Pending requests created after `date` (the background check), oldest first.
+    public static func approvalNotices(
+        for approvals: [ApprovalRequest], createdAfter date: Date, subject: (ApprovalRequest) -> String? = { _ in nil }
+    ) -> [ActivityNotice] {
+        approvals.filter { $0.isPending && $0.createdAt > date }
+            .sorted { $0.createdAt < $1.createdAt }
+            .compactMap { approvalNotice(for: $0, subject: subject($0)) }
     }
 
     /// Mark keys as already shown (e.g. the user is looking at that conversation).

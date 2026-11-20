@@ -51,6 +51,7 @@ final class IOSApprovalsModel {
             guard brandId == app.currentBrandId else { return }
             for approval in list { records[approval.id] = approval }
             pendingIds = list.filter(\.isPending).sorted { $0.createdAt > $1.createdAt }.map(\.id)
+            app.approvalsListed(pendingIds)
             loadedBrandId = brandId
             error = nil
         } catch {
@@ -127,6 +128,7 @@ final class IOSApprovalsModel {
         guard let app, !busy.contains(approval.id) else { return nil }
         busy.insert(approval.id)
         defer { busy.remove(approval.id) }
+        app.approvalDecidedHere(approval.id)
         do {
             let result = try await work(app.dataService)
             apply(result.approval)

@@ -78,6 +78,7 @@ final class IOSNotifier {
         if let id = notice.conversationId { info["conversationId"] = id }
         if let id = notice.contentId { info["contentId"] = id }
         if let id = notice.brandId { info["brandId"] = id }
+        if let id = notice.messageId { info["messageId"] = id }
         if notice.id.hasPrefix(ActivityNoticeTracker.claudeLimitPrefix) { info["route"] = "usage" }
         content.userInfo = info
         return UNNotificationRequest(identifier: notice.id, content: content, trigger: nil)
@@ -86,6 +87,12 @@ final class IOSNotifier {
     /// Where a tapped notification leads.
     nonisolated static func route(from userInfo: [AnyHashable: Any]) -> IOSRoute? {
         if userInfo["route"] as? String == "usage" { return .usage }
+        // A new approval request: its chat card, else "Onay bekleyenler".
+        if userInfo["kind"] as? String == ActivityNotice.Kind.approvalPending.rawValue {
+            guard let id = userInfo["conversationId"] as? String else { return .approvals(contentId: nil) }
+            if let messageId = userInfo["messageId"] as? String { return .conversationMessage(id, messageId: messageId) }
+            return .conversation(id)
+        }
         // A finished share (N20) links where it went.
         if let raw = userInfo["link"] as? String, let url = URL(string: raw), let link = StudioLink(url: url) {
             switch link {
@@ -144,7 +151,8 @@ private final class BackgroundTaskBox: @unchecked Sendable {
 
 /// The background pass (M7): find the Mac where it is now (the last address, its LAN
 /// addresses, then the Remote Control tunnel, as the app does), then announce jobs that finished
-/// since the app was last active, conversations waiting on the user (consent / question) and a
+/// since the app was last active, conversations waiting on the user (consent / question), new
+/// approval requests ("Onay bekleyen görsel") and a
 /// Claude limit that waits for "Gemini ile devam et / Sınırı bekle".
 enum BackgroundJobCheck {
     static func run(defaults: UserDefaults = .standard) async -> Bool {
@@ -166,6 +174,8 @@ enum BackgroundJobCheck {
             var notices = ActivityNoticeTracker.notices(for: jobs, finishedAfter: since)
             // Waiting on the user: never announced twice (the app shares the same list).
             var waiting = await waitingNotices(client)
+            // New approval requests ("Onay bekleyen görsel") since the last check.
+            waiting += await approvalNotices(client, since: since)
             if let presence = try? await client.presence(), let limit = ActivityNoticeTracker.claudeLimitNotice(presence.claude?.limit) {
                 waiting.append(limit)
             }
@@ -179,6 +189,24 @@ enum BackgroundJobCheck {
             return true
         } catch {
             return false
+        }
+    }
+
+    /// Pending approval requests created after `since`, named after their post or product.
+    static func approvalNotices(_ client: APIClient, since: Date) async -> [ActivityNotice] {
+        guard let page = try? await client.approvalsPage(status: .pending, limit: 20) else { return [] }
+        let fresh = page.items.filter { $0.isPending && $0.createdAt > since }
+        guard !fresh.isEmpty else { return [] }
+        var names: [EntityID: String] = [:]
+        for contentId in Set(fresh.compactMap(\.contentId)).prefix(5) {
+            if let content = try? await client.content(contentId) { names[contentId] = content.title }
+        }
+        let productBrands = Set(fresh.filter { $0.contentId == nil && $0.productId != nil }.map(\.brandId))
+        for brandId in productBrands.prefix(3) {
+            for product in (try? await client.products(brandId: brandId)) ?? [] { names[product.id] = product.name }
+        }
+        return ActivityNoticeTracker.approvalNotices(for: fresh, createdAfter: since) { approval in
+            approval.contentId.flatMap { names[$0] } ?? approval.productId.flatMap { names[$0] }
         }
     }
 

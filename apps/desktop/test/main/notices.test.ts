@@ -20,9 +20,12 @@ import {
 } from "../../src/main/renderer-link.ts";
 import { IPC, type NoticeInput } from "../../src/shared/ipc.ts";
 import {
+  approvalCheckSummary,
+  approvalNotice,
   finishedNotice,
   JOB_LABELS,
   noticeRoute,
+  parseMessageRoute,
   waitingNotice,
 } from "../../src/shared/notices.ts";
 
@@ -299,6 +302,150 @@ describe("ActivityNotices (main-process notifications)", () => {
     await flush();
     expect(getJson).toHaveBeenCalledTimes(2);
     notices.stop();
+  });
+});
+
+describe("approval request notices (Onay bekleyenler)", () => {
+  const NOW = new Date("2026-11-20T12:00:00.000Z");
+  const approval = (over: Record<string, unknown> = {}) => ({
+    id: "apr1",
+    brandId: "b1",
+    kind: "product_image",
+    status: "pending",
+    contentId: "post1",
+    productId: "p1",
+    conversationId: "conv1",
+    messageId: "m1",
+    checkReport: {
+      passed: true,
+      items: [{ aspect: "Etiket yazısı", ok: true, note: "" }],
+      summary: "",
+    },
+    createdAt: "2026-11-20T11:59:00.000Z",
+    ...over,
+  });
+
+  function setup(over: { focused?: boolean; route?: string } = {}) {
+    const sockets = new FakeSockets();
+    const posted: NoticeInput[] = [];
+    const getJson = vi.fn(async (_target: unknown, path: string) =>
+      path.startsWith("/api/contents/") ? { title: "Venta Borinc" } : { name: "Boro" },
+    );
+    const notices = new ActivityNotices({
+      target: () => ({ port: 8790, ownerSecret: "own" }),
+      socket: sockets.factory,
+      getJson,
+      post: (n) => posted.push(n),
+      windowFocused: () => over.focused ?? false,
+      currentRoute: () => over.route ?? "new",
+      now: () => NOW,
+      setTimer: () => 0,
+      clearTimer: () => undefined,
+    });
+    notices.start();
+    const push = (a: unknown) => sockets.push("/jobs/", { type: "approval.updated", approval: a });
+    return { posted, getJson, push };
+  }
+
+  it("announces a new pending request once, named after its post, opening its chat card", async () => {
+    const w = setup();
+    w.push(approval());
+    await flush();
+    expect(w.getJson).toHaveBeenCalledWith(expect.anything(), "/api/contents/post1");
+    expect(w.posted).toEqual([
+      {
+        id: "approval:apr1",
+        title: "Onay bekleyen görsel",
+        body: "Venta Borinc · Kontrol temiz",
+        route: "m:conv1/m1",
+      },
+    ]);
+    // A re-check of the same request, and its decision, stay quiet.
+    w.push(approval({ updatedAt: "later" }));
+    w.push(approval({ status: "approved" }));
+    await flush();
+    expect(w.posted).toHaveLength(1);
+  });
+
+  it("names a photo upgrade after its product and opens Onay bekleyenler without a chat", async () => {
+    const w = setup();
+    w.push(
+      approval({
+        id: "apr2",
+        kind: "product_photo_upgrade",
+        contentId: null,
+        conversationId: null,
+        messageId: null,
+        checkReport: {
+          passed: false,
+          items: [
+            { aspect: "Etiket yazısı", ok: false, note: "bozuk" },
+            { aspect: "Kapak", ok: false, note: "gri" },
+          ],
+          summary: "",
+        },
+      }),
+    );
+    await flush();
+    expect(w.getJson).toHaveBeenCalledWith(expect.anything(), "/api/brands/b1/products/p1");
+    expect(w.posted).toEqual([
+      {
+        id: "approval:apr2",
+        title: "Ürün fotoğrafı iyileştirildi",
+        body: "Boro · 2 sorun: Etiket yazısı, Kapak",
+        route: "approvals:b1",
+      },
+    ]);
+  });
+
+  it("stays quiet for decided, old, and on-screen requests", async () => {
+    const decidedFirst = setup();
+    // Decided (here or elsewhere) before a late "pending" frame.
+    decidedFirst.push(approval({ status: "rejected" }));
+    decidedFirst.push(approval());
+    // Created long ago (listed already).
+    decidedFirst.push(approval({ id: "old", createdAt: "2026-11-20T10:00:00.000Z" }));
+    await flush();
+    expect(decidedFirst.posted).toEqual([]);
+
+    // The user is in that conversation with the window in front: the card shows it.
+    const looking = setup({ focused: true, route: "c:conv1" });
+    looking.push(approval());
+    await flush();
+    expect(looking.posted).toEqual([]);
+
+    // In front, but elsewhere: announced.
+    const elsewhere = setup({ focused: true, route: "c:other" });
+    elsewhere.push(approval());
+    await flush();
+    expect(elsewhere.posted.map((n) => n.id)).toEqual(["approval:apr1"]);
+  });
+
+  it("does not announce a request decided while its name was read", async () => {
+    const w = setup();
+    w.push(approval());
+    w.push(approval({ status: "approved" }));
+    await flush();
+    expect(w.posted).toEqual([]);
+  });
+
+  it("builds texts and routes", () => {
+    expect(approvalCheckSummary(null)).toBe("Kontrol yapılmadı");
+    expect(approvalCheckSummary({ passed: false, items: [], summary: "Işık sert" })).toBe(
+      "Işık sert",
+    );
+    expect(approvalCheckSummary({ passed: false, items: [] })).toBe("Kontrol sorun buldu");
+    expect(approvalNotice({ ...approval({ kind: "variant", checkReport: null }) }, " ")).toEqual({
+      id: "approval:apr1",
+      title: "Onay bekleyen varyant",
+      body: "Varyant · Kontrol yapılmadı",
+      route: "m:conv1/m1",
+    });
+    expect(approvalNotice(approval({ messageId: null }), "X")?.route).toBe("c:conv1");
+    expect(approvalNotice(approval({ status: "approved" }))).toBeNull();
+    expect(parseMessageRoute("m:conv1/m1")).toEqual({ conversationId: "conv1", messageId: "m1" });
+    expect(parseMessageRoute("m:conv1/")).toBeNull();
+    expect(parseMessageRoute("c:conv1")).toBeNull();
   });
 });
 

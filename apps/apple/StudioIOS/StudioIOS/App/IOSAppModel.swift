@@ -731,6 +731,10 @@ final class IOSAppModel {
             for notice in noticeTracker.notices(for: job, contentTitle: title) { deliver(notice) }
         case .message(.approvalUpdated(let approval)):
             approvals.apply(approval)
+            let notices = noticeTracker.approvalNotices(for: approval, subject: approvals.subject(of: approval))
+            for notice in notices { deliver(notice) }
+            // The post turns "Onay bekliyor": the widget follows.
+            if !notices.isEmpty, !isSample { IOSWidgets.reload() }
         default:
             break
         }
@@ -742,8 +746,27 @@ final class IOSAppModel {
         for notice in notices { deliver(notice) }
     }
 
+    /// Approval requests the app listed: not news when the feed updates them later.
+    func approvalsListed(_ ids: [EntityID]) {
+        noticeTracker.settleApprovals(ids)
+        for id in ids { _ = Self.markAnnounced(ActivityNoticeTracker.approvalKey(id), defaults: settings.defaults) }
+    }
+
+    /// The user decides a request on this phone: a late "pending" event for it stays quiet.
+    func approvalDecidedHere(_ id: EntityID) {
+        noticeTracker.settleApprovals([id])
+        _ = Self.markAnnounced(ActivityNoticeTracker.approvalKey(id), defaults: settings.defaults)
+    }
+
     private func deliver(_ notice: ActivityNotice) {
         guard settings.isNoticeEnabled(notice.kind.category) else { return }
+        if notice.kind == .approvalPending {
+            // Once across launches and the background check; not while its chat is on screen.
+            guard Self.markAnnounced(notice.id, defaults: settings.defaults) else { return }
+            if isInForeground, let id = notice.conversationId, id == visibleConversationId { return }
+            notifier.post(notice)
+            return
+        }
         if isInForeground, let id = notice.conversationId, id == visibleConversationId, notice.kind != .waitingOnYou { return }
         // "Seni bekliyor" once across launches and the background check (M7).
         if notice.kind == .waitingOnYou, !Self.markAnnounced(notice.id, defaults: settings.defaults) { return }
