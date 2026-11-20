@@ -282,6 +282,32 @@ export const PlanReject = z
 export type PlanReject = z.input<typeof PlanReject>;
 
 /**
+ * A design's AI image slot filled through the product-image line (docs/URETIM-RESIM.md Faz 1):
+ * once the HTML design version is stored, the worker queues one `image.generate` job per empty
+ * slot with these products (exact description → generation → AI check) and an approval target
+ * (`product_image`, the post, the slot, the chat); the picture fills the slot only when the owner
+ * approves. Sent only after the owner said yes to the paid generation (the chat's consent card):
+ * `consented: true` is required, and without this field no picture is generated.
+ */
+export const SlotImageRequest = z
+  .object({
+    /** The owner allowed the paid generation for this post's slot(s). */
+    consented: z.literal(true),
+    /** Products the picture shows (exact description + check); none = a scene without one. */
+    productIds: z.array(EntityId).max(4).optional(),
+    /** The product's side to show ("sol", "arka", "önden"…); picks the reference photos. */
+    view: z.string().trim().max(80).optional(),
+    /** Picture style; absent = the brand's `imageStylePreset`, "" = no style. */
+    style: z.string().trim().max(500).optional(),
+    /** What the picture shows; absent = the post's `imageBrief` (else its title and brief). */
+    prompt: z.string().trim().max(4_000).optional(),
+    /** The chat the approval card goes to (default: the generation's `conversationId`). */
+    conversationId: EntityId.optional(),
+  })
+  .meta({ id: "SlotImageRequest" });
+export type SlotImageRequest = z.infer<typeof SlotImageRequest>;
+
+/**
  * `POST /api/plans/{id}/generate` (U2, N3).
  *
  * Without `itemIds` only the items that still need a design are queued: accepted items whose post
@@ -313,6 +339,12 @@ export const PlanGenerate = z
      * and `wecra` run today; others are refused with "Bu motor henüz hazır değil".
      */
     engine: GenerationEngine.optional(),
+    /**
+     * Fill the AI image slots of these posts through the product-image line (the owner consented
+     * to the paid generation); copied into the payload of every item whose `imageSlot` is
+     * `ai_generate`.
+     */
+    slotImage: SlotImageRequest.optional(),
   })
   .meta({ id: "PlanGenerate" });
 export type PlanGenerate = z.input<typeof PlanGenerate>;
@@ -468,6 +500,11 @@ export const ContentGeneratePayload = z
     variantIndex: GenerationVariants.optional(),
     /** Products of the brand the post is about (`@ürün` mentions); their facts go to the designer. */
     productIds: z.array(EntityId).max(8).optional(),
+    /**
+     * Fill the design's AI image slot through the product-image line once the version is stored
+     * (HTML engine; only after the owner consented to the paid generation).
+     */
+    slotImage: SlotImageRequest.optional(),
   })
   .meta({ id: "ContentGeneratePayload" });
 export type ContentGeneratePayload = z.infer<typeof ContentGeneratePayload>;

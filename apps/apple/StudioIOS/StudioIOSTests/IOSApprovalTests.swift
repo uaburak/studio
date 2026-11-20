@@ -4,6 +4,10 @@ import Testing
 import UIKit
 @testable import StudioIOS
 
+/// The app model lives as long as the app does; screens hold it `unowned` and finish their async
+/// work after a test returns, so the tests keep theirs alive too.
+@MainActor private var liveApps: [IOSAppModel] = []
+
 @MainActor
 private func makeApp() async -> (IOSAppModel, SampleBackend) {
     let backend = SampleBackend(data: SampleData(now: .now), uploadDelay: .zero)
@@ -11,6 +15,7 @@ private func makeApp() async -> (IOSAppModel, SampleBackend) {
     let settings = IOSAppSettings(defaults: defaults, tokenStore: InMemoryDeviceTokenStore(), useSampleData: true)
     let app = IOSAppModel(settings: settings, conversationService: backend, dataService: backend, notifier: IOSNotifier(delivering: .silent))
     await app.load()
+    liveApps.append(app)
     return (app, backend)
 }
 
