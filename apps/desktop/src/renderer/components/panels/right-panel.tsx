@@ -4,10 +4,16 @@
 import type { AgentRun, Job, Platform, SocialAccount } from "@studio/contract";
 import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useState } from "react";
+import {
+  CountBadge,
+  PendingApprovals,
+  usePendingApprovalCount,
+} from "../../features/approvals/approvals-section.tsx";
 import { BrandPane } from "../../features/brand/brand-pane.tsx";
 import { CalendarPane } from "../../features/calendar/calendar-pane.tsx";
 import { PhonePane } from "../../features/devices/phone-pane.tsx";
 import { MediaPane } from "../../features/media/media-pane.tsx";
+import { usePanelBrandId } from "../../features/panel-brand.ts";
 import { WorkspaceSlot } from "../../features/post-editor/slots.tsx";
 import { openSettings } from "../../features/settings/store.ts";
 import { useApi } from "../../lib/api.ts";
@@ -107,7 +113,7 @@ export function PanelSection({
   children,
   last,
 }: {
-  title: string;
+  title: ReactNode;
   children: ReactNode;
   last?: boolean;
 }) {
@@ -175,13 +181,31 @@ export function PanelRow({
 
 function DetailsPane() {
   const route = useAppStore((s) => s.route);
+  const brandId = usePanelBrandId();
   return (
     <>
+      {brandId && <ApprovalsSection brandId={brandId} />}
       <EnvironmentSection />
       <UsageSection />
       {route.kind === "conversation" ? <ContextSection id={route.id} /> : <NewChatContext />}
       <AccountsSection conversationId={route.kind === "conversation" ? route.id : null} />
     </>
+  );
+}
+
+function ApprovalsSection({ brandId }: { brandId: string }) {
+  const count = usePendingApprovalCount(brandId);
+  return (
+    <PanelSection
+      title={
+        <span className="flex items-center gap-1.5">
+          Onay bekleyenler
+          {count > 0 && <CountBadge count={count} label="onay bekliyor" />}
+        </span>
+      }
+    >
+      <PendingApprovals brandId={brandId} />
+    </PanelSection>
   );
 }
 

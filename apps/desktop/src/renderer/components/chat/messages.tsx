@@ -1,8 +1,9 @@
 // Messages of the transcript (Wecra "User bubble", markdown, image tiles): the user's bubble on
 // the right, the assistant's reply without a bubble with an action row on hover, the queued
 // bubble with "Şimdi gönder".
-import type { ConversationAlias, MessageMention } from "@studio/contract";
+import type { ConversationAlias, MessageEntityMention, MessageMention } from "@studio/contract";
 import { type ReactNode, useState } from "react";
+import { ApprovalCard } from "../../features/approvals/approval-card.tsx";
 import { ChatPostCard } from "../../features/posts/chat-post-card.tsx";
 import type {
   AssistantBlock,
@@ -12,7 +13,15 @@ import type {
 } from "../../lib/transcript.ts";
 import type { ConversationController } from "../../state/conversation.ts";
 import { cn, IconButton } from "../ui/controls.tsx";
-import { IconCheck, IconClose, IconCopy, IconPencil, IconRetry } from "../ui/icons.tsx";
+import {
+  IconCheck,
+  IconClose,
+  IconCopy,
+  IconPackage,
+  IconPencil,
+  IconRetry,
+} from "../ui/icons.tsx";
+import { InstaGrid } from "../ui/insta-icons.tsx";
 import {
   ConsentCard,
   ErrorBlock,
@@ -25,47 +34,125 @@ import {
 import { ImageGrid } from "./images.tsx";
 import { Markdown, MentionPill } from "./markdown.tsx";
 
-/** User text with the server's resolved mentions as pills. */
+type TextMention =
+  | { type: "file"; start: number; end: number; mention: MessageMention }
+  | { type: "entity"; start: number; end: number; mention: MessageEntityMention };
+
+/** File and product / post mentions in text order (overlaps: the earlier one wins). */
+export function textMentions(
+  mentions: readonly MessageMention[],
+  entityMentions: readonly MessageEntityMention[],
+): TextMention[] {
+  const all: TextMention[] = [
+    ...mentions.map((m) => ({ type: "file" as const, start: m.start, end: m.end, mention: m })),
+    ...entityMentions.map((m) => ({
+      type: "entity" as const,
+      start: m.start,
+      end: m.end,
+      mention: m,
+    })),
+  ].sort((a, b) => a.start - b.start);
+  const out: TextMention[] = [];
+  let cursor = 0;
+  for (const m of all) {
+    if (m.start < cursor) continue;
+    out.push(m);
+    cursor = m.end;
+  }
+  return out;
+}
+
+/** User text with the server's resolved mentions as pills (files) and chips (products, posts). */
 function MentionedText({
   text,
   mentions,
+  entityMentions,
   aliases,
   onMention,
+  onEntity,
 }: {
   text: string;
   mentions: MessageMention[];
+  entityMentions: MessageEntityMention[];
   aliases: ConversationAlias[];
   onMention(aliasId: string): void;
+  onEntity?: ((mention: MessageEntityMention) => void) | undefined;
 }) {
-  if (mentions.length === 0) return <>{text}</>;
+  const list = textMentions(mentions, entityMentions);
+  if (list.length === 0) return <>{text}</>;
   const parts: ReactNode[] = [];
   let cursor = 0;
-  for (const m of [...mentions].sort((a, b) => a.start - b.start)) {
-    if (m.start < cursor) continue;
+  for (const m of list) {
     if (m.start > cursor) parts.push(text.slice(cursor, m.start));
-    const name = aliases.find((a) => a.id === m.aliasId)?.alias ?? m.alias;
-    parts.push(
-      <MentionPill key={`${m.start}`} alias={name} onClick={() => onMention(m.aliasId)} />,
-    );
+    if (m.type === "file") {
+      const aliasId = m.mention.aliasId;
+      const name = aliases.find((a) => a.id === aliasId)?.alias ?? m.mention.alias;
+      parts.push(
+        <MentionPill key={`${m.start}`} alias={name} onClick={() => onMention(aliasId)} />,
+      );
+    } else {
+      const mention = m.mention;
+      parts.push(
+        <EntityPill
+          key={`${m.start}`}
+          kind={mention.kind}
+          name={mention.name}
+          onClick={onEntity ? () => onEntity(mention) : undefined}
+        />,
+      );
+    }
     cursor = m.end;
   }
   if (cursor < text.length) parts.push(text.slice(cursor));
   return <>{parts}</>;
 }
 
+/** An `@product` / `@post` chip: its kind's mark and the name. */
+export function EntityPill({
+  kind,
+  name,
+  onClick,
+}: {
+  kind: MessageEntityMention["kind"];
+  name: string;
+  onClick?: (() => void) | undefined;
+}) {
+  const what = kind === "product" ? "Ürün" : "Post";
+  return (
+    <button
+      type="button"
+      title={`${what}: @${name}`}
+      aria-label={`${what} @${name}`}
+      onClick={onClick}
+      className="mx-px inline-flex h-[20px] translate-y-[-1px] items-center gap-1 rounded-full bg-control-hover px-1.5 align-middle text-[0.9em] text-fg hover:bg-control-pressed"
+    >
+      {kind === "product" ? (
+        <IconPackage size={11} strokeWidth={1.75} className="shrink-0 text-icon" />
+      ) : (
+        <InstaGrid size={11} className="shrink-0 text-icon" />
+      )}
+      @{name}
+    </button>
+  );
+}
+
 export function UserBubble({
   text,
   mentions,
+  entityMentions = [],
   images,
   aliases,
   onMention,
+  onEntity,
   muted = false,
 }: {
   text: string;
   mentions: MessageMention[];
+  entityMentions?: MessageEntityMention[];
   images: ChatImage[];
   aliases: ConversationAlias[];
   onMention(aliasId: string): void;
+  onEntity?: ((mention: MessageEntityMention) => void) | undefined;
   muted?: boolean;
 }) {
   return (
@@ -78,7 +165,14 @@ export function UserBubble({
             muted ? "text-fg-2" : "text-fg",
           )}
         >
-          <MentionedText text={text} mentions={mentions} aliases={aliases} onMention={onMention} />
+          <MentionedText
+            text={text}
+            mentions={mentions}
+            entityMentions={entityMentions}
+            aliases={aliases}
+            onMention={onMention}
+            onEntity={onEntity}
+          />
         </div>
       )}
     </div>
@@ -284,6 +378,8 @@ function AssistantBlockView({
       return <ErrorBlock error={block.error} onRetry={onRetry} />;
     case "post":
       return <ChatPostCard contentId={block.contentId} version={block.version} note={block.note} />;
+    case "approval":
+      return <ApprovalCard approvalId={block.approvalId} />;
     case "notice":
     case "unknown":
       return <NoticeLine text={block.text} />;

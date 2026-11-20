@@ -3,6 +3,7 @@
 // follows the same stream also while the window is closed.
 import type {
   ApiClient,
+  ApprovalRequest,
   Job,
   JobStreamMessage,
   JobWatch,
@@ -21,6 +22,7 @@ export class JobsController {
   private snapshotValue: JobsSnapshot = { jobs: [], presence: null, status: "connecting" };
   private listeners = new Set<() => void>();
   private watch: JobWatch | undefined;
+  private approvalListeners = new Set<(approval: ApprovalRequest) => void>();
   /** Called for every job that changed (after the first snapshot). */
   onJobChange: ((job: Job, previous: Job | undefined) => void) | undefined;
 
@@ -32,6 +34,12 @@ export class JobsController {
   };
 
   getSnapshot = (): JobsSnapshot => this.snapshotValue;
+
+  /** `approval.updated`: an approval request was created or decided (any brand). */
+  onApproval = (listener: (approval: ApprovalRequest) => void): (() => void) => {
+    this.approvalListeners.add(listener);
+    return () => this.approvalListeners.delete(listener);
+  };
 
   private set(next: Partial<JobsSnapshot>): void {
     this.snapshotValue = { ...this.snapshotValue, ...next };
@@ -71,6 +79,9 @@ export class JobsController {
       }
       case "presence":
         this.set({ presence: message.presence });
+        return;
+      case "approval.updated":
+        for (const l of this.approvalListeners) l(message.approval);
         return;
       default:
         return;

@@ -1,37 +1,90 @@
 // Composer logic (pure): `@` mention queries and suggestions, inserting a mention, alias
 // allocation for attached images, and what a send contains.
-import { autoAlias } from "@studio/contract";
+import {
+  autoAlias,
+  type MentionCandidate as ContractMentionCandidate,
+  slugify,
+} from "@studio/contract";
 import type { OutgoingMessage } from "./transcript.ts";
 
 const WORD_BEFORE = /[\p{L}\p{N}\p{M}_.+\-@/\\=&%#~]/u;
 
-/** The `@query` being typed at `caret` (start = index of `@`), or null. */
+/**
+ * The `@query` being typed at `caret` (start = index of `@`), or null. Letters of any language
+ * count (`@böro` finds `@boro`); the names themselves are ASCII.
+ */
 export function mentionQuery(text: string, caret: number): { start: number; query: string } | null {
   let i = caret - 1;
-  while (i >= 0 && /[A-Za-z0-9-]/.test(text[i] ?? "")) i--;
+  while (i >= 0 && /[\p{L}\p{N}-]/u.test(text[i] ?? "")) i--;
   if (i < 0 || text[i] !== "@") return null;
   if (i > 0 && WORD_BEFORE.test(text[i - 1] ?? "")) return null;
-  return { start: i, query: text.slice(i + 1, caret).toLowerCase() };
+  return { start: i, query: text.slice(i + 1, caret).toLocaleLowerCase("tr") };
 }
 
+/** What `@` can name: a file of the chat (or one being attached), a product, a post. */
+export type MentionKind = "file" | "product" | "content";
+
 export interface MentionCandidate {
+  /** The name inserted after `@` (a file alias or a product's / post's mention name). */
   alias: string;
   assetId: string | null;
   previewUrl: string | null;
   isDraft: boolean;
+  /** Default `file`. */
+  kind?: MentionKind;
+  /** Products and posts: the name / title (also searched). */
+  label?: string;
+  /** Products: the category; posts: the status. */
+  detail?: string;
 }
 
-/** Prefix matches first, then other matches. */
+/** Folded for matching: Turkish letters to ASCII, spaces to `-` (`"Venta Böro"` → `venta-boro`). */
+export function foldMention(text: string): string {
+  return slugify(text);
+}
+
+/**
+ * Prefix matches of the name first, then names containing the query and products / posts whose
+ * label contains it; files, then products, then posts within each group (the order a sent
+ * `@name` resolves in).
+ */
 export function mentionSuggestions(
   candidates: MentionCandidate[],
   query: string,
 ): MentionCandidate[] {
-  const q = query.toLowerCase();
+  const q = foldMention(query) || query.toLowerCase();
   if (!q) return candidates;
-  return [
-    ...candidates.filter((c) => c.alias.startsWith(q)),
-    ...candidates.filter((c) => !c.alias.startsWith(q) && c.alias.includes(q)),
-  ];
+  const rank = (c: MentionCandidate) => (c.kind === "product" ? 1 : c.kind === "content" ? 2 : 0);
+  const byKind = (list: MentionCandidate[]) =>
+    list.map((c, i) => ({ c, i })).sort((a, b) => rank(a.c) - rank(b.c) || a.i - b.i);
+  const prefix = candidates.filter((c) => c.alias.startsWith(q));
+  const other = candidates.filter(
+    (c) =>
+      !c.alias.startsWith(q) &&
+      (c.alias.includes(q) || (c.label !== undefined && foldMention(c.label).includes(q))),
+  );
+  return [...byKind(prefix), ...byKind(other)].map((x) => x.c);
+}
+
+/**
+ * The brand's products and posts as composer candidates; names a file of the chat already uses
+ * are left out (the file wins when the message is sent).
+ */
+export function entityCandidates(
+  items: readonly ContractMentionCandidate[],
+  fileAliases: ReadonlySet<string>,
+): MentionCandidate[] {
+  return items
+    .filter((item) => !fileAliases.has(item.slug))
+    .map((item) => ({
+      alias: item.slug,
+      assetId: item.imageAssetId,
+      previewUrl: null,
+      isDraft: false,
+      kind: item.kind,
+      label: item.label,
+      detail: item.detail,
+    }));
 }
 
 /** Replace `@query` (start…caret) with `@alias ` and return the new text and caret. */

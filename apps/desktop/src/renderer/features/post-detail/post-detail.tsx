@@ -42,6 +42,7 @@ import { useAppStore } from "../../state/app-store.ts";
 import { startChat } from "../../state/chat-draft.ts";
 import { usePostOpener } from "../../state/post-opener.ts";
 import { useJobsSnapshot } from "../../state/studio.tsx";
+import { PostApprovalTag } from "../approvals/approvals-section.tsx";
 import { ChecksPanel, useApproveGuard } from "../checks/checks-panel.tsx";
 import { WECRA_MISSING, wecraVendored } from "../post-editor/wecra/vendored.ts";
 import { usePostActions } from "../posts/actions.ts";
@@ -654,6 +655,7 @@ export function EditorView({ editor, snapshot }: { editor: PostEditor; snapshot:
           <div className="mt-3 flex flex-wrap items-center gap-1.5">
             <TagPill tone={facts.tone}>{statusText}</TagPill>
             <ApprovalHeart {...revokeControl(content, actions, editor)} className="-my-1" />
+            <PostApprovalTag contentId={content.id} count={content.pendingApprovals ?? 0} />
             {version && (
               <TagPill tone={viewingCurrent ? "neutral" : "warning"}>
                 v{version.version}

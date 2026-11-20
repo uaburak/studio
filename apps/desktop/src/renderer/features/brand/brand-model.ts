@@ -8,6 +8,9 @@ import {
   type BrandKitFontRole,
   type BrandProfile,
   brandKitAnalysisBlocker,
+  GENERATION_ENGINE_LABELS,
+  GenerationEngine,
+  isEngineReady,
   type Platform,
   type SocialAccount,
   slugify,
@@ -65,6 +68,30 @@ export const LANGUAGES: { tag: string; label: string }[] = [
   { tag: "ar", label: "Arapça" },
   { tag: "ru", label: "Rusça" },
 ];
+
+// --- production engine (docs/URETIM-RESIM.md §1) -----------------------------------------------
+
+export interface EngineOption {
+  value: GenerationEngine;
+  /** "Wecra (yakında)" for an engine that does not run yet. */
+  label: string;
+  ready: boolean;
+}
+
+/** The engines in the order the owner sees them: Wecra, HTML, SVG, Kod. */
+export function engineOptions(): EngineOption[] {
+  return GenerationEngine.options.map((value) => {
+    const ready = isEngineReady(value);
+    const name = GENERATION_ENGINE_LABELS[value];
+    return { value, ready, label: ready ? name : `${name} (yakında)` };
+  });
+}
+
+/** A select's value → the brand's default engine ("" = Sor, null). */
+export function engineChoice(raw: string): GenerationEngine | null {
+  const parsed = GenerationEngine.safeParse(raw);
+  return parsed.success ? parsed.data : null;
+}
 
 export function languageLabel(tag: string): string {
   return LANGUAGES.find((l) => l.tag === tag)?.label ?? tag;

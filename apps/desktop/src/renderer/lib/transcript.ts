@@ -8,6 +8,7 @@ import {
   type ConversationAlias,
   type ErrorPart,
   type Message,
+  type MessageEntityMention,
   type MessageMention,
   type MessagePart,
   type Plan,
@@ -61,6 +62,8 @@ export type AssistantBlock =
   | { kind: "progress"; key: string; steps: ProgressPart[] }
   | { kind: "error"; key: string; error: ErrorPart }
   | { kind: "post"; key: string; contentId: string; version: number | null; note: string | null }
+  /** A generated picture waiting for the owner's word (Onayla / Reddet / Yeniden üret). */
+  | { kind: "approval"; key: string; approvalId: string }
   | { kind: "notice"; key: string; text: string }
   | { kind: "unknown"; key: string; text: string };
 
@@ -112,6 +115,8 @@ export type TranscriptItem =
       id: string;
       text: string;
       mentions: MessageMention[];
+      /** `@product` / `@post` references the server resolved. */
+      entityMentions: MessageEntityMention[];
       images: ChatImage[];
     }
   | {
@@ -230,6 +235,7 @@ export function buildTranscript(input: TranscriptInput): TranscriptItem[] {
         id: message.id,
         text,
         mentions: message.mentions ?? resolveAliasMentions(text, aliases),
+        entityMentions: message.entityMentions ?? [],
         images: message.parts.flatMap((p) =>
           p.type === "attachment" ? [chatImage(p, aliases)] : [],
         ),
@@ -366,6 +372,13 @@ function assistantItem(message: Message, input: TranscriptInput, isLive: boolean
           contentId: part.contentId,
           version: part.version,
           note: part.note,
+        });
+        break;
+      case "approval_request":
+        blocks.push({
+          kind: "approval",
+          key: `approval-${part.approvalId}`,
+          approvalId: part.approvalId,
         });
         break;
       default:

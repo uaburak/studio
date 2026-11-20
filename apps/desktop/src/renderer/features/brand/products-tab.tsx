@@ -32,6 +32,7 @@ import { useImageZoom } from "../../components/ui/zoomable-image.tsx";
 import { assetUrl, describeError } from "../../lib/api.ts";
 import { thumbUrl } from "../../lib/thumbnail.ts";
 import { useAppStore } from "../../state/app-store.ts";
+import { useFocusRequests } from "../../state/focus-requests.ts";
 import { useBrandProducts, useProductActions } from "./products-data.ts";
 import {
   addTags,
@@ -85,6 +86,18 @@ export function ProductsTab({ brand }: { brand: Brand }) {
   const list = products.data ?? [];
   const shown = list.filter((p) => productMatches(p, query));
   const openProduct = opened ? list.find((p) => p.id === opened.id) : undefined;
+
+  // An @product chip of a chat asked for one product: open its page once the list has it.
+  const focus = useFocusRequests((s) => s.product);
+  useEffect(() => {
+    if (!focus || focus.brandId !== brand.id || !products.data) return;
+    useFocusRequests.getState().takeProduct(focus.nonce);
+    if (products.data.some((p) => p.id === focus.productId)) {
+      setOpened({ id: focus.productId, origin: null });
+    } else {
+      showToast({ message: "Ürün bulunamadı; silinmiş olabilir." });
+    }
+  }, [focus, brand.id, products.data, showToast]);
 
   const scroller = () => root.current?.closest<HTMLElement>(".scroll-area") ?? null;
 

@@ -6,6 +6,7 @@
 // The sidebar's and the panel's inner edges resize them.
 import { lazy, Suspense, useEffect } from "react";
 import type { MenuCommand } from "../../../shared/ipc.ts";
+import { useApprovalStream } from "../../features/approvals/approvals-data.ts";
 import { requestNewBrand } from "../../features/brand/new-brand-request.ts";
 import { OnboardingSheet } from "../../features/onboarding/onboarding-sheet.tsx";
 import { openOnboarding } from "../../features/onboarding/store.ts";
@@ -273,6 +274,7 @@ function useCommands() {
 
 export function AppShell() {
   useCommands();
+  useApprovalStream();
   const route = useAppStore((s) => s.route);
   const sidebarPresented = useAppStore((s) => s.sidebarPresented);
   const sidebarWidth = useAppStore((s) => s.sidebarWidth);

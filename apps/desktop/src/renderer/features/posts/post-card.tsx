@@ -72,6 +72,8 @@ const PostCardBody = forwardRef<
   const picture = coverAssetId(card.version, isReel);
   const dot = STATE_DOT[state];
   const meta = cardMetaText(card);
+  /** A generated picture of the post waits for the owner's word (docs/URETIM-RESIM.md §12). */
+  const awaiting = (card.content.pendingApprovals ?? 0) > 0;
   const media = (el: Element | null) => el?.closest("li")?.querySelector("[data-media]") ?? null;
   const mediaRect = (el: Element | null) => media(el)?.getBoundingClientRect() ?? null;
   const badge =
@@ -94,7 +96,7 @@ const PostCardBody = forwardRef<
         type="button"
         tabIndex={-1}
         aria-label={`Postu aç: ${card.content.title}`}
-        title={`${card.content.title}\n${meta} · ${STATE_LABEL[state]}`}
+        title={`${card.content.title}\n${meta} · ${STATE_LABEL[state]}${awaiting ? " · Onay bekliyor" : ""}`}
         onClick={(event) => actions.open(card, mediaRect(event.currentTarget), event)}
         className="block w-full text-left"
       >
@@ -157,6 +159,12 @@ const PostCardBody = forwardRef<
             <span className="absolute bottom-2 left-2 flex h-6 items-center gap-1.5 rounded-full bg-black/60 px-2 text-caption font-semibold text-white">
               {badge.spin && <Spinner size={11} />}
               {badge.text}
+            </span>
+          )}
+          {awaiting && !badge && !failure && (
+            <span className="absolute bottom-2 left-2 flex h-6 items-center gap-1.5 rounded-full bg-black/60 px-2 text-caption font-semibold text-white">
+              <span aria-hidden="true" className="size-1.5 rounded-full bg-warning" />
+              Onay bekliyor
             </span>
           )}
           {failure && reason && (

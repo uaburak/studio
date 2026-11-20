@@ -1,12 +1,14 @@
 // A conversation: the transcript (710 pt column, follows the bottom without jumps), the glass
 // composer floating over it, the status line, "jump to latest".
 import type { Conversation, ConversationAlias, WorkerPresence } from "@studio/contract";
-import { useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { openEntityMention, useMentionCandidates } from "../../features/mentions/mentions-data.ts";
 import { ScrollFollower, type ScrollMetrics, showJumpToLatest } from "../../lib/scroll-follow.ts";
 import { buildTranscript, type TranscriptItem } from "../../lib/transcript.ts";
 import { canRunChat } from "../../lib/usage.ts";
 import { useAppStore } from "../../state/app-store.ts";
 import type { ConversationController } from "../../state/conversation.ts";
+import { useFocusRequests } from "../../state/focus-requests.ts";
 import { useAgentChoice, useConversation, useJobs } from "../../state/studio.tsx";
 import { useConversationActions } from "../shell/conversation-actions.ts";
 import { Button, cn, WorkingDots } from "../ui/controls.tsx";
@@ -53,6 +55,8 @@ export function useFollowBottom() {
     scroller,
     content,
     jump,
+    /** Stop following the bottom (the view scrolls to an earlier message). */
+    pause: () => follower.current.onUserScrollUp(),
     onScroll: () => {
       const el = scroller.current;
       if (!el) return;
@@ -101,6 +105,7 @@ export function ChatView({ id }: { id: string }) {
   const follow = useFollowBottom();
   const presence: WorkerPresence | null = state?.presence ?? jobs.presence;
   const aliases = state?.aliases ?? [];
+  const entities = useMentionCandidates(state?.conversation.brandId ?? null);
 
   useLayoutEffect(() => {
     if (focusSignal) composer.current?.focus();
@@ -171,6 +176,8 @@ export function ChatView({ id }: { id: string }) {
             items={items}
             aliases={aliases}
             controller={controller}
+            brandId={state?.conversation.brandId ?? null}
+            onFocusScroll={follow.pause}
             onMention={onMention}
             onEditPlan={() => {
               setPlaceholder("Planda neyi değiştireyim?");
@@ -218,6 +225,7 @@ export function ChatView({ id }: { id: string }) {
                   state && !state.conversation.brandId ? "Markasız sohbete görsel eklenemez." : null
                 }
                 aliases={aliases}
+                entities={entities}
                 onSend={async (message, { now }) => {
                   follow.resume();
                   setPlaceholder("Bir şey sor…");
@@ -262,10 +270,84 @@ function ArchivedBar({ conversation }: { conversation: Conversation }) {
   );
 }
 
+/** The message a transcript item shows (users' and the assistant's), else null. */
+export function itemMessageId(item: TranscriptItem): string | null {
+  if (item.kind === "user") return item.id;
+  if (item.kind === "assistant") return item.message.id;
+  return null;
+}
+
+/**
+ * A "go to this message" request for this conversation (focus-requests.ts): once the message
+ * is on screen it scrolls to the middle and stays highlighted for a moment. Returns the
+ * highlighted message.
+ */
+export function useMessageFocus(
+  conversationId: string,
+  items: readonly TranscriptItem[],
+  onBeforeScroll?: () => void,
+): string | null {
+  const request = useFocusRequests((s) => s.message);
+  const [highlight, setHighlight] = useState<string | null>(null);
+  const ready = items.length > 0 && !items.some((i) => i.kind === "loading");
+  const before = useRef(onBeforeScroll);
+  before.current = onBeforeScroll;
+  useEffect(() => {
+    if (!request || request.conversationId !== conversationId || !ready) return;
+    useFocusRequests.getState().takeMessage(request.nonce);
+    const target = request.messageId;
+    if (!items.some((i) => itemMessageId(i) === target)) return;
+    setHighlight(target);
+    const frame = requestAnimationFrame(() => {
+      before.current?.();
+      const el = [...document.querySelectorAll<HTMLElement>("[data-message-id]")].find(
+        (node) => node.dataset.messageId === target,
+      );
+      el?.scrollIntoView?.({ block: "center", behavior: "smooth" });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [request, conversationId, ready, items]);
+  useEffect(() => {
+    if (!highlight) return;
+    const timer = setTimeout(() => setHighlight(null), 2_400);
+    return () => clearTimeout(timer);
+  }, [highlight]);
+  return highlight;
+}
+
+function MessageAnchor({
+  id,
+  highlighted,
+  className,
+  children,
+}: {
+  id: string;
+  highlighted: boolean;
+  className?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div
+      data-message-id={id}
+      data-highlighted={highlighted || undefined}
+      className={cn(
+        "rounded-[14px] transition-[background-color,box-shadow] duration-700 ease-out",
+        highlighted &&
+          "bg-accent-subtle/40 shadow-[0_0_0_8px_color-mix(in_srgb,var(--accent-subtle)_40%,transparent)]",
+        className,
+      )}
+    >
+      {children}
+    </div>
+  );
+}
+
 export function TranscriptItems({
   items,
   aliases,
   controller,
+  brandId = null,
+  onFocusScroll,
   onMention,
   onEditPlan,
   onEditQueued,
@@ -273,10 +355,15 @@ export function TranscriptItems({
   items: TranscriptItem[];
   aliases: ConversationAlias[];
   controller: ConversationController;
+  /** The conversation's brand (an @product chip opens the product on it). */
+  brandId?: string | null;
+  /** Called before the view scrolls to a requested message (stop following the bottom). */
+  onFocusScroll?: () => void;
   onMention(aliasId: string): void;
   onEditPlan(): void;
   onEditQueued(text: string): void;
 }) {
+  const highlight = useMessageFocus(controller.id, items, onFocusScroll);
   // Only the last reply's error offers "Yeniden dene", and only while nothing runs or waits.
   const busy = items.some((i) => i.kind === "working" || i.kind === "queued");
   let lastAssistant = -1;
@@ -303,31 +390,43 @@ export function TranscriptItems({
             );
           case "user":
             return (
-              <div key={item.key} className="my-5 first:mt-0">
+              <MessageAnchor
+                key={item.key}
+                id={item.id}
+                highlighted={highlight === item.id}
+                className="my-5 first:mt-0"
+              >
                 <UserBubble
                   text={item.text}
                   mentions={item.mentions}
+                  entityMentions={item.entityMentions}
                   images={item.images}
                   aliases={aliases}
                   onMention={onMention}
+                  onEntity={(mention) => openEntityMention(mention, brandId)}
                 />
-              </div>
+              </MessageAnchor>
             );
           case "assistant":
             return (
-              <AssistantMessage
+              <MessageAnchor
                 key={item.key}
-                item={item}
-                aliases={aliases}
-                controller={controller}
-                onMention={onMention}
-                onEditPlan={onEditPlan}
-                onRetry={
-                  index === lastAssistant && !busy && !item.isStreaming
-                    ? () => controller.retryLast()
-                    : undefined
-                }
-              />
+                id={item.message.id}
+                highlighted={highlight === item.message.id}
+              >
+                <AssistantMessage
+                  item={item}
+                  aliases={aliases}
+                  controller={controller}
+                  onMention={onMention}
+                  onEditPlan={onEditPlan}
+                  onRetry={
+                    index === lastAssistant && !busy && !item.isStreaming
+                      ? () => controller.retryLast()
+                      : undefined
+                  }
+                />
+              </MessageAnchor>
             );
           case "event":
             return <EventLine key={item.key} text={item.text} />;

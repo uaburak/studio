@@ -6,7 +6,7 @@
 // are uploaded again to the new one, so a send never carries another brand's images.
 
 import { autoUpdate, FloatingPortal, flip, offset, shift, useFloating } from "@floating-ui/react";
-import type { ConversationAlias } from "@studio/contract";
+import type { ConversationAlias, MentionCandidate as EntityCandidate } from "@studio/contract";
 import { aliasBaseFor } from "@studio/contract";
 import {
   forwardRef,
@@ -30,6 +30,7 @@ import {
   allocateAlias,
   canSend,
   type Draft,
+  entityCandidates,
   insertMention,
   type MentionCandidate,
   makeMessage,
@@ -38,10 +39,19 @@ import {
   sendButtonMode,
   sendProblem,
 } from "../../lib/composer.ts";
+import { thumbUrl } from "../../lib/thumbnail.ts";
 import type { OutgoingMessage } from "../../lib/transcript.ts";
 import { newClientMessageId } from "../../state/conversation.ts";
 import { cn, IconButton, Spinner } from "../ui/controls.tsx";
-import { IconArrowUp, IconClose, IconMic, IconPlus, IconWarning } from "../ui/icons.tsx";
+import {
+  IconArrowUp,
+  IconClose,
+  IconGrid,
+  IconMic,
+  IconPackage,
+  IconPlus,
+  IconWarning,
+} from "../ui/icons.tsx";
 import { ZoomableImage } from "../ui/zoomable-image.tsx";
 
 export interface ComposerHandle {
@@ -59,6 +69,8 @@ export interface ComposerProps {
   brandId: string | null;
   attachDisabledReason?: string | null;
   aliases?: ConversationAlias[];
+  /** The brand's products and posts `@` offers after the chat's files (mention-candidates). */
+  entities?: readonly EntityCandidate[];
   /** `now`: ⌘↩ while a reply runs (stop it, this message goes first). */
   onSend(message: OutgoingMessage, options: { now: boolean }): Promise<boolean>;
   onStop?(): void;
@@ -77,6 +89,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     brandId,
     attachDisabledReason,
     aliases = [],
+    entities = NO_ENTITIES,
     onSend,
     onStop,
     initialText = "",
@@ -319,9 +332,9 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   );
   useEffect(() => onComposerAttach(attachAssets), [attachAssets]);
 
-  // @mentions
-  const candidates = useMemo<MentionCandidate[]>(
-    () => [
+  // @mentions: the chat's files (and those being attached), then products and posts.
+  const candidates = useMemo<MentionCandidate[]>(() => {
+    const files: MentionCandidate[] = [
       ...drafts.map((d) => ({
         alias: d.alias,
         assetId: d.state.kind === "uploaded" ? d.state.assetId : null,
@@ -334,14 +347,15 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
         previewUrl: null,
         isDraft: false,
       })),
-    ],
-    [drafts, aliases],
-  );
+    ];
+    return [...files, ...entityCandidates(entities, new Set(files.map((f) => f.alias)))];
+  }, [drafts, aliases, entities]);
   const query = focused ? mentionQuery(text, caret) : null;
   const suggestions =
     query && query.start !== dismissedQueryAt
-      ? mentionSuggestions(candidates, query.query).slice(0, 8)
+      ? mentionSuggestions(candidates, query.query).slice(0, 10)
       : [];
+  const onlyFiles = suggestions.every((s) => (s.kind ?? "file") === "file");
   useEffect(() => setSuggestionIndex(0), [query?.query, query?.start]);
 
   const pick = (alias: string) => {
@@ -548,12 +562,15 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
             ref={refs.setFloating}
             style={floatingStyles}
             role="listbox"
-            aria-label="Görseller"
-            className="glass z-[90] w-[260px] animate-pop-in rounded-[12px] p-1"
+            aria-label={onlyFiles ? "Görseller" : "Görseller, ürünler ve postlar"}
+            className={cn(
+              "glass z-[90] animate-pop-in rounded-[12px] p-1",
+              onlyFiles ? "w-[260px]" : "w-[320px]",
+            )}
           >
             {suggestions.map((s, i) => (
               <div
-                key={s.alias}
+                key={`${s.kind ?? "file"}:${s.alias}`}
                 role="option"
                 tabIndex={-1}
                 aria-selected={i === suggestionIndex}
@@ -567,17 +584,37 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
                   i === suggestionIndex && "bg-control",
                 )}
               >
-                <span className="size-6 shrink-0 overflow-hidden rounded-[6px] bg-control">
-                  {(s.previewUrl ?? (s.assetId ? assetUrl(s.assetId) : null)) && (
-                    <img
-                      src={s.previewUrl ?? assetUrl(s.assetId as string)}
-                      alt=""
-                      className="size-full object-cover"
-                    />
+                <span className="flex size-6 shrink-0 items-center justify-center overflow-hidden rounded-[6px] bg-control text-icon">
+                  {s.kind === "product" || s.kind === "content" ? (
+                    s.assetId ? (
+                      <img
+                        src={thumbUrl(s.assetId, 24)}
+                        alt=""
+                        className="size-full object-cover"
+                      />
+                    ) : s.kind === "product" ? (
+                      <IconPackage size={13} strokeWidth={1.5} />
+                    ) : (
+                      <IconGrid size={13} strokeWidth={1.5} />
+                    )
+                  ) : (
+                    (s.previewUrl ?? (s.assetId ? assetUrl(s.assetId) : null)) && (
+                      <img
+                        src={s.previewUrl ?? assetUrl(s.assetId as string)}
+                        alt=""
+                        className="size-full object-cover"
+                      />
+                    )
                   )}
                 </span>
-                <span className="text-body text-fg">@{s.alias}</span>
-                {s.isDraft && <span className="ml-auto text-caption text-fg-3">yeni</span>}
+                {s.kind === "product" || s.kind === "content" ? (
+                  <EntityOption candidate={s} />
+                ) : (
+                  <>
+                    <span className="text-body text-fg">@{s.alias}</span>
+                    {s.isDraft && <span className="ml-auto text-caption text-fg-3">yeni</span>}
+                  </>
+                )}
               </div>
             ))}
           </div>
@@ -586,6 +623,26 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     </div>
   );
 });
+
+const NO_ENTITIES: readonly EntityCandidate[] = [];
+
+/** A product / post row of the @ list: its label, the name to be written and its detail. */
+function EntityOption({ candidate }: { candidate: MentionCandidate }) {
+  const kind = candidate.kind === "product" ? "Ürün" : "Post";
+  return (
+    <>
+      <span className="flex min-w-0 flex-1 flex-col leading-tight">
+        <span className="truncate text-body text-fg">
+          {candidate.label || `@${candidate.alias}`}
+        </span>
+        <span className="truncate text-caption text-fg-3">@{candidate.alias}</span>
+      </span>
+      <span className="max-w-[45%] shrink-0 truncate text-caption text-fg-3">
+        {candidate.detail ? `${kind} · ${candidate.detail}` : kind}
+      </span>
+    </>
+  );
+}
 
 function SendButton({
   mode,

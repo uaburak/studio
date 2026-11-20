@@ -98,6 +98,8 @@ export function ChatPanel({
               items={items}
               aliases={aliases}
               controller={controller}
+              brandId={state?.conversation.brandId ?? null}
+              onFocusScroll={follow.pause}
               onMention={(aliasId) => {
                 const alias = aliases.find((a) => a.id === aliasId);
                 if (alias)

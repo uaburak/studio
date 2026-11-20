@@ -79,6 +79,7 @@ export function ChatPostCard({
         </span>
         <IconChevronRight size={12} strokeWidth={1.75} className="shrink-0 text-fg-3" />
         <TagPill tone={STATE_TONE[state]}>{STATE_LABEL[state]}</TagPill>
+        {(c.pendingApprovals ?? 0) > 0 && <TagPill tone="warning">Onay bekliyor</TagPill>}
         {(note || refVersion) && (
           <span className="min-w-0 truncate text-footnote text-fg-2">
             {[refVersion ? `v${refVersion}` : null, note].filter(Boolean).join(" · ")}

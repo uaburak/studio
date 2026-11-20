@@ -1,12 +1,19 @@
 // Brand building blocks: the logo tile (logo file, else initials on the brand colour), colour
 // swatches, platform icons with their state, and the new-brand sheet.
-import { slugify } from "@studio/contract";
+import { type GenerationEngine, slugify } from "@studio/contract";
 import { useState } from "react";
 import { Button, cn, TextField } from "../../components/ui/controls.tsx";
 import { PlatformIcon } from "../../components/ui/icons.tsx";
 import { Sheet } from "../../components/ui/sheet.tsx";
 import { assetUrl } from "../../lib/api.ts";
-import { LANGUAGES, PLATFORM_NAME, type PlatformLine, type Swatch } from "./brand-model.ts";
+import {
+  engineChoice,
+  engineOptions,
+  LANGUAGES,
+  PLATFORM_NAME,
+  type PlatformLine,
+  type Swatch,
+} from "./brand-model.ts";
 import { useCreateBrandFlow } from "./use-create-brand.ts";
 
 export function BrandMark({
@@ -196,6 +203,39 @@ export function LanguageSelect({
         </option>
       ))}
       {!LANGUAGES.some((l) => l.tag === value) && <option value={value}>{value}</option>}
+    </select>
+  );
+}
+
+/**
+ * "Varsayılan üretim motoru": Sor (null: the agent asks each time) or an engine. Engines that do
+ * not run yet are listed as "yakında" and cannot be picked (one saved elsewhere stays shown).
+ */
+export function EngineSelect({
+  value,
+  onChange,
+  className,
+}: {
+  value: GenerationEngine | null;
+  onChange(value: GenerationEngine | null): void;
+  className?: string;
+}) {
+  return (
+    <select
+      aria-label="Varsayılan üretim motoru"
+      value={value ?? ""}
+      onChange={(event) => onChange(engineChoice(event.target.value))}
+      className={cn(
+        "no-drag h-7 rounded-full bg-field px-3 text-body text-fg shadow-[inset_0_0_0_1px_var(--border-hairline)] outline-none hover:bg-control",
+        className,
+      )}
+    >
+      <option value="">Sor</option>
+      {engineOptions().map((o) => (
+        <option key={o.value} value={o.value} disabled={!o.ready && o.value !== value}>
+          {o.label}
+        </option>
+      ))}
     </select>
   );
 }

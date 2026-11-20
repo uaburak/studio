@@ -5,6 +5,7 @@
 // and a conversation left empty when the view goes away is archived — no empty chats remain.
 import type { Conversation } from "@studio/contract";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useMentionCandidates } from "../../features/mentions/mentions-data.ts";
 import { type ErrorDescription, explainError, useApi } from "../../lib/api.ts";
 import { saveChoicePatch } from "../../lib/models.ts";
 import type { OutgoingMessage } from "../../lib/transcript.ts";
@@ -38,6 +39,7 @@ export function NewChatView() {
   const accounts = useAccounts();
   const { presence } = useJobs();
   const currentBrandId = useAppStore((s) => s.currentBrandId);
+  const entities = useMentionCandidates(currentBrandId);
   const setCurrentBrand = useAppStore((s) => s.setCurrentBrand);
   const navigate = useAppStore((s) => s.navigate);
   const focusSignal = useAppStore((s) => s.focusComposer);
@@ -179,6 +181,7 @@ export function NewChatView() {
           working={false}
           disabled={!up}
           brandId={currentBrandId}
+          entities={entities}
           attachDisabledReason={
             currentBrandId ? null : "Görsel eklemek için önce başlıktaki menüden bir marka seç."
           }

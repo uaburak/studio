@@ -6,7 +6,12 @@
 import type { ConversationList } from "@studio/contract";
 import { type InfiniteData, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
+import {
+  CountBadge,
+  usePendingApprovalCount,
+} from "../../features/approvals/approvals-section.tsx";
 import { isPageRoute, PageTitle } from "../../features/page-title.tsx";
+import { usePanelBrandId } from "../../features/panel-brand.ts";
 import { WorkspaceSlot } from "../../features/post-editor/slots.tsx";
 import { useWorkspaceStore } from "../../features/post-editor/workspace-store.ts";
 import { PostsTitleButton } from "../../features/posts/posts-title.tsx";
@@ -58,6 +63,7 @@ export function PanelTools() {
   const togglePanel = useAppStore((s) => s.togglePanel);
   const setSearchOpen = useAppStore((s) => s.setSearchOpen);
   const setSettingsOpen = useAppStore((s) => s.setSettingsOpen);
+  const pending = usePendingApprovalCount(usePanelBrandId());
   const more: MenuEntry[] = [
     { id: "reload", label: "Yenile", shortcut: "Y", onSelect: () => window.location.reload() },
     { id: "search", label: "Ara", shortcut: "K", onSelect: () => setSearchOpen(true) },
@@ -66,16 +72,34 @@ export function PanelTools() {
   ];
   return (
     <div className="flex items-center gap-1" role="toolbar" aria-label="Sağ panel">
-      {(postOpen ? [POST_TOOL, ...TOOLS] : TOOLS).map((tool) => (
-        <IconButton
-          key={tool.pane}
-          icon={tool.icon}
-          label={panelTitle(tool.pane)}
-          shortcut={"shortcut" in tool ? tool.shortcut : undefined}
-          selected={panelPresented && panelPane === tool.pane}
-          onClick={() => togglePanel(tool.pane)}
-        />
-      ))}
+      {(postOpen ? [POST_TOOL, ...TOOLS] : TOOLS).map((tool) => {
+        const button = (
+          <IconButton
+            key={tool.pane}
+            icon={tool.icon}
+            label={
+              tool.pane === "details" && pending > 0
+                ? `${panelTitle(tool.pane)} · ${pending} onay bekliyor`
+                : panelTitle(tool.pane)
+            }
+            shortcut={"shortcut" in tool ? tool.shortcut : undefined}
+            selected={panelPresented && panelPane === tool.pane}
+            onClick={() => togglePanel(tool.pane)}
+          />
+        );
+        if (tool.pane !== "details" || pending === 0) return button;
+        // Ayrıntılar holds "Onay bekleyenler": its count rides on the icon.
+        return (
+          <span key={tool.pane} className="relative inline-flex">
+            {button}
+            <CountBadge
+              count={pending}
+              label="onay bekliyor"
+              className="pointer-events-none absolute -top-0.5 -right-0.5"
+            />
+          </span>
+        );
+      })}
       <MenuButton entries={more} placement="bottom-end" label="Diğer">
         {({ ref, onClick, onKeyDown, open, ...aria }) => (
           <IconButton

@@ -4,8 +4,13 @@
 // draft, AI analysis), Hesaplar (connection state; connecting lives in Settings), Ürünler
 // (the brand's products) and Şablonlar (approved posts saved as layouts, N9). The section is part of the route, so back / forward step through
 // sections too. The content uses the page's full width; only long text keeps a reading width.
-import type { Brand, BrandKitLogoBackground, BrandProfile } from "@studio/contract";
-import { MAX_KIT_SAMPLES, MIN_KIT_SAMPLES } from "@studio/contract";
+import type {
+  Brand,
+  BrandKitLogoBackground,
+  BrandProfile,
+  GenerationEngine,
+} from "@studio/contract";
+import { MAX_IMAGE_STYLE_PRESET_LENGTH, MAX_KIT_SAMPLES, MIN_KIT_SAMPLES } from "@studio/contract";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Button,
@@ -54,7 +59,7 @@ import {
   type TokenRow,
   tokenRows,
 } from "./brand-model.ts";
-import { BrandMark, LanguageSelect } from "./brand-views.tsx";
+import { BrandMark, EngineSelect, LanguageSelect } from "./brand-views.tsx";
 import { AddSystemFontButton, KitFontList } from "./kit-fonts.tsx";
 import { ProductsTab } from "./products-tab.tsx";
 import { SkillsSection } from "./skills-section.tsx";
@@ -236,10 +241,18 @@ function GeneralTab({ brand }: { brand: Brand }) {
   const [name, setName] = useState(brand.name);
   const [slug, setSlug] = useState(brand.slug);
   const [language, setLanguage] = useState(brand.defaultLanguage);
+  const savedEngine = brand.defaultEngine ?? null;
+  const savedStyle = brand.imageStylePreset ?? "";
+  const [engine, setEngine] = useState<GenerationEngine | null>(savedEngine);
+  const [style, setStyle] = useState(savedStyle);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const changed =
-    name.trim() !== brand.name || slug.trim() !== brand.slug || language !== brand.defaultLanguage;
+    name.trim() !== brand.name ||
+    slug.trim() !== brand.slug ||
+    language !== brand.defaultLanguage ||
+    engine !== savedEngine ||
+    style.trim() !== savedStyle;
   const save = async (input: Parameters<typeof actions.update>[1], message: string) => {
     setBusy(true);
     setError(null);
@@ -263,6 +276,25 @@ function GeneralTab({ brand }: { brand: Brand }) {
       <Row label="İçerik dili" detail="Postlar bu dilde yazılır.">
         <LanguageSelect className="w-[240px]" value={language} onChange={setLanguage} />
       </Row>
+      <Row
+        label="Varsayılan üretim motoru"
+        detail="Post üretirken ajan bu motoru sormadan kullanır. “Sor” seçiliyse her seferinde sorar."
+      >
+        <EngineSelect className="w-[240px]" value={engine} onChange={setEngine} />
+      </Row>
+      <Row
+        label="Görsel stili"
+        detail="Üretilen görsellere eklenecek stil. Boş bırakılabilir; ürünün kendisi değişmez."
+      >
+        <TextField
+          aria-label="Görsel stili"
+          className="w-[240px]"
+          placeholder="vintage, retro, minimal…"
+          maxLength={MAX_IMAGE_STYLE_PRESET_LENGTH}
+          value={style}
+          onChange={(e) => setStyle(e.target.value)}
+        />
+      </Row>
       <div className="flex items-center gap-3 pt-4">
         <Button
           variant="primary"
@@ -273,6 +305,8 @@ function GeneralTab({ brand }: { brand: Brand }) {
                 ...(name.trim() !== brand.name ? { name: name.trim() } : {}),
                 ...(slug.trim() !== brand.slug ? { slug: slug.trim() } : {}),
                 ...(language !== brand.defaultLanguage ? { defaultLanguage: language } : {}),
+                ...(engine !== savedEngine ? { defaultEngine: engine } : {}),
+                ...(style.trim() !== savedStyle ? { imageStylePreset: style.trim() } : {}),
               },
               "Marka kaydedildi.",
             )
