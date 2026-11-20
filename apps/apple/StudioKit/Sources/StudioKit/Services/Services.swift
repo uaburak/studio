@@ -184,6 +184,73 @@ public protocol StudioDataService: Sendable {
     func asset(_ id: EntityID) async throws -> Asset
     /// "Bu çekimden Reels yap": a new Reels content and its `content.generate` job.
     func createReel(_ request: ReelFromFootage) async throws -> (Content, Job)
+
+    // The rest of the brand page (skills, templates, checks, special days). Defaults below.
+    func brandSkills(brandId: EntityID) async throws -> [BrandSkill]
+    func createBrandSkill(brandId: EntityID, _ input: BrandSkillCreate) async throws -> BrandSkill
+    func updateBrandSkill(brandId: EntityID, id: EntityID, _ input: BrandSkillUpdate) async throws -> BrandSkill
+    func deleteBrandSkill(brandId: EntityID, id: EntityID) async throws
+    func brandSkillVersions(brandId: EntityID, skillId: EntityID) async throws -> [BrandSkillVersion]
+    func restoreBrandSkillVersion(brandId: EntityID, skillId: EntityID, version: Int) async throws -> BrandSkill
+    /// "AI ile çıkar": a `brand.skill_draft` job.
+    func draftBrandSkill(brandId: EntityID, focus: String) async throws -> Job
+    func templates(brandId: EntityID) async throws -> [ContentTemplate]
+    func updateTemplate(_ id: EntityID, _ input: ContentTemplateUpdate) async throws -> ContentTemplate
+    func deleteTemplate(_ id: EntityID) async throws
+    func useTemplate(_ id: EntityID, _ input: TemplateUse) async throws -> TemplateUseResult
+    func checkSettings(brandId: EntityID) async throws -> BrandCheckSettings
+    func saveCheckSettings(brandId: EntityID, _ input: BrandCheckSettingsPut) async throws -> BrandCheckSettings
+    func planningSettings(brandId: EntityID) async throws -> BrandPlanningSettings
+    func savePlanningSettings(brandId: EntityID, _ input: BrandPlanningSettingsPut) async throws -> BrandPlanningSettings
+    /// Special days between two `YYYY-MM-DD` dates (no brand filter).
+    func specialDays(from: String, to: String) async throws -> [SpecialDay]
+    func specialDayOverrides() async throws -> SpecialDayOverrides
+    func saveSpecialDayOverrides(_ overrides: [ReligiousDayOverride]) async throws -> SpecialDayOverrides
+}
+
+/// Brand page defaults (skills, templates, checks, special days): other conformers keep
+/// compiling; reads come back empty and writes say they cannot be done here.
+extension StudioDataService {
+    public func brandSkills(brandId: EntityID) async throws -> [BrandSkill] { [] }
+    public func createBrandSkill(brandId: EntityID, _ input: BrandSkillCreate) async throws -> BrandSkill {
+        throw StudioAPIError.invalidConfiguration("Skill'ler bu bağlantıda kaydedilemiyor.")
+    }
+    public func updateBrandSkill(brandId: EntityID, id: EntityID, _ input: BrandSkillUpdate) async throws -> BrandSkill {
+        throw StudioAPIError.invalidConfiguration("Skill'ler bu bağlantıda kaydedilemiyor.")
+    }
+    public func deleteBrandSkill(brandId: EntityID, id: EntityID) async throws {
+        throw StudioAPIError.invalidConfiguration("Skill'ler bu bağlantıda silinemiyor.")
+    }
+    public func brandSkillVersions(brandId: EntityID, skillId: EntityID) async throws -> [BrandSkillVersion] { [] }
+    public func restoreBrandSkillVersion(brandId: EntityID, skillId: EntityID, version: Int) async throws -> BrandSkill {
+        throw StudioAPIError.invalidConfiguration("Skill sürümü bu bağlantıda geri yüklenemiyor.")
+    }
+    public func draftBrandSkill(brandId: EntityID, focus: String) async throws -> Job {
+        throw StudioAPIError.invalidConfiguration("Skill bu bağlantıda çıkarılamıyor.")
+    }
+    public func templates(brandId: EntityID) async throws -> [ContentTemplate] { [] }
+    public func updateTemplate(_ id: EntityID, _ input: ContentTemplateUpdate) async throws -> ContentTemplate {
+        throw StudioAPIError.invalidConfiguration("Şablonlar bu bağlantıda kaydedilemiyor.")
+    }
+    public func deleteTemplate(_ id: EntityID) async throws {
+        throw StudioAPIError.invalidConfiguration("Şablonlar bu bağlantıda silinemiyor.")
+    }
+    public func useTemplate(_ id: EntityID, _ input: TemplateUse) async throws -> TemplateUseResult {
+        throw StudioAPIError.invalidConfiguration("Şablondan post bu bağlantıda hazırlanamıyor.")
+    }
+    public func checkSettings(brandId: EntityID) async throws -> BrandCheckSettings { BrandCheckSettings(brandId: brandId) }
+    public func saveCheckSettings(brandId: EntityID, _ input: BrandCheckSettingsPut) async throws -> BrandCheckSettings {
+        throw StudioAPIError.invalidConfiguration("Kontrol ayarları bu bağlantıda kaydedilemiyor.")
+    }
+    public func planningSettings(brandId: EntityID) async throws -> BrandPlanningSettings { BrandPlanningSettings(brandId: brandId) }
+    public func savePlanningSettings(brandId: EntityID, _ input: BrandPlanningSettingsPut) async throws -> BrandPlanningSettings {
+        throw StudioAPIError.invalidConfiguration("Özel gün ayarları bu bağlantıda kaydedilemiyor.")
+    }
+    public func specialDays(from: String, to: String) async throws -> [SpecialDay] { [] }
+    public func specialDayOverrides() async throws -> SpecialDayOverrides { SpecialDayOverrides() }
+    public func saveSpecialDayOverrides(_ overrides: [ReligiousDayOverride]) async throws -> SpecialDayOverrides {
+        throw StudioAPIError.invalidConfiguration("Bayram tarihleri bu bağlantıda kaydedilemiyor.")
+    }
 }
 
 /// N21 / N23 defaults: other conformers keep compiling.
@@ -577,6 +644,40 @@ public struct RemoteStudioDataService: StudioDataService {
     public func deleteProduct(brandId: EntityID, id: EntityID) async throws { try await client.deleteProduct(brandId: brandId, id: id) }
     public func asset(_ id: EntityID) async throws -> Asset { try await client.asset(id) }
     public func createReel(_ request: ReelFromFootage) async throws -> (Content, Job) { try await client.createReel(request) }
+
+    // Brand page: skills, templates, checks, special days
+    public func brandSkills(brandId: EntityID) async throws -> [BrandSkill] { try await client.brandSkills(brandId: brandId) }
+    public func createBrandSkill(brandId: EntityID, _ input: BrandSkillCreate) async throws -> BrandSkill {
+        try await client.createBrandSkill(brandId: brandId, input)
+    }
+    public func updateBrandSkill(brandId: EntityID, id: EntityID, _ input: BrandSkillUpdate) async throws -> BrandSkill {
+        try await client.updateBrandSkill(brandId: brandId, id: id, input)
+    }
+    public func deleteBrandSkill(brandId: EntityID, id: EntityID) async throws { try await client.deleteBrandSkill(brandId: brandId, id: id) }
+    public func brandSkillVersions(brandId: EntityID, skillId: EntityID) async throws -> [BrandSkillVersion] {
+        try await client.brandSkillVersions(brandId: brandId, skillId: skillId)
+    }
+    public func restoreBrandSkillVersion(brandId: EntityID, skillId: EntityID, version: Int) async throws -> BrandSkill {
+        try await client.restoreBrandSkillVersion(brandId: brandId, skillId: skillId, version: version)
+    }
+    public func draftBrandSkill(brandId: EntityID, focus: String) async throws -> Job { try await client.draftBrandSkill(brandId: brandId, focus: focus) }
+    public func templates(brandId: EntityID) async throws -> [ContentTemplate] { try await client.templates(brandId: brandId) }
+    public func updateTemplate(_ id: EntityID, _ input: ContentTemplateUpdate) async throws -> ContentTemplate { try await client.updateTemplate(id, input) }
+    public func deleteTemplate(_ id: EntityID) async throws { try await client.deleteTemplate(id) }
+    public func useTemplate(_ id: EntityID, _ input: TemplateUse) async throws -> TemplateUseResult { try await client.useTemplate(id, input) }
+    public func checkSettings(brandId: EntityID) async throws -> BrandCheckSettings { try await client.checkSettings(brandId: brandId) }
+    public func saveCheckSettings(brandId: EntityID, _ input: BrandCheckSettingsPut) async throws -> BrandCheckSettings {
+        try await client.putCheckSettings(brandId: brandId, input)
+    }
+    public func planningSettings(brandId: EntityID) async throws -> BrandPlanningSettings { try await client.planningSettings(brandId: brandId) }
+    public func savePlanningSettings(brandId: EntityID, _ input: BrandPlanningSettingsPut) async throws -> BrandPlanningSettings {
+        try await client.putPlanningSettings(brandId: brandId, input)
+    }
+    public func specialDays(from: String, to: String) async throws -> [SpecialDay] { try await client.specialDays(from: from, to: to) }
+    public func specialDayOverrides() async throws -> SpecialDayOverrides { try await client.specialDayOverrides() }
+    public func saveSpecialDayOverrides(_ overrides: [ReligiousDayOverride]) async throws -> SpecialDayOverrides {
+        try await client.putSpecialDayOverrides(overrides)
+    }
 
     public func generateAIImage(
         brandId: EntityID, prompt: String, aspectRatio: String, imageSize: String,

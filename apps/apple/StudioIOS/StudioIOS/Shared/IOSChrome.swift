@@ -45,7 +45,7 @@ enum StudioMenus {
     /// One action per brand (checkmark on the current one).
     static func brandActions(_ app: IOSAppModel, onPick: @escaping (EntityID) -> Void) -> [UIMenuElement] {
         guard !app.brands.isEmpty else {
-            return [UIAction(title: "Marka yok", subtitle: "Mac'te yeni marka oluştur (⇧⌘N)", attributes: .disabled) { _ in }]
+            return [UIAction(title: "Marka yok", subtitle: "Markalar'da + ile yeni marka oluştur", attributes: .disabled) { _ in }]
         }
         return app.brands.map { brand in
             UIAction(title: brand.name, state: brand.id == app.currentBrandId ? .on : .off) { _ in

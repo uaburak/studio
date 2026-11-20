@@ -459,6 +459,287 @@ public actor SampleBackend: ConversationService, StudioDataService {
         products[brandId]?.removeAll { $0.id == id }
     }
 
+    // MARK: - Brand page: skills, templates, checks, special days
+
+    private var skills: [EntityID: [BrandSkill]] = [:]
+    private var skillVersions: [EntityID: [BrandSkillVersion]] = [:]
+    private var templateList: [EntityID: [ContentTemplate]] = [:]
+    private var checkSettingsByBrand: [EntityID: BrandCheckSettings] = [:]
+    private var planningByBrand: [EntityID: BrandPlanningSettings] = [:]
+    private var bayramOverrides = SpecialDayOverrides()
+    private var brandPageSeeded = false
+
+    /// MTM Agro's skills, templates and kit, like a brand that has used Studio for a while.
+    private func seedBrandPage() {
+        guard !brandPageSeeded else { return }
+        brandPageSeeded = true
+        let mtm = SampleData.mtm
+        let made = data.now.addingTimeInterval(-86_400 * 12)
+        let first = BrandSkill(
+            id: "skill-mtm-1", brandId: mtm, name: "tek-gorsel-post",
+            description: "Tek görselli ürün postu: fotoğraf üstte, başlık ve doz altta.",
+            body: "# Tek görselli post\n\n## Ne zaman kullanılır\n- Bir ürünün tek fotoğrafla tanıtımı.\n\n## Ölçüler ve yerleşim\n- Tuval 1080×1350, kenar boşluğu 72 px.\n- Fotoğraf yuvası üst %60.\n\n## Yapılmayacaklar\n- Vurgu rengini birden çok öğede kullanma.",
+            enabled: true, version: 2, origin: .manual, createdAt: made, updatedAt: made.addingTimeInterval(86_400 * 3))
+        let second = BrandSkill(
+            id: "skill-mtm-2", brandId: mtm, name: "carousel-formati",
+            description: "Doz tabloları için 4:5 carousel.",
+            body: "# Carousel formatı\n\n- İlk kare soru, son kare bayi çağrısı.\n- Her karede tek bilgi.",
+            enabled: false, version: 1, origin: .aiDraft, createdAt: made, updatedAt: made)
+        skills[mtm] = [first, second]
+        skillVersions[first.id] = [
+            BrandSkillVersion(id: "skv-1b", skillId: first.id, brandId: mtm, version: 2, name: first.name, description: first.description, body: first.body, origin: .manual, note: "Doz satırı eklendi", createdAt: first.updatedAt),
+            BrandSkillVersion(id: "skv-1a", skillId: first.id, brandId: mtm, version: 1, name: first.name, description: first.description, body: "# Tek görselli post\n\n- Fotoğraf üstte.", origin: .manual, createdAt: made),
+        ]
+        skillVersions[second.id] = [
+            BrandSkillVersion(id: "skv-2a", skillId: second.id, brandId: mtm, version: 1, name: second.name, description: second.description, body: second.body, origin: .aiDraft, createdAt: made),
+        ]
+        let headline = TemplateField(key: "headline", label: "Başlık", kind: .text, role: "headline", layer: "headline", example: "Kışa hazır toprak", maxChars: 24)
+        let body = TemplateField(key: "body", label: "Metin", kind: .text, role: "body", layer: "body", example: "Bor ve çinko eksikliği verimi düşürür; ekimden önce toprağını test ettir.", maxChars: 90, multiline: true)
+        let cta = TemplateField(key: "cta", label: "Çağrı", kind: .text, role: "cta", layer: "cta", example: "Bayine sor", maxChars: 16, locked: true)
+        let slot = TemplateField(key: "slot", label: "Görsel", kind: .image, layer: "slot", example: "/media/asset-tarla.png", ratio: "4:5")
+        templateList[mtm] = [
+            ContentTemplate(
+                id: "tpl-mtm-1", brandId: mtm, name: "Ürün tanıtımı", contentType: .post, fields: [headline, body, cta, slot],
+                previewAssetIds: ["asset-tarla"], source: TemplateSource(contentId: "post-02a", version: 1, title: "Doğru saklama rehberi"),
+                useCount: 3, createdAt: made, updatedAt: made),
+            ContentTemplate(
+                id: "tpl-mtm-2", brandId: mtm, name: "Doz carousel", contentType: .carousel, slideCount: 4,
+                fields: [headline, TemplateField(key: "body-2", label: "Metin · Kare 2", kind: .text, slide: 1, layer: "body-2", example: "Dekara 2 kg", maxChars: 30)],
+                previewAssetIds: ["asset-depo", nil, nil, nil], source: TemplateSource(contentId: nil, version: 2, title: "Kış hazırlığı"),
+                createdAt: made, updatedAt: made),
+        ]
+        planningByBrand[mtm] = BrandPlanningSettings(brandId: mtm, suggestedTags: [.tarim, .gida])
+        kits[mtm] = kits[mtm] ?? BrandKit(
+            brandId: mtm,
+            palette: [
+                BrandKitColor(name: "accent", hex: "#FF6A00", use: "tek vurgu"),
+                BrandKitColor(name: "ink", hex: "#0A0A0A", use: "başlık ve metin"),
+                BrandKitColor(name: "paper", hex: "#F4F4F5", use: "zemin"),
+            ],
+            samples: [BrandKitSample(assetId: "asset-tarla", caption: "Hasat zamanı"), BrandKitSample(assetId: "asset-depo")],
+            notes: "Hedef kitle: bayiler ve çiftçiler. Abartılı sıfatlardan kaçın.", updatedAt: made)
+    }
+
+    public func brandSkills(brandId: EntityID) async throws -> [BrandSkill] {
+        seedBrandPage()
+        return skills[brandId] ?? []
+    }
+
+    private func skillProblem(brandId: EntityID, name: String?, description: String?, body: String?, except id: EntityID?) -> String? {
+        let others = (skills[brandId] ?? []).filter { $0.id != id }
+        let current = (skills[brandId] ?? []).first { $0.id == id }
+        return BrandSkillRules.problem(
+            name: name ?? current?.name ?? "", description: description ?? current?.description ?? "",
+            body: body ?? current?.body ?? "", otherNames: others.map(\.name))
+    }
+
+    public func createBrandSkill(brandId: EntityID, _ input: BrandSkillCreate) async throws -> BrandSkill {
+        seedBrandPage()
+        if let problem = skillProblem(brandId: brandId, name: input.name, description: input.description, body: input.body, except: nil) {
+            throw StudioAPIError.server(status: 400, code: .validationError, message: problem, issues: [])
+        }
+        if let limit = BrandSkillRules.addBlocker(count: skills[brandId]?.count ?? 0) {
+            throw StudioAPIError.server(status: 409, code: .conflict, message: limit, issues: [])
+        }
+        let skill = BrandSkill(
+            id: nextId("skill"), brandId: brandId, name: input.name.trimmingCharacters(in: .whitespaces),
+            description: input.description.trimmingCharacters(in: .whitespaces), body: input.body,
+            enabled: input.enabled ?? true, createdAt: now, updatedAt: now)
+        skills[brandId, default: []].append(skill)
+        skillVersions[skill.id] = [BrandSkillVersion(
+            id: nextId("skv"), skillId: skill.id, brandId: brandId, version: 1, name: skill.name, description: skill.description,
+            body: skill.body, origin: .manual, note: input.note ?? "", createdAt: now)]
+        return skill
+    }
+
+    public func updateBrandSkill(brandId: EntityID, id: EntityID, _ input: BrandSkillUpdate) async throws -> BrandSkill {
+        seedBrandPage()
+        guard var skill = skills[brandId]?.first(where: { $0.id == id }) else {
+            throw StudioAPIError.server(status: 404, code: .notFound, message: "skill \(id) not found", issues: [])
+        }
+        if let problem = skillProblem(brandId: brandId, name: input.name, description: input.description, body: input.body, except: id) {
+            throw StudioAPIError.server(status: 400, code: .validationError, message: problem, issues: [])
+        }
+        let textChanged = (input.name.map { $0 != skill.name } ?? false)
+            || (input.description.map { $0 != skill.description } ?? false)
+            || (input.body.map { $0 != skill.body } ?? false)
+        if let name = input.name { skill.name = name }
+        if let description = input.description { skill.description = description }
+        if let body = input.body { skill.body = body }
+        if let enabled = input.enabled { skill.enabled = enabled }
+        if textChanged {
+            skill.version += 1
+            skill.origin = .manual
+            skillVersions[id, default: []].insert(BrandSkillVersion(
+                id: nextId("skv"), skillId: id, brandId: brandId, version: skill.version, name: skill.name,
+                description: skill.description, body: skill.body, origin: .manual, note: input.note ?? "", createdAt: now), at: 0)
+        }
+        skill.updatedAt = now
+        skills[brandId] = skills[brandId]?.map { $0.id == id ? skill : $0 }
+        return skill
+    }
+
+    public func deleteBrandSkill(brandId: EntityID, id: EntityID) async throws {
+        seedBrandPage()
+        skills[brandId]?.removeAll { $0.id == id }
+        skillVersions[id] = nil
+    }
+
+    public func brandSkillVersions(brandId: EntityID, skillId: EntityID) async throws -> [BrandSkillVersion] {
+        seedBrandPage()
+        return skillVersions[skillId] ?? []
+    }
+
+    public func restoreBrandSkillVersion(brandId: EntityID, skillId: EntityID, version: Int) async throws -> BrandSkill {
+        seedBrandPage()
+        guard var skill = skills[brandId]?.first(where: { $0.id == skillId }),
+              let old = skillVersions[skillId]?.first(where: { $0.version == version }) else {
+            throw StudioAPIError.server(status: 404, code: .notFound, message: "version not found", issues: [])
+        }
+        skill.version += 1
+        skill.name = old.name
+        skill.description = old.description
+        skill.body = old.body
+        skill.origin = .restore
+        skill.updatedAt = now
+        skillVersions[skillId, default: []].insert(BrandSkillVersion(
+            id: nextId("skv"), skillId: skillId, brandId: brandId, version: skill.version, name: skill.name,
+            description: skill.description, body: skill.body, origin: .restore, note: "v\(version) geri yüklendi", createdAt: now), at: 0)
+        skills[brandId] = skills[brandId]?.map { $0.id == skillId ? skill : $0 }
+        return skill
+    }
+
+    /// Drafts a switched-off skill at once (the worker would take a minute).
+    public func draftBrandSkill(brandId: EntityID, focus: String) async throws -> Job {
+        seedBrandPage()
+        let taken = (skills[brandId] ?? []).map(\.name)
+        let topic = focus.trimmingCharacters(in: .whitespacesAndNewlines)
+        let name = BrandSkillRules.uniqueName(topic.isEmpty ? "marka-postu" : topic, taken: taken)
+        let skill = BrandSkill(
+            id: nextId("skill"), brandId: brandId, name: name, description: topic.isEmpty ? "Örnek postlardan çıkarıldı." : topic,
+            body: BrandSkillRules.newBody, enabled: false, origin: .aiDraft, createdAt: now, updatedAt: now)
+        skills[brandId, default: []].append(skill)
+        skillVersions[skill.id] = [BrandSkillVersion(
+            id: nextId("skv"), skillId: skill.id, brandId: brandId, version: 1, name: name, description: skill.description,
+            body: skill.body, origin: .aiDraft, createdAt: now)]
+        let job = Job(
+            id: nextId("job"), type: .brandSkillDraft, status: .succeeded, payload: BrandSkillRules.draftPayload(focus: focus),
+            brandId: brandId, createdAt: now, updatedAt: now, startedAt: now, finishedAt: now, progress: 1,
+            output: ["skillId": .string(skill.id), "name": .string(name)])
+        data.jobs.insert(job, at: 0)
+        broadcastJobs()
+        return job
+    }
+
+    public func templates(brandId: EntityID) async throws -> [ContentTemplate] {
+        seedBrandPage()
+        return templateList[brandId] ?? []
+    }
+
+    private func templateBrand(_ id: EntityID) -> EntityID? {
+        templateList.first { $0.value.contains { $0.id == id } }?.key
+    }
+
+    public func updateTemplate(_ id: EntityID, _ input: ContentTemplateUpdate) async throws -> ContentTemplate {
+        seedBrandPage()
+        guard let brandId = templateBrand(id), var template = templateList[brandId]?.first(where: { $0.id == id }) else {
+            throw StudioAPIError.server(status: 404, code: .notFound, message: "template not found", issues: [])
+        }
+        if let name = input.name { template.name = name }
+        if let description = input.description { template.description = description }
+        for change in input.fields ?? [] {
+            guard let index = template.fields.firstIndex(where: { $0.key == change.key }) else { continue }
+            if let label = change.label { template.fields[index].label = label }
+            if let locked = change.locked { template.fields[index].locked = locked }
+            if let autoFit = change.autoFit { template.fields[index].autoFit = autoFit }
+        }
+        template.updatedAt = now
+        templateList[brandId] = templateList[brandId]?.map { $0.id == id ? template : $0 }
+        return template
+    }
+
+    public func deleteTemplate(_ id: EntityID) async throws {
+        seedBrandPage()
+        for key in templateList.keys { templateList[key]?.removeAll { $0.id == id } }
+    }
+
+    /// A draft post from the template with its queued fill job.
+    public func useTemplate(_ id: EntityID, _ input: TemplateUse) async throws -> TemplateUseResult {
+        seedBrandPage()
+        guard let brandId = templateBrand(id), let index = templateList[brandId]?.firstIndex(where: { $0.id == id }),
+              var template = templateList[brandId]?[index] else {
+            throw StudioAPIError.server(status: 404, code: .notFound, message: "template not found", issues: [])
+        }
+        let content = Content(
+            id: nextId("post"), brandId: brandId, type: template.contentType, title: input.title ?? template.name,
+            brief: input.brief ?? "", status: .draft, targetPlatforms: [.instagram], caption: "",
+            currentVersion: nil, createdAt: now, updatedAt: now)
+        data.contents.append(content)
+        template.useCount += 1
+        templateList[brandId]?[index] = template
+        var payload: JSONObject = ["templateId": .string(id)]
+        if let fill = input.fill { payload["fill"] = .string(fill.rawValue) }
+        let job = Job(
+            id: nextId("job"), type: .contentGenerate, status: .queued, payload: payload, brandId: brandId, contentId: content.id,
+            createdAt: now, updatedAt: now)
+        data.jobs.insert(job, at: 0)
+        broadcastJobs()
+        return TemplateUseResult(content: content, job: job)
+    }
+
+    public func checkSettings(brandId: EntityID) async throws -> BrandCheckSettings {
+        checkSettingsByBrand[brandId] ?? BrandCheckSettings(brandId: brandId)
+    }
+
+    public func saveCheckSettings(brandId: EntityID, _ input: BrandCheckSettingsPut) async throws -> BrandCheckSettings {
+        let saved = BrandCheckSettings(
+            brandId: brandId, disabledChecks: input.disabledChecks, bannedWords: input.bannedWords,
+            strictness: input.strictness, autoFix: input.autoFix, updatedAt: now)
+        checkSettingsByBrand[brandId] = saved
+        return saved
+    }
+
+    public func planningSettings(brandId: EntityID) async throws -> BrandPlanningSettings {
+        seedBrandPage()
+        return planningByBrand[brandId] ?? BrandPlanningSettings(brandId: brandId)
+    }
+
+    public func savePlanningSettings(brandId: EntityID, _ input: BrandPlanningSettingsPut) async throws -> BrandPlanningSettings {
+        seedBrandPage()
+        let saved = BrandPlanningSettings(
+            brandId: brandId, sectorTags: input.sectorTags, disabledCategories: input.disabledCategories,
+            suggestedTags: planningByBrand[brandId]?.suggestedTags ?? [], updatedAt: now)
+        planningByBrand[brandId] = saved
+        return saved
+    }
+
+    /// Diyanet's bayram first days for 2026–2028 (2028 computed, ±1 day), corrections applied.
+    public func specialDays(from: String, to: String) async throws -> [SpecialDay] {
+        let table: [(year: Int, ramazan: String, kurban: String, approximate: Bool)] = [
+            (2026, "2026-03-20", "2026-05-27", false),
+            (2027, "2027-03-09", "2027-05-16", false),
+            (2028, "2028-02-26", "2028-05-05", true),
+        ]
+        var days: [SpecialDay] = []
+        for row in table {
+            let own = bayramOverrides.overrides.first { $0.year == row.year }
+            days.append(SpecialDay(
+                id: "ramazan-bayrami-\(row.year)", ruleId: "ramazan-bayrami", date: own?.ramazanBayrami ?? row.ramazan, days: 3,
+                name: "Ramazan Bayramı", category: .dini, approximate: row.approximate && own?.ramazanBayrami == nil))
+            days.append(SpecialDay(
+                id: "kurban-bayrami-\(row.year)", ruleId: "kurban-bayrami", date: own?.kurbanBayrami ?? row.kurban, days: 4,
+                name: "Kurban Bayramı", category: .dini, approximate: row.approximate && own?.kurbanBayrami == nil))
+        }
+        return days.filter { $0.date >= from && $0.date <= to }
+    }
+
+    public func specialDayOverrides() async throws -> SpecialDayOverrides { bayramOverrides }
+
+    public func saveSpecialDayOverrides(_ overrides: [ReligiousDayOverride]) async throws -> SpecialDayOverrides {
+        bayramOverrides = SpecialDayOverrides(overrides: overrides.sorted { $0.year < $1.year }, updatedAt: now)
+        return bayramOverrides
+    }
+
     public func asset(_ id: EntityID) async throws -> Asset {
         guard let asset = data.assets[id] else {
             throw StudioAPIError.server(status: 404, code: .notFound, message: "asset \(id) not found", issues: [])
@@ -566,6 +847,7 @@ public actor SampleBackend: ConversationService, StudioDataService {
         guard data.brands.contains(where: { $0.id == brandId }) else {
             throw StudioAPIError.server(status: 404, code: .notFound, message: "brand not found", issues: [])
         }
+        seedBrandPage()
         return kits[brandId] ?? .empty(brandId)
     }
 

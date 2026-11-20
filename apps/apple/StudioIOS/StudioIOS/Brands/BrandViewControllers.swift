@@ -1,14 +1,87 @@
+import Observation
 import StudioKit
 import UIKit
 
-/// Brands: switch the current brand, open a brand's profile.
-final class BrandsViewController: UITableViewController {
+/// What the Markalar list shows besides the brands: archived brands and each brand's kit and
+/// profiles (its logo, colour and profile state), read once per brand.
+@MainActor
+@Observable
+final class BrandListModel {
+    @ObservationIgnored weak var app: IOSAppModel?
+    private(set) var archived: [Brand] = []
+    private(set) var kits: [EntityID: BrandKit] = [:]
+    private(set) var profiles: [EntityID: [BrandProfile]] = [:]
+    private(set) var isLoading = false
+    private(set) var hasLoaded = false
+    var error: String?
+
+    init(app: IOSAppModel) { self.app = app }
+
+    var all: [Brand] { (app?.brands ?? []) + archived.filter { brand in !(app?.brands.contains { $0.id == brand.id } ?? false) } }
+
+    func overview(_ brand: Brand) -> BrandOverview {
+        BrandOverview(brand: brand, kit: kits[brand.id], profile: BrandOverview.cardProfile(profiles[brand.id] ?? []), accounts: app?.accounts ?? [])
+    }
+
+    func load(refreshBrands: Bool = false) async {
+        guard let app else { return }
+        let service = app.dataService
+        isLoading = true
+        defer {
+            isLoading = false
+            hasLoaded = true
+        }
+        do {
+            if refreshBrands {
+                app.brands = try await service.brands()
+                if let accounts = try? await service.socialAccounts(brandId: nil) { app.accounts = accounts }
+            }
+            archived = try await service.archivedBrands()
+            error = nil
+        } catch {
+            self.error = IOSAppModel.describe(error)
+        }
+        // Kits and profiles of every brand, side by side.
+        await withTaskGroup(of: (EntityID, BrandKit?, [BrandProfile]?).self) { group in
+            for brand in all {
+                let id = brand.id
+                group.addTask {
+                    async let kit = try? service.brandKit(brandId: id)
+                    async let profiles = try? service.brandProfiles(brandId: id)
+                    return (id, await kit, await profiles)
+                }
+            }
+            for await (id, kit, profiles) in group {
+                if let kit { self.kits[id] = kit }
+                if let profiles { self.profiles[id] = profiles }
+            }
+        }
+    }
+
+    func changed(_ brand: Brand) {
+        archived.removeAll { $0.id == brand.id }
+        if brand.status == .archived { archived.append(brand) }
+    }
+}
+
+/// Markalar: every brand as a row with its round mark, name, short name and language, the state
+/// of its accounts and profile; "Etkin | Arşiv" in the bar, a search, "+" for a new brand. A row
+/// opens the brand's page; swipes select or archive it.
+final class BrandsViewController: UIViewController, UITableViewDataSource, UITableViewDelegate, UISearchResultsUpdating {
     private unowned let app: IOSAppModel
+    private let model: BrandListModel
+    private let tableView = UITableView(frame: .zero, style: .plain)
+    private let segmented = UISegmentedControl(items: ["Etkin", "Arşiv"])
+    private let search = UISearchController(searchResultsController: nil)
+    private let emptyView = EmptyStateView()
     private var observation: IOSObservationToken?
+    private var shown: [Brand] = []
+    private var showsArchive: Bool { segmented.selectedSegmentIndex == 1 }
 
     init(app: IOSAppModel) {
         self.app = app
-        super.init(style: .insetGrouped)
+        self.model = BrandListModel(app: app)
+        super.init(nibName: nil, bundle: nil)
         title = "Markalar"
     }
 
@@ -16,336 +89,266 @@ final class BrandsViewController: UITableViewController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        tableView.backgroundColor = IOSTheme.groupedBackground
-        tableView.register(UITableViewCell.self, forCellReuseIdentifier: "brand")
-        observation = observeIOS { [weak self] in
-            guard let self else { return }
-            _ = self.app.brands
-            _ = self.app.currentBrandId
-            self.tableView.reloadData()
+        view.backgroundColor = IOSTheme.canvas
+        navigationItem.largeTitleDisplayMode = .never
+        segmented.selectedSegmentIndex = 0
+        segmented.addAction(UIAction { [weak self] _ in self?.render() }, for: .valueChanged)
+        navigationItem.titleView = segmented
+        let add = UIBarButtonItem(image: UIImage(systemName: "plus"), primaryAction: UIAction { [weak self] _ in self?.createBrand() })
+        add.accessibilityLabel = "Yeni marka"
+        navigationItem.rightBarButtonItem = add
+        search.searchResultsUpdater = self
+        search.obscuresBackgroundDuringPresentation = false
+        search.searchBar.placeholder = "Markalarda ara"
+        navigationItem.searchController = search
+        navigationItem.hidesSearchBarWhenScrolling = true
+
+        tableView.translatesAutoresizingMaskIntoConstraints = false
+        tableView.backgroundColor = IOSTheme.canvas
+        tableView.dataSource = self
+        tableView.delegate = self
+        tableView.separatorColor = IOSTheme.hairline
+        tableView.separatorInset = UIEdgeInsets(top: 0, left: IOSTheme.gutter + 52 + 14, bottom: 0, right: 0)
+        tableView.register(BrandListCell.self, forCellReuseIdentifier: BrandListCell.reuse)
+        tableView.topEdgeEffect.style = .soft
+        tableView.contentInset.bottom = 40
+        view.addSubview(tableView)
+        tableView.pin(to: view)
+        setContentScrollView(tableView, for: .top)
+        let refresh = UIRefreshControl()
+        refresh.addAction(UIAction { [weak self, weak refresh] _ in
+            Task {
+                await self?.model.load(refreshBrands: true)
+                refresh?.endRefreshing()
+            }
+        }, for: .valueChanged)
+        tableView.refreshControl = refresh
+        emptyView.isHidden = true
+        tableView.backgroundView = emptyView
+
+        observation = observeIOS { [weak self] in self?.render() }
+        Task { await model.load() }
+    }
+
+    override func viewWillAppear(_ animated: Bool) {
+        super.viewWillAppear(animated)
+        // A brand changed on its page (archived, renamed, a new kit) shows here on the way back.
+        if model.hasLoaded { Task { await model.load() } }
+    }
+
+    func updateSearchResults(for searchController: UISearchController) { render() }
+
+    private var query: String { search.searchBar.text ?? "" }
+
+    private func render() {
+        let all = model.all
+        let active = all.filter { $0.status != .archived }.count
+        let archived = all.count - active
+        segmented.setTitle(active > 0 ? "Etkin · \(active)" : "Etkin", forSegmentAt: 0)
+        segmented.setTitle(archived > 0 ? "Arşiv · \(archived)" : "Arşiv", forSegmentAt: 1)
+        segmented.sizeToFit()
+        shown = BrandOverview.shown(all, archived: showsArchive, query: query)
+        // Reading what each row shows makes the list follow kits, profiles and the current brand.
+        _ = model.kits
+        _ = model.profiles
+        _ = app.currentBrandId
+        _ = app.accounts
+        tableView.reloadData()
+
+        let searching = !query.trimmingCharacters(in: .whitespaces).isEmpty
+        if all.isEmpty, model.hasLoaded {
+            emptyView.configure(icon: "building.2", title: model.error == nil ? "Henüz marka yok" : "Markalar yüklenemedi",
+                                message: model.error ?? "Yeni bir marka oluştur; kitini doldurup AI ile profilini çıkarabilirsin.",
+                                actions: [UIButton.studioPill(title: "Yeni marka", kind: .primary, image: "plus") { [weak self] in self?.createBrand() }])
+            emptyView.isHidden = false
+        } else if shown.isEmpty, model.hasLoaded || !all.isEmpty {
+            emptyView.configure(icon: searching ? "magnifyingglass" : "archivebox", title: searching ? "“\(query.trimmingCharacters(in: .whitespaces))” için marka yok" : (showsArchive ? "Arşivde marka yok" : "Etkin marka yok"), message: nil)
+            emptyView.isHidden = false
+        } else {
+            emptyView.isHidden = true
         }
     }
 
-    override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int { max(1, app.brands.count) }
+    // MARK: Table
 
-    override func tableView(_ tableView: UITableView, titleForFooterInSection section: Int) -> String? {
-        "Yeni marka, marka kiti ve profil çıkarma Mac'te yapılır. Buradan profili görüp taslağı onaylayabilirsin."
-    }
+    func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int { shown.count }
 
-    override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
-        let cell = tableView.dequeueReusableCell(withIdentifier: "brand", for: indexPath)
-        cell.backgroundColor = IOSTheme.elevated
-        var content = UIListContentConfiguration.subtitleCell()
-        guard app.brands.indices.contains(indexPath.row) else {
-            content.text = "Marka yok"
-            content.secondaryText = "Mac'te yeni marka oluştur (⇧⌘N)."
-            cell.contentConfiguration = content
-            return cell
+    func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
+        let cell = tableView.dequeueReusableCell(withIdentifier: BrandListCell.reuse, for: indexPath)
+        if let cell = cell as? BrandListCell, shown.indices.contains(indexPath.row) {
+            let brand = shown[indexPath.row]
+            cell.configure(brand: brand, overview: model.overview(brand), profiles: model.profiles[brand.id], current: brand.id == app.currentBrandId, images: app.images)
         }
-        let brand = app.brands[indexPath.row]
-        content.text = brand.name
-        let accounts = app.accounts(of: brand.id).map { "\($0.platform.displayName) \($0.handle)" }
-        content.secondaryText = ([brand.slug] + accounts).joined(separator: " · ")
-        content.secondaryTextProperties.color = IOSTheme.textSecondary
-        cell.contentConfiguration = content
-        cell.accessoryType = .detailButton
-        cell.tintColor = IOSTheme.ink
-        if brand.id == app.currentBrandId {
-            let check = UIImageView(image: UIImage(systemName: "checkmark"))
-            check.tintColor = IOSTheme.ink
-            cell.accessoryView = nil
-            cell.accessoryType = .checkmark
-            _ = check
-        }
-        cell.accessibilityHint = "Seçer. Profil için ayrıntı düğmesi."
         return cell
     }
 
-    override func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
+    func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         tableView.deselectRow(at: indexPath, animated: true)
-        guard app.brands.indices.contains(indexPath.row) else { return }
-        let brand = app.brands[indexPath.row]
-        app.selectBrand(brand.id)
-        navigationController?.pushViewController(BrandProfileViewController(app: app, brandId: brand.id), animated: true)
+        guard shown.indices.contains(indexPath.row) else { return }
+        open(shown[indexPath.row])
     }
 
-    override func tableView(_ tableView: UITableView, accessoryButtonTappedForRowWith indexPath: IndexPath) {
-        guard app.brands.indices.contains(indexPath.row) else { return }
-        navigationController?.pushViewController(BrandProfileViewController(app: app, brandId: app.brands[indexPath.row].id), animated: true)
+    func tableView(_ tableView: UITableView, leadingSwipeActionsConfigurationForRowAt indexPath: IndexPath) -> UISwipeActionsConfiguration? {
+        guard shown.indices.contains(indexPath.row) else { return nil }
+        let brand = shown[indexPath.row]
+        guard brand.status != .archived, brand.id != app.currentBrandId else { return nil }
+        let select = UIContextualAction(style: .normal, title: "Seç") { [weak self] _, _, done in
+            self?.select(brand)
+            done(true)
+        }
+        select.backgroundColor = IOSTheme.accent
+        select.image = UIImage(systemName: "checkmark.circle")
+        return UISwipeActionsConfiguration(actions: [select])
+    }
+
+    func tableView(_ tableView: UITableView, trailingSwipeActionsConfigurationForRowAt indexPath: IndexPath) -> UISwipeActionsConfiguration? {
+        guard shown.indices.contains(indexPath.row) else { return nil }
+        let brand = shown[indexPath.row]
+        let archived = brand.status == .archived
+        let action = UIContextualAction(style: archived ? .normal : .destructive, title: archived ? "Arşivden çıkar" : "Arşivle") { [weak self] _, _, done in
+            self?.toggleArchive(brand)
+            done(true)
+        }
+        action.image = UIImage(systemName: archived ? "tray.and.arrow.up" : "archivebox")
+        return UISwipeActionsConfiguration(actions: [action])
+    }
+
+    func tableView(_ tableView: UITableView, contextMenuConfigurationForRowAt indexPath: IndexPath, point: CGPoint) -> UIContextMenuConfiguration? {
+        guard shown.indices.contains(indexPath.row) else { return nil }
+        let brand = shown[indexPath.row]
+        return UIContextMenuConfiguration(identifier: brand.id as NSString, previewProvider: nil) { [weak self] _ in
+            guard let self else { return nil }
+            var primary: [UIMenuElement] = [UIAction(title: "Aç", image: UIImage(systemName: "arrow.up.forward.square")) { _ in self.open(brand) }]
+            if brand.status != .archived {
+                primary.append(UIAction(title: "Bu markayı seç", image: UIImage(systemName: "checkmark.circle"), attributes: brand.id == self.app.currentBrandId ? .disabled : []) { _ in self.select(brand) })
+                primary.append(UIAction(title: "Sohbette konuş", image: UIImage(systemName: "bubble.left.and.text.bubble.right")) { _ in
+                    self.app.selectBrand(brand.id)
+                    self.app.open(.newConversation)
+                })
+            }
+            return UIMenu(children: [
+                UIMenu(options: .displayInline, children: primary),
+                UIAction(title: brand.status == .archived ? "Arşivden çıkar" : "Arşivle…", image: UIImage(systemName: brand.status == .archived ? "tray.and.arrow.up" : "archivebox"), attributes: brand.status == .archived ? [] : .destructive) { _ in self.toggleArchive(brand) },
+            ])
+        }
+    }
+
+    // MARK: Actions
+
+    private func open(_ brand: Brand, tab: BrandTab = .general) {
+        navigationItem.backButtonDisplayMode = .minimal
+        navigationController?.pushViewController(BrandProfileViewController(app: app, brandId: brand.id, tab: tab), animated: true)
+    }
+
+    private func select(_ brand: Brand) {
+        app.selectBrand(brand.id)
+        Haptics.success()
+        Toast.show("\(brand.name) seçildi", in: view)
+    }
+
+    private func toggleArchive(_ brand: Brand) {
+        let archiving = brand.status != .archived
+        let run = { [weak self] in
+            guard let self else { return }
+            Task {
+                do {
+                    let saved = try await self.app.dataService.updateBrand(brand.id, BrandUpdate(status: archiving ? .archived : .active))
+                    if archiving {
+                        self.app.brands.removeAll { $0.id == saved.id }
+                        if self.app.currentBrandId == saved.id, let next = self.app.brands.first { self.app.selectBrand(next.id) }
+                    } else if !self.app.brands.contains(where: { $0.id == saved.id }) {
+                        self.app.brands.append(saved)
+                    }
+                    self.model.changed(saved)
+                    Haptics.success()
+                    Toast.show(archiving ? "\(brand.name) arşivlendi" : "\(brand.name) arşivden çıkarıldı", in: self.view)
+                } catch {
+                    self.presentError(IOSAppModel.describe(error))
+                }
+            }
+        }
+        guard archiving else { return run() }
+        confirm("\(brand.name) arşivlensin mi?", message: "Marka silinmez; listelerden kalkar, sonra geri getirilebilir.", action: "Arşivle", onConfirm: run)
+    }
+
+    /// "Yeni marka": name, short name, language. The new brand becomes the current one and its
+    /// page opens on the kit (as on the Mac).
+    private func createBrand() {
+        let form = BrandFormViewController(mode: .create) { [weak self] name, slug, language in
+            guard let self else { return "Sayfa kapandı." }
+            do {
+                let brand = try await self.app.dataService.createBrand(BrandCreate(name: name, slug: slug, defaultLanguage: language))
+                if !self.app.brands.contains(where: { $0.id == brand.id }) { self.app.brands.append(brand) }
+                self.app.selectBrand(brand.id)
+                Haptics.success()
+                self.segmented.selectedSegmentIndex = 0
+                self.open(brand, tab: .kit)
+                Toast.show("\(brand.name) oluşturuldu. Marka kitini doldurup AI ile analiz edebilirsin.", in: self.view)
+                return nil
+            } catch {
+                return IOSAppModel.describe(error)
+            }
+        }
+        presentSheet(form, detents: [.large()])
     }
 }
 
-/// A brand's profile: accounts, palette and kit summary, the approved profile (DESIGN.md,
-/// VOICE.md) and a newer draft to approve.
-final class BrandProfileViewController: UIViewController {
-    private unowned let app: IOSAppModel
-    let brandId: EntityID
-    private let stack = UIStackView.v([], spacing: 14)
-    private var profiles: [BrandProfile] = []
-    private var kit: BrandKit?
-    /// The kit could not be read (shown instead of silently treating it as empty).
-    private var kitError: String?
-    private var isLoading = true
-    private var isBusy = false
-    private var loadError: String?
+/// One brand in Markalar: its round mark, the name (a seal on the current one, a tag on an
+/// archived one), short name and language, then its accounts and profile state.
+final class BrandListCell: UITableViewCell {
+    static let reuse = "brand"
+    private var mark = BrandMarkView(side: 52, images: nil)
+    private let nameLabel = UILabel.studio("", size: 17, weight: .semibold, lines: 1, style: .headline)
+    private let seal = UIImageView(image: UIImage(systemName: "checkmark.seal.fill"))
+    private let tagLabel = UILabel.studio("", size: 12, weight: .semibold, color: IOSTheme.textSecondary, style: .caption1)
+    private let subtitleLabel = UILabel.studio("", size: 14, color: IOSTheme.textSecondary, lines: 1, style: .subheadline)
+    private let stateLabel = UILabel.studio("", size: 13, color: IOSTheme.textTertiary, lines: 2, style: .footnote)
+    private let markHolder = UIView()
 
-    init(app: IOSAppModel, brandId: EntityID) {
-        self.app = app
-        self.brandId = brandId
-        super.init(nibName: nil, bundle: nil)
+    override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
+        super.init(style: style, reuseIdentifier: reuseIdentifier)
+        backgroundColor = IOSTheme.canvas
+        accessoryType = .disclosureIndicator
+        markHolder.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([markHolder.widthAnchor.constraint(equalToConstant: 52), markHolder.heightAnchor.constraint(equalToConstant: 52)])
+        seal.tintColor = IOSTheme.accent
+        seal.preferredSymbolConfiguration = UIImage.SymbolConfiguration(pointSize: 14, weight: .semibold)
+        seal.setContentHuggingPriority(.required, for: .horizontal)
+        tagLabel.setContentHuggingPriority(.required, for: .horizontal)
+        let nameRow = UIStackView.h([nameLabel, seal, tagLabel, UIView.spacer()], spacing: 6)
+        let texts = UIStackView.v([nameRow, subtitleLabel, stateLabel], spacing: 2)
+        let row = UIStackView.h([markHolder, texts], spacing: 14)
+        contentView.addSubview(row)
+        row.pin(to: contentView, insets: UIEdgeInsets(top: 12, left: IOSTheme.gutter, bottom: 12, right: 8))
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
 
-    private var brand: Brand? { app.brand(brandId) }
-
-    override func viewDidLoad() {
-        super.viewDidLoad()
-        view.backgroundColor = IOSTheme.groupedBackground
-        title = brand?.name ?? "Marka"
-        navigationItem.largeTitleDisplayMode = .never
-        let scroll = UIScrollView()
-        scroll.translatesAutoresizingMaskIntoConstraints = false
-        scroll.alwaysBounceVertical = true
-        view.addSubview(scroll)
-        scroll.pin(to: view)
-        scroll.addSubview(stack)
-        NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: scroll.contentLayoutGuide.leadingAnchor, constant: IOSTheme.gutter),
-            stack.trailingAnchor.constraint(equalTo: scroll.contentLayoutGuide.trailingAnchor, constant: -IOSTheme.gutter),
-            stack.topAnchor.constraint(equalTo: scroll.contentLayoutGuide.topAnchor, constant: 12),
-            stack.bottomAnchor.constraint(equalTo: scroll.contentLayoutGuide.bottomAnchor, constant: -32),
-            stack.widthAnchor.constraint(equalTo: scroll.frameLayoutGuide.widthAnchor, constant: -2 * IOSTheme.gutter),
-        ])
-        let refresh = UIRefreshControl()
-        refresh.addAction(UIAction { [weak self, weak refresh] _ in
-            Task {
-                await self?.load()
-                refresh?.endRefreshing()
-            }
-        }, for: .valueChanged)
-        scroll.refreshControl = refresh
-        render()
-        Task { await load() }
-    }
-
-    private func load() async {
-        isLoading = true
-        do {
-            async let loadedProfiles = app.dataService.brandProfiles(brandId: brandId)
-            async let loadedKit = app.dataService.brandKit(brandId: brandId)
-            profiles = try await loadedProfiles.sorted { $0.version > $1.version }
-            do {
-                kit = try await loadedKit
-                kitError = nil
-            } catch {
-                kitError = "Marka kiti okunamadı: \(IOSAppModel.describe(error))"
-            }
-            loadError = nil
-        } catch {
-            loadError = IOSAppModel.describe(error)
+    func configure(brand: Brand, overview: BrandOverview, profiles: [BrandProfile]?, current: Bool, images: IOSImageStore) {
+        if mark.superview == nil || markHolder.subviews.isEmpty {
+            mark = BrandMarkView(side: 52, images: images)
+            markHolder.addSubview(mark)
+            mark.pin(to: markHolder)
         }
-        isLoading = false
-        render()
-    }
-
-    private var current: BrandProfile? { profiles.first { $0.isCurrent } ?? profiles.first { $0.status == .approved } }
-    private var draft: BrandProfile? {
-        profiles.first { $0.status == .draft && $0.version > (current?.version ?? 0) }
-    }
-
-    private func render() {
-        stack.removeAllArranged()
-        guard let brand else {
-            stack.addArrangedSubview(UILabel.studio("Marka bulunamadı.", size: 15, color: IOSTheme.textSecondary))
-            return
-        }
-        // Header
-        let header = IOSCardView(padding: 16, spacing: 6)
-        header.stack.addArrangedSubview(UILabel.studio(brand.name, size: 22, weight: .bold, lines: 0, style: .title2))
-        header.stack.addArrangedSubview(UILabel.studio("\(brand.slug) · \(brand.defaultLanguage.uppercased())", size: 14, color: IOSTheme.textSecondary, style: .subheadline))
-        if brand.id != app.currentBrandId {
-            header.stack.addArrangedSubview(UIStackView.h([UIButton.studioPill(title: "Bu markaya geç", kind: .ink) { [weak self] in
-                guard let self else { return }
-                self.app.selectBrand(brand.id)
-                Haptics.selection()
-                self.render()
-            }, UIView.spacer()], spacing: 0))
-        } else {
-            header.stack.addArrangedSubview(UILabel.studio("Seçili marka", size: 12, weight: .semibold, color: IOSTheme.textTertiary, style: .caption1))
-        }
-        stack.addArrangedSubview(header)
-
-        // Accounts
-        let accounts = app.accounts(of: brand.id)
-        let accountsCard = IOSCardView(padding: 16, spacing: 8)
-        accountsCard.stack.addArrangedSubview(sectionTitle("Hesaplar"))
-        if accounts.isEmpty {
-            accountsCard.stack.addArrangedSubview(UILabel.studio("Bağlı hesap yok. Hesaplar Mac'te Ayarlar → Hesaplar'da bağlanır.", size: 14, color: IOSTheme.textSecondary, lines: 0, style: .subheadline))
-        }
-        for account in accounts {
-            let health = account.tokenHealth.map { " · \($0.rawValue)" } ?? ""
-            let line = UIStackView.h([
-                IOSStatusDotView(color: account.status == .connected ? IOSTheme.textSecondary : IOSTheme.accent, size: 7),
-                UILabel.studio("\(account.platform.displayName) · \(account.handle)", size: 15, style: .subheadline),
-                UIView.spacer(),
-                UILabel.studio("\(account.status.rawValue)\(health)", size: 12, color: IOSTheme.textTertiary, style: .caption1),
-            ], spacing: 8)
-            accountsCard.stack.addArrangedSubview(line)
-        }
-        stack.addArrangedSubview(accountsCard)
-
-        if isLoading && profiles.isEmpty {
-            let spinner = UIActivityIndicatorView(style: .medium)
-            spinner.startAnimating()
-            stack.addArrangedSubview(spinner)
-            return
-        }
-        if let loadError {
-            stack.addArrangedSubview(UILabel.studio(loadError, size: 14, color: IOSTheme.accent, lines: 0, style: .subheadline))
-        }
-
-        // Draft waiting for approval
-        if let draft {
-            let card = IOSCardView(padding: 16, spacing: 10)
-            card.layer.borderColor = IOSTheme.accent.withAlphaComponent(0.6).cgColor
-            card.stack.addArrangedSubview(UIStackView.h([IOSStatusDotView(color: IOSTheme.accent, size: 7), UILabel.studio("Onayın bekleniyor", size: 12, weight: .semibold, color: IOSTheme.accent, style: .caption1), UIView.spacer()], spacing: 6))
-            card.stack.addArrangedSubview(UILabel.studio("Profil taslağı v\(draft.version)", size: 17, weight: .semibold, style: .headline))
-            card.stack.addArrangedSubview(UILabel.studio("Onaylanınca yeni postlar bu kurallarla üretilir. \(AssistantStatus.relative(draft.updatedAt)) güncellendi.", size: 14, color: IOSTheme.textSecondary, lines: 0, style: .subheadline))
-            let approve = UIButton.studioPill(title: "Taslağı onayla", kind: .primary) { [weak self] in self?.approve(draft) }
-            approve.configuration?.showsActivityIndicator = isBusy
-            approve.isEnabled = !isBusy
-            let view = UIButton.studioPill(title: "İncele", kind: .secondary) { [weak self] in self?.showProfile(draft) }
-            card.stack.addArrangedSubview(UIStackView.h([approve, view, UIView.spacer()], spacing: 8))
-            stack.addArrangedSubview(card)
-        }
-
-        // Palette and kit
-        if let kitError {
-            let card = IOSCardView(padding: 16, spacing: 8)
-            card.stack.addArrangedSubview(sectionTitle("Marka kiti"))
-            card.stack.addArrangedSubview(UILabel.studio(kitError, size: 14, color: IOSTheme.accent, lines: 0, style: .subheadline))
-            stack.addArrangedSubview(card)
-        } else if let kit, kit.updatedAt != nil || !kit.palette.isEmpty {
-            let card = IOSCardView(padding: 16, spacing: 10)
-            card.stack.addArrangedSubview(sectionTitle("Marka kiti"))
-            if !kit.palette.isEmpty {
-                let swatches = UIStackView.h(kit.palette.prefix(10).map { color in
-                    let swatch = UIView()
-                    swatch.translatesAutoresizingMaskIntoConstraints = false
-                    swatch.backgroundColor = UIColor(hexString: color.hex) ?? IOSTheme.fill
-                    swatch.layer.cornerRadius = 14
-                    swatch.layer.borderWidth = 1
-                    swatch.layer.borderColor = IOSTheme.border.cgColor
-                    swatch.isAccessibilityElement = true
-                    swatch.accessibilityLabel = "\(color.name) \(color.hex)"
-                    NSLayoutConstraint.activate([swatch.widthAnchor.constraint(equalToConstant: 28), swatch.heightAnchor.constraint(equalToConstant: 28)])
-                    return swatch
-                } + [UIView.spacer()], spacing: 6)
-                card.stack.addArrangedSubview(swatches)
-            }
-            let summary = "\(kit.samples.count) örnek post · \(kit.logos.count) logo · \(kit.fonts.count) font"
-            card.stack.addArrangedSubview(UILabel.studio(summary, size: 14, color: IOSTheme.textSecondary, style: .subheadline))
-            if !kit.fonts.isEmpty {
-                let names = kit.fonts.map { $0.isSystem ? "\($0.family) (Mac'te yüklü)" : $0.family }
-                card.stack.addArrangedSubview(UILabel.studio(names.joined(separator: ", "), size: 14, lines: 0, style: .subheadline))
-            }
-            stack.addArrangedSubview(card)
-        }
-
-        // Approved profile
-        if let current {
-            let card = IOSCardView(padding: 16, spacing: 10)
-            card.stack.addArrangedSubview(sectionTitle("Onaylı profil · v\(current.version)"))
-            if let approved = current.approvedAt {
-                card.stack.addArrangedSubview(UILabel.studio("Onay: \(TurkishFormat.dayAndTime(approved))", size: 13, color: IOSTheme.textSecondary, style: .footnote))
-            }
-            card.stack.addArrangedSubview(textBlock("Tasarım kuralları (DESIGN.md)", current.designRules))
-            card.stack.addArrangedSubview(textBlock("Ses tonu (VOICE.md)", current.voice))
-            stack.addArrangedSubview(card)
-        } else if draft == nil {
-            let card = IOSCardView(padding: 16, spacing: 8)
-            card.stack.addArrangedSubview(sectionTitle("Profil yok"))
-            card.stack.addArrangedSubview(UILabel.studio("Mac'te Markalar → \(brand.name) → Marka Kiti'ne 3–12 örnek post ekleyip “AI ile analiz et”e bas; taslak burada onaya düşer.", size: 14, color: IOSTheme.textSecondary, lines: 0, style: .subheadline))
-            let analyze = UIButton.studioPill(title: "Profili çıkar", kind: .secondary, image: "wand.and.stars") { [weak self] in self?.analyze() }
-            analyze.isEnabled = kitError == nil && (kit?.samples.count ?? 0) >= BrandKit.minSamples && !isBusy
-            card.stack.addArrangedSubview(UIStackView.h([analyze, UIView.spacer()], spacing: 0))
-            stack.addArrangedSubview(card)
-        }
-
-        if profiles.count > 1 {
-            let history = IOSCardView(padding: 16, spacing: 6)
-            history.stack.addArrangedSubview(sectionTitle("Sürümler"))
-            for profile in profiles {
-                let status = profile.isCurrent ? "geçerli" : (profile.status == .approved ? "onaylı" : "taslak")
-                let button = UIButton.studioPill(title: "v\(profile.version) · \(status) · \(AssistantStatus.relative(profile.updatedAt))", kind: .plain) { [weak self] in self?.showProfile(profile) }
-                button.contentHorizontalAlignment = .leading
-                history.stack.addArrangedSubview(button)
-            }
-            stack.addArrangedSubview(history)
-        }
-    }
-
-    private func sectionTitle(_ text: String) -> UILabel {
-        let label = UILabel.studio(text, size: 13, weight: .semibold, color: IOSTheme.textSecondary, style: .footnote)
-        label.accessibilityTraits = .header
-        return label
-    }
-
-    private func textBlock(_ title: String, _ text: String) -> UIView {
-        let titleLabel = UILabel.studio(title, size: 14, weight: .semibold, style: .subheadline)
-        let body = UILabel.studio(text.isEmpty ? "—" : text, size: 14, color: text.isEmpty ? IOSTheme.textTertiary : IOSTheme.textPrimary, lines: 12, style: .subheadline)
-        body.lineBreakMode = .byTruncatingTail
-        var views: [UIView] = [titleLabel, body]
-        if text.split(separator: "\n").count > 12 || text.count > 700 {
-            views.append(UIStackView.h([UIButton.studioPill(title: "Tamamını göster", kind: .plain) { [weak self] in
-                self?.presentSheet(TextReaderViewController(title: title, text: text), detents: [.large()])
-            }, UIView.spacer()], spacing: 0))
-        }
-        return UIStackView.v(views, spacing: 4)
-    }
-
-    private func showProfile(_ profile: BrandProfile) {
-        let text = "# DESIGN.md\n\n\(profile.designRules)\n\n# VOICE.md\n\n\(profile.voice)"
-        presentSheet(TextReaderViewController(title: "Profil v\(profile.version)", text: text), detents: [.large()])
-    }
-
-    private func approve(_ draft: BrandProfile) {
-        confirm("Profil v\(draft.version) onaylansın mı?", message: "Yeni postlar bu kurallar ve ses tonuyla üretilir.", action: "Onayla", destructive: false) { [weak self] in
-            guard let self else { return }
-            self.isBusy = true
-            self.render()
-            Task {
-                do {
-                    _ = try await self.app.dataService.approveBrandProfile(brandId: self.brandId, version: draft.version)
-                    Haptics.success()
-                    Toast.show("Profil v\(draft.version) onaylandı", in: self.view)
-                } catch {
-                    self.presentError(IOSAppModel.describe(error))
-                }
-                self.isBusy = false
-                await self.load()
-            }
-        }
-    }
-
-    private func analyze() {
-        isBusy = true
-        render()
-        Task {
-            do {
-                _ = try await app.dataService.analyzeBrand(brandId: brandId, notes: nil)
-                Toast.show("Profil çıkarılıyor; bitince bildirim gelir.", in: view)
-            } catch {
-                presentError(IOSAppModel.describe(error))
-            }
-            isBusy = false
-            render()
-        }
+        mark.configure(overview)
+        let archived = brand.status == .archived
+        nameLabel.text = brand.name
+        nameLabel.textColor = archived ? IOSTheme.textSecondary : IOSTheme.textPrimary
+        seal.isHidden = !current
+        tagLabel.text = archived ? "Arşivde" : nil
+        tagLabel.isHidden = !archived
+        subtitleLabel.text = overview.subtitle
+        let accounts = BrandOverview.platformsSummary(overview.platforms)
+        let profile = profiles == nil ? "…" : overview.profileLine
+        let waiting = (profiles ?? []).contains { draft in draft.status == .draft && draft.version > ((profiles ?? []).first { $0.isCurrent }?.version ?? 0) }
+        stateLabel.text = "\(accounts.text) · \(profile)\(waiting ? " · onay bekliyor" : "")"
+        stateLabel.textColor = accounts.attention || waiting ? IOSTheme.accent : IOSTheme.textTertiary
+        accessibilityLabel = [brand.name, current ? "seçili marka" : nil, archived ? "arşivde" : nil, overview.subtitle, stateLabel.text].compactMap { $0 }.joined(separator: ", ")
+        accessibilityHint = "Markanın sayfasını açar."
     }
 }
 
-/// Long text (DESIGN.md / VOICE.md) in a sheet.
+/// Long text (DESIGN.md / VOICE.md, a skill version) in a sheet.
 final class TextReaderViewController: UIViewController {
     private let text: String
 
@@ -364,10 +367,8 @@ final class TextReaderViewController: UIViewController {
         let textView = UITextView()
         textView.translatesAutoresizingMaskIntoConstraints = false
         textView.isEditable = false
-        textView.text = text
-        textView.font = IOSTheme.font(15)
+        textView.attributedText = ChatText.assistant(text, aliases: [])
         textView.adjustsFontForContentSizeCategory = true
-        textView.textColor = IOSTheme.textPrimary
         textView.backgroundColor = .clear
         textView.textContainerInset = UIEdgeInsets(top: 16, left: 12, bottom: 32, right: 12)
         view.addSubview(textView)

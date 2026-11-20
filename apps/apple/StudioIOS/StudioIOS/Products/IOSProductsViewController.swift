@@ -15,11 +15,15 @@ final class IOSProductsModel {
     private(set) var hasLoaded = false
     var error: String?
 
-    init(app: IOSAppModel) {
+    /// A brand page's products stay on that brand; Ürünler follows the current brand.
+    private let fixedBrandId: EntityID?
+
+    init(app: IOSAppModel, brandId: EntityID? = nil) {
         self.app = app
+        self.fixedBrandId = brandId
     }
 
-    var brandId: EntityID? { app?.currentBrandId }
+    var brandId: EntityID? { fixedBrandId ?? app?.currentBrandId }
 
     func load() async {
         guard let app, let brandId else { return }
@@ -374,10 +378,10 @@ final class ProductEditorViewController: UIViewController, UITextFieldDelegate {
     private var isSaving = false
     private var analysisTask: Task<Void, Never>?
 
-    init(app: IOSAppModel, product: BrandProduct?, newPhoto: UIImage? = nil, photoAssetIds: [EntityID] = [], analyzeAssetId: EntityID? = nil) {
+    init(app: IOSAppModel, product: BrandProduct?, newPhoto: UIImage? = nil, photoAssetIds: [EntityID] = [], analyzeAssetId: EntityID? = nil, brandId: EntityID? = nil) {
         self.app = app
         self.product = product
-        self.brandId = product?.brandId ?? app.currentBrandId
+        self.brandId = product?.brandId ?? brandId ?? app.currentBrandId
         self.photoIds = product?.imageAssetIds ?? photoAssetIds
         self.pendingPhoto = newPhoto
         self.analyzeAssetId = analyzeAssetId

@@ -154,4 +154,44 @@ struct IOSViewSmokeTests {
         await exercise(PairingScannerViewController(app: app))
         await exercise(TextReaderViewController(title: "DESIGN.md", text: "# Başlık\n\nMetin"))
     }
+
+    /// Every section of a brand's page and the sheets and lists it opens.
+    @Test func brandPageSectionsAndSheets() async throws {
+        let app = await makeApp()
+        let page = BrandProfileViewController(app: app, brandId: SampleData.mtm)
+        await exercise(page)
+        await page.model.load()
+        #expect(page.model.skills.count == 2)
+        #expect(page.model.templates.count == 2)
+        #expect(page.model.kit?.palette.isEmpty == false)
+        for tab in BrandTab.allCases {
+            page.show(tab)
+            page.view.layoutIfNeeded()
+            #expect(page.currentTab == tab)
+            #expect(page.body.arrangedSubviews.isEmpty == false, "\(tab)")
+        }
+        let model = page.model
+        let template = try #require(model.templates.first)
+        let skill = try #require(model.skills.first)
+        let kit = try #require(model.kit)
+        await exercise(BrandSkillViewController(model: model, skillId: skill.id))
+        await exercise(BrandSkillViewController(model: model, skillId: nil))
+        await exercise(BrandChecksViewController(model: model))
+        await exercise(BrandSpecialDaysViewController(model: model))
+        await exercise(TemplateUseViewController(app: app, model: model, template: template))
+        await exercise(TemplateSettingsViewController(model: model, template: template))
+        await exercise(BrandMediaPickerViewController(app: app, brandId: SampleData.mtm, selected: nil) { _ in })
+        await exercise(BrandFormViewController(mode: .create) { _, _, _ in nil })
+        await exercise(BrandColorEditorViewController(color: kit.palette.first, defaultName: "renk-1") { _ in })
+        await exercise(BrandFontEditorViewController(font: BrandKitFont(source: .system, assetId: nil, family: "Avenir Next"), fileName: nil, preview: nil) { _ in })
+        await exercise(BrandTextEditorViewController(title: "Notlar", text: "", placeholder: "Not") { _ in nil })
+        await exercise(BrandDayPickerViewController(title: "2027 Ramazan Bayramı", date: Date(), year: 2027, corrected: true) { _ in })
+
+        // Saved as you go: a colour added on the phone reaches the backend.
+        model.changeKit { $0.palette.append(BrandKitColor(name: "yeni-renk", hex: "#123456")) }
+        model.flushKit()
+        try? await Task.sleep(for: .milliseconds(100))
+        let saved = try await app.dataService.brandKit(brandId: SampleData.mtm)
+        #expect(saved.palette.contains { $0.name == "yeni-renk" })
+    }
 }
