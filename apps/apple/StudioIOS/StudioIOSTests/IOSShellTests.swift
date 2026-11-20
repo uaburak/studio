@@ -335,7 +335,7 @@ struct IOSShellTests {
 
         // Attaching: photos, files, paste (camera only on a device).
         let attach = titles(composer.attachMenu().children)
-        #expect(attach.contains("Fotoğraflar") && attach.contains("Dosyalar") && attach.contains("Panodan yapıştır"))
+        #expect(attach.contains("Fotoğraflar ve videolar") && attach.contains("Dosyalar") && attach.contains("Panodan yapıştır"))
         #expect(attach.contains("Kamera") == ImagePicking.cameraAvailable)
 
         // Typing turns the primary button into send.

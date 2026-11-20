@@ -52,7 +52,8 @@ struct IOSViewSmokeTests {
         }
         #expect(app.pendingRoute == nil)
         #expect(root.mainNav.topViewController is IOSPostDetailViewController)
-        #expect(root.mainNav.viewControllers.first is IOSChatViewController)
+        // A post opens over Profil (its section), the back swipe goes there.
+        #expect(root.mainNav.viewControllers.first is IOSPostsViewController)
 
         app.open(.conversation("c-kasim"))
         for _ in 0..<50 where root.chat?.model.id != "c-kasim" { try? await Task.sleep(for: .milliseconds(20)) }
