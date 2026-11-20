@@ -23,7 +23,7 @@ enum BrandTab: Int, CaseIterable {
 /// Profil, Hesaplar, Ürünler and Şablonlar. Everything the Mac's brand page does is here:
 /// editing goes into sheets (a skill's editor too), the longer lists (checks, special days) and a
 /// product's page are pushed.
-final class BrandProfileViewController: UIViewController {
+final class BrandProfileViewController: UIViewController, UIGestureRecognizerDelegate, DrawerSwipeBlocking {
     private unowned let app: IOSAppModel
     let brandId: EntityID
     let model: BrandPageModel
@@ -32,7 +32,10 @@ final class BrandProfileViewController: UIViewController {
     private let scroll = UIScrollView()
     private let header = BrandPageHeader()
     private let tabs = BrandTabStrip()
-    let body = UIStackView.v([], spacing: 0)
+    /// Where the tab builders put their rows: the page's own stack, or (while the pages slide)
+    /// the neighbouring tab's.
+    private(set) var body = UIStackView.v([], spacing: 0)
+    private lazy var pageBody = body
     private var observation: IOSObservationToken?
     private var lastSignature: Int?
     /// Tiles of the Ürünler tab the product page zooms out of (by product id).
@@ -69,7 +72,9 @@ final class BrandProfileViewController: UIViewController {
         scroll.pin(to: view)
         setContentScrollView(scroll, for: .top)
 
-        let column = UIStackView.v([header, tabs, body], spacing: 0)
+        let column = UIStackView.v([header, tabs, pageBody], spacing: 0)
+        // The neighbouring tab's page lies beside the column's own, outside its bounds.
+        column.clipsToBounds = false
         scroll.addSubview(column)
         NSLayoutConstraint.activate([
             column.topAnchor.constraint(equalTo: scroll.contentLayoutGuide.topAnchor),
@@ -84,6 +89,9 @@ final class BrandProfileViewController: UIViewController {
         header.onChat = { [weak self] in self?.openChat() }
         header.onCount = { [weak self] tab in self?.show(tab) }
         tabs.onSelect = { [weak self] tab in self?.show(tab) }
+        pagePan.delegate = self
+        view.addGestureRecognizer(pagePan)
+        scroll.panGestureRecognizer.require(toFail: pagePan)
 
         let refresh = UIRefreshControl()
         refresh.addAction(UIAction { [weak self, weak refresh] _ in
@@ -104,10 +112,199 @@ final class BrandProfileViewController: UIViewController {
     }
 
     func show(_ next: BrandTab) {
-        guard next != currentTab else { return }
-        currentTab = next
-        Haptics.selection()
+        guard next != currentTab || pageAnimator != nil else { return }
+        slide(to: next)
+    }
+
+    // MARK: Paging between tabs (as Profil's Gönderiler / Reels / Hikâyeler)
+
+    private lazy var pagePan = UIPanGestureRecognizer(target: self, action: #selector(paged(_:)))
+    private var pageAnimator: UIViewPropertyAnimator?
+    private var pageTarget: BrandTab?
+    private var pageOffset: CGFloat = 0
+    private var panBase: CGFloat = 0
+    /// The neighbouring tab's rows beside the page while it slides.
+    private var neighborPage: UIStackView?
+    private var neighborTab: BrandTab?
+    /// -1: the neighbour is to the right (the next tab), 1: to the left, 0: none.
+    private var neighborSide: CGFloat = 0
+    /// Carries the offset through the animators, so a catch knows where the page is.
+    private lazy var pageTracker: UIView = {
+        let tracker = UIView()
+        tracker.isUserInteractionEnabled = false
+        view.insertSubview(tracker, at: 0)
+        return tracker
+    }()
+    /// The same hairline gap between the pages as between Profil's.
+    private let pageGap: CGFloat = 1.5
+
+    private var pageHeading: BrandTab { pageAnimator != nil ? (pageTarget ?? currentTab) : currentTab }
+
+    /// Rightward swipes page back while not on the first tab; on Genel they go back a screen.
+    var blocksDrawerSwipe: Bool { pageHeading != .general }
+
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+        guard gestureRecognizer === pagePan else { return true }
+        // The tab strip scrolls sideways itself.
+        var view = touch.view
+        while let current = view {
+            if current === tabs { return false }
+            view = current.superview
+        }
+        return true
+    }
+
+    func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+        guard gestureRecognizer === pagePan, model.brand != nil else { return gestureRecognizer !== pagePan }
+        let velocity = pagePan.velocity(in: view)
+        guard abs(velocity.x) > abs(velocity.y) * 1.2 else { return false }
+        if velocity.x < 0 { return pageAnimator != nil || currentTab.rawValue < BrandTab.allCases.count - 1 }
+        return pageHeading != .general
+    }
+
+    @objc private func paged(_ pan: UIPanGestureRecognizer) {
+        let width = max(view.bounds.width, 1)
+        let dx = pan.translation(in: view).x
+        switch pan.state {
+        case .began:
+            panBase = interruptPaging()
+            pageTarget = nil
+        case .changed:
+            var offset = panBase + dx
+            let last = BrandTab.allCases.count - 1
+            if (currentTab == .general && offset > 0) || (currentTab.rawValue == last && offset < 0) { offset *= 0.3 }
+            setPage(offset: offset)
+        case .ended, .cancelled, .failed:
+            let offset = pageOffset
+            let velocity = pan.state == .ended ? pan.velocity(in: view).x : 0
+            var target = currentTab
+            if offset < -width * 0.25 || velocity < -500 {
+                target = (neighborSide < 0 ? neighborTab : nil) ?? BrandTab(rawValue: currentTab.rawValue + 1) ?? currentTab
+            }
+            if offset > width * 0.25 || velocity > 500 {
+                target = (neighborSide > 0 ? neighborTab : nil) ?? BrandTab(rawValue: currentTab.rawValue - 1) ?? currentTab
+            }
+            slide(to: target, from: offset)
+        default:
+            break
+        }
+    }
+
+    /// The page's rows moved sideways (the header and the tab strip stay), the neighbouring tab's
+    /// glued to their side and the underline following.
+    private func setPage(offset: CGFloat) {
+        pageOffset = offset
+        let move = CGAffineTransform(translationX: offset, y: 0)
+        pageBody.transform = move
+        pageTracker.transform = move
+        let side: CGFloat = offset < 0 ? -1 : (offset > 0 ? 1 : 0)
+        if pageTarget == nil, side != 0, side != neighborSide {
+            showNeighbor(BrandTab(rawValue: currentTab.rawValue - Int(side)), side: side)
+        }
+        let span = view.bounds.width + pageGap
+        neighborPage?.transform = CGAffineTransform(translationX: offset - neighborSide * span, y: 0)
+        let steps = neighborTab.map { CGFloat(abs($0.rawValue - currentTab.rawValue)) } ?? 1
+        tabs.follow(CGFloat(currentTab.rawValue) - offset / max(span, 1) * max(steps, 1))
+    }
+
+    /// Builds `tab`'s rows into a stack laid beside the page, on `side`.
+    private func showNeighbor(_ tab: BrandTab?, side: CGFloat) {
+        dropNeighbor()
+        neighborTab = tab
+        neighborSide = side
+        guard let tab, let brand = model.brand, let overview = model.overview, let column = pageBody.superview else { return }
+        let stack = UIStackView.v([], spacing: 0)
+        stack.translatesAutoresizingMaskIntoConstraints = true
+        stack.isUserInteractionEnabled = false
+        let savedTiles = productTiles
+        body = stack
+        UIView.performWithoutAnimation { build(tab, brand, overview) }
+        body = pageBody
+        productTiles = savedTiles
+        let width = pageBody.bounds.width
+        let size = stack.systemLayoutSizeFitting(CGSize(width: width, height: 0), withHorizontalFittingPriority: .required, verticalFittingPriority: .fittingSizeLevel)
+        stack.frame = CGRect(x: pageBody.frame.minX, y: pageBody.frame.minY, width: width, height: size.height)
+        column.addSubview(stack)
+        stack.layoutIfNeeded()
+        neighborPage = stack
+    }
+
+    private func dropNeighbor() {
+        neighborPage?.removeFromSuperview()
+        neighborPage = nil
+        neighborTab = nil
+        neighborSide = 0
+    }
+
+    /// Stops a running slide where it is; one caught on its way to another tab hands over to it
+    /// at once (its page becomes the current one, at the same spot), so a second swipe goes on.
+    private func interruptPaging() -> CGFloat {
+        if let animator = pageAnimator {
+            pageAnimator = nil
+            animator.stopAnimation(false)
+            animator.finishAnimation(at: .current)
+            setPage(offset: pageTracker.transform.tx)
+            if let target = pageTarget, target != currentTab, neighborTab == target {
+                let onScreen = pageOffset - neighborSide * (view.bounds.width + pageGap)
+                let previous = currentTab
+                pageTarget = nil
+                switchTab(to: target)
+                if onScreen != 0 { showNeighbor(previous, side: onScreen < 0 ? -1 : 1) }
+                setPage(offset: onScreen)
+            }
+        }
+        tabs.select(currentTab, animated: false)
+        return pageOffset
+    }
+
+    private func switchTab(to tab: BrandTab) {
+        currentTab = tab
+        dropNeighbor()
+        lastSignature = nil
         render()
+        view.layoutIfNeeded()
+    }
+
+    /// To `target`: both pages slide together, side by side, until the other fills the screen;
+    /// or back into place. Interruptible at any moment (a new swipe or tap takes over).
+    private func slide(to target: BrandTab, from offset: CGFloat? = nil) {
+        let start = offset ?? interruptPaging()
+        if let animator = pageAnimator {
+            pageAnimator = nil
+            animator.stopAnimation(true)
+        }
+        let width = max(view.bounds.width, 1)
+        pageTarget = target
+        guard target != currentTab else {
+            setPage(offset: start)
+            let back = UIViewPropertyAnimator(duration: 0.32, dampingRatio: 1) { self.setPage(offset: 0) }
+            back.addCompletion { [weak self] position in
+                guard let self, position == .end, self.pageAnimator === back else { return }
+                self.pageAnimator = nil
+                self.pageTarget = nil
+                self.dropNeighbor()
+                self.tabs.select(self.currentTab, animated: false)
+            }
+            pageAnimator = back
+            back.startAnimation()
+            return
+        }
+        let side: CGFloat = target.rawValue > currentTab.rawValue ? -1 : 1
+        if neighborTab != target || neighborSide != side || neighborPage == nil { showNeighbor(target, side: side) }
+        setPage(offset: start)
+        let end = side * (width + pageGap)
+        let remaining = min(max(abs(end - start) / width, 0.3), 1)
+        let across = UIViewPropertyAnimator(duration: 0.38 * remaining, dampingRatio: 1) { self.setPage(offset: end) }
+        across.addCompletion { [weak self] position in
+            guard let self, position == .end, self.pageAnimator === across else { return }
+            self.pageAnimator = nil
+            self.pageTarget = nil
+            self.switchTab(to: target)
+            self.setPage(offset: 0)
+        }
+        pageAnimator = across
+        across.startAnimation()
+        Haptics.selection()
     }
 
     /// Renders even when the model did not change (a picked profile version).
@@ -176,10 +373,14 @@ final class BrandProfileViewController: UIViewController {
             brand: brand, overview: overview, isCurrent: model.isCurrent,
             counts: [(.products, model.products.products.count, "ürün"), (.templates, model.templates.count, "şablon"), (.kit, model.skills.count, "skill")],
             status: statusLine(), loading: model.isLoading && !model.hasLoaded)
-        tabs.select(currentTab)
+        if pageAnimator == nil { tabs.select(currentTab, animated: true) }
         productTiles = [:]
         body.removeAllArranged()
-        switch currentTab {
+        build(currentTab, brand, overview)
+    }
+
+    private func build(_ tab: BrandTab, _ brand: Brand, _ overview: BrandOverview) {
+        switch tab {
         case .general: buildGeneral(brand, overview)
         case .kit: buildKit(brand)
         case .profile: buildProfile(brand)
@@ -469,9 +670,21 @@ final class BrandTabStrip: UIView {
 
     required init?(coder: NSCoder) { fatalError("not used") }
 
-    func select(_ tab: BrandTab) {
+    /// Where the underline stands, in tabs (2.5 = halfway between Profil and Hesaplar); the page
+    /// drives it, so it moves with the finger and with the page's slide.
+    private var position: CGFloat = 0
+
+    func follow(_ position: CGFloat) {
+        let last = CGFloat(BrandTab.allCases.count - 1)
+        self.position = min(max(position, 0), last)
+        if let nearest = BrandTab(rawValue: Int(self.position.rounded())), nearest != selected { select(nearest, animated: false, keepPosition: true) }
+        placeUnderline()
+    }
+
+    func select(_ tab: BrandTab, animated: Bool = true, keepPosition: Bool = false) {
         let changed = tab != selected
         selected = tab
+        if !keepPosition { position = CGFloat(tab.rawValue) }
         for (index, button) in buttons.enumerated() {
             let on = index == tab.rawValue
             button.configuration?.baseForegroundColor = on ? IOSTheme.textPrimary : IOSTheme.textTertiary
@@ -485,8 +698,10 @@ final class BrandTabStrip: UIView {
         }
         setNeedsLayout()
         guard changed, window != nil else { return }
-        UIView.animate(withDuration: 0.25, delay: 0, usingSpringWithDamping: 1, initialSpringVelocity: 0) {
-            self.layoutIfNeeded()
+        if animated {
+            UIView.animate(withDuration: 0.25, delay: 0, usingSpringWithDamping: 1, initialSpringVelocity: 0) {
+                self.placeUnderline()
+            }
         }
         // The picked word comes fully into view when the strip scrolls.
         let button = buttons[tab.rawValue]
@@ -497,9 +712,19 @@ final class BrandTabStrip: UIView {
         super.layoutSubviews()
         // The buttons' frames first (they are laid out inside the scroll view).
         scroll.layoutIfNeeded()
-        guard buttons.indices.contains(selected.rawValue) else { return }
-        let button = buttons[selected.rawValue]
-        let frame = button.convert(button.bounds, to: scroll)
-        underline.frame = CGRect(x: frame.minX + 8, y: bounds.height - 2, width: max(frame.width - 16, 0), height: 2)
+        placeUnderline()
+    }
+
+    /// Between the two words around `position`, in proportion.
+    private func placeUnderline() {
+        guard !buttons.isEmpty else { return }
+        let lower = min(max(Int(position.rounded(.down)), 0), buttons.count - 1)
+        let upper = min(lower + 1, buttons.count - 1)
+        let t = position - CGFloat(lower)
+        let a = buttons[lower].convert(buttons[lower].bounds, to: scroll)
+        let b = buttons[upper].convert(buttons[upper].bounds, to: scroll)
+        let x = a.minX + (b.minX - a.minX) * t
+        let w = a.width + (b.width - a.width) * t
+        underline.frame = CGRect(x: x + 8, y: bounds.height - 2, width: max(w - 16, 0), height: 2)
     }
 }

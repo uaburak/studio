@@ -393,6 +393,8 @@ final class StudioRootViewController: UIViewController, UINavigationControllerDe
         guard mainNav.viewControllers.count > 1, let top = mainNav.topViewController else { return false }
         // The system's zoom brings its own swipe and drag back.
         if top.preferredTransition != nil { return false }
+        // A page that pages its own tabs with a rightward swipe (a brand's page past Genel).
+        if let paging = top as? DrawerSwipeBlocking, paging.blocksDrawerSwipe { return false }
         return top is PostFeedViewController || !(top is any ZoomTransitionDestination)
     }
 
