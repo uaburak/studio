@@ -38,6 +38,11 @@ export const BrandProduct = z
     id: EntityId,
     brandId: EntityId,
     name: z.string(),
+    /**
+     * Mention name in chats (`@boro`), unique in the brand across products and posts (see
+     * mention.ts). Always sent by this server; absent from older ones.
+     */
+    slug: z.string().optional(),
     /** Short description ("" when none). */
     description: z.string(),
     /** Free category ("" when none): "Gübre", "Tohum". */

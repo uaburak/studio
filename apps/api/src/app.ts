@@ -9,6 +9,7 @@ import { hostComponents } from "./lib/health.ts";
 import { createRouter } from "./lib/router.ts";
 import { accessControl, authenticate } from "./middleware/access.ts";
 import { aiRoutes } from "./routes/ai.ts";
+import { approvalRoutes } from "./routes/approvals.ts";
 import { assetAnalysisRoutes } from "./routes/asset-analysis.ts";
 import { assetRoutes } from "./routes/assets.ts";
 import { brandKitRoutes } from "./routes/brand-kits.ts";
@@ -115,6 +116,7 @@ app.route("/", scheduleRoutes);
 app.route("/", publishDetailRoutes); // /api/contents/{id}/publish-details, /api/brands/{id}/publish-locations (N13)
 app.route("/", insightRoutes); // /api/contents/{id}/performance, /api/brands/{id}/performance|best-times (N15)
 app.route("/", commentRoutes); // /api/comments/* (N16)
+app.route("/", approvalRoutes); // /api/approvals/*, /api/worker/approvals (URETIM-RESIM Faz 0)
 app.route("/", publishingRoutes); // /api/publishing/*, /api/publish-logs, /api/worker/publishing/* (P3)
 app.route("/", aiRoutes); // /api/ai/*, /api/worker/ai/* (roadmap 7 + 11)
 app.route("/", hubRoutes); // /api/hub (worker WebSocket), /api/workers/presence

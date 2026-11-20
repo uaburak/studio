@@ -9,6 +9,7 @@ import {
   Timestamp,
 } from "./common.ts";
 import { ContentType } from "./content.ts";
+import { GenerationEngine, GenerationVariants } from "./generation.ts";
 import { Job, JobStatus } from "./job.ts";
 import { ReelGenerateOptions } from "./reel.ts";
 import { RepurposeSpec, TemplateFill } from "./template.ts";
@@ -307,6 +308,11 @@ export const PlanGenerate = z
     force: z.boolean().optional(),
     /** With `force`: the user confirmed replacing edited or approved posts. */
     overwriteEdits: z.boolean().optional(),
+    /**
+     * Design engine for these posts (default: the brand's `defaultEngine`, else `html`). Only
+     * `html` runs today; others are refused with "Bu motor henüz hazır değil".
+     */
+    engine: GenerationEngine.optional(),
   })
   .meta({ id: "PlanGenerate" });
 export type PlanGenerate = z.input<typeof PlanGenerate>;
@@ -450,6 +456,17 @@ export const ContentGeneratePayload = z
     template: TemplateFill.optional(),
     /** Convert a post (N10): its texts and pictures become a story or a Reels. */
     repurpose: RepurposeSpec.optional(),
+    /**
+     * Design engine (docs/URETIM-RESIM.md). Absent = `html`. Only `html` runs today; the worker
+     * fails the job with "Bu motor henüz hazır değil" for the others (never falls back).
+     */
+    engine: GenerationEngine.optional(),
+    /** How many variants the owner asked for in this request (each is its own post and job). */
+    variants: GenerationVariants.optional(),
+    /** Which of the `variants` this job makes (1-based). */
+    variantIndex: GenerationVariants.optional(),
+    /** Products of the brand the post is about (`@ürün` mentions); their facts go to the designer. */
+    productIds: z.array(EntityId).max(8).optional(),
   })
   .meta({ id: "ContentGeneratePayload" });
 export type ContentGeneratePayload = z.infer<typeof ContentGeneratePayload>;

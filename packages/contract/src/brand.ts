@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { EntityId, nonEmptyUpdate, PageQuery, pageOf, Timestamp } from "./common.ts";
+import { GenerationEngine } from "./generation.ts";
 
 export const BrandStatus = z.enum(["active", "archived"]).meta({ id: "BrandStatus" });
 export type BrandStatus = z.infer<typeof BrandStatus>;
@@ -20,6 +21,10 @@ export type BrandSlug = z.infer<typeof BrandSlug>;
 
 const BrandName = z.string().trim().min(1).max(120);
 
+/** Free text added to the brand's generated pictures' prompts ("vintage", "retro"…); "" = none. */
+export const MAX_IMAGE_STYLE_PRESET_LENGTH = 500;
+const ImageStylePreset = z.string().trim().max(MAX_IMAGE_STYLE_PRESET_LENGTH);
+
 export const Brand = z
   .object({
     id: EntityId,
@@ -29,6 +34,13 @@ export const Brand = z
     status: BrandStatus,
     createdAt: Timestamp,
     updatedAt: Timestamp,
+    /**
+     * The engine the agent uses for this brand's posts without asking (null: ask each time).
+     * Always sent by this server; absent from older ones.
+     */
+    defaultEngine: GenerationEngine.nullable().optional(),
+    /** Style preset for generated pictures ("" = none). Always sent by this server. */
+    imageStylePreset: z.string().optional(),
   })
   .meta({ id: "Brand" });
 export type Brand = z.infer<typeof Brand>;
@@ -39,6 +51,8 @@ export const BrandCreate = z
     /** Derived from `name` when omitted. */
     slug: BrandSlug.optional(),
     defaultLanguage: LanguageTag.default("tr"),
+    defaultEngine: GenerationEngine.nullable().optional(),
+    imageStylePreset: ImageStylePreset.optional(),
   })
   .meta({ id: "BrandCreate" });
 export type BrandCreate = z.input<typeof BrandCreate>;
@@ -50,6 +64,9 @@ export const BrandUpdate = z
     defaultLanguage: LanguageTag.optional(),
     /** Brands are never deleted; archive them instead. */
     status: BrandStatus.optional(),
+    /** null clears it (the agent asks each time). */
+    defaultEngine: GenerationEngine.nullable().optional(),
+    imageStylePreset: ImageStylePreset.optional(),
   })
   .refine(nonEmptyUpdate, "at least one field is required")
   .meta({ id: "BrandUpdate" });

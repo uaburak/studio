@@ -14,6 +14,7 @@ import {
 } from "./common.ts";
 import { ContentCheckPayload } from "./content-check.ts";
 import { CommentsSuggestPayload, CommentsSyncPayload, InsightsSyncPayload } from "./engagement.ts";
+import { ApprovalTarget } from "./generation.ts";
 import { ReelSpecPatch } from "./reel.ts";
 
 export const JobId = z.string().min(1).max(128);
@@ -266,6 +267,11 @@ export const ImageGeneratePayload = z
      * reading the photo); checked against the final picture.
      */
     labelText: z.string().trim().max(4000).optional(),
+    /**
+     * Ask the owner before the picture is used: the result becomes an approval request of this
+     * kind (`POST /api/worker/approvals`) instead of filling `targetSlotId` right away.
+     */
+    approval: ApprovalTarget.optional(),
   })
   .meta({ id: "ImageGeneratePayload" });
 export type ImageGeneratePayload = z.infer<typeof ImageGeneratePayload>;

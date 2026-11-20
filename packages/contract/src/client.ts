@@ -19,6 +19,16 @@ import {
   type WorkerAiUsageReport,
 } from "./ai.ts";
 import {
+  ApprovalActionResult,
+  type ApprovalApprove,
+  type ApprovalCreate,
+  ApprovalList,
+  type ApprovalListQuery,
+  type ApprovalRegenerate,
+  type ApprovalReject,
+  ApprovalRequest,
+} from "./approval.ts";
+import {
   Asset,
   AssetAnalysisPendingList,
   AssetList,
@@ -186,6 +196,7 @@ import {
   type JobStreamQuery,
   WorkerPresence,
 } from "./job.ts";
+import { MentionCandidateList } from "./mention.ts";
 import {
   Plan,
   type PlanAccept,
@@ -534,6 +545,42 @@ export function createApiClient(options: ApiClientOptions = {}) {
         call(Brand, "/api/brands", { method: "POST", json: input, init }),
       update: (id: string, input: BrandUpdate, init?: RequestInit) =>
         call(Brand, `/api/brands/${enc(id)}`, { method: "PATCH", json: input, init }),
+      /** Products and posts the chat composer offers after `@` (mention.ts). */
+      mentionCandidates: (id: string, init?: RequestInit) =>
+        call(MentionCandidateList, `/api/brands/${enc(id)}/mention-candidates`, { init }),
+    },
+
+    approvals: {
+      /** Newest first; `status` defaults to `pending` (`all` for every status). */
+      list: (query?: ApprovalListQuery, init?: RequestInit) =>
+        call(ApprovalList, "/api/approvals", { query: q(query), init }),
+      get: (id: string, init?: RequestInit) =>
+        call(ApprovalRequest, `/api/approvals/${enc(id)}`, { init }),
+      approve: (id: string, input: ApprovalApprove = {}, init?: RequestInit) =>
+        call(ApprovalActionResult, `/api/approvals/${enc(id)}/approve`, {
+          method: "POST",
+          json: input,
+          init,
+        }),
+      reject: (id: string, input: ApprovalReject = {}, init?: RequestInit) =>
+        call(ApprovalActionResult, `/api/approvals/${enc(id)}/reject`, {
+          method: "POST",
+          json: input,
+          init,
+        }),
+      /** The owner's consent to run the same generation again (paid). */
+      regenerate: (id: string, input: ApprovalRegenerate = {}, init?: RequestInit) =>
+        call(ApprovalActionResult, `/api/approvals/${enc(id)}/regenerate`, {
+          method: "POST",
+          json: input,
+          init,
+        }),
+    },
+
+    workerApprovals: {
+      /** A finished generation asks for the owner's word (worker token). */
+      create: (input: ApprovalCreate, init?: RequestInit) =>
+        call(ApprovalRequest, "/api/worker/approvals", { method: "POST", json: input, init }),
     },
 
     brandKits: {

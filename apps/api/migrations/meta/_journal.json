@@ -169,6 +169,13 @@
       "when": 1795042745164,
       "tag": "0023_engagement",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "6",
+      "when": 1795176688852,
+      "tag": "0024_production_basics",
+      "breakpoints": true
     }
   ]
 }

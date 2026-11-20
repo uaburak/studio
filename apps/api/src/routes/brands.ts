@@ -1,10 +1,12 @@
-import { createRoute } from "@hono/zod-openapi";
+import { createRoute, z } from "@hono/zod-openapi";
 import {
   Brand,
   BrandCreate,
   BrandList,
   BrandListQuery,
   BrandUpdate,
+  EntityId,
+  MentionCandidateList,
   slugify,
 } from "@studio/contract";
 import { and, desc, eq, lt, type SQL } from "drizzle-orm";
@@ -13,6 +15,7 @@ import { toBrand } from "../db/mappers.ts";
 import { brands } from "../db/schema.ts";
 import { badRequest, conflict, notFound } from "../lib/errors.ts";
 import { newId } from "../lib/ids.ts";
+import { mentionCandidates } from "../lib/mentions.ts";
 import { toPage } from "../lib/pagination.ts";
 import { createRouter, errors, IdParams, json, jsonBody } from "../lib/router.ts";
 
@@ -84,6 +87,8 @@ export const brandRoutes = createRouter()
           slug,
           defaultLanguage: input.defaultLanguage,
           status: "active",
+          defaultEngine: input.defaultEngine ?? null,
+          imageStylePreset: input.imageStylePreset ?? "",
           createdAt: now,
           updatedAt: now,
         })
@@ -134,5 +139,25 @@ export const brandRoutes = createRouter()
         .returning();
       if (!row) throw notFound("brand", id);
       return c.json(toBrand(row), 200);
+    },
+  )
+  .openapi(
+    createRoute({
+      method: "get",
+      path: "/api/brands/{brandId}/mention-candidates",
+      tags,
+      summary: "Products and posts the chat composer offers after `@`",
+      description:
+        "Products (oldest first), then the newest posts (at most MAX_MENTION_POSTS; posts in " +
+        "the trash are left out), each with its mention name (`slug`, without `@`). Names are " +
+        "unique in the brand; file aliases of a conversation (`@image`…) win over them.",
+      request: { params: z.object({ brandId: EntityId }) },
+      responses: { 200: json(MentionCandidateList, "The candidates."), 404: errors[404] },
+    }),
+    async (c) => {
+      const { brandId } = c.req.valid("param");
+      const db = createDb(c.env.DB);
+      await requireBrand(db, brandId);
+      return c.json({ items: await mentionCandidates(db, brandId) }, 200);
     },
   );

@@ -9,10 +9,11 @@ import {
 } from "@studio/contract";
 import { and, asc, eq, gt, inArray, type SQL } from "drizzle-orm";
 import { createDb, type Db } from "../db/client.ts";
-import { toBrandProduct } from "../db/mappers.ts";
+import { type BrandProductRow, toBrandProduct } from "../db/mappers.ts";
 import { assets, brandProducts } from "../db/schema.ts";
 import { badRequest, notFound } from "../lib/errors.ts";
 import { newId } from "../lib/ids.ts";
+import { productSlugs } from "../lib/mentions.ts";
 import { toPage } from "../lib/pagination.ts";
 import { createRouter, errors, json, jsonBody } from "../lib/router.ts";
 import { requireBrand } from "./brands.ts";
@@ -55,6 +56,12 @@ async function assertImages(db: Db, brandId: string, ids: readonly string[]): Pr
   if (issues.length > 0) throw badRequest("the product references unusable files", issues);
 }
 
+/** The product with its mention name (`@boro`). */
+async function withSlug(db: Db, row: BrandProductRow) {
+  const slugs = await productSlugs(db, row.brandId);
+  return toBrandProduct(row, slugs.get(row.id));
+}
+
 export const brandProductRoutes = createRouter()
   .openapi(
     createRoute({
@@ -82,8 +89,14 @@ export const brandProductRoutes = createRouter()
         .where(and(...where))
         .orderBy(asc(brandProducts.id))
         .limit(limit + 1);
+      const slugs = await productSlugs(db, brandId);
       return c.json(
-        toPage(rows, limit, toBrandProduct, (r) => r.id),
+        toPage(
+          rows,
+          limit,
+          (r) => toBrandProduct(r, slugs.get(r.id)),
+          (r) => r.id,
+        ),
         200,
       );
     },
@@ -125,7 +138,7 @@ export const brandProductRoutes = createRouter()
         })
         .returning();
       if (!row) throw new Error("insert returned no row");
-      return c.json(toBrandProduct(row), 201);
+      return c.json(await withSlug(db, row), 201);
     },
   )
   .openapi(
@@ -139,8 +152,9 @@ export const brandProductRoutes = createRouter()
     }),
     async (c) => {
       const { brandId, productId } = c.req.valid("param");
-      const row = await requireProduct(createDb(c.env.DB), brandId, productId);
-      return c.json(toBrandProduct(row), 200);
+      const db = createDb(c.env.DB);
+      const row = await requireProduct(db, brandId, productId);
+      return c.json(await withSlug(db, row), 200);
     },
   )
   .openapi(
@@ -169,7 +183,7 @@ export const brandProductRoutes = createRouter()
         .where(eq(brandProducts.id, current.id))
         .returning();
       if (!row) throw notFound(`brand ${brandId} product`, productId);
-      return c.json(toBrandProduct(row), 200);
+      return c.json(await withSlug(db, row), 200);
     },
   )
   .openapi(
