@@ -140,13 +140,24 @@ final class IOSChatViewController: UIViewController, UITableViewDelegate {
 
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
+        // Pushed (a post's own chat): the back button, not the drawer.
+        if let navigation = navigationController, navigation.viewControllers.first !== self {
+            navigationItem.leftBarButtonItem = nil
+        }
         // The greeting follows the clock.
         renderHome()
     }
 
+    /// Opened from a post's field: typing starts right away.
+    var focusComposerOnAppear = false
+
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
         app.visibleConversationId = model.id
+        if focusComposerOnAppear {
+            focusComposerOnAppear = false
+            composer.textView.becomeFirstResponder()
+        }
     }
 
     override func viewWillDisappear(_ animated: Bool) {
@@ -674,4 +685,9 @@ final class ChatHomeView: UIView {
         }
         actionRow.isHidden = action == nil
     }
+}
+
+extension IOSChatViewController: FloatingComposerHost {
+    var floatingComposer: UIView { composer }
+    var floatingComposerPill: UIView { composer.pill }
 }

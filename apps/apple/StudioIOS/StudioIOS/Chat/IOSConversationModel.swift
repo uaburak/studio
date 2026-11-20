@@ -324,6 +324,14 @@ final class IOSConversationModel {
         didSet { if selection != oldValue { app.saveSelection(selection, for: id) } }
     }
     @ObservationIgnored private var streamTask: Task<Void, Never>?
+    /// A post's own chat (opened from the post): every message starts with the post's line, as
+    /// the Mac's post chat writes it (`postReference`), so the agent knows which post it means.
+    @ObservationIgnored var messagePrefix: (() -> String)?
+    /// For a post's chat not made yet: its title, its brand, its placeholder, and who learns its id.
+    @ObservationIgnored var newConversationTitle: String?
+    @ObservationIgnored var newConversationBrandId: EntityID?
+    @ObservationIgnored var placeholderOverride: String?
+    @ObservationIgnored var onCreated: ((EntityID) -> Void)?
 
     init(id: EntityID?, app: IOSAppModel) {
         self.id = id
@@ -382,7 +390,9 @@ final class IOSConversationModel {
     func refreshComposerState() {
         let reason: String? = brandId == nil ? "Markasız sohbete görsel eklenemez; önce bir marka seç." : nil
         if composer.attachDisabledReason != reason { composer.attachDisabledReason = reason }
-        if isNew {
+        if let placeholderOverride {
+            if composer.placeholder != placeholderOverride { composer.placeholder = placeholderOverride }
+        } else if isNew {
             let name = app.currentBrand?.name.split(separator: " ").first.map(String.init)
             let placeholder = name.map { "\($0) için ne üretelim?" } ?? "Ne üretelim?"
             if composer.placeholder != placeholder { composer.placeholder = placeholder }
@@ -426,14 +436,16 @@ final class IOSConversationModel {
         isSending = true
         defer { isSending = false }
         var message = composer.makeMessage()
+        if let prefix = messagePrefix?() { message.text = "\(prefix)\n\(message.text)" }
         message.model = selection.model
         message.effort = selection.effort
         do {
             if id == nil {
-                let firstLine = message.text.trimmingCharacters(in: .whitespacesAndNewlines)
-                let title = firstLine.isEmpty ? nil : String(firstLine.prefix(60))
-                let conversation = try await app.conversationService.createConversation(brandId: app.currentBrandId, title: title)
+                let firstLine = composer.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                let title = newConversationTitle ?? (firstLine.isEmpty ? nil : String(firstLine.prefix(60)))
+                let conversation = try await app.conversationService.createConversation(brandId: newConversationBrandId ?? app.currentBrandId, title: title)
                 id = conversation.id
+                onCreated?(conversation.id)
                 app.conversationUpdated(conversation)
                 app.register(self, as: conversation.id)
                 app.saveSelection(selection, for: conversation.id)

@@ -374,12 +374,14 @@ final class StudioRootViewController: UIViewController, UINavigationControllerDe
 
     /// The picture viewer flies its picture in and out (see `PhotoZoomTransition`).
     func navigationController(_ navigationController: UINavigationController, animationControllerFor operation: UINavigationController.Operation, from fromVC: UIViewController, to toVC: UIViewController) -> UIViewControllerAnimatedTransitioning? {
+        // A post and its chat: the pages slide, their shared message field stays put.
+        if let slide = ComposerSlideAnimator.make(operation, from: fromVC, to: toVC) { return slide }
         if operation == .pop, backInteraction != nil { return SwipeBackAnimator() }
         return PhotoViewerNavigationDelegate.animator(operation: operation, from: fromVC, to: toVC)
     }
 
     func navigationController(_ navigationController: UINavigationController, interactionControllerFor animationController: UIViewControllerAnimatedTransitioning) -> UIViewControllerInteractiveTransitioning? {
-        if animationController is SwipeBackAnimator { return backInteraction }
+        if animationController is SwipeBackAnimator || animationController is ComposerSlideAnimator { return backInteraction }
         return PhotoViewerNavigationDelegate.interaction(for: animationController)
     }
 

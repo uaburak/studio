@@ -27,6 +27,7 @@ final class IOSPostDetailViewController: UIViewController, UITextViewDelegate {
     private let bottomBar = UIView()
     private let instructionView = ComposerTextView()
     private var instructionHeight: NSLayoutConstraint!
+    private let instructionPill = UIVisualEffectView()
     private var instructionSend: UIButton!
     private var scheduleButton: UIButton!
     private var approveButton: UIButton!
@@ -111,6 +112,15 @@ final class IOSPostDetailViewController: UIViewController, UITextViewDelegate {
         }
     }
 
+    /// Back from the post's chat: the agent may have made a new version meanwhile.
+    override func viewWillAppear(_ animated: Bool) {
+        super.viewWillAppear(animated)
+        if hasAppeared { Task { await session.load() } }
+        hasAppeared = true
+    }
+
+    private var hasAppeared = false
+
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
         if let layer = session.selectedLayerId { session.flushNudge(layer) }
@@ -159,7 +169,8 @@ final class IOSPostDetailViewController: UIViewController, UITextViewDelegate {
         let row = UIStackView.h([instructionView, instructionSend], spacing: 6, alignment: .bottom)
         let glass = UIGlassEffect(style: .regular)
         glass.isInteractive = false
-        let pill = UIVisualEffectView(effect: glass)
+        let pill = instructionPill
+        pill.effect = glass
         pill.translatesAutoresizingMaskIntoConstraints = false
         pill.cornerConfiguration = .corners(radius: .fixed(26))
         row.translatesAutoresizingMaskIntoConstraints = false
@@ -190,6 +201,40 @@ final class IOSPostDetailViewController: UIViewController, UITextViewDelegate {
             bottomBar.bottomAnchor.constraint(equalTo: view.keyboardLayoutGuide.topAnchor),
             resting,
         ])
+    }
+
+    /// The field is the post's own chat: a tap slides that chat in (the field stays put and
+    /// becomes the chat's), where the request is typed and the agent's answer follows.
+    func textViewShouldBeginEditing(_ textView: UITextView) -> Bool {
+        openPostChat()
+        return false
+    }
+
+    private func openPostChat() {
+        let content = session.content
+        let model: IOSConversationModel
+        if let known = session.postConversations.conversationId(for: content.id) {
+            model = app.conversationModel(known)
+        } else {
+            model = app.newConversationModel()
+            model.newConversationTitle = String(content.title.prefix(200))
+            model.newConversationBrandId = content.brandId
+            let conversations = session.postConversations
+            let contentId = content.id
+            model.onCreated = { id in conversations.remember(id, for: contentId) }
+        }
+        // Every message names the post and its current version, as the Mac's post chat does.
+        model.messagePrefix = { [weak session] in
+            guard let session else { return "" }
+            return CanvasOrigin.postReference(
+                title: session.content.title, contentId: session.content.id,
+                version: session.activeVersion?.version, canvas: session.isCanvasVersion)
+        }
+        model.placeholderOverride = "Neyi değiştireyim?"
+        model.refreshComposerState()
+        let chat = IOSChatViewController(model: model)
+        chat.focusComposerOnAppear = true
+        navigationController?.pushViewController(chat, animated: true)
     }
 
     func textViewDidChange(_ textView: UITextView) {
@@ -922,4 +967,9 @@ final class IOSPostDetailViewController: UIViewController, UITextViewDelegate {
             }
         }
     }
+}
+
+extension IOSPostDetailViewController: FloatingComposerHost {
+    var floatingComposer: UIView { bottomBar }
+    var floatingComposerPill: UIView { instructionPill }
 }
