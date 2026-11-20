@@ -24,6 +24,7 @@ Mimari tek sayfada: [docs/MIMARI.md](docs/MIMARI.md). Güncel durum ve açık i�
 | `apps/api`             | API (Hono, Cloudflare Workers çalışma zamanı; Mac'te `wrangler dev`): D1, R2, `Hub` Durable Object, LAN geçidi |
 | `apps/worker`          | Üretim worker'ı (Node): sohbet ajanı, içerik üretimi, render, Reels, görsel, kontroller, yerel yayın           |
 | `apps/cloud-publisher` | Yalnızca zamanlanmış postları paylaşan Cloudflare Worker                                                       |
+| `apps/mcp`             | MCP sunucusu (stdio): Claude Code ve diğer ajanlar Studio'yu yerel API üzerinden sahip olarak kullanır         |
 | `apps/apple`           | iPhone uygulaması (`StudioIOS`) ve ortak Swift çekirdeği (`StudioKit`)                                         |
 | `packages/contract`    | Ortak zod şemaları ve tipli API istemcisi (TypeScript tarafının tek sözleşmesi)                                |
 | `packages/design-kit`  | Slayt HTML sözleşmesi, render ve kontrol yardımcıları                                                          |
@@ -80,7 +81,7 @@ xcodebuild -project apps/apple/StudioIOS/StudioIOS.xcodeproj -scheme StudioIOS \
 - [docs/DENETIM-PLANI.md](docs/DENETIM-PLANI.md): denetim bulguları, kararlar, ilerleme
 - [docs/ROADMAP-desktop.md](docs/ROADMAP-desktop.md): masaüstü yol haritası (durumlarıyla)
 - [apps/api/README.md](apps/api/README.md), [apps/worker/README.md](apps/worker/README.md),
-  [apps/cloud-publisher/README.md](apps/cloud-publisher/README.md),
+  [apps/cloud-publisher/README.md](apps/cloud-publisher/README.md), [apps/mcp/README.md](apps/mcp/README.md),
   [apps/apple/README.md](apps/apple/README.md), [apps/desktop/docs/editor.md](apps/desktop/docs/editor.md)
 - [PLAN.md](PLAN.md): ilk plan (tarihsel)
 

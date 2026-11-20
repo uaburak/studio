@@ -5,6 +5,7 @@ packages:
   - apps/api
   - apps/worker
   - apps/cloud-publisher
+  - apps/mcp
   - packages/*
 
 # Single source of truth for dependency versions. Packages reference these

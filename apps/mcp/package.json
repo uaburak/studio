@@ -1,0 +1,26 @@
+{
+  "name": "@studio/mcp",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Studio MCP server (stdio): lets Claude Code and other agents operate Studio through its local API.",
+  "scripts": {
+    "build": "esbuild src/main.ts --bundle --platform=node --format=esm --target=node24 --packages=external --outfile=dist/main.js",
+    "start": "node dist/main.js",
+    "dev": "node src/main.ts",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "openapi:update": "tsx scripts/update-openapi.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.32.1",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "esbuild": "catalog:",
+    "tsx": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

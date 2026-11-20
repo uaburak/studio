@@ -1,0 +1,9 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "types": ["node"],
+    // src/ runs directly on Node (type stripping): only erasable TypeScript.
+    "erasableSyntaxOnly": true
+  },
+  "include": ["src", "test", "scripts"]
+}
