@@ -392,6 +392,10 @@ final class IOSMediaViewController: UIViewController, UICollectionViewDelegate, 
     /// The page (the grid and its empty state) moved sideways by `offset`, the other page glued
     /// to its side and the segmented control's pill following along.
     private func setPage(offset: CGFloat) {
+        // On whole pixels: a page standing between two pixels draws its words soft, then sharp,
+        // then soft again as the finger moves (white titles on pictures shimmered).
+        let scale = max(traitCollection.displayScale, 1)
+        let offset = (offset * scale).rounded() / scale
         let move = CGAffineTransform(translationX: offset, y: 0)
         collection.transform = move
         emptyView.transform = move

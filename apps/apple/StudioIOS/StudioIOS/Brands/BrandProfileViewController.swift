@@ -195,6 +195,10 @@ final class BrandProfileViewController: UIViewController, UIGestureRecognizerDel
     /// The page's rows moved sideways (the header and the tab strip stay), the neighbouring tab's
     /// glued to their side and the underline following.
     private func setPage(offset: CGFloat) {
+        // On whole pixels: a page standing between two pixels draws its words soft, then sharp,
+        // then soft again as the finger moves (white titles on pictures shimmered).
+        let scale = max(traitCollection.displayScale, 1)
+        let offset = (offset * scale).rounded() / scale
         pageOffset = offset
         let move = CGAffineTransform(translationX: offset, y: 0)
         pageBody.transform = move
@@ -738,6 +742,27 @@ final class BrandTabStrip: UIView {
         self.position = min(max(position, 0), last)
         if let nearest = BrandTab(rawValue: Int(self.position.rounded())), nearest != selected { select(nearest, animated: false, keepPosition: true, reveal: false) }
         placeUnderline()
+        // The words slide too, in step with the underline: the tab being swiped to comes into
+        // view as the page does (Şablonlar no longer arrives off screen).
+        scroll.layoutIfNeeded()
+        scroll.contentOffset.x = stripOffset(at: self.position)
+    }
+
+    /// Where the strip stands for `position`: each word as near the middle as the ends allow,
+    /// in proportion between two words.
+    private func stripOffset(at position: CGFloat) -> CGFloat {
+        guard !buttons.isEmpty else { return 0 }
+        let maxOffset = max(scroll.contentSize.width - scroll.bounds.width, 0)
+        func centered(_ index: Int) -> CGFloat {
+            let frame = buttons[index].convert(buttons[index].bounds, to: scroll)
+            return min(max(frame.midX - scroll.bounds.width / 2, 0), maxOffset)
+        }
+        let lower = min(max(Int(position.rounded(.down)), 0), buttons.count - 1)
+        let upper = min(lower + 1, buttons.count - 1)
+        let t = position - CGFloat(lower)
+        let x = centered(lower) + (centered(upper) - centered(lower)) * t
+        let scale = max(traitCollection.displayScale, 1)
+        return (x * scale).rounded() / scale
     }
 
     func select(_ tab: BrandTab, animated: Bool = true, keepPosition: Bool = false, reveal: Bool = true) {
@@ -765,8 +790,9 @@ final class BrandTabStrip: UIView {
         // The picked word comes fully into view when the strip scrolls (not under a dragging
         // finger: the strip would slide on its own as the page moves).
         guard reveal else { return }
-        let button = buttons[tab.rawValue]
-        scroll.scrollRectToVisible(button.convert(button.bounds, to: scroll).insetBy(dx: -24, dy: 0), animated: true)
+        let target = stripOffset(at: CGFloat(tab.rawValue))
+        guard abs(scroll.contentOffset.x - target) > 0.5 else { return }
+        scroll.setContentOffset(CGPoint(x: target, y: 0), animated: animated)
     }
 
     override func layoutSubviews() {

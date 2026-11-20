@@ -398,6 +398,10 @@ final class IOSPostsViewController: UIViewController, UICollectionViewDelegate, 
     /// The grid's tiles and the empty state moved sideways (the header and the tabs stay), with
     /// the neighbouring tab's page glued to their side.
     private func setPage(offset: CGFloat) {
+        // On whole pixels: a page standing between two pixels draws its words soft, then sharp,
+        // then soft again as the finger moves (white titles on pictures shimmered).
+        let scale = max(traitCollection.displayScale, 1)
+        let offset = (offset * scale).rounded() / scale
         pageOffset = offset
         let move = CGAffineTransform(translationX: offset, y: 0)
         for cell in collectionView.visibleCells { cell.transform = move }
