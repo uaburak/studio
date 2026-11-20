@@ -5,8 +5,10 @@
 import { useMemo } from "react";
 import {
   JumpToLatest,
+  OlderMessages,
   TranscriptItems,
   useFollowBottom,
+  useOlderMessages,
 } from "../../../components/chat/chat-view.tsx";
 import { StatusLine } from "../../../components/chat/status-line.tsx";
 import { cn, IconButton } from "../../../components/ui/controls.tsx";
@@ -38,6 +40,7 @@ export function ChatPanel({
   const jobs = useJobsSnapshot();
   const openLightbox = useAppStore((s) => s.openLightbox);
   const follow = useFollowBottom();
+  const older = useOlderMessages(controller, snapshot, follow.scroller);
   const state = snapshot?.state ?? null;
   const presence = state?.presence ?? jobs.presence;
   const aliases = state?.aliases ?? [];
@@ -89,11 +92,18 @@ export function ChatPanel({
       ) : (
         <div
           ref={follow.scroller}
-          onScroll={follow.onScroll}
-          onWheel={follow.onWheel}
+          onScroll={() => {
+            follow.onScroll();
+            older.onScroll();
+          }}
+          onWheel={(event) => {
+            follow.onWheel(event);
+            older.onUserScroll();
+          }}
           className="scroll-area min-h-0 flex-1 overflow-x-hidden [overflow-anchor:none]"
         >
           <div ref={follow.content} className="px-4 pt-4 pb-6 [&_.max-w-\[78\%\]]:max-w-[88%]">
+            <OlderMessages snapshot={snapshot} onLoad={older.load} />
             <TranscriptItems
               items={items}
               aliases={aliases}

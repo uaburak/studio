@@ -87,6 +87,23 @@ export function entityCandidates(
     }));
 }
 
+/**
+ * What `@` offers in a chat that takes no new files (the post dock): the conversation's files,
+ * then the brand's products and posts.
+ */
+export function chatMentionCandidates(
+  aliases: readonly { alias: string; assetId: string }[],
+  entities: readonly ContractMentionCandidate[],
+): MentionCandidate[] {
+  const files: MentionCandidate[] = aliases.map((a) => ({
+    alias: a.alias,
+    assetId: a.assetId,
+    previewUrl: null,
+    isDraft: false,
+  }));
+  return [...files, ...entityCandidates(entities, new Set(files.map((f) => f.alias)))];
+}
+
 /** Replace `@query` (start…caret) with `@alias ` and return the new text and caret. */
 export function insertMention(
   text: string,

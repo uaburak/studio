@@ -40,6 +40,10 @@ export interface ConversationSnapshot {
   errorDetail: string | null;
   /** A reply runs, or a send just started one the stream has not shown yet. */
   isReplyActive: boolean;
+  /** Older messages (before the snapshot's newest ones) are being loaded. */
+  loadingOlder: boolean;
+  /** Why the last load of older messages failed (null: it did not). */
+  olderError: string | null;
 }
 
 export interface ConversationDeps {
@@ -51,6 +55,31 @@ export interface ConversationDeps {
 }
 
 type Listener = () => void;
+
+/** Messages per "load older" page (the API's largest page). */
+export const OLDER_MESSAGES_PAGE = 100;
+/** "Go to this message" stops after this many pages (a message that is not there). */
+const MAX_OLDER_PAGES = 200;
+
+/**
+ * A new snapshot (a reconnect) holds only the newest messages: the older ones loaded before stay
+ * in front of it when the two overlap (the snapshot's oldest message is among them).
+ */
+export function keepOlderMessages(
+  previous: ConversationState | null,
+  next: ConversationState,
+): ConversationState {
+  if (!previous || !next.hasMoreMessages) return next;
+  const first = next.messages[0];
+  if (!first) return next;
+  const at = previous.messages.findIndex((m) => m.id === first.id);
+  if (at <= 0) return next;
+  return {
+    ...next,
+    messages: [...previous.messages.slice(0, at), ...next.messages],
+    hasMoreMessages: previous.hasMoreMessages,
+  };
+}
 
 export function newClientMessageId(): string {
   return (
@@ -74,6 +103,8 @@ export class ConversationController {
   private errorDetail: string | null = null;
   /** The run a send just started, until the stream shows it (busy until then: no 409). */
   private awaitingRunId: string | null = null;
+  private loadingOlder: Promise<boolean> | null = null;
+  private olderError: string | null = null;
   private watch: ConversationWatch | undefined;
   private listeners = new Set<Listener>();
   private snapshotValue: ConversationSnapshot;
@@ -110,6 +141,8 @@ export class ConversationController {
       error: this.error,
       errorDetail: this.errorDetail,
       isReplyActive: this.isReplyActive,
+      loadingOlder: this.loadingOlder !== null,
+      olderError: this.olderError,
     };
   }
 
@@ -151,8 +184,9 @@ export class ConversationController {
   /** Apply one stream frame (also used by tests). */
   apply(message: ConversationStreamMessage): void {
     const previous = this.stateValue;
-    const next = applyConversationStreamMessage(previous, message);
+    let next = applyConversationStreamMessage(previous, message);
     if (next === previous) return;
+    if (next && message.type === "conversation.snapshot") next = keepOlderMessages(previous, next);
     if (next?.stale) {
       // A seq gap: reconnect from the last applied event.
       this.stateValue = { ...next, stale: false };
@@ -203,6 +237,66 @@ export class ConversationController {
 
   get isReplyActive(): boolean {
     return this.stateValue?.activeRun != null || this.awaitingRunId !== null;
+  }
+
+  // --- older messages --------------------------------------------------------------------------
+
+  /**
+   * Load the page of messages before the oldest one in hand (`GET .../messages`, newest first,
+   * `cursor` = that message's id). Resolves true when the transcript grew (or may grow on a
+   * next call), false when there is nothing older or the load failed (`olderError`).
+   */
+  loadOlder(): Promise<boolean> {
+    if (this.loadingOlder) return this.loadingOlder;
+    const state = this.stateValue;
+    if (!state?.hasMoreMessages) return Promise.resolve(false);
+    const oldest = state.messages[0]?.id;
+    const load = async (): Promise<boolean> => {
+      try {
+        const page = await this.client.conversations.messages.list(this.id, {
+          limit: OLDER_MESSAGES_PAGE,
+          ...(oldest ? { cursor: oldest } : {}),
+        });
+        const current = this.stateValue;
+        if (!current) return false;
+        // A snapshot replaced the transcript meanwhile: page again from its oldest message.
+        if (current.messages[0]?.id !== oldest) return current.hasMoreMessages;
+        const known = new Set(current.messages.map((m) => m.id));
+        const older = page.items.filter((m) => !known.has(m.id)).reverse();
+        this.stateValue = {
+          ...current,
+          messages: [...older, ...current.messages],
+          hasMoreMessages: page.nextCursor !== null && older.length > 0,
+        };
+        this.olderError = null;
+        return older.length > 0;
+      } catch (error) {
+        this.olderError = describeError(error);
+        return false;
+      } finally {
+        this.loadingOlder = null;
+        this.emit();
+      }
+    };
+    this.loadingOlder = load();
+    this.emit();
+    return this.loadingOlder;
+  }
+
+  /**
+   * Make sure `messageId` is in the transcript: load older pages until it is (true), or until
+   * there is nothing older / a load fails (false).
+   */
+  async ensureMessage(messageId: string): Promise<boolean> {
+    for (let i = 0; i < MAX_OLDER_PAGES; i++) {
+      const state = this.stateValue;
+      if (!state) return false;
+      if (state.messages.some((m) => m.id === messageId)) return true;
+      if (!state.hasMoreMessages) return false;
+      const grew = await this.loadOlder();
+      if (!grew && this.olderError) return false;
+    }
+    return this.stateValue?.messages.some((m) => m.id === messageId) ?? false;
   }
 
   // --- sending ---------------------------------------------------------------------------------

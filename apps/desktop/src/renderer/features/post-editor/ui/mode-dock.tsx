@@ -7,15 +7,18 @@ import { AnimatePresence, LayoutGroup, MotionConfig, motion } from "motion/react
 import {
   forwardRef,
   type ReactNode,
+  useEffect,
   useImperativeHandle,
   useLayoutEffect,
   useMemo,
   useRef,
   useState,
 } from "react";
+import { MentionOptionBody } from "../../../components/chat/composer.tsx";
 import { cn, IconButton } from "../../../components/ui/controls.tsx";
 import { IconChat, IconClose, IconPencil } from "../../../components/ui/icons.tsx";
 import { Popover } from "../../../components/ui/popover.tsx";
+import { insertMention, type MentionCandidate, mentionSuggestions } from "../../../lib/composer.ts";
 import type { ChatLayers } from "../wecra/scope.ts";
 import type { WorkspaceMode } from "../workspace-store.ts";
 import { IconArrowUp, IconAt } from "./glyphs.tsx";
@@ -136,6 +139,32 @@ export function ModeSwitch({
 
 // --- Sohbet: the message box --------------------------------------------------------------------
 
+/** A row of the dock's `@` list: a canvas layer (scope) or a name written into the text. */
+export type DockMentionOption =
+  | { type: "layer"; key: string; label: string; detail?: string | undefined }
+  | { type: "name"; candidate: MentionCandidate };
+
+/** Names `@` offers after the layers (as many as the main composer shows). */
+const MAX_NAMES = 10;
+
+/**
+ * The dock's `@` list for `query`: the canvas's layers (they become the request's scope), then
+ * the chat's files and the brand's products and posts (written as `@name`, like the composer).
+ */
+export function dockMentionOptions(
+  layers: readonly { key: string; label: string; detail?: string | undefined }[],
+  names: readonly MentionCandidate[],
+  query: string,
+): DockMentionOption[] {
+  const named = /^[\p{L}\p{N}-]*$/u.test(query)
+    ? mentionSuggestions([...names], query.toLocaleLowerCase("tr")).slice(0, MAX_NAMES)
+    : [];
+  return [
+    ...layers.map((l) => ({ type: "layer" as const, ...l })),
+    ...named.map((candidate) => ({ type: "name" as const, candidate })),
+  ];
+}
+
 export interface ChatInputHandle {
   /** Focus the box; `prefill` replaces the text, `scope` replaces the picked layers. */
   focus(prefill?: string, scope?: readonly string[]): void;
@@ -149,10 +178,15 @@ export const ChatInput = forwardRef<
     working: boolean;
     disabled: string | null;
     placeholder?: string;
+    /** The chat's files and the brand's products and posts `@` offers after the layers. */
+    mentions?: readonly MentionCandidate[];
     onSend(text: string, scope: readonly string[]): Promise<boolean>;
     onStop(): void;
   }
->(function ChatInput({ layers, working, disabled, placeholder, onSend, onStop }, ref) {
+>(function ChatInput(
+  { layers, working, disabled, placeholder, mentions = NO_MENTIONS, onSend, onStop },
+  ref,
+) {
   const input = useRef<HTMLTextAreaElement | null>(null);
   const [text, setText] = useState("");
   const [picked, setPicked] = useState<string[] | null>(null);
@@ -183,14 +217,40 @@ export const ChatInput = forwardRef<
     el.style.height = text ? `${Math.min(el.scrollHeight, 132)}px` : "22px";
   }, [text]);
 
-  const options = useMemo(() => (mention ? layers.search(mention.query) : []), [mention, layers]);
+  const options = useMemo(
+    () =>
+      mention ? dockMentionOptions(layers.search(mention.query), mentions, mention.query) : [],
+    [mention, layers, mentions],
+  );
+  const hasLayers = options.some((o) => o.type === "layer");
+  const hasNames = options.some((o) => o.type === "name");
+  const list = useRef<HTMLDivElement | null>(null);
+  // Keys move through a list taller than the popover: the chosen row stays in view.
+  useEffect(() => {
+    const row = list.current?.querySelector<HTMLElement>('[aria-selected="true"]');
+    row?.scrollIntoView?.({ block: "nearest" });
+  }, [active]);
 
-  const pick = (key: string) => {
+  const pick = (option: DockMentionOption) => {
     if (!mention) return;
-    setPicked([...new Set([...(picked ?? []), key])]);
-    setText(text.slice(0, mention.start) + text.slice(mention.start + 1 + mention.query.length));
+    const end = mention.start + 1 + mention.query.length;
+    if (option.type === "layer") {
+      setPicked([...new Set([...(picked ?? []), option.key])]);
+      setText(text.slice(0, mention.start) + text.slice(end));
+      setMention(null);
+      input.current?.focus();
+      return;
+    }
+    // A file, product or post: written into the text (`@name `), the server resolves it.
+    const next = insertMention(text, mention.start, end, option.candidate.alias);
+    setText(next.text);
     setMention(null);
-    input.current?.focus();
+    requestAnimationFrame(() => {
+      const el = input.current;
+      if (!el) return;
+      el.focus();
+      el.setSelectionRange(next.caret, next.caret);
+    });
   };
 
   const send = async () => {
@@ -237,7 +297,7 @@ export const ChatInput = forwardRef<
         <IconButton
           size={32}
           icon={<IconAt size={15} strokeWidth={1.6} />}
-          label="Katman seç (@)"
+          label={mentions.length > 0 ? "Katman, ürün ya da post seç (@)" : "Katman seç (@)"}
           onClick={() => {
             const at = text.length;
             setText(`${text}@`);
@@ -252,7 +312,11 @@ export const ChatInput = forwardRef<
           placeholder={
             disabled ??
             placeholder ??
-            (working ? "↩ sıraya al · yanıt sürüyor" : "Bu post için ne yapayım? @ ile katman seç")
+            (working
+              ? "↩ sıraya al · yanıt sürüyor"
+              : mentions.length > 0
+                ? "Bu post için ne yapayım? @ ile katman, ürün ya da post seç"
+                : "Bu post için ne yapayım? @ ile katman seç")
           }
           disabled={!!disabled}
           value={text}
@@ -276,7 +340,7 @@ export const ChatInput = forwardRef<
               if (e.key === "Enter" || e.key === "Tab") {
                 e.preventDefault();
                 const o = options[active];
-                if (o) pick(o.key);
+                if (o) pick(o);
                 return;
               }
             }
@@ -330,30 +394,71 @@ export const ChatInput = forwardRef<
         open={!!mention && options.length > 0}
         onClose={() => setMention(null)}
         placement="top-start"
-        label="Katmanlar"
+        label={hasNames ? "Katmanlar, görseller, ürünler ve postlar" : "Katmanlar"}
       >
-        <div role="listbox" aria-label="Katman seç" className="flex w-[280px] flex-col p-1">
-          {options.map((o, i) => (
-            <button
-              key={o.key}
-              type="button"
-              role="option"
-              aria-selected={i === active}
-              onMouseDown={(e) => {
-                e.preventDefault();
-                pick(o.key);
-              }}
-              className={cn(
-                "flex h-8 items-center gap-2 rounded-full px-2.5 text-left text-body",
-                i === active ? "bg-control" : "hover:bg-control",
-              )}
-            >
-              <span className="min-w-0 flex-1 truncate text-fg">@{o.label}</span>
-              <span className="shrink-0 text-footnote text-fg-3">{o.detail}</span>
-            </button>
-          ))}
+        <div
+          ref={list}
+          role="listbox"
+          aria-label={hasNames ? "Katman, görsel, ürün ya da post seç" : "Katman seç"}
+          className={cn(
+            "flex max-h-[340px] flex-col overflow-y-auto p-1",
+            hasNames ? "w-[320px]" : "w-[280px]",
+          )}
+        >
+          {options.map((o, i) => {
+            const firstName = o.type === "name" && options[i - 1]?.type !== "name";
+            return o.type === "layer" ? (
+              <button
+                key={`layer:${o.key}`}
+                type="button"
+                role="option"
+                aria-selected={i === active}
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  pick(o);
+                }}
+                onMouseEnter={() => setActive(i)}
+                className={cn(
+                  "flex h-8 shrink-0 items-center gap-2 rounded-full px-2.5 text-left text-body",
+                  i === active ? "bg-control" : "hover:bg-control",
+                )}
+              >
+                <span className="min-w-0 flex-1 truncate text-fg">@{o.label}</span>
+                <span className="shrink-0 text-footnote text-fg-3">{o.detail}</span>
+              </button>
+            ) : (
+              <div key={`${o.candidate.kind ?? "file"}:${o.candidate.alias}`} className="contents">
+                {firstName && hasLayers && (
+                  <div
+                    role="presentation"
+                    className="mx-2 mt-1 mb-0.5 border-t border-hairline pt-1.5 text-caption text-fg-3"
+                  >
+                    Görseller, ürünler ve postlar
+                  </div>
+                )}
+                <div
+                  role="option"
+                  tabIndex={-1}
+                  aria-selected={i === active}
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    pick(o);
+                  }}
+                  onMouseEnter={() => setActive(i)}
+                  className={cn(
+                    "flex h-9 shrink-0 items-center gap-2.5 rounded-[8px] px-2",
+                    i === active && "bg-control",
+                  )}
+                >
+                  <MentionOptionBody candidate={o.candidate} />
+                </div>
+              </div>
+            );
+          })}
         </div>
       </Popover>
     </div>
   );
 });
+
+const NO_MENTIONS: readonly MentionCandidate[] = [];

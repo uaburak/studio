@@ -584,37 +584,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
                   i === suggestionIndex && "bg-control",
                 )}
               >
-                <span className="flex size-6 shrink-0 items-center justify-center overflow-hidden rounded-[6px] bg-control text-icon">
-                  {s.kind === "product" || s.kind === "content" ? (
-                    s.assetId ? (
-                      <img
-                        src={thumbUrl(s.assetId, 24)}
-                        alt=""
-                        className="size-full object-cover"
-                      />
-                    ) : s.kind === "product" ? (
-                      <IconPackage size={13} strokeWidth={1.5} />
-                    ) : (
-                      <IconGrid size={13} strokeWidth={1.5} />
-                    )
-                  ) : (
-                    (s.previewUrl ?? (s.assetId ? assetUrl(s.assetId) : null)) && (
-                      <img
-                        src={s.previewUrl ?? assetUrl(s.assetId as string)}
-                        alt=""
-                        className="size-full object-cover"
-                      />
-                    )
-                  )}
-                </span>
-                {s.kind === "product" || s.kind === "content" ? (
-                  <EntityOption candidate={s} />
-                ) : (
-                  <>
-                    <span className="text-body text-fg">@{s.alias}</span>
-                    {s.isDraft && <span className="ml-auto text-caption text-fg-3">yeni</span>}
-                  </>
-                )}
+                <MentionOptionBody candidate={s} />
               </div>
             ))}
           </div>
@@ -625,6 +595,40 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
 });
 
 const NO_ENTITIES: readonly EntityCandidate[] = [];
+
+/**
+ * One row of an `@` list (the composer's, the post dock's): the file's preview or the product's
+ * / post's image, and its name.
+ */
+export function MentionOptionBody({ candidate: s }: { candidate: MentionCandidate }) {
+  const entity = s.kind === "product" || s.kind === "content";
+  const preview = s.previewUrl ?? (s.assetId ? assetUrl(s.assetId) : null);
+  return (
+    <>
+      <span className="flex size-6 shrink-0 items-center justify-center overflow-hidden rounded-[6px] bg-control text-icon">
+        {entity ? (
+          s.assetId ? (
+            <img src={thumbUrl(s.assetId, 24)} alt="" className="size-full object-cover" />
+          ) : s.kind === "product" ? (
+            <IconPackage size={13} strokeWidth={1.5} />
+          ) : (
+            <IconGrid size={13} strokeWidth={1.5} />
+          )
+        ) : (
+          preview && <img src={preview} alt="" className="size-full object-cover" />
+        )}
+      </span>
+      {entity ? (
+        <EntityOption candidate={s} />
+      ) : (
+        <>
+          <span className="text-body text-fg">@{s.alias}</span>
+          {s.isDraft && <span className="ml-auto text-caption text-fg-3">yeni</span>}
+        </>
+      )}
+    </>
+  );
+}
 
 /** A product / post row of the @ list: its label, the name to be written and its detail. */
 function EntityOption({ candidate }: { candidate: MentionCandidate }) {

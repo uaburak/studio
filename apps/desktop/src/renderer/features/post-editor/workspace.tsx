@@ -42,9 +42,11 @@ import type { MenuEntry } from "../../components/ui/menu.tsx";
 import { describeError, useApi } from "../../lib/api.ts";
 import { registerAppFlush } from "../../lib/app-flush.ts";
 import { bridge } from "../../lib/bridge.ts";
+import { chatMentionCandidates } from "../../lib/composer.ts";
 import { noteCanvasNavKey } from "../../lib/nav-gestures.ts";
 import { useAppStore } from "../../state/app-store.ts";
 import { useJobsSnapshot } from "../../state/studio.tsx";
+import { useMentionCandidates } from "../mentions/mentions-data.ts";
 import type { RevokeControl } from "../post-detail/approval-heart.tsx";
 import {
   activeVersion,
@@ -326,6 +328,13 @@ export function PostWorkspace(props: WorkspaceProps) {
     notify,
     onReplyEnd: () => void editor.refresh(),
   });
+  // `@` in the dock: the chat's files, the brand's products and posts (as in the main composer).
+  const mentionEntities = useMentionCandidates(content.brandId);
+  const chatAliases = chat.snapshot?.state?.aliases;
+  const mentions = useMemo(
+    () => chatMentionCandidates(chatAliases ?? [], mentionEntities),
+    [chatAliases, mentionEntities],
+  );
 
   // Read only (E3): approved / scheduled until Düzenle is confirmed, publishing, published, an
   // older version, an AI run (the Sohbet answering, a revision job) that may make a version.
@@ -493,6 +502,7 @@ export function PostWorkspace(props: WorkspaceProps) {
             layers={layers}
             working={chat.working}
             disabled={chatDisabled}
+            mentions={mentions}
             onSend={chat.send}
             onStop={chat.stop}
           />
