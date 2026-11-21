@@ -107,7 +107,7 @@ export function modelUnavailableReason(
       const status = presence.claude?.status;
       if (!status || status === "signed_in") return null;
       return status === "not_installed"
-        ? "kurulu değil"
+        ? "Claude Code gerekli · Kur"
         : status === "signing_in"
           ? "giriş sürüyor"
           : "giriş yapılmadı";

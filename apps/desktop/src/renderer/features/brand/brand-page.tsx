@@ -35,6 +35,7 @@ import { useAccounts, useBrands } from "../../state/studio.tsx";
 import { ChecksSettingsSection } from "../checks/checks-settings.tsx";
 import { useBrandAssets } from "../media/media-data.ts";
 import { FieldLabel, PageHeader, TextLink } from "../pane-ui.tsx";
+import { ToolRequired } from "../tools/tools.tsx";
 import {
   cardProfile,
   useAnalysisJob,
@@ -282,6 +283,7 @@ function GeneralTab({ brand }: { brand: Brand }) {
       >
         <EngineSelect className="w-[240px]" value={engine} onChange={setEngine} />
       </Row>
+      {engine === "code" && <ToolRequired id="python" className="border-b border-hairline py-2" />}
       <Row
         label="Görsel stili"
         detail="Üretilen görsellere eklenecek stil. Boş bırakılabilir; ürünün kendisi değişmez."

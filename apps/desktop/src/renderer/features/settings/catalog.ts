@@ -327,15 +327,8 @@ export const ITEMS = {
     "advanced.tools",
     "advanced",
     "Araçlar",
-    "Studio'nun kullandığı ama içinde gelmeyen programlar.",
-    "ffmpeg whisper chromium claude gemini codex cloudflared brew kur",
-  ),
-  chromium: item(
-    "advanced.chromium",
-    "advanced",
-    "Chromium",
-    "",
-    "chromium playwright tarayıcı render görsel",
+    "Studio'nun kullandığı programlar. Eksik olanı buradan resmi kaynağından kur; hiçbir şey kendiliğinden inmez.",
+    "ffmpeg whisper chromium claude gemini python cloudflared kur güncelle kaldır araç",
   ),
   workerKeys: item(
     "advanced.workerKeys",

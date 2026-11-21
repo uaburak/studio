@@ -4,7 +4,8 @@
 // 2. Dangerous operations need an explicit `confirm: true` argument: anything that deletes,
 //    disconnects accounts, publishes (now or on a schedule) or replies publicly, changes the
 //    owner's devices / pairing / keys / secrets / sign-ins, spends money above the everyday level
-//    (image generation, bulk generation, "go on with Gemini") or changes the AI budget.
+//    (image generation, bulk generation, "go on with Gemini"), changes the AI budget, or installs /
+//    removes software on the Mac (the tool manager).
 // 3. Secrets in responses (tokens, keys, passwords …) are redacted before anything is returned.
 
 export interface DangerRule {
@@ -23,6 +24,8 @@ export const DANGEROUS_JOB_TYPES = new Set([
   "schedule.publish",
   "brand.analyze",
   "brand.skill_draft",
+  "tool.install",
+  "tool.uninstall",
 ]);
 
 function body(args: Record<string, unknown>): Record<string, unknown> {
@@ -122,6 +125,11 @@ export const DANGER_RULES: readonly DangerRule[] = [
     method: "POST",
     path: /^\/api\/contents\/(revise|repurpose)$/,
     reason: "birçok postu birden değiştirir / üretir (bulk generation)",
+  },
+  {
+    method: "POST",
+    path: /^\/api\/tools\/\{id\}\/(install|uninstall)$/,
+    reason: "Mac'e program indirip kurar ya da kaldırır (installs / removes software on the Mac)",
   },
   {
     method: "POST",

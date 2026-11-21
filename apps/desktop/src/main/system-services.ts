@@ -22,7 +22,7 @@ import {
 } from "../shared/system-ipc.ts";
 import type { CreatedHost } from "./host/create-host.ts";
 import { loginShellPath, which } from "./host/environment.ts";
-import { ChromiumInstaller, detectTools } from "./host/tools.ts";
+import { detectTools, findChromium } from "./host/tools.ts";
 import { EDITABLE_WORKER_ENV } from "./host/worker-env.ts";
 
 /**
@@ -206,27 +206,23 @@ export function setupSystemServices(input: SystemServicesInput): SystemServices 
   keepAwake.start();
   input.onSettingsChange(() => void keepAwake.check());
 
-  const chromium = new ChromiumInstaller({
-    stateDir: input.stateDir,
-    layout: () => created.layout(),
-    runtime: (layout) => created.runtime(layout),
-    onChange: (status: ChromiumStatus) => input.send(SYSTEM_IPC.chromiumChanged, status),
-    log: (message) => input.log("info", message),
-  });
-
   let toolsCache: { at: number; report: ToolsReport["tools"] } | null = null;
   ipcMain.handle(SYSTEM_IPC.tools, async (_e, refresh: unknown): Promise<ToolsReport> => {
     if (!toolsCache || refresh === true || Date.now() - toolsCache.at > 60_000) {
       toolsCache = { at: Date.now(), report: detectTools(await loginShellPath(), which) };
     }
-    return { tools: toolsCache.report, chromium: chromium.current() };
-  });
-  ipcMain.handle(SYSTEM_IPC.chromiumInstall, async () => {
-    const status = await chromium.install();
-    // The worker reads PLAYWRIGHT_BROWSERS_PATH at start: a fresh install needs a restart only
-    // when it changed where Chromium is.
-    if (status.state === "ready" && host.ownsChildren) void host.restart();
-    return status;
+    const layout = created.layout();
+    const chromium: ChromiumStatus = layout
+      ? { ...findChromium(layout, input.stateDir), progress: null }
+      : {
+          state: "missing",
+          revision: null,
+          browsersPath: null,
+          location: null,
+          progress: null,
+          message: "Studio'nun sunucu dosyaları bulunamadı.",
+        };
+    return { tools: toolsCache.report, chromium };
   });
 
   ipcMain.handle(SYSTEM_IPC.health, async (): Promise<HostHealth> => {

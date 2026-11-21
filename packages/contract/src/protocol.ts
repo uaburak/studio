@@ -3,6 +3,7 @@ import { ClaudeAccount, GeminiAccount, WorkerCommand } from "./agent.ts";
 import { AiProviderStatus } from "./ai.ts";
 import { ApprovalRequest } from "./approval.ts";
 import { Job, JobId, WorkerPresence, WorkerUsage } from "./job.ts";
+import { ToolStatus } from "./tools.ts";
 
 /**
  * Worker <-> hub WebSocket protocol.
@@ -142,6 +143,16 @@ export const WorkerProvidersMessage = z.object({
   providers: z.array(AiProviderStatus).max(16),
 });
 
+/**
+ * The tools Studio uses on the Mac (tools.ts) as the worker sees them: after `hello`, after every
+ * `tool.install` / `tool.uninstall` and while one runs. The hub keeps the latest list and shows
+ * it in presence as `tools` and at `GET /api/tools`.
+ */
+export const WorkerToolsMessage = z.object({
+  type: z.literal("worker.tools"),
+  tools: z.array(ToolStatus).max(16),
+});
+
 /** Hub forwards an app request about AI sign-in / status (start Claude login, re-read Claude/Gemini status). */
 export const WorkerCommandMessage = z.object({
   type: z.literal("worker.command"),
@@ -185,6 +196,7 @@ export const ProtocolMessage = z.discriminatedUnion("type", [
   WorkerClaudeMessage,
   WorkerGeminiMessage,
   WorkerProvidersMessage,
+  WorkerToolsMessage,
   JobCancelMessage,
   JobResultAckMessage,
   WorkerCommandMessage,
@@ -204,6 +216,7 @@ export type WorkerUsageMessage = z.infer<typeof WorkerUsageMessage>;
 export type WorkerClaudeMessage = z.infer<typeof WorkerClaudeMessage>;
 export type WorkerGeminiMessage = z.infer<typeof WorkerGeminiMessage>;
 export type WorkerProvidersMessage = z.infer<typeof WorkerProvidersMessage>;
+export type WorkerToolsMessage = z.infer<typeof WorkerToolsMessage>;
 export type WorkerCommandMessage = z.infer<typeof WorkerCommandMessage>;
 export type JobCancelMessage = z.infer<typeof JobCancelMessage>;
 export type JobResultAckMessage = z.infer<typeof JobResultAckMessage>;
@@ -228,6 +241,7 @@ export type WorkerToHubMessage = Extract<
       | "worker.claude"
       | "worker.gemini"
       | "worker.providers"
+      | "worker.tools"
       | "ping"
       | "pong";
   }

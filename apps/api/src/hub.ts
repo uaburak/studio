@@ -24,6 +24,8 @@ import {
   type JobResultMessage,
   type JobStreamMessage,
   PROTOCOL_VERSION,
+  type ToolStatus,
+  type ToolsControl,
   type WorkerCommand,
   type WorkerPresence,
   type WorkerToHubMessage,
@@ -92,6 +94,9 @@ const CLAUDE_KEY = "presence:claude";
 const GEMINI_KEY = "presence:gemini";
 /** Latest `worker.providers` report (Codex / OpenAI / Antigravity), shown in presence as `providers`. */
 const PROVIDERS_KEY = "presence:providers";
+/** Latest `worker.tools` report (ffmpeg, Claude Code …), shown in presence as `tools`. */
+const TOOLS_KEY = "presence:tools";
+const TOOLS_AT_KEY = "presence:toolsAt";
 /** When the alarm last looked for due statistics / comment reads (ms), and queued comments. */
 const ENGAGEMENT_CHECK_KEY = "engagement:checkedAt";
 const COMMENTS_QUEUED_KEY = "engagement:commentsQueuedAt";
@@ -427,6 +432,37 @@ export class Hub extends DurableObject<Env> {
     });
   }
 
+  /**
+   * The tools Studio uses on the Mac as the worker last reported them. With `refresh`, ask the
+   * connected workers to look again (`tools.status`).
+   */
+  async toolsControl(refresh = false): Promise<ToolsControl> {
+    return this.serial(async () => {
+      const workers = this.macWorkers().filter((w) => !w.att.draining);
+      let sent = 0;
+      if (refresh) {
+        for (const { ws } of workers) {
+          try {
+            sendWorker(ws, { type: "worker.command", command: "tools.status" });
+            sent++;
+          } catch {
+            // closing
+          }
+        }
+      }
+      const [tools, at] = await Promise.all([
+        this.ctx.storage.get<ToolStatus[]>(TOOLS_KEY),
+        this.ctx.storage.get<number>(TOOLS_AT_KEY),
+      ]);
+      return {
+        tools: tools ?? [],
+        online: workers.length > 0,
+        reportedAt: at ? new Date(at).toISOString() : null,
+        sent,
+      };
+    });
+  }
+
   // --- worker messages -----------------------------------------------------------
 
   private async onWorkerMessage(
@@ -551,6 +587,11 @@ export class Hub extends DurableObject<Env> {
       }
       case "worker.providers": {
         await this.ctx.storage.put(PROVIDERS_KEY, message.providers);
+        await this.broadcastPresence();
+        return;
+      }
+      case "worker.tools": {
+        await this.ctx.storage.put({ [TOOLS_KEY]: message.tools, [TOOLS_AT_KEY]: now });
         await this.broadcastPresence();
         return;
       }
@@ -839,15 +880,17 @@ export class Hub extends DurableObject<Env> {
     const all = this.workerSockets().filter(({ ws }) => ws !== exclude);
     const mac = all.filter((w) => !isCanvasRunner(w.att.capabilities ?? []));
     const workers = [...mac, ...all.filter((w) => !mac.includes(w))];
-    const [running, queueLength, stored, usage, claude, gemini, providers] = await Promise.all([
-      this.store.running(),
-      this.store.queueLength(),
-      this.ctx.storage.get<number>(LAST_SEEN_KEY),
-      this.ctx.storage.get<WorkerUsage>(USAGE_KEY),
-      this.ctx.storage.get<ClaudeAccount>(CLAUDE_KEY),
-      this.ctx.storage.get<GeminiAccount>(GEMINI_KEY),
-      this.ctx.storage.get<AiProviderStatus[]>(PROVIDERS_KEY),
-    ]);
+    const [running, queueLength, stored, usage, claude, gemini, providers, tools] =
+      await Promise.all([
+        this.store.running(),
+        this.store.queueLength(),
+        this.ctx.storage.get<number>(LAST_SEEN_KEY),
+        this.ctx.storage.get<WorkerUsage>(USAGE_KEY),
+        this.ctx.storage.get<ClaudeAccount>(CLAUDE_KEY),
+        this.ctx.storage.get<GeminiAccount>(GEMINI_KEY),
+        this.ctx.storage.get<AiProviderStatus[]>(PROVIDERS_KEY),
+        this.ctx.storage.get<ToolStatus[]>(TOOLS_KEY),
+      ]);
     const lastSeen = Math.max(stored ?? 0, ...mac.map((w) => w.att.lastSeenAt));
     return {
       online: mac.some((w) => !w.att.draining),
@@ -878,6 +921,7 @@ export class Hub extends DurableObject<Env> {
       ...(claude ? { claude } : {}),
       ...(gemini ? { gemini } : {}),
       ...(providers ? { providers } : {}),
+      ...(tools ? { tools } : {}),
     };
   }
 

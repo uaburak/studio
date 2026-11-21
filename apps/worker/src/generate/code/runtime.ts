@@ -2,7 +2,9 @@
  * The code engine's Python runtime (docs/URETIM-RESIM.md, Faz 4).
  *
  * A project-local virtualenv under the worker's state dir — `<stateDir>/code-engine/venv` — built
- * from the Mac's own `python3` (Homebrew's when there is one, else the Command Line Tools'), with
+ * from Studio's own Python (Ayarlar → Gelişmiş → Araçlar → Python, a python-build-standalone build
+ * in `tools/`, tools/manager.ts) or else the Mac's own `python3` (Homebrew's, else the Command
+ * Line Tools' — never the stub that would open the installer dialog), with
  * the pinned `apps/worker/code-engine/requirements.txt` (Pillow, numpy, OpenCV headless,
  * skia-python; wheels only). Nothing is installed globally and nothing needs sudo.
  *
@@ -17,6 +19,10 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { managedExecutable } from "../../tools/paths.ts";
+
+/** Studio's own Python's name in `tools/bin` (contract TOOL_MANIFEST `python`). */
+export const MANAGED_PYTHON = "studio-python3";
 
 /** The helper files the sandbox gets a copy of (code-engine/). */
 export const CODE_ENGINE_FILES = ["run.py", "studio_brand.py"] as const;
@@ -153,10 +159,27 @@ async function probePython(python: string): Promise<PythonInfo | null> {
 }
 
 /**
+ * The Python the code engine is built from: Studio's own (`tools/bin/studio-python3`) first, else
+ * the Mac's (`findMacPython`).
+ */
+export async function findSystemPython(
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<PythonInfo | null> {
+  if (!env.STUDIO_CODE_PYTHON) {
+    const managed = managedExecutable(MANAGED_PYTHON, env);
+    if (managed) {
+      const info = await probePython(managed);
+      if (info) return info;
+    }
+  }
+  return findMacPython(env);
+}
+
+/**
  * The Mac's Python 3 (3.9 or newer): `STUDIO_CODE_PYTHON`, Homebrew's, then the Command Line
  * Tools' `/usr/bin/python3` (only when the tools are installed: the stub would open a dialog).
  */
-export async function findSystemPython(
+export async function findMacPython(
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<PythonInfo | null> {
   const candidates = [
@@ -204,7 +227,7 @@ export class CodeRuntimeError extends Error {
 
 /** The one-time setup path, in the messages. */
 export const SETUP_HINT =
-  "Kurulum: Terminal'de proje klasöründe `pnpm -C apps/worker code-engine:setup` (Python 3 gerekir: Xcode Komut Satırı Araçları ya da Homebrew `python3`).";
+  "Python gerekli · Ayarlar → Gelişmiş → Araçlar → Python'dan Kur (ya da sohbette “Python'u kur” de).";
 
 /**
  * Build the virtualenv (or rebuild it when the requirements changed): `python3 -m venv`, then
@@ -213,7 +236,7 @@ export const SETUP_HINT =
  */
 export async function setupRuntime(
   stateDir: string,
-  options: { signal?: AbortSignal; log?: (line: string) => void } = {},
+  options: { signal?: AbortSignal; log?: (line: string) => void; python?: string } = {},
 ): Promise<CodeRuntime> {
   const log = options.log ?? (() => {});
   const engineDir = codeEngineDir();
@@ -221,7 +244,7 @@ export async function setupRuntime(
     throw new CodeRuntimeError(
       "Kod motoru için Python ortamı hazır değil: motorun dosyaları (apps/worker/code-engine) bulunamadı.",
     );
-  const base = await findSystemPython();
+  const base = options.python ? await probePython(options.python) : await findSystemPython();
   if (!base)
     throw new CodeRuntimeError(
       `Kod motoru için Python ortamı hazır değil: bu Mac'te Python 3 (3.9 ya da yenisi) bulunamadı. ${SETUP_HINT}`,

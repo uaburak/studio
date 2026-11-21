@@ -38,3 +38,4 @@ export * from "./similarity.ts";
 export * from "./social-account.ts";
 export * from "./special-days.ts";
 export * from "./template.ts";
+export * from "./tools.ts";

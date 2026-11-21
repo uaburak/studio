@@ -1,17 +1,13 @@
 // Ayarlar → Gelişmiş, the packaged app's parts (P1, P2, P9): the host's health (every part,
 // ok / warn / fail), starting with the Mac and keeping it awake, the tools Studio does not carry
-// (Chromium can be installed from here), and the worker's keys from this Mac's secure store.
+// (each installable from here, through the worker's tool.install job), and the worker's keys from this Mac's secure store.
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useRef, useState } from "react";
-import type {
-  ChromiumStatus,
-  HealthItem,
-  PackagingBridge,
-  WorkerEnvView,
-} from "../../../../shared/system-ipc.ts";
-import { Button, Spinner, Switch, TextField } from "../../../components/ui/controls.tsx";
+import { useRef, useState } from "react";
+import type { HealthItem, PackagingBridge, WorkerEnvView } from "../../../../shared/system-ipc.ts";
+import { Button, Switch, TextField } from "../../../components/ui/controls.tsx";
 import { bridge } from "../../../lib/bridge.ts";
 import { useHost, useSettings } from "../../../state/studio.tsx";
+import { ToolsList } from "../../tools/tools.tsx";
 import { ITEMS } from "../catalog.ts";
 import { FormFooter, Row, Subheader, useConfirm } from "../parts.tsx";
 
@@ -127,93 +123,9 @@ export function StartupRows() {
   );
 }
 
-function chromiumDetail(status: ChromiumStatus | undefined): string {
-  if (!status) return "";
-  return status.state === "installing" && status.progress !== null
-    ? `Chromium indiriliyor… %${status.progress}`
-    : status.message;
-}
-
-/** What Studio uses but does not carry, and the one-line install of each. */
+/** The tools Studio uses on the Mac: status and Kur / Güncelle / Kaldır (worker jobs). */
 export function ToolsRows() {
-  const p = packaging();
-  const queryClient = useQueryClient();
-  const tools = useQuery({
-    queryKey: ["tools"],
-    queryFn: () => p?.tools() ?? Promise.resolve(null),
-    enabled: p !== null,
-  });
-  const [chromium, setChromium] = useState<ChromiumStatus | null>(null);
-  useEffect(() => p?.onChromium(setChromium), [p]);
-  if (!p) return null;
-  const status = chromium ?? tools.data?.chromium;
-  const installing = status?.state === "installing";
-  return (
-    <>
-      <Row
-        item={ITEMS.chromium}
-        detail={chromiumDetail(status)}
-        detailTone={status?.state === "failed" ? "danger" : "default"}
-      >
-        {status && status.state !== "ready" && (
-          <Button
-            variant="primary"
-            disabled={installing}
-            icon={installing ? <Spinner size={12} /> : undefined}
-            onClick={() =>
-              void p
-                .installChromium()
-                .then(() => queryClient.invalidateQueries({ queryKey: ["tools"] }))
-            }
-          >
-            {installing ? "İndiriliyor…" : "Chromium'u indir"}
-          </Button>
-        )}
-      </Row>
-      <Row
-        item={ITEMS.tools}
-        footer={
-          tools.data ? (
-            <ul className="flex flex-col gap-2" aria-label="Araçlar">
-              {tools.data.tools.map((t) => (
-                <li key={t.id} className="flex flex-col gap-0.5 text-body">
-                  <span className="flex items-baseline gap-2">
-                    <span
-                      aria-hidden
-                      className={`w-3 shrink-0 text-caption ${t.state === "ok" ? "text-fg-3" : "text-accent-text"}`}
-                    >
-                      {t.state === "ok" ? "●" : "○"}
-                    </span>
-                    <span className="font-medium text-fg">{t.label}</span>
-                    <span className="selectable min-w-0 flex-1 text-fg-2">
-                      {t.state === "ok" ? (t.path ?? "") : "Kurulu değil"}
-                    </span>
-                  </span>
-                  <span className="selectable pl-5 text-footnote text-fg-2">
-                    {t.detail}
-                    {t.install && (
-                      <code className="ml-1 rounded-[4px] bg-field px-1 font-mono text-caption text-fg">
-                        {t.install}
-                      </code>
-                    )}
-                  </span>
-                </li>
-              ))}
-            </ul>
-          ) : undefined
-        }
-      >
-        <Button
-          disabled={tools.isFetching}
-          onClick={() =>
-            void p.tools(true).then((next) => queryClient.setQueryData(["tools"], next))
-          }
-        >
-          Yeniden ara
-        </Button>
-      </Row>
-    </>
-  );
+  return <Row item={ITEMS.tools} footer={<ToolsList />} />;
 }
 
 const SOURCE_TEXT = { "env-file": "depodaki .env'den", settings: "buradan" } as const;
@@ -340,7 +252,7 @@ export function SystemRows() {
       <HealthRows />
       <Subheader title="Başlangıç ve uyku" ids={[ITEMS.loginItem.id, ITEMS.keepAwake.id]} />
       <StartupRows />
-      <Subheader title="Araçlar" ids={[ITEMS.chromium.id, ITEMS.tools.id]} />
+      <Subheader title="Araçlar" ids={[ITEMS.tools.id]} />
       <ToolsRows />
       <Subheader title="Worker" ids={[ITEMS.workerKeys.id]} />
       <WorkerKeyRows />

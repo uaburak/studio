@@ -9,16 +9,23 @@ import { FileOutbox, type Outbox } from "./outbox.ts";
 import { JobRegistry } from "./registry.ts";
 import { JobRunner } from "./runner.ts";
 import { nodeSocketFactory, type SocketFactory } from "./socket.ts";
+import type { ToolService } from "./tools/service.ts";
 import { encodableUsageFrame } from "./usage-report.ts";
 
 export const WORKER_VERSION = "0.1.0";
 
 /**
- * The job types this worker can run: `demo.echo`, plus `chat.turn` and
+ * The job types this worker can run: `demo.echo`, the tool installs (`tool.install`,
+ * `tool.uninstall`, always: a fresh Mac installs Claude Code with them), plus `chat.turn` and
  * `content.generate` when an agent runtime (Claude / Gemini) is given.
  */
-export function createDefaultRegistry(agent?: AgentRuntime): JobRegistry {
+export function createDefaultRegistry(agent?: AgentRuntime, tools?: ToolService): JobRegistry {
   const registry = new JobRegistry().register("demo.echo", demoEcho);
+  if (tools) {
+    registry
+      .register("tool.install", tools.installHandler())
+      .register("tool.uninstall", tools.uninstallHandler());
+  }
   return agent ? agent.register(registry) : registry;
 }
 
@@ -34,6 +41,8 @@ export interface StartWorkerOptions {
   agent?: AgentRuntime;
   /** Defaults to a FileOutbox in `config.stateDir`. */
   outbox?: Outbox;
+  /** The tool manager (main.ts: the real one, tools under STUDIO_TOOLS_DIR); absent: none. */
+  tools?: ToolService | null;
   onStateChange?: (state: ConnectionState) => void;
 }
 
@@ -51,7 +60,8 @@ export interface RunningWorker {
 export function startWorker(options: StartWorkerOptions): RunningWorker {
   const { config, logger } = options;
   const agent = options.agent;
-  const registry = options.registry ?? createDefaultRegistry(agent);
+  const tools = options.tools ?? null;
+  const registry = options.registry ?? createDefaultRegistry(agent, tools ?? undefined);
   const aiTypes = new Set<string>(AI_JOB_TYPES);
   const baseTypes = registry.types().filter((t) => !agent || !aiTypes.has(t));
   const outbox =
@@ -87,7 +97,37 @@ export function startWorker(options: StartWorkerOptions): RunningWorker {
     connection.send({ type: "worker.providers", providers: agent.providerStatuses() });
   };
 
+  /** The tools' status to the hub (`worker.tools`), at most every second while installs run. */
+  let toolsTimer: ReturnType<typeof setTimeout> | undefined;
+  let toolsSending = false;
+  const sendTools = async () => {
+    if (!tools || !connection) return;
+    if (toolsSending) return;
+    toolsSending = true;
+    try {
+      const list = await tools.snapshot();
+      connection.send({ type: "worker.tools", tools: list });
+    } catch (error) {
+      logger.warn(`tools snapshot failed: ${(error as Error).message}`);
+    } finally {
+      toolsSending = false;
+    }
+  };
+  const scheduleTools = () => {
+    if (toolsTimer) return;
+    toolsTimer = setTimeout(() => {
+      toolsTimer = undefined;
+      void sendTools();
+    }, 1_000);
+    toolsTimer.unref?.();
+  };
+  const unsubTools = tools?.manager.onChange(scheduleTools);
+
   const handleWorkerCommand = async (command: WorkerCommand) => {
+    if (command === "tools.status") {
+      await sendTools();
+      return;
+    }
     if (!agent) {
       logger.debug(`ignoring worker.command (${command}): agent runtime disabled`);
       return;
@@ -118,6 +158,8 @@ export function startWorker(options: StartWorkerOptions): RunningWorker {
         await agent.refreshCredentials();
         await agent.refreshAiSettings();
         sendProviders();
+        return;
+      default:
         return;
     }
   };
@@ -152,6 +194,7 @@ export function startWorker(options: StartWorkerOptions): RunningWorker {
       sendGemini();
       sendProviders();
       sendUsage();
+      void sendTools();
     },
     onMessage: (message) => {
       if (message.type === "worker.command") {
@@ -192,6 +235,8 @@ export function startWorker(options: StartWorkerOptions): RunningWorker {
       return conn.state;
     },
     async shutdown() {
+      unsubTools?.();
+      if (toolsTimer) clearTimeout(toolsTimer);
       unsubUsage?.();
       unsubClaude?.();
       unsubGemini?.();
@@ -201,6 +246,8 @@ export function startWorker(options: StartWorkerOptions): RunningWorker {
       await agent?.stop();
     },
     stop() {
+      unsubTools?.();
+      if (toolsTimer) clearTimeout(toolsTimer);
       unsubUsage?.();
       unsubClaude?.();
       unsubGemini?.();

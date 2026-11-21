@@ -248,7 +248,8 @@ describe("LocalHost start", () => {
       STUDIO_OWNER_SECRET: OWNER,
       STUDIO_INSTANCE_ID: "inst-1",
       WRANGLER_SEND_METRICS: "false",
-      PATH: "/usr/bin:/opt/homebrew/bin",
+      // Studio's own tools first (Ayarlar → Gelişmiş → Araçlar).
+      PATH: `${join(ctx.stateDir, "tools", "bin")}:/usr/bin:/opt/homebrew/bin`,
     });
     // Secrets only travel in the environment, never on a command line (G1, G2).
     const commandLines = ctx.launcher.started.map((p) => p.spec.args.join(" ")).join("\n");
@@ -267,6 +268,7 @@ describe("LocalHost start", () => {
       STUDIO_HUB_URL: "ws://127.0.0.1:8790/api/hub",
       STUDIO_WORKER_TOKEN: token,
       STUDIO_CLAUDE_BIN: "/opt/homebrew/bin/claude",
+      STUDIO_TOOLS_DIR: join(ctx.stateDir, "tools"),
     });
     expect(byName.worker?.env.STUDIO_GEMINI_BIN).toBeUndefined();
     expect(byName.worker?.args).toEqual([
@@ -598,7 +600,7 @@ describe("LocalHost start and quit (A11)", () => {
       loginShellPath: async () => "/slow/bin:/usr/bin",
       computerName: async () => "Async Mac",
       which: (tool, path) =>
-        tool === "node" && path.startsWith("/slow") ? "/slow/bin/node" : null,
+        tool === "node" && path.includes(":/slow/bin:") ? "/slow/bin/node" : null,
     });
     hosts.push(ctx.host);
     await ctx.host.start();

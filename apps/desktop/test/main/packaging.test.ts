@@ -32,7 +32,8 @@ import {
   chromiumRevision,
   detectTools,
   findChromium,
-  parseInstallProgress,
+  IN_APP,
+  toolDirs,
 } from "../../src/main/host/tools.ts";
 import { allowedWorkerEnvName, WorkerEnvStore } from "../../src/main/host/worker-env.ts";
 import { KeepAwake } from "../../src/main/system-services.ts";
@@ -348,7 +349,7 @@ describe("tools Studio does not carry", () => {
     );
     const missing = findChromium(layout, state, home);
     expect(missing).toMatchObject({ state: "missing", browsersPath: join(state, "browsers") });
-    expect(missing.message).toContain("Chromium'u indir");
+    expect(missing.message).toContain("Chromium gerekli");
     const cache = join(home, "Library", "Caches", "ms-playwright", "chromium_headless_shell-1255");
     mkdirSync(cache, { recursive: true });
     writeFileSync(join(cache, "INSTALLATION_COMPLETE"), "");
@@ -363,9 +364,11 @@ describe("tools Studio does not carry", () => {
     expect(findChromium(layout, state, home)).toMatchObject({ state: "ready", location: "state" });
   });
 
-  it("reads the installer's progress", () => {
-    expect(parseInstallProgress("|■■■■      |  40% of 90.1 MiB\n|■■■■■■|  55% of")).toBe(55);
-    expect(parseInstallProgress("Downloading Chrome Headless Shell")).toBeNull();
+  it("looks in Studio's own tools first, then PATH and Homebrew", () => {
+    const dirs = toolDirs("/usr/bin:/bin", "/Users/x");
+    expect(dirs[0]).toBe("/Users/x/Library/Application Support/Studio/tools/bin");
+    expect(dirs).toContain("/opt/homebrew/bin");
+    expect(dirs.indexOf("/usr/bin")).toBe(1);
   });
 
   it("says what is missing and the one-line install", () => {
@@ -375,7 +378,7 @@ describe("tools Studio does not carry", () => {
       "/nohome",
     );
     const ffmpeg = tools.find((t) => t.id === "ffmpeg");
-    expect(ffmpeg).toMatchObject({ state: "missing", install: "brew install ffmpeg" });
+    expect(ffmpeg).toMatchObject({ state: "missing", install: IN_APP });
     expect(tools.find((t) => t.id === "claude")).toMatchObject({
       state: "ok",
       path: "/x/claude",

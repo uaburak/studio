@@ -13,6 +13,7 @@ import {
   IconUndo,
   IconWarning,
 } from "../../components/ui/icons.tsx";
+import { ToolRequired } from "../tools/tools.tsx";
 import {
   activeVersion,
   canRedo,
@@ -87,6 +88,7 @@ export function ReelEditor({ snapshot, editor }: { snapshot: EditorSnapshot; edi
     return (
       <div className="flex flex-col gap-3">
         {header}
+        <ToolRequired id="ffmpeg" />
         <p className="text-body text-fg-2">
           {blocker ?? "Bu Reels düzenlenebilir bilgi taşımıyor."}
         </p>
@@ -109,6 +111,7 @@ export function ReelEditor({ snapshot, editor }: { snapshot: EditorSnapshot; edi
   return (
     <div className="flex flex-col gap-4" data-testid="reel-editor">
       {header}
+      <ToolRequired id="ffmpeg" />
       {blocker && <p className="text-footnote text-fg-2">{blocker}</p>}
       {issues.length > 0 && (
         <div className="flex flex-col gap-1">

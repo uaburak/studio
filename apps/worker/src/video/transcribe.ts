@@ -17,6 +17,7 @@ import { z } from "zod";
 import { callGeminiJson } from "../gemini/json-call.ts";
 import { DEFAULT_GEMINI_MODELS } from "../gemini/models.ts";
 import type { GeminiUsageSample } from "../gemini/pricing.ts";
+import { workerToolsDir } from "../tools/paths.ts";
 import { buildToolEnv, extractSpeechWav, type FfmpegRunner, findExecutable } from "./ffmpeg.ts";
 
 const execFileAsync = promisify(nodeExecFile);
@@ -84,6 +85,8 @@ export function resolveWhisperModel(env: NodeJS.ProcessEnv = process.env): strin
   }
   const home = env.HOME || homedir();
   const dirs = [
+    // Studio's own download (Ayarlar → Gelişmiş → Araçlar → whisper.cpp, tools/manager.ts).
+    path.join(workerToolsDir(env), "whisper", "models-v1", "models"),
     path.join(home, ".studio", "models"),
     path.join(home, ".cache", "whisper"),
     "/opt/homebrew/share/whisper-cpp",
@@ -110,7 +113,7 @@ export function resolveWhisperModel(env: NodeJS.ProcessEnv = process.env): strin
 }
 
 export const WHISPER_MISSING_NOTE =
-  "Klipteki konuşma yazıya dökülemedi: whisper.cpp kurulu değil. `brew install whisper-cpp` ile kurup bir model indirin (ör. ~/.studio/models/ggml-small.bin) ya da .env'e GEMINI_API_KEY ekleyin. Altyazılar senaryodaki metinlerden yazıldı.";
+  "Klipteki konuşma yazıya dökülemedi: whisper.cpp kurulu değil (isteğe bağlı) ve Gemini anahtarı yok. Ayarlar → Yapay zekâ'dan Gemini anahtarı ekleyebilirsin. Altyazılar senaryodaki metinlerden yazıldı.";
 
 const GeminiTranscriptSchema = z.object({
   language: z.string().default("tr"),
@@ -350,7 +353,7 @@ export function createDefaultClipTranscriber(options: DefaultTranscriberOptions)
       note: whisperFailure
         ? `${whisperFailure}. Altyazılar senaryodaki metinlerden yazıldı.`
         : whisperBin && !whisperModel
-          ? "Klipteki konuşma yazıya dökülemedi: whisper.cpp kurulu ama model dosyası yok. Bir ggml modelini ~/.studio/models/ altına koyun (ör. ggml-small.bin) ya da STUDIO_WHISPER_MODEL verin. Altyazılar senaryodaki metinlerden yazıldı."
+          ? "Klipteki konuşma yazıya dökülemedi: whisper.cpp kurulu ama model yok · Ayarlar → Gelişmiş → Araçlar → whisper.cpp'den modeli indir. Altyazılar senaryodaki metinlerden yazıldı."
           : WHISPER_MISSING_NOTE,
     };
   };

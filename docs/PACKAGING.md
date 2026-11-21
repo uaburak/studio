@@ -63,7 +63,7 @@ klasörü" geri dönüşü kaldırıldı; ikisi de yoksa sunucu açıkça hata v
 | API    | `wrangler dev` (cwd `apps/api`, kaynak dosyalardan)                                              | `wrangler dev` derlenmiş `host/api/index.js` ile (`no_bundle`), yapılandırma ve wrangler'ın geçici dosyaları durum klasöründe (`runtime/api`), uygulamanın içine hiçbir şey yazılmaz |
 | Geçit  | `apps/api/scripts/lan-gateway.mjs`                                                               | `host/gateway/lan-gateway.mjs`                                                                                                                                                       |
 | Worker | `node --env-file-if-exists=<depo>/.env --import tsx src/main.ts` (cwd `apps/worker`)             | `host/worker/main.js` (cwd `<durum>/worker`), `.env` okunmaz, `STUDIO_SKILLS_DIR=host/agent/skills`                                                                                  |
-| Tünel  | PATH'teki `cloudflared`                                                                          | aynı                                                                                                                                                                                 |
+| Tünel  | `tools/bin`, sonra PATH                                                                          | aynı                                                                                                                                                                                 |
 
 Görsel yardımcısı (`studio-vision`, Apple Vision; etiketleme N12 ve etiket koruma U9): worker
 önce `STUDIO_VISION_HELPER`'a, sonra kendi yanındaki `host/bin/studio-vision`'a (paket), sonra
@@ -103,22 +103,57 @@ ve uzaktan erişim tüneli; her biri `ok` / `warn` / `fail` + Türkçe etiket ve
 Gelişmiş → Sunucu sağlığı bunu gösterir. Yeni bir göç eklerken `apps/api/src/lib/health.ts`
 `LATEST_MIGRATION` güncellenir (test hatırlatır).
 
-## Ayrıca kurulması gerekenler
+## Ayrıca kurulması gerekenler: uygulama içi araçlar
 
-Ayarlar → Gelişmiş → Araçlar her birinin durumunu ve tek satırlık kurulumunu gösterir:
+Yeni bir Mac'e Studio.app kurmak yeter: Homebrew, Xcode / Komut Satırı Araçları ya da terminal
+gerekmez. Studio'nun kullandığı ama içinde taşımadığı programlar **Ayarlar → Gelişmiş → Araçlar**'dan
+(ya da sohbette "ffmpeg'i kur" diyerek, iPhone'dan da) resmi kaynaklarından kurulur. Hiçbir şey
+kendiliğinden inmez; her kurulum kaynağı ve boyutu gösterilen açık bir eylemdir.
 
-- **Chromium** (görsel ve Reels oluşturma): Playwright'ın önbelleğinde (`~/Library/Caches/ms-playwright`)
-  doğru sürüm varsa o kullanılır; yoksa Ayarlar'daki "Chromium'u indir" düğmesi paketteki
-  Playwright kurucusuyla durum klasörüne (`browsers/`) indirir (~100 MB, ilerleme gösterilir).
-  Kendiliğinden hiçbir şey indirilmez.
-- **ffmpeg** (Reels): `brew install ffmpeg`.
-- **whisper.cpp** (isteğe bağlı, Reels altyazıları): `brew install whisper-cpp` + bir ggml modeli
-  (`~/.studio/models/`).
-- **Claude Code / Gemini CLI / Codex**: giriş kabuğunun PATH'inden, arka planda bulunur.
-- **cloudflared** (yalnızca uzaktan erişim): `brew install cloudflared`.
+| Araç        | Ne için                     | Kaynak                                                                                                                                                                       | Doğrulama                                                         |
+| ----------- | --------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------- |
+| Claude Code | Claude ile sohbet ve üretim | Anthropic'in yerel kurucu kanalı (`downloads.claude.ai/claude-code-releases/stable` → `manifest.json` → ikili; https://claude.ai/install.sh ne yapıyorsa o), Studio dağıtmaz | kanalın manifest SHA-256'sı + Anthropic Developer ID (Q6L2SF6YDW) |
+| Gemini CLI  | Gemini (Google hesabı)      | npm kaydı `@google/gemini-cli` (tek parça paket), Studio'nun kendi Node'uyla (paket: Electron Node kipinde) çalışan bir başlatıcı                                            | npm `integrity` (sha512)                                          |
+| Chromium    | görseller, Reels kareleri   | paketteki Playwright kurucusu (`playwright-core install --only-shell chromium`) → `<durum>/browsers`                                                                         | Playwright'ın kendi denetimi                                      |
+| ffmpeg      | Reels                       | Martin Riedl'in imzalı ve notarize macOS derlemesi (arm64 + x64; ffmpeg.org'un macOS bağlantısı evermeet.cx yalnızca Intel ve imzasız)                                       | sabit SHA-256 + Developer ID (KU3N25YGLU)                         |
+| Python      | kod motoru                  | astral-sh/python-build-standalone (CPython 3.12, sabit sürüm), ardından motorun paketleri PyPI'dan `<durum>/worker/code-engine/venv`'e                                       | sabit SHA-256; pip yalnızca wheel                                 |
+| cloudflared | uzaktan erişim              | cloudflare/cloudflared GitHub sürümü (darwin arm64/amd64 tgz)                                                                                                                | sabit SHA-256                                                     |
+| whisper.cpp | isteğe bağlı, yerel altyazı | macOS için hazır program yayımlanmıyor: uygulama içinden kurulamaz. Mac'te `whisper-cli` varsa `ggml-small` modeli Hugging Face'ten (ggerganov/whisper.cpp) indirilir        | sabit SHA-256                                                     |
 
-Arama sırası: giriş kabuğunun PATH'i, sonra `/opt/homebrew/bin`, `/usr/local/bin`,
-`~/.local/bin`, `~/.studio/bin`.
+Sürümler ve özetler tek dosyada: `packages/contract/src/tools.ts` (`TOOL_MANIFEST`; nasıl
+yükseltileceği dosyanın başında yazar). `pnpm -C apps/worker tools:e2e [ffmpeg cloudflared python
+gemini claude]` her aracı geçici bir klasöre gerçekten indirip doğrular, açar ve çalıştırır (gerçek
+durum klasörüne dokunmaz; `STUDIO_TOOLS_E2E_PYPI=1` kod motorunun paketlerini de kurar).
+
+Düzen: `~/Library/Application Support/Studio/tools/<araç>/<sürüm>/` (her kurulum `tools/.tmp/`'de
+hazırlanır, doğrulanır ve yeniden adlandırmayla yerine konur), `tools/<araç>/current.json` (ne
+kurulu), `tools/bin/<ad>` (geçerli sürüme sembolik bağ; yenisi geçici bağın üzerine yeniden
+adlandırılır). Kaldır yalnızca Studio'nun kopyasını siler; Mac'te zaten olan (Homebrew, PATH) bir
+araç "kurulu" sayılır ve üzerine asla kurulmaz. İndirdiğimiz ve doğruladığımız dosyaların karantina
+işareti (`com.apple.quarantine`) kaldırılır.
+
+Arama sırası (Mac uygulaması ve worker aynı, contract `pathWithTools`): `tools/bin`, sonra giriş
+kabuğunun PATH'i, `/opt/homebrew/bin`, `/usr/local/bin`, `~/.local/bin`, `~/.studio/bin`. Ana süreç
+sunucuyu başlatırken PATH'in başına `tools/bin`'i koyar ve worker'a `STUDIO_TOOLS_DIR` verir;
+worker da kendi PATH'ine ekler, böylece yeni kurulan Claude Code / ffmpeg / Gemini CLI yeniden
+başlatmadan kullanılır (Claude / Gemini kurulunca worker oturum durumunu yeniden okur ve iş
+türlerini yeniden duyurur). cloudflared için sunucuyu yeniden başlatmak gerekir.
+
+Kurulumlar worker işidir (`tool.install` / `tool.uninstall`, her zaman duyurulur), API'nin ulaştığı
+her yerden başlatılabilir:
+
+- `GET /api/tools` → `ToolsControl { tools: ToolStatus[], online, reportedAt, sent }` (canlısı:
+  presence `tools`; worker bağlanınca, her işten sonra ve kurulum sürerken `worker.tools` bildirir)
+- `POST /api/tools/refresh` → worker'a yeniden bakmasını söyler
+- `POST /api/tools/{id}/install` `{ update?: boolean }` → 202 `Job` (ilerleme iş akışında ve
+  presence `tools[].progress`'te; Mac'te zaten kurulu / kurulamaz olana 409)
+- `POST /api/tools/{id}/uninstall` → 202 `Job`
+
+Sohbet ajanının `list_tools` ve `install_tool` araçları var; `install_tool` önce izin kartı
+gösterir ("ffmpeg kurulsun mu? Kaynak: …, ~29 MB"), onaylanınca işi başlatıp bitmesini bekler.
+MCP sunucusunda kur / kaldır `confirm: true` ister. Bir özellik eksik araçla karşılaşınca ham hata
+yerine "<araç> gerekli · Kur" gösterir (Reels → ffmpeg, kod motoru → Python, Claude / Gemini →
+CLI'ları, uzaktan erişim → cloudflared, ilk açılış → Claude Code).
 
 ## Yapay zekâ anahtarları
 
