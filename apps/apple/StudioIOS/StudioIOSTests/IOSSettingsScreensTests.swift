@@ -118,13 +118,22 @@ struct IOSSettingsScreensTests {
         }
     }
 
-    @Test func toolsPlaceholderListsTheProgramsAndTakesNewRows() async {
-        let (app, _) = await makeApp()
-        let tools = SettingsToolsViewController(app: app)
-        await show(tools)
-        #expect(tools.rowTitles.contains("Chromium"))
-        #expect(tools.rowTitles.contains("ffmpeg"))
-        tools.tools = [SettingsToolItem(id: "ffmpeg", title: "ffmpeg", detail: "Video", state: .missing, action: .install)]
-        #expect(tools.rowTitles == ["ffmpeg"])
+    @Test func toolsListTheMacsProgramsAndInstallFromThePhone() async throws {
+        let (app, backend) = await makeApp()
+        let screen = SettingsToolsViewController(app: app)
+        await show(screen)
+        #expect(screen.rowTitles.contains("Chromium"))
+        #expect(screen.rowTitles.contains("ffmpeg"))
+        let ffmpeg = try #require(screen.sections.flatMap(\.rows).first { $0.id == "ffmpeg" })
+        #expect(ffmpeg.value == "Kur")
+        #expect(ffmpeg.detail?.contains("~29 MB") == true)
+        #expect(screen.sections.contains { $0.header == "İsteğe bağlı" })
+
+        try await app.settingsStore.installTool("ffmpeg", update: false)
+        screen.rebuild()
+        #expect(try await backend.tools().tools.first { $0.id == "ffmpeg" }?.state == .installed)
+        let after = try #require(screen.sections.flatMap(\.rows).first { $0.id == "ffmpeg" })
+        #expect(after.value == nil)
+        #expect(after.detail?.contains("Studio'nun kopyası") == true)
     }
 }

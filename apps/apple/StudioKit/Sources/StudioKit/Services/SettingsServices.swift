@@ -32,6 +32,14 @@ extension StudioDataService {
     public func serverHealth() async throws -> HealthResponse {
         throw StudioAPIError.invalidConfiguration("Sunucu sağlığı bu bağlantıda okunamıyor.")
     }
+    public func tools() async throws -> ToolsControl { ToolsControl(tools: [], online: false) }
+    public func refreshTools() async throws -> ToolsControl { try await tools() }
+    public func installTool(_ id: String, update: Bool) async throws -> Job {
+        throw StudioAPIError.invalidConfiguration("Araç bu bağlantıda kurulamıyor.")
+    }
+    public func uninstallTool(_ id: String) async throws -> Job {
+        throw StudioAPIError.invalidConfiguration("Araç bu bağlantıda kaldırılamıyor.")
+    }
 }
 
 extension RemoteStudioDataService {
@@ -54,4 +62,8 @@ extension RemoteStudioDataService {
     public func pairedDevices() async throws -> DeviceList { try await client.deviceList() }
     public func revokeDevice(_ id: EntityID) async throws -> PairedDevice { try await client.revokeDevice(id) }
     public func serverHealth() async throws -> HealthResponse { try await client.health() }
+    public func tools() async throws -> ToolsControl { try await client.tools() }
+    public func refreshTools() async throws -> ToolsControl { try await client.refreshTools() }
+    public func installTool(_ id: String, update: Bool) async throws -> Job { try await client.installTool(id, update: update) }
+    public func uninstallTool(_ id: String) async throws -> Job { try await client.uninstallTool(id) }
 }

@@ -31,6 +31,9 @@ public struct JobType: RawRepresentable, Codable, Hashable, Sendable, Expressibl
     /// The Mac app's canvas runner (S1): reading / editing a canvas version's Wecra document.
     public static let canvasRead: JobType = "canvas.read"
     public static let canvasApply: JobType = "canvas.apply"
+    /// Ayarlar → Araçlar: install / remove a program Studio uses on the Mac.
+    public static let toolInstall: JobType = "tool.install"
+    public static let toolUninstall: JobType = "tool.uninstall"
 
     /// Short Turkish label for job lists.
     public var label: String {
@@ -45,6 +48,8 @@ public struct JobType: RawRepresentable, Codable, Hashable, Sendable, Expressibl
         case .brandSkillDraft: "Skill taslağı"
         case .canvasRead: "Tuval okuma"
         case .canvasApply: "Tuval düzenlemesi"
+        case .toolInstall: "Araç kurulumu"
+        case .toolUninstall: "Araç kaldırma"
         case .demoEcho: "Deneme işi"
         default: rawValue
         }
@@ -230,11 +235,13 @@ public struct WorkerPresence: Codable, Sendable, Hashable {
     public var gemini: GeminiAccount?
     /// Codex CLI / OpenAI API / Antigravity CLI as the Mac last reported them; nil from older workers.
     public var providers: [AIProviderStatus]?
+    /// The programs Studio uses on the Mac (Ayarlar → Araçlar) as the worker last reported them; nil from older workers.
+    public var tools: [ToolStatus]?
 
     public init(
         online: Bool, lastSeenAt: Date? = nil, workers: [ConnectedWorker] = [], currentJobs: [PresenceJob] = [], queueLength: Int = 0,
         usage: WorkerUsage? = nil, claude: ClaudeAccount? = nil, gemini: GeminiAccount? = nil,
-        providers: [AIProviderStatus]? = nil
+        providers: [AIProviderStatus]? = nil, tools: [ToolStatus]? = nil
     ) {
         self.online = online
         self.lastSeenAt = lastSeenAt
@@ -245,6 +252,7 @@ public struct WorkerPresence: Codable, Sendable, Hashable {
         self.claude = claude
         self.gemini = gemini
         self.providers = providers
+        self.tools = tools
     }
 
     public static let offline = WorkerPresence(online: false)

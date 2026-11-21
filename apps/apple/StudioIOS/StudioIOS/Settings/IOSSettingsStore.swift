@@ -20,6 +20,10 @@ final class IOSSettingsStore {
     private(set) var devices: DeviceList?
     private(set) var health: HealthResponse?
     private(set) var healthError: String?
+    private(set) var tools: ToolsControl?
+    private(set) var toolsError: String?
+    /// A tool job was just queued (until the list shows it running or finished).
+    private(set) var toolJobRunning = false
     /// A change was sent and the Mac has not taken it yet (the screens show "Mac'e iletiliyor…").
     private(set) var waitingForMac = false
 
@@ -74,6 +78,43 @@ final class IOSSettingsStore {
         } catch {
             healthError = Self.describe(error)
         }
+    }
+
+    // MARK: Tools (Ayarlar → Araçlar)
+
+    /// Live from presence `tools` (the job stream) when the Mac reports it there, else the last list.
+    var currentTools: [ToolStatus] {
+        app?.presence?.tools ?? tools?.tools ?? []
+    }
+
+    func loadTools() async {
+        guard let service else { return }
+        do {
+            tools = try await service.tools()
+            toolsError = nil
+            if !(tools?.tools.contains { $0.state == .installing } ?? false) { toolJobRunning = false }
+        } catch {
+            toolsError = Self.describe(error)
+        }
+    }
+
+    func refreshTools() async throws {
+        guard let service else { return }
+        tools = try await service.refreshTools()
+    }
+
+    func installTool(_ id: String, update: Bool) async throws {
+        guard let service else { return }
+        _ = try await service.installTool(id, update: update)
+        toolJobRunning = true
+        await loadTools()
+    }
+
+    func uninstallTool(_ id: String) async throws {
+        guard let service else { return }
+        _ = try await service.uninstallTool(id)
+        toolJobRunning = true
+        await loadTools()
     }
 
     // MARK: Changes

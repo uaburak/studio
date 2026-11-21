@@ -18,6 +18,12 @@ struct SampleSettings: Sendable {
         PairedDevice(id: "dev-old", name: "Eski iPhone", platform: .ios, createdAt: Date(timeIntervalSince1970: 1_780_000_000), lastSeenAt: Date(timeIntervalSince1970: 1_785_000_000), revokedAt: nil),
     ]
     let currentDeviceId = "dev-this"
+    var tools: [ToolStatus] = [
+        ToolStatus(id: "claude", label: "Claude Code", purpose: "Sohbet ve içerik üretimi (Opus, Sonnet, Haiku).", source: "Anthropic (claude.ai)", sourceUrl: "https://claude.ai/download", sizeBytes: 60_000_000, state: .installed, version: "2.4.1", path: "/usr/local/bin/claude", location: .system, installable: true),
+        ToolStatus(id: "chromium", label: "Chromium", purpose: "Post görsellerini çizer.", source: "Playwright (Microsoft)", sourceUrl: "https://playwright.dev", sizeBytes: 150_000_000, state: .outdated, version: "1200", targetVersion: "1208", location: .studio, installable: true, removable: true),
+        ToolStatus(id: "ffmpeg", label: "ffmpeg", purpose: "Reels videolarını hazırlar.", source: "ffmpeg.org (evermeet.cx)", sourceUrl: "https://evermeet.cx/ffmpeg/", sizeBytes: 29_000_000, state: .missing, targetVersion: "7.1", installable: true),
+        ToolStatus(id: "whisper", label: "Whisper", purpose: "Sesli mesajları yazıya döker.", source: "OpenAI (whisper.cpp)", sourceUrl: "https://github.com/ggerganov/whisper.cpp", state: .missing, installable: false, optional: true, note: "Uygulamadan kurulum yakında."),
+    ]
 
     static let defaultHost = HostSettingsState(
         values: HostSettingsValues(
@@ -163,6 +169,46 @@ extension SampleBackend {
         }
         if settingsSample.devices[index].revokedAt == nil { settingsSample.devices[index].revokedAt = sampleNow }
         return settingsSample.devices[index]
+    }
+
+    public func tools() async throws -> ToolsControl {
+        ToolsControl(tools: settingsSample.tools, online: true, reportedAt: sampleNow)
+    }
+
+    public func refreshTools() async throws -> ToolsControl {
+        ToolsControl(tools: settingsSample.tools, online: true, reportedAt: sampleNow, sent: 1)
+    }
+
+    /// The sample "Mac" installs at once.
+    public func installTool(_ id: String, update: Bool) async throws -> Job {
+        guard let index = settingsSample.tools.firstIndex(where: { $0.id == id }) else {
+            throw StudioAPIError.server(status: 404, code: .notFound, message: "tool \(id) not found", issues: [])
+        }
+        var tool = settingsSample.tools[index]
+        guard tool.installable else {
+            throw StudioAPIError.server(status: 409, code: .conflict, message: "\(tool.label) uygulamadan kurulamıyor.", issues: [])
+        }
+        if tool.state == .installed, !(update && tool.location == .studio) {
+            throw StudioAPIError.server(status: 409, code: .conflict, message: "\(tool.label) bu Mac'te zaten kurulu.", issues: [])
+        }
+        tool.state = .installed
+        tool.location = .studio
+        tool.removable = true
+        tool.version = tool.targetVersion ?? tool.version ?? "1.0"
+        tool.error = nil
+        settingsSample.tools[index] = tool
+        return Job(id: "job-tool-\(id)", type: .toolInstall, status: .succeeded, payload: ["toolId": .string(id)], createdAt: sampleNow, updatedAt: sampleNow)
+    }
+
+    public func uninstallTool(_ id: String) async throws -> Job {
+        guard let index = settingsSample.tools.firstIndex(where: { $0.id == id }), settingsSample.tools[index].location == .studio else {
+            throw StudioAPIError.server(status: 409, code: .conflict, message: "Studio'nun bu araçtan kendi kopyası yok.", issues: [])
+        }
+        settingsSample.tools[index].state = .missing
+        settingsSample.tools[index].location = nil
+        settingsSample.tools[index].version = nil
+        settingsSample.tools[index].removable = false
+        return Job(id: "job-untool-\(id)", type: .toolUninstall, status: .succeeded, payload: ["toolId": .string(id)], createdAt: sampleNow, updatedAt: sampleNow)
     }
 
     public func serverHealth() async throws -> HealthResponse {

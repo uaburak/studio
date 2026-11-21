@@ -237,6 +237,12 @@ public protocol StudioDataService: Sendable {
     func revokeDevice(_ id: EntityID) async throws -> PairedDevice
     /// `GET /api/health` (the server's parts).
     func serverHealth() async throws -> HealthResponse
+    /// Ayarlar → Araçlar: the programs Studio uses on the Mac.
+    func tools() async throws -> ToolsControl
+    func refreshTools() async throws -> ToolsControl
+    /// Queue `tool.install` (`update`: replace Studio's own copy).
+    func installTool(_ id: String, update: Bool) async throws -> Job
+    func uninstallTool(_ id: String) async throws -> Job
 }
 
 /// Brand page defaults (skills, templates, checks, special days): other conformers keep

@@ -586,9 +586,11 @@ enum ChatViews {
 
     static func consentCard(message: Message, consent: ConsentPart, context: ChatCellContext) -> UIView {
         let card = IOSCardView(padding: 16, spacing: 8)
+        // `install_tool`: the chat agent asks to install a program on the Mac (source and size in the detail).
+        let install = consent.tool == "install_tool"
         if consent.state == .pending {
             card.layer.borderColor = IOSTheme.accent.withAlphaComponent(0.6).cgColor
-            let eyebrow = UIStackView.h([IOSStatusDotView(color: IOSTheme.accent, size: 7), UILabel.studio("Onayın bekleniyor", size: 12, weight: .semibold, color: IOSTheme.accent, style: .caption1), UIView.spacer()], spacing: 6)
+            let eyebrow = UIStackView.h([IOSStatusDotView(color: IOSTheme.accent, size: 7), UILabel.studio(install ? "Mac'e kurulum izni" : "Onayın bekleniyor", size: 12, weight: .semibold, color: IOSTheme.accent, style: .caption1), UIView.spacer()], spacing: 6)
             card.stack.addArrangedSubview(eyebrow)
         }
         card.stack.addArrangedSubview(UILabel.studio(consent.title, size: 16, weight: .semibold, lines: 0, style: .headline))
@@ -598,21 +600,21 @@ enum ChatViews {
         let busy = context.model.busyConsents.contains(message.id + consent.consentId)
         switch consent.state {
         case .pending:
-            let allow = UIButton.studioPill(title: "Bir kez izin ver", kind: .primary) {
+            let allow = UIButton.studioPill(title: install ? "Kur" : "Bir kez izin ver", kind: .primary) {
                 Task { await context.model.decideConsent(message: message, consent: consent, allow: true) }
             }
             allow.configuration?.showsActivityIndicator = busy
             allow.isEnabled = !busy
-            let deny = UIButton.studioPill(title: "Reddet", kind: .secondary) {
+            let deny = UIButton.studioPill(title: install ? "Kurma" : "Reddet", kind: .secondary) {
                 Task { await context.model.decideConsent(message: message, consent: consent, allow: false) }
             }
             deny.isEnabled = !busy
             card.stack.setCustomSpacing(12, after: card.stack.arrangedSubviews.last!)
             card.stack.addArrangedSubview(UIStackView.h([allow, deny, UIView.spacer()], spacing: 8))
         case .allowed:
-            card.stack.addArrangedSubview(statusRow(symbol: "checkmark", text: "İzin verildi"))
+            card.stack.addArrangedSubview(statusRow(symbol: "checkmark", text: install ? "Kurulum onaylandı" : "İzin verildi"))
         case .denied:
-            card.stack.addArrangedSubview(statusRow(symbol: "xmark", text: "Reddedildi"))
+            card.stack.addArrangedSubview(statusRow(symbol: "xmark", text: install ? "Kurulmadı" : "Reddedildi"))
         case .expired, .unknown:
             card.stack.addArrangedSubview(statusRow(symbol: "clock", text: "Yanıtlanmadığı için süresi doldu"))
         }
