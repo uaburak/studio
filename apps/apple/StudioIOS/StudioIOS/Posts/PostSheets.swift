@@ -205,7 +205,7 @@ final class ScheduleSheetViewController: UIViewController {
         for account in accounts {
             let toggle = UISwitch()
             toggle.isOn = selected.contains(account.id)
-            toggle.onTintColor = IOSTheme.ink
+            toggle.onTintColor = IOSTheme.accent
             toggle.addAction(UIAction { [weak self, weak toggle] _ in
                 guard let self, let toggle else { return }
                 if toggle.isOn { self.selected.insert(account.id) } else { self.selected.remove(account.id) }

@@ -82,6 +82,12 @@ export const DANGER_RULES: readonly DangerRule[] = [
     reason: "cihaz eşleştirmesini değiştirir (changes device pairing)",
   },
   {
+    method: "POST",
+    path: /^\/api\/host\/settings\/changes$/,
+    reason:
+      "Mac uygulamasının ayarlarını (uzaktan erişim, yerel ağ, anahtarlar) değiştirir (changes Mac host settings)",
+  },
+  {
     method: "PUT",
     path: /^\/api\/pairing\/routes$/,
     reason: "telefonların Mac'e ulaşma adreslerini değiştirir (changes pairing routes)",

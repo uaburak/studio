@@ -24,6 +24,7 @@ import {
   WorkerAiUsageReport,
 } from "@studio/contract";
 import { desc, eq, gte, isNotNull, sql } from "drizzle-orm";
+import type { Context } from "hono";
 import { createDb, type Db } from "../db/client.ts";
 import { aiKeys, aiUsage } from "../db/schema.ts";
 import {
@@ -48,16 +49,16 @@ import {
 } from "../lib/ai-keys.ts";
 import { badRequest, conflict, notFound } from "../lib/errors.ts";
 import { newId } from "../lib/ids.ts";
-import { createRouter, errors, json, jsonBody } from "../lib/router.ts";
+import { type AppEnv, createRouter, errors, json, jsonBody } from "../lib/router.ts";
 import { VAULT_UNAVAILABLE_MESSAGE, vaultReady } from "../lib/token-vault.ts";
-import { requireLocal } from "../middleware/access.ts";
+import { requireOwner } from "../middleware/access.ts";
 import { requireWorkerToken } from "../middleware/worker-auth.ts";
 import { hubStub } from "./jobs.ts";
 
 /*
  * AI provider keys (roadmap 7), paid AI spend (roadmap 11, U8) and the S7 preferences.
  *
- * Keys: the Mac itself only. A key is checked with the provider's free models listing before
+ * Keys: the owner (the Mac or a paired phone; a phone never sees the hint). A key is checked with the provider's free models listing before
  * it is stored; a key the provider refuses is not stored. After a change the worker is told to
  * read the keys again (`worker.command ai.credentials`). Only the worker reads the plaintext.
  *
@@ -68,18 +69,20 @@ import { hubStub } from "./jobs.ts";
  */
 
 const tags = ["AI"];
-const forbidden = json(ApiErrorBody, "Not called from the Mac itself (`forbidden`).");
+const forbidden = json(ApiErrorBody, "Not called by the owner (`forbidden`).");
 const security = [{ workerToken: [] }];
 const unauthorized = { description: "Missing or wrong worker token (plain text)." };
 
 const router = createRouter();
 
-router.use("/api/ai/keys", requireLocal);
-router.use("/api/ai/keys/*", requireLocal);
-router.use("/api/ai/budget", requireLocal);
-// Anyone signed in may read the preferences; only the Mac itself changes them.
+// The owner (the Mac or a paired phone, iOS Ayarlar → Yapay zekâ); never the worker token. A
+// phone may store or remove a key but never reads it back (not even the hint).
+router.use("/api/ai/keys", requireOwner);
+router.use("/api/ai/keys/*", requireOwner);
+router.use("/api/ai/budget", requireOwner);
+// Anyone signed in may read the preferences; only the owner changes them.
 router.use("/api/ai/preferences", async (c, next) =>
-  c.req.method === "GET" || c.req.method === "HEAD" ? next() : requireLocal(c, next),
+  c.req.method === "GET" || c.req.method === "HEAD" ? next() : requireOwner(c, next),
 );
 // The Claude-limit answer ("Gemini ile devam et / Sınırı bekle") may also come from a paired
 // phone: it only picks between two choices the owner already allowed in the preferences.
@@ -103,6 +106,11 @@ async function keyList(db: Db, env: Env): Promise<AiKeyList> {
     items.push(toKeyState(provider, await loadKeyRow(db, provider)));
   }
   return { items, vaultReady: vaultReady(env) };
+}
+
+/** A paired phone sees only whether a key is stored, never its last characters. */
+function shown(c: Context<AppEnv>, state: AiKeyState): AiKeyState {
+  return c.get("principal")?.kind === "device" ? { ...state, hint: null } : state;
 }
 
 const totalsColumns = {
@@ -201,17 +209,20 @@ export const aiRoutes = router
       method: "get",
       path: "/api/ai/keys",
       tags,
-      summary: "Stored AI provider keys (hint, last check, models; never the key) (Mac only)",
+      summary: "Stored AI provider keys (hint, last check, models; never the key) (owner)",
       responses: { 200: json(AiKeyList, "Keys."), 403: forbidden },
     }),
-    async (c) => c.json(await keyList(createDb(c.env.DB), c.env), 200),
+    async (c) => {
+      const list = await keyList(createDb(c.env.DB), c.env);
+      return c.json({ ...list, items: list.items.map((item) => shown(c, item)) }, 200);
+    },
   )
   .openapi(
     createRoute({
       method: "put",
       path: "/api/ai/keys/{provider}",
       tags,
-      summary: "Check and store an API key in the vault (Mac only)",
+      summary: "Check and store an API key in the vault (owner)",
       description:
         "Lists the provider's models with the key first (free). A key the provider refuses is " +
         "not stored (400). When the provider cannot be reached the key is stored unchecked. " +
@@ -233,7 +244,7 @@ export const aiRoutes = router
         throw badRequest(check.detail, [{ path: "key", message: check.detail }]);
       const row = await saveKey(createDb(c.env.DB), c.env, provider, key, check);
       await notifyWorker(c.env);
-      return c.json(toKeyState(provider, row), 200);
+      return c.json(shown(c, toKeyState(provider, row)), 200);
     },
   )
   .openapi(
@@ -241,7 +252,7 @@ export const aiRoutes = router
       method: "post",
       path: "/api/ai/keys/{provider}/check",
       tags,
-      summary: "Check the stored key again (models.list; free) (Mac only)",
+      summary: "Check the stored key again (models.list; free) (owner)",
       request: { params: AiKeyProviderParam },
       responses: { 200: json(AiKeyState, "Checked."), 403: forbidden, 404: errors[404] },
     }),
@@ -253,7 +264,7 @@ export const aiRoutes = router
       if (!row || !key) throw notFound("AI key", provider);
       const next = await recordCheck(db, provider, await checkKey(provider, key));
       await notifyWorker(c.env);
-      return c.json(toKeyState(provider, next), 200);
+      return c.json(shown(c, toKeyState(provider, next)), 200);
     },
   )
   .openapi(
@@ -261,7 +272,7 @@ export const aiRoutes = router
       method: "delete",
       path: "/api/ai/keys/{provider}",
       tags,
-      summary: "Forget the stored key (the worker falls back to its .env) (Mac only)",
+      summary: "Forget the stored key (the worker falls back to its .env) (owner)",
       request: { params: AiKeyProviderParam },
       responses: { 200: json(AiKeyState, "Deleted."), 403: forbidden },
     }),
@@ -297,8 +308,7 @@ export const aiRoutes = router
       method: "put",
       path: "/api/ai/budget",
       tags,
-      summary:
-        "Set (or clear with null) the monthly budget of the paid AI services in USD (Mac only)",
+      summary: "Set (or clear with null) the monthly budget of the paid AI services in USD (owner)",
       request: { body: jsonBody(AiBudgetPut) },
       responses: { 200: json(AiSpendSummary, "Saved."), 400: errors[400], 403: forbidden },
     }),
@@ -328,7 +338,7 @@ export const aiRoutes = router
       method: "put",
       path: "/api/ai/preferences",
       tags,
-      summary: "Change the Claude-limit behaviour, the monthly budget or stop-at-budget (Mac only)",
+      summary: "Change the Claude-limit behaviour, the monthly budget or stop-at-budget (owner)",
       description:
         "Only the fields sent change. `monthlyBudgetUsd` is the same budget `PUT /api/ai/budget` " +
         "sets. A new `claudeLimit` drops the answer given under the old one. The worker is told " +
@@ -349,7 +359,7 @@ export const aiRoutes = router
       method: "post",
       path: "/api/ai/claude-limit/decision",
       tags,
-      summary: "Answer the Claude limit: go on with Gemini, or wait for the reset (Mac only)",
+      summary: "Answer the Claude limit: go on with Gemini, or wait for the reset (owner)",
       description:
         "The answer holds until `until`: by default presence `claude.limit.resetsAt` (when " +
         "still ahead), else five hours from now. 400 when `until` is not in the future. The " +

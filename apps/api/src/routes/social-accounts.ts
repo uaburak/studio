@@ -53,7 +53,7 @@ import {
   type VaultEnv,
   vaultReady,
 } from "../lib/token-vault.ts";
-import { requireLocal } from "../middleware/access.ts";
+import { requireLocal, requireOwner } from "../middleware/access.ts";
 import { requireBrand } from "./brands.ts";
 
 const tags = ["Social accounts"];
@@ -272,8 +272,9 @@ router.use("/api/social-accounts/meta/exchange", requireLocal);
 router.use("/api/social-accounts/linkedin/connect", requireLocal);
 router.use("/api/social-accounts/linkedin/oauth", requireLocal);
 router.use("/api/social-accounts/:id/token", requireLocal);
-router.use("/api/social-accounts/:id/check", requireLocal);
-router.use("/api/social-accounts/:id/disconnect", requireLocal);
+// The owner may check expiry and disconnect from the phone too (iOS Ayarlar → Hesaplar).
+router.use("/api/social-accounts/:id/check", requireOwner);
+router.use("/api/social-accounts/:id/disconnect", requireOwner);
 
 export const socialAccountRoutes = router
   .openapi(
@@ -586,7 +587,7 @@ export const socialAccountRoutes = router
       method: "post",
       path: "/api/social-accounts/{id}/check",
       tags,
-      summary: "Check token health (expiry, and with `live` the platform itself) (Mac only)",
+      summary: "Check token health (expiry, and with `live` the platform itself) (owner)",
       description:
         "Without `live`: expiry-based health. With `live`: Meta `debug_token` (needs the App " +
         "ID and secret from the Mac's Keychain; they are not stored) or LinkedIn `userinfo`. " +
@@ -679,7 +680,7 @@ export const socialAccountRoutes = router
       method: "post",
       path: "/api/social-accounts/{id}/disconnect",
       tags,
-      summary: "Disconnect: delete the vaulted token and disable the account (Mac only)",
+      summary: "Disconnect: delete the vaulted token and disable the account (owner)",
       description:
         "Refused (409) while the account has pending or publishing schedules. The account " +
         "row stays (history); connecting it again re-enables it.",

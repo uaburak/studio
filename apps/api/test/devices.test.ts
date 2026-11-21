@@ -172,18 +172,28 @@ describe("access control matrix", () => {
     expect(res.status).toBe(401);
   });
 
-  it("lets only the Mac manage devices", async () => {
-    const { token } = await pair();
+  it("lets only the Mac make pairing codes; the owner's phone may list and revoke others", async () => {
+    const { token, device } = await pair();
+    const other = await pair("Eski iPhone");
     const phone = { ...lan(), ...bearer(token) };
-    for (const [method, path] of [
-      ["POST", "/api/pairing/codes"],
-      ["GET", "/api/devices"],
-      ["POST", "/api/devices/whatever/revoke"],
-    ] as const) {
-      const res = await call<ApiErrorBody>(method, path, phone);
-      expect(res.status, path).toBe(403);
-      expect(res.body.error.code).toBe("forbidden");
-    }
+    const codes = await call<ApiErrorBody>("POST", "/api/pairing/codes", phone);
+    expect(codes.status).toBe(403);
+    expect(codes.body.error.code).toBe("forbidden");
+
+    const list = await call<DeviceList>("GET", "/api/devices", phone);
+    expect(list.status).toBe(200);
+    expect(list.body.currentDeviceId).toBe(device.id);
+    expect(list.body.items.some((d) => d.id === other.device.id)).toBe(true);
+    expect((await call<DeviceList>("GET", "/api/devices", LOCAL)).body.currentDeviceId).toBeNull();
+
+    // A phone cannot revoke itself (it would lock itself out); it may revoke another one.
+    const self = await call<ApiErrorBody>("POST", `/api/devices/${device.id}/revoke`, phone);
+    expect(self.status).toBe(409);
+    expect(self.body.error.code).toBe("conflict");
+    const revoked = await call<Device>("POST", `/api/devices/${other.device.id}/revoke`, phone);
+    expect(revoked.status).toBe(200);
+    expect(revoked.body.revokedAt).not.toBeNull();
+
     const worker = await call("GET", "/api/devices", { ...lan(), ...bearer("test-worker-token") });
     expect(worker.status).toBe(403);
   });

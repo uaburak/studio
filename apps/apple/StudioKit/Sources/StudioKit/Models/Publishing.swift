@@ -33,11 +33,14 @@ public struct PublishingStatus: Codable, Sendable, Equatable {
     public var cloud: Cloud
     /// False when the API has no token vault key (tokens cannot be stored).
     public var vaultReady: Bool
+    /// A schedule later than this is not published (missed); absent from older servers: 120.
+    public var maxLatenessMinutes: Int?
 
-    public init(mode: PublishingMode, cloud: Cloud, vaultReady: Bool) {
+    public init(mode: PublishingMode, cloud: Cloud, vaultReady: Bool, maxLatenessMinutes: Int? = nil) {
         self.mode = mode
         self.cloud = cloud
         self.vaultReady = vaultReady
+        self.maxLatenessMinutes = maxLatenessMinutes
     }
 
     /// Before the API answered (or an older API): this Mac publishes.

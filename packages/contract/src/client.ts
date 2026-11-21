@@ -180,6 +180,13 @@ import {
 } from "./engagement.ts";
 import { HealthResponse } from "./health.ts";
 import {
+  HostSettingsChange,
+  type HostSettingsChangeCreate,
+  type HostSettingsSync,
+  HostSettingsSyncResult,
+  HostSettingsView,
+} from "./host-settings.ts";
+import {
   BestTimes,
   type BestTimesQuery,
   BrandPerformance,
@@ -1177,10 +1184,29 @@ export function createApiClient(options: ApiClientOptions = {}) {
         call(MacRoutes, "/api/pairing/routes", { method: "PUT", json: input, init }),
     },
 
+    host: {
+      /** The Mac app's own settings as it last sent them, and recent changes (owner). */
+      settings: (init?: RequestInit) => call(HostSettingsView, "/api/host/settings", { init }),
+      /** Queue a change for the Mac app (owner; refused when it would cut the caller's route). */
+      change: (input: HostSettingsChangeCreate, init?: RequestInit) =>
+        call(HostSettingsChange, "/api/host/settings/changes", {
+          method: "POST",
+          json: input,
+          init,
+        }),
+      /** The Mac app's sync: its state and results in, queued changes out (the Mac itself only). */
+      sync: (input: HostSettingsSync, init?: RequestInit) =>
+        call(HostSettingsSyncResult, "/api/host/settings/sync", {
+          method: "POST",
+          json: input,
+          init,
+        }),
+    },
+
     devices: {
-      /** Paired devices, newest first (the Mac itself only). */
+      /** Paired devices, newest first (the Mac itself and paired devices). */
       list: (init?: RequestInit) => call(DeviceList, "/api/devices", { init }),
-      /** Revoke a device: its token stops working immediately. */
+      /** Revoke a device: its token stops working immediately (a phone cannot revoke itself). */
       revoke: (id: string, init?: RequestInit) =>
         call(Device, `/api/devices/${enc(id)}/revoke`, { method: "POST", init }),
     },

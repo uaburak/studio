@@ -75,6 +75,8 @@ export const ENUMS = {
   generationEngine: ["wecra", "html", "svg", "code"],
   approvalKind: ["product_image", "variant", "product_photo_upgrade"],
   approvalStatus: ["pending", "approved", "rejected", "superseded"],
+  // --- Mac host settings bridge (iOS Ayarlar; 0027) ---
+  hostSettingsChangeStatus: ["pending", "applied", "failed"],
 } as const;
 
 /** `col in ('a', 'b')` for CHECK constraints (values are constants above, never input). */
@@ -1505,5 +1507,38 @@ export const approvalRequests = sqliteTable(
     index("approval_requests_status_idx").on(t.status, t.id),
     check("approval_requests_kind_check", oneOf(t.kind, ENUMS.approvalKind)),
     check("approval_requests_status_check", oneOf(t.status, ENUMS.approvalStatus)),
+  ],
+);
+
+// --- Mac host settings bridge (iOS Ayarlar; 0027) --------------------------------------------
+
+/** One key change inside a queued host settings change; `sealed` is erased once finished. */
+export interface HostKeyChangeRow {
+  name: string;
+  action: "set" | "remove";
+  sealed: { ciphertext: string; iv: string; keyVersion: number } | null;
+}
+
+/**
+ * Changes a paired phone queued for the Mac app's own settings (routes/host-settings.ts). The Mac
+ * app picks pending rows up on its sync and reports each result; secret values are sealed in the
+ * token vault and dropped when the row is finished.
+ */
+export const hostSettingsChanges = sqliteTable(
+  "host_settings_changes",
+  {
+    id: text("id").primaryKey(),
+    deviceId: text("device_id"),
+    /** HostSettingsPatch JSON. */
+    values: text("values", { mode: "json" }).$type<Record<string, unknown>>().notNull(),
+    keys: text("keys", { mode: "json" }).$type<HostKeyChangeRow[]>().notNull(),
+    status: text("status", { enum: ENUMS.hostSettingsChangeStatus }).notNull().default("pending"),
+    message: text("message"),
+    createdAt: createdAt(),
+    finishedAt: integer("finished_at", { mode: "timestamp_ms" }),
+  },
+  (t) => [
+    index("host_settings_changes_status_idx").on(t.status, t.createdAt),
+    check("host_settings_changes_status_check", oneOf(t.status, ENUMS.hostSettingsChangeStatus)),
   ],
 );

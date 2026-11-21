@@ -37,8 +37,10 @@ import type { AppEnv } from "../lib/router.ts";
  *
  * Public: `GET /api/health` and `POST /api/pairing/claim` (rate-limited).
  * Everything else answers `401 unauthorized` with `WWW-Authenticate: Bearer`.
- * Device management (`/api/devices`, `/api/pairing/codes`) additionally
- * requires `local` (`requireLocal`, 403 otherwise).
+ * Pairing codes, sign-ins, OAuth flows and account tokens additionally require
+ * `local` (`requireLocal`, 403 otherwise). The owner's settings (paired devices,
+ * AI keys and budget, the cloud publisher, the Mac host settings bridge) take
+ * `local` or `device` but never the worker token (`requireOwner`).
  */
 
 export type Principal =
@@ -154,10 +156,72 @@ export const accessControl: MiddlewareHandler<AppEnv> = async (c, next) => {
   await next();
 };
 
-/** Only the Mac itself (pairing codes, device list, revoke). */
+/** Only the Mac itself (pairing codes, sign-ins, OAuth flows, tokens). */
 export const requireLocal: MiddlewareHandler<AppEnv> = async (c, next) => {
   if (c.get("principal")?.kind !== "local") {
-    return c.json(errorBody("forbidden", "only the Mac itself can manage devices"), 403);
+    return c.json(errorBody("forbidden", "only the Mac itself can do this"), 403);
   }
   await next();
 };
+
+/**
+ * The owner: the Mac itself or a paired device (never the worker token). Settings a phone may
+ * change from iOS Ayarlar (AI keys, budget, cloud publisher, paired devices, the Mac host bridge).
+ */
+export const requireOwner: MiddlewareHandler<AppEnv> = async (c, next) => {
+  const kind = c.get("principal")?.kind;
+  if (kind !== "local" && kind !== "device") {
+    return c.json(
+      errorBody("forbidden", "only the owner (the Mac or a paired phone) can do this"),
+      403,
+    );
+  }
+  await next();
+};
+
+/** Private and link-local IPv4 / IPv6 ranges (a phone on the LAN), CGNAT (VPN overlays) too. */
+export function isPrivateAddress(address: string): boolean {
+  const a = address
+    .trim()
+    .toLowerCase()
+    .replace(/^::ffff:/, "");
+  if (isLoopback(a)) return true;
+  const v4 = a.match(/^(\d{1,3})\.(\d{1,3})\.\d{1,3}\.\d{1,3}$/);
+  if (v4) {
+    const x = Number(v4[1]);
+    const y = Number(v4[2]);
+    return (
+      x === 10 ||
+      (x === 172 && y >= 16 && y <= 31) ||
+      (x === 192 && y === 168) ||
+      (x === 169 && y === 254) ||
+      (x === 100 && y >= 64 && y <= 127)
+    );
+  }
+  return a.startsWith("fe80:") || a.startsWith("fc") || a.startsWith("fd");
+}
+
+/**
+ * Which way a request reached the API: `local` (the Mac app), `tunnel` (Cloudflare Tunnel:
+ * addressed to the tunnel's hostname, carrying Cloudflare's `CF-Ray`, or from a public address)
+ * or `lan` (through the LAN gateway from the local network).
+ */
+export function requestRoute(
+  c: Context<AppEnv>,
+  tunnelHostnames: readonly string[],
+): "local" | "lan" | "tunnel" {
+  if (c.get("principal")?.kind === "local") return "local";
+  let hostname = "";
+  try {
+    hostname = new URL(c.req.url).hostname.toLowerCase();
+  } catch {
+    hostname = "";
+  }
+  const known = tunnelHostnames
+    .map((h) => h.trim().toLowerCase().replace(/:\d+$/, ""))
+    .filter(Boolean);
+  if (hostname && known.includes(hostname)) return "tunnel";
+  if (c.req.header("CF-Ray") !== undefined) return "tunnel";
+  if (!isPrivateAddress(clientAddress(c))) return "tunnel";
+  return "lan";
+}

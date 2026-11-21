@@ -88,13 +88,16 @@ public struct AIPreferences: Codable, Sendable, Hashable {
     public var monthlyBudgetUsd: Double?
     public var stopAtBudget: Bool
     public var limitDecision: ClaudeLimitDecision?
+    /// N12: describe each new picture with the AI (paid); absent from older servers = off.
+    public var mediaCaptions: Bool?
     public var updatedAt: Date?
 
-    public init(claudeLimit: ClaudeLimitMode = .ask, monthlyBudgetUsd: Double? = nil, stopAtBudget: Bool = false, limitDecision: ClaudeLimitDecision? = nil, updatedAt: Date? = nil) {
+    public init(claudeLimit: ClaudeLimitMode = .ask, monthlyBudgetUsd: Double? = nil, stopAtBudget: Bool = false, limitDecision: ClaudeLimitDecision? = nil, mediaCaptions: Bool? = nil, updatedAt: Date? = nil) {
         self.claudeLimit = claudeLimit
         self.monthlyBudgetUsd = monthlyBudgetUsd
         self.stopAtBudget = stopAtBudget
         self.limitDecision = limitDecision
+        self.mediaCaptions = mediaCaptions
         self.updatedAt = updatedAt
     }
 }

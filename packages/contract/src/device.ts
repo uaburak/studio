@@ -12,7 +12,8 @@ import { EntityId, Timestamp } from "./common.ts";
  *                                                                          (127.0.0.1 only)
  *   phone:    POST /api/pairing/claim {code | secret, deviceName, platform}
  *                                      -> { device, token, routes }        (public, rate-limited)
- *   Mac app:  GET  /api/devices, POST /api/devices/{id}/revoke             (127.0.0.1 only)
+ *   owner:    GET  /api/devices, POST /api/devices/{id}/revoke  (the Mac or a paired phone;
+ *                                                               a phone cannot revoke itself)
  *   Mac app:  PUT  /api/pairing/routes  (127.0.0.1 only; where phones can reach this Mac)
  *   phone:    GET  /api/pairing/routes  (paired device; keeps its saved routes fresh)
  *
@@ -165,6 +166,10 @@ export const PairingResult = z
 export type PairingResult = z.infer<typeof PairingResult>;
 
 export const DeviceList = z
-  .object({ items: z.array(Device) })
+  .object({
+    items: z.array(Device),
+    /** The caller's own device when a paired phone asks (it cannot revoke itself); else null. */
+    currentDeviceId: z.string().nullable().optional(),
+  })
   .meta({ id: "DeviceList", description: "Paired devices, newest first (revoked ones included)." });
 export type DeviceList = z.infer<typeof DeviceList>;

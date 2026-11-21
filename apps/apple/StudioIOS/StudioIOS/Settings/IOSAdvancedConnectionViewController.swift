@@ -212,7 +212,7 @@ final class IOSAdvancedConnectionViewController: UITableViewController {
         if let toggle = row.toggle {
             let toggleView = UISwitch()
             toggleView.isOn = toggle
-            toggleView.onTintColor = IOSTheme.ink
+            toggleView.onTintColor = IOSTheme.accent
             let handler = row.onToggle
             toggleView.addAction(UIAction { [weak toggleView] _ in handler?(toggleView?.isOn ?? false) }, for: .valueChanged)
             cell.accessoryView = toggleView

@@ -220,6 +220,23 @@ public protocol StudioDataService: Sendable {
     func regenerateApproval(_ id: EntityID, _ input: ApprovalRegenerate) async throws -> ApprovalActionResult
     /// Products, then the newest posts, each with its `@` name.
     func mentionCandidates(brandId: EntityID) async throws -> [EntityMentionCandidate]
+
+    // Ayarlar parity with the Mac app. Defaults in SettingsServices.swift.
+    /// The Mac app's own settings (local network, remote access, keys, …) as it last sent them.
+    func hostSettings() async throws -> HostSettingsView
+    /// Queue a change for the Mac app; it applies it within seconds.
+    func changeHostSettings(_ input: HostSettingsChangeCreate) async throws -> HostSettingsChange
+    func aiKeys() async throws -> AIKeyList
+    func setAIKey(_ provider: AIKeyProvider, key: String) async throws -> AIKeyState
+    func checkAIKey(_ provider: AIKeyProvider) async throws -> AIKeyState
+    func deleteAIKey(_ provider: AIKeyProvider) async throws -> AIKeyState
+    func setAIPreferences(_ input: AIPreferencesPut) async throws -> AIPreferences
+    func setPublishingSettings(_ input: PublishingSettingsPatch) async throws -> PublishingStatus
+    /// Paired devices with the asking phone's own id.
+    func pairedDevices() async throws -> DeviceList
+    func revokeDevice(_ id: EntityID) async throws -> PairedDevice
+    /// `GET /api/health` (the server's parts).
+    func serverHealth() async throws -> HealthResponse
 }
 
 /// Brand page defaults (skills, templates, checks, special days): other conformers keep

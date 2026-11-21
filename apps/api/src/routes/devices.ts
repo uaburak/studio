@@ -23,7 +23,7 @@ import { randomDigits, randomToken, sha256Hex } from "../lib/crypto.ts";
 import { errorBody, notFound } from "../lib/errors.ts";
 import { newId } from "../lib/ids.ts";
 import { createRouter, errors, IdParams, json, jsonBody } from "../lib/router.ts";
-import { clientAddress, requireLocal } from "../middleware/access.ts";
+import { clientAddress, requireLocal, requireOwner } from "../middleware/access.ts";
 import { hubStub } from "./jobs.ts";
 
 /*
@@ -78,8 +78,9 @@ const forbidden = json(ApiErrorBody, "Not called from the Mac itself (`forbidden
 export const deviceRoutes = createRouter();
 
 deviceRoutes.use("/api/pairing/codes", requireLocal);
-deviceRoutes.use("/api/devices", requireLocal);
-deviceRoutes.use("/api/devices/*", requireLocal);
+// The owner may see and revoke paired devices from the phone too (iOS Ayarlar → Cihazlar).
+deviceRoutes.use("/api/devices", requireOwner);
+deviceRoutes.use("/api/devices/*", requireOwner);
 
 deviceRoutes.openapi(
   createRoute({
@@ -386,7 +387,7 @@ deviceRoutes.openapi(
     method: "get",
     path: "/api/devices",
     tags,
-    summary: "List paired devices (Mac only)",
+    summary: "List paired devices (owner)",
     responses: { 200: json(DeviceList, "Newest first, revoked ones included."), 403: forbidden },
   }),
   async (c) => {
@@ -394,7 +395,14 @@ deviceRoutes.openapi(
       .select()
       .from(devices)
       .orderBy(desc(devices.createdAt), desc(devices.id));
-    return c.json({ items: rows.map(toDevice) }, 200);
+    const principal = c.get("principal");
+    return c.json(
+      {
+        items: rows.map(toDevice),
+        currentDeviceId: principal?.kind === "device" ? principal.deviceId : null,
+      },
+      200,
+    );
   },
 );
 
@@ -403,14 +411,29 @@ deviceRoutes.openapi(
     method: "post",
     path: "/api/devices/{id}/revoke",
     tags,
-    summary: "Revoke a paired device (Mac only)",
+    summary: "Revoke a paired device (owner)",
     description:
-      "Its token stops working immediately and its open live streams (jobs, conversations) are closed. Revoking twice is a no-op.",
+      "Its token stops working immediately and its open live streams (jobs, conversations) are closed. Revoking twice is a no-op. A phone cannot revoke itself (409; it forgets the Mac instead).",
     request: { params: IdParams },
-    responses: { 200: json(Device, "The revoked device."), 403: forbidden, 404: errors[404] },
+    responses: {
+      200: json(Device, "The revoked device."),
+      403: forbidden,
+      404: errors[404],
+      409: errors[409],
+    },
   }),
   async (c) => {
     const { id } = c.req.valid("param");
+    const principal = c.get("principal");
+    if (principal?.kind === "device" && principal.deviceId === id) {
+      return c.json(
+        errorBody(
+          "conflict",
+          "Bu iPhone kendini buradan kaldıramaz. Ayarlar → Mac → Bağlantıyı kaldır'ı kullan ya da Mac'te kaldır.",
+        ),
+        409,
+      );
+    }
     const db = createDb(c.env.DB);
     await db
       .update(devices)

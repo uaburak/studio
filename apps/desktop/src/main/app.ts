@@ -2,6 +2,7 @@
 // in the unified top bar, sidebar vibrancy), the local host supervisor, settings, the menu,
 // notifications, backups and the typed IPC the preload exposes. Started by index.ts only in the
 // copy of the app that holds the single-instance lock.
+import { hostname } from "node:os";
 import { join } from "node:path";
 import {
   app,
@@ -25,6 +26,7 @@ import {
   type NoticeInput,
   type SettingsPatch,
 } from "../shared/ipc.ts";
+import { validateTunnelToken } from "./accounts/ipc.ts";
 import { createSecretStore, safeStorageCipher, setupAccounts } from "./accounts/setup.ts";
 import { ActivityNotices, getOwnerJson, nodeActivitySocket } from "./activity-notices.ts";
 import { BackupService } from "./backup-service.ts";
@@ -44,6 +46,8 @@ import {
   writeInstanceId,
   writeOwnerSecret,
 } from "./host/secrets.ts";
+import { EDITABLE_WORKER_ENV } from "./host/worker-env.ts";
+import { HostSettingsBridge } from "./host-settings-bridge.ts";
 import { installMainLog, MainLog } from "./main-log.ts";
 import { buildMenu } from "./menu.ts";
 import { NoticeLog, Notifier } from "./notifications.ts";
@@ -54,7 +58,13 @@ import { needsOwnerHeader, originOf } from "./protocol-paths.ts";
 import { PublishingSync } from "./publishing-sync.ts";
 import { RendererLink, watchRenderer } from "./renderer-link.ts";
 import { defaultSettings, SettingsStore } from "./settings.ts";
-import { type SystemServices, setupSystemServices } from "./system-services.ts";
+import {
+  loginItemState,
+  type SystemServices,
+  setLoginItem,
+  setupSystemServices,
+  UPDATES,
+} from "./system-services.ts";
 
 export function startApp(): void {
   const isDev = !app.isPackaged && Boolean(process.env.ELECTRON_RENDERER_URL);
@@ -361,6 +371,7 @@ export function startApp(): void {
   });
 
   let systemServices: SystemServices | null = null;
+  let hostSettingsBridge: HostSettingsBridge | null = null;
 
   function registerIpc(): void {
     ipcMain.handle(IPC.hostGet, () => host.snapshot());
@@ -418,7 +429,7 @@ export function startApp(): void {
     ipcMain.handle(ACCOUNTS_IPC.backupCreate, () => backups.backup());
     ipcMain.handle(ACCOUNTS_IPC.backupRestore, () => backups.restore());
     host.onChange((snapshot) => send(IPC.hostChanged, snapshot));
-    setupAccounts({
+    const accounts = setupAccounts({
       stateDir,
       logsDir: host.logsDir,
       secrets,
@@ -440,6 +451,54 @@ export function startApp(): void {
       send,
       log: (level, message) => mainLog.write(level, message),
     });
+    // iOS Ayarlar: the phone sees and changes this app's own settings through the local API.
+    const keepAwake = systemServices.keepAwake;
+    hostSettingsBridge = new HostSettingsBridge({
+      ports: {
+        settings: { get: () => settings.get(), update: (patch) => settings.update(patch) },
+        host: {
+          snapshot: () => host.snapshot(),
+          macName: () => host.routes()?.macName ?? hostname(),
+          tunnel: () => host.tunnelState(),
+        },
+        loginItem: { get: () => loginItemState(), set: (on) => setLoginItem(on) },
+        keepAwake: () => ({ active: keepAwake.active, reason: keepAwake.reason }),
+        workerEnv: {
+          summary: () => created.workerEnv.summary(),
+          set: (name, value) => created.workerEnv.set(name, value),
+          remove: (name) => created.workerEnv.remove(name),
+          editable: EDITABLE_WORKER_ENV,
+        },
+        accounts: {
+          apps: () => accounts.apps(),
+          saveMetaApp: (input) => accounts.saveMetaApp(input),
+          saveLinkedInApp: (input) => accounts.saveLinkedInApp(input),
+          forgetMetaSecret: () => accounts.forgetMetaSecret(),
+          forgetLinkedInSecret: () => secrets.delete("linkedin-client-secret"),
+        },
+        tunnelToken: {
+          has: () => secrets.has("cloudflare-tunnel-token"),
+          save: (value) => secrets.save("cloudflare-tunnel-token", validateTunnelToken(value)),
+          remove: () => secrets.delete("cloudflare-tunnel-token"),
+        },
+        appVersion: app.getVersion(),
+        mode: created.mode,
+        updatesNote: UPDATES.enabled
+          ? "Güncellemeler otomatik denetlenir."
+          : "Otomatik güncelleme kapalı: yeni sürümü Mac'te elle kur.",
+      },
+      target: () => {
+        const snapshot = host.snapshot();
+        const up = snapshot.status.kind === "running" || snapshot.status.kind === "attached";
+        return up && snapshot.apiPort !== null
+          ? { port: snapshot.apiPort, ownerSecret: currentOwnerSecret() }
+          : null;
+      },
+      restartHost: () => void host.restart(),
+      restartTunnel: () => void host.restartTunnel(),
+      log: (message) => mainLog.write("warn", message),
+    });
+    hostSettingsBridge.start();
     let tunnelHostname = settings.get().remoteHostname;
     settings.onChange((value) => {
       applyAppearance(value.appearance);
@@ -499,6 +558,7 @@ export function startApp(): void {
     if (quitting) return;
     quitting = true;
     systemServices?.stop();
+    hostSettingsBridge?.stop();
     stopCanvasRunner();
     activity.stop();
     try {

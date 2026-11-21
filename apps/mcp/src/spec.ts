@@ -64,6 +64,8 @@ export function snakeCase(text: string): string {
 export function isExcluded(method: string, path: string): boolean {
   if (path.startsWith("/api/worker/")) return true;
   if (path === "/api/pairing/claim") return true;
+  // The Mac app's own settings sync (it hands out queued secret values).
+  if (path === "/api/host/settings/sync") return true;
   if (method === "GET" && path.endsWith("/stream")) return true;
   if (path.startsWith("/api/dev/")) return true;
   return false;

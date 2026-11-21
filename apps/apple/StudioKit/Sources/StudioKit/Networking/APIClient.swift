@@ -11,6 +11,9 @@ public struct HealthResponse: Codable, Sendable, Equatable {
     public var checks: Checks
     /// Id of the Mac host that started this API (absent when started by hand).
     public var instance: String?
+    /// The server's parts (database, storage, worker, …; absent from older APIs).
+    public var components: [HealthComponent]?
+    public var migrations: HealthMigrations?
 }
 
 /// Typed client for the Studio API (mirror of `createApiClient` in

@@ -24,6 +24,7 @@ export * from "./engagement.ts";
 export * from "./generation.ts";
 export * from "./health.ts";
 export * from "./hijri.ts";
+export * from "./host-settings.ts";
 export * from "./insights.ts";
 export * from "./job.ts";
 export * from "./mention.ts";

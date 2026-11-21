@@ -26,12 +26,12 @@ import {
 } from "../lib/publishing.ts";
 import { createRouter, errors, json, jsonBody } from "../lib/router.ts";
 import { encryptSetting } from "../lib/token-vault.ts";
-import { requireLocal } from "../middleware/access.ts";
+import { requireOwner } from "../middleware/access.ts";
 import { requireWorkerToken } from "../middleware/worker-auth.ts";
 import { migrateLegacyTokens } from "./social-accounts.ts";
 
 const tags = ["Publishing"];
-const forbidden = json(ApiErrorBody, "Not called from the Mac itself (`forbidden`).");
+const forbidden = json(ApiErrorBody, "Not called by the owner (`forbidden`).");
 const security = [{ workerToken: [] }];
 const unauthorized = { description: "Missing or wrong worker token (plain text)." };
 
@@ -88,8 +88,9 @@ async function workerConfig(row: PublishingSettingsRow | null, env: Env) {
 
 const router = createRouter();
 
-router.use("/api/publishing/cloud", requireLocal);
-router.use("/api/publishing/settings", requireLocal);
+// The owner (the Mac or a paired phone, iOS Ayarlar → Yayın); never the worker token.
+router.use("/api/publishing/cloud", requireOwner);
+router.use("/api/publishing/settings", requireOwner);
 router.use("/api/worker/publishing/*", requireWorkerToken);
 
 export const publishingRoutes = router
@@ -112,7 +113,7 @@ export const publishingRoutes = router
       method: "put",
       path: "/api/publishing/cloud",
       tags,
-      summary: "Set the cloud publisher URL and bearer token (Mac only)",
+      summary: "Set the cloud publisher URL and bearer token (owner)",
       description:
         "Probes `{url}/health` and `{url}/v1/orders` with the token first; the token is sealed " +
         "with the token vault and only handed to the worker.",
@@ -147,7 +148,7 @@ export const publishingRoutes = router
       method: "delete",
       path: "/api/publishing/cloud",
       tags,
-      summary: "Forget the cloud publisher; this Mac publishes again (Mac only)",
+      summary: "Forget the cloud publisher; this Mac publishes again (owner)",
       description:
         "Refused (409) while schedules handed to the cloud publisher are pending or publishing " +
         "there, or cancelled here but not yet cancelled there: without the cloud publisher the " +
@@ -190,7 +191,7 @@ export const publishingRoutes = router
       method: "patch",
       path: "/api/publishing/settings",
       tags,
-      summary: "Change publishing settings: maximum lateness (Mac only)",
+      summary: "Change publishing settings: maximum lateness (owner)",
       description:
         "`maxLatenessMinutes` (default 120): a schedule whose time passed more than this long " +
         "ago (the Mac was asleep, the cloud publisher was down) is not published; it fails as " +

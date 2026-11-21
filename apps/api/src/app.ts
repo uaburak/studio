@@ -23,6 +23,7 @@ import { contentCheckRoutes } from "./routes/content-checks.ts";
 import { contentRoutes } from "./routes/contents.ts";
 import { conversationRoutes } from "./routes/conversations.ts";
 import { deviceRoutes, readRoutes } from "./routes/devices.ts";
+import { hostSettingsRoutes } from "./routes/host-settings.ts";
 import { hubRoutes } from "./routes/hub.ts";
 import { insightRoutes } from "./routes/insights.ts";
 import { createJob, hubStub, jobRoutes } from "./routes/jobs.ts";
@@ -120,6 +121,7 @@ app.route("/", commentRoutes); // /api/comments/* (N16)
 app.route("/", approvalRoutes); // /api/approvals/*, /api/worker/approvals (URETIM-RESIM Faz 0)
 app.route("/", publishingRoutes); // /api/publishing/*, /api/publish-logs, /api/worker/publishing/* (P3)
 app.route("/", aiRoutes); // /api/ai/*, /api/worker/ai/* (roadmap 7 + 11)
+app.route("/", hostSettingsRoutes); // /api/host/settings* (the Mac app settings bridge, iOS Ayarlar)
 app.route("/", hubRoutes); // /api/hub (worker WebSocket), /api/workers/presence
 app.route("/", toolRoutes); // /api/tools/* (in-app tool installs on the Mac)
 

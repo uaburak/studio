@@ -290,6 +290,8 @@ final class IOSAppModel {
     let calendar = IOSCalendarModel()
     /// Approval requests ("Onay bekleyenler").
     let approvals = IOSApprovalsModel()
+    /// What the Ayarlar screens read and change (cached between visits).
+    let settingsStore = IOSSettingsStore()
     /// The current brand's products and posts the composer offers after `@`.
     private(set) var mentionCandidates: [EntityMentionCandidate] = []
     @ObservationIgnored private var mentionCandidatesBrandId: EntityID?
@@ -355,6 +357,7 @@ final class IOSAppModel {
         posts.app = self
         calendar.app = self
         approvals.app = self
+        settingsStore.app = self
     }
 
     var presence: WorkerPresence? { jobBoard.presence }

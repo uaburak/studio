@@ -155,6 +155,13 @@ public struct PairingResult: Codable, Sendable, Equatable {
 /// `DeviceList`.
 public struct DeviceList: Codable, Sendable, Equatable {
     public var items: [PairedDevice]
+    /// The asking phone's own device (it cannot revoke itself); nil for the Mac or older APIs.
+    public var currentDeviceId: String?
+
+    public init(items: [PairedDevice], currentDeviceId: String? = nil) {
+        self.items = items
+        self.currentDeviceId = currentDeviceId
+    }
 }
 
 extension APIClient {
@@ -179,12 +186,17 @@ extension APIClient {
         try await send(MacRoutes.self, .put, "/api/pairing/routes", body: routes.input)
     }
 
-    /// `GET /api/devices` (only from the Mac itself).
+    /// `GET /api/devices` (the Mac or a paired phone).
     public func devices() async throws(StudioAPIError) -> [PairedDevice] {
         try await get(DeviceList.self, "/api/devices").items
     }
 
-    /// `POST /api/devices/{id}/revoke` (only from the Mac itself).
+    /// `GET /api/devices` with the asking phone's own id.
+    public func deviceList() async throws(StudioAPIError) -> DeviceList {
+        try await get(DeviceList.self, "/api/devices")
+    }
+
+    /// `POST /api/devices/{id}/revoke` (the Mac or a paired phone; a phone cannot revoke itself).
     @discardableResult
     public func revokeDevice(_ id: EntityID) async throws(StudioAPIError) -> PairedDevice {
         try await send(PairedDevice.self, .post, "/api/devices/\(id.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? id)/revoke")

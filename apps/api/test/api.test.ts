@@ -11,6 +11,7 @@ import {
   decodeMessage,
   encodeMessage,
   HealthResponse,
+  HostSettingsChangeStatus,
   type Job,
   JobStatus,
   Platform,
@@ -143,6 +144,7 @@ describe("D1 + Drizzle", () => {
       [ENUMS.publishLogStatus, PublishLogStatus.options],
       [ENUMS.agentEffort, AgentEffort.options],
       [ENUMS.tokenHealth, TokenHealthStatus.options],
+      [ENUMS.hostSettingsChangeStatus, HostSettingsChangeStatus.options],
     ];
     for (const [db, contract] of pairs) expect([...db]).toEqual([...contract]);
   });

@@ -6664,6 +6664,467 @@
           "occurredAt"
         ]
       },
+      "HostSettingsView": {
+        "type": "object",
+        "properties": {
+          "state": {
+            "$ref": "#/components/schemas/HostSettingsState"
+          },
+          "seenAt": {
+            "type": ["string", "null"],
+            "format": "date-time"
+          },
+          "live": {
+            "type": "boolean"
+          },
+          "via": {
+            "$ref": "#/components/schemas/HostRoute"
+          },
+          "changes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/HostSettingsChange"
+            }
+          }
+        },
+        "required": ["state", "seenAt", "live", "via", "changes"]
+      },
+      "HostSettingsState": {
+        "type": ["object", "null"],
+        "properties": {
+          "values": {
+            "$ref": "#/components/schemas/HostSettingsValues"
+          },
+          "keys": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/HostKeyState"
+            },
+            "maxItems": 16
+          },
+          "info": {
+            "$ref": "#/components/schemas/HostInfo"
+          }
+        },
+        "required": ["values", "keys", "info"]
+      },
+      "HostSettingsValues": {
+        "type": "object",
+        "properties": {
+          "lanEnabled": {
+            "type": "boolean"
+          },
+          "remoteControlEnabled": {
+            "type": "boolean"
+          },
+          "remoteHostname": {
+            "type": "string",
+            "maxLength": 253
+          },
+          "keepAwake": {
+            "type": "boolean"
+          },
+          "notificationsEnabled": {
+            "type": "boolean"
+          },
+          "appearance": {
+            "$ref": "#/components/schemas/HostAppearance"
+          },
+          "ownerName": {
+            "type": "string",
+            "maxLength": 80
+          },
+          "loginItem": {
+            "type": "boolean"
+          },
+          "defaultModel": {
+            "type": ["string", "null"],
+            "maxLength": 64
+          },
+          "defaultEffort": {
+            "type": ["string", "null"],
+            "maxLength": 32
+          },
+          "metaAppId": {
+            "type": "string",
+            "maxLength": 64
+          },
+          "linkedInClientId": {
+            "type": "string",
+            "maxLength": 128
+          }
+        },
+        "required": [
+          "lanEnabled",
+          "remoteControlEnabled",
+          "remoteHostname",
+          "keepAwake",
+          "notificationsEnabled",
+          "appearance",
+          "ownerName",
+          "loginItem",
+          "defaultModel",
+          "defaultEffort",
+          "metaAppId",
+          "linkedInClientId"
+        ]
+      },
+      "HostAppearance": {
+        "type": "string",
+        "enum": ["system", "light", "dark"]
+      },
+      "HostKeyState": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "$ref": "#/components/schemas/HostKeyName"
+          },
+          "label": {
+            "type": "string",
+            "maxLength": 120
+          },
+          "group": {
+            "type": "string",
+            "enum": ["tunnel", "worker", "accounts"]
+          },
+          "secret": {
+            "type": "boolean"
+          },
+          "saved": {
+            "type": "boolean"
+          },
+          "source": {
+            "type": ["string", "null"],
+            "enum": ["settings", "env-file", null]
+          }
+        },
+        "required": ["name", "label", "group", "secret", "saved", "source"]
+      },
+      "HostKeyName": {
+        "type": "string",
+        "enum": [
+          "CLOUDFLARE_TUNNEL_TOKEN",
+          "GEMINI_API_KEY",
+          "ELEVENLABS_API_KEY",
+          "STUDIO_ELEVENLABS_VOICE_ID",
+          "STUDIO_CLOUD_PUBLISHER_URL",
+          "STUDIO_CLOUD_PUBLISHER_TOKEN",
+          "META_APP_SECRET",
+          "LINKEDIN_CLIENT_SECRET"
+        ]
+      },
+      "HostInfo": {
+        "type": "object",
+        "properties": {
+          "macName": {
+            "type": "string",
+            "maxLength": 120
+          },
+          "appVersion": {
+            "type": "string",
+            "maxLength": 40
+          },
+          "mode": {
+            "type": "string",
+            "enum": ["dev", "packaged"]
+          },
+          "hostEnabled": {
+            "type": "boolean"
+          },
+          "hostStatus": {
+            "type": "string",
+            "maxLength": 300
+          },
+          "hostError": {
+            "type": "boolean"
+          },
+          "apiPort": {
+            "type": ["integer", "null"]
+          },
+          "lanPort": {
+            "type": ["integer", "null"]
+          },
+          "lanUrls": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 200
+            },
+            "maxItems": 8
+          },
+          "tunnel": {
+            "type": "object",
+            "properties": {
+              "state": {
+                "type": "string",
+                "enum": ["off", "ok", "warn", "fail"]
+              },
+              "detail": {
+                "type": "string",
+                "maxLength": 500
+              }
+            },
+            "required": ["state", "detail"]
+          },
+          "loginItemSupported": {
+            "type": "boolean"
+          },
+          "loginItemNote": {
+            "type": "string",
+            "maxLength": 300
+          },
+          "keepAwakeActive": {
+            "type": "boolean"
+          },
+          "keepAwakeReason": {
+            "type": ["string", "null"],
+            "maxLength": 200
+          },
+          "keysSealed": {
+            "type": "boolean"
+          },
+          "updatesNote": {
+            "type": "string",
+            "maxLength": 300
+          }
+        },
+        "required": [
+          "macName",
+          "appVersion",
+          "mode",
+          "hostEnabled",
+          "hostStatus",
+          "hostError",
+          "apiPort",
+          "lanPort",
+          "lanUrls",
+          "tunnel",
+          "loginItemSupported",
+          "loginItemNote",
+          "keepAwakeActive",
+          "keepAwakeReason",
+          "keysSealed",
+          "updatesNote"
+        ]
+      },
+      "HostRoute": {
+        "type": "string",
+        "enum": ["local", "lan", "tunnel"]
+      },
+      "HostSettingsChange": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "values": {
+            "$ref": "#/components/schemas/HostSettingsPatch"
+          },
+          "keys": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "$ref": "#/components/schemas/HostKeyName"
+                },
+                "action": {
+                  "type": "string",
+                  "enum": ["set", "remove"]
+                }
+              },
+              "required": ["name", "action"]
+            }
+          },
+          "deviceId": {
+            "type": ["string", "null"]
+          },
+          "status": {
+            "$ref": "#/components/schemas/HostSettingsChangeStatus"
+          },
+          "message": {
+            "type": ["string", "null"],
+            "maxLength": 500
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "finishedAt": {
+            "type": ["string", "null"],
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "id",
+          "values",
+          "keys",
+          "deviceId",
+          "status",
+          "message",
+          "createdAt",
+          "finishedAt"
+        ]
+      },
+      "HostSettingsPatch": {
+        "type": "object",
+        "properties": {
+          "lanEnabled": {
+            "type": "boolean"
+          },
+          "remoteControlEnabled": {
+            "type": "boolean"
+          },
+          "remoteHostname": {
+            "type": "string",
+            "maxLength": 253
+          },
+          "keepAwake": {
+            "type": "boolean"
+          },
+          "notificationsEnabled": {
+            "type": "boolean"
+          },
+          "appearance": {
+            "$ref": "#/components/schemas/HostAppearance"
+          },
+          "ownerName": {
+            "type": "string",
+            "maxLength": 80
+          },
+          "loginItem": {
+            "type": "boolean"
+          },
+          "defaultModel": {
+            "$ref": "#/components/schemas/AgentModel"
+          },
+          "defaultEffort": {
+            "$ref": "#/components/schemas/AgentEffort"
+          },
+          "metaAppId": {
+            "type": "string",
+            "maxLength": 64,
+            "pattern": "^\\d*$"
+          },
+          "linkedInClientId": {
+            "type": "string",
+            "maxLength": 128,
+            "pattern": "^\\S*$"
+          },
+          "restartHost": {
+            "type": "boolean",
+            "enum": [true]
+          }
+        }
+      },
+      "HostSettingsChangeStatus": {
+        "type": "string",
+        "enum": ["pending", "applied", "failed"]
+      },
+      "HostSettingsChangeCreate": {
+        "type": "object",
+        "properties": {
+          "values": {
+            "$ref": "#/components/schemas/HostSettingsPatch"
+          },
+          "keys": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/HostKeyChange"
+            },
+            "maxItems": 8,
+            "default": []
+          }
+        }
+      },
+      "HostKeyChange": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "$ref": "#/components/schemas/HostKeyName"
+          },
+          "value": {
+            "type": ["string", "null"],
+            "minLength": 1,
+            "maxLength": 4096
+          }
+        },
+        "required": ["name", "value"]
+      },
+      "HostSettingsSyncResult": {
+        "type": "object",
+        "properties": {
+          "pending": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/HostSettingsPendingChange"
+            }
+          }
+        },
+        "required": ["pending"]
+      },
+      "HostSettingsPendingChange": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "values": {
+            "$ref": "#/components/schemas/HostSettingsPatch"
+          },
+          "keys": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/HostKeyChange"
+            }
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": ["id", "values", "keys", "createdAt"]
+      },
+      "HostSettingsSync": {
+        "type": "object",
+        "properties": {
+          "state": {
+            "$ref": "#/components/schemas/HostSettingsState"
+          },
+          "results": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/HostSettingsResult"
+            },
+            "maxItems": 50,
+            "default": []
+          }
+        },
+        "required": ["state"]
+      },
+      "HostSettingsResult": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "ok": {
+            "type": "boolean"
+          },
+          "message": {
+            "type": ["string", "null"],
+            "maxLength": 500,
+            "default": null
+          }
+        },
+        "required": ["id", "ok"]
+      },
       "WorkerPresence": {
         "type": "object",
         "properties": {
@@ -11005,6 +11466,9 @@
             "items": {
               "$ref": "#/components/schemas/Device"
             }
+          },
+          "currentDeviceId": {
+            "type": ["string", "null"]
           }
         },
         "required": ["items"],
@@ -13015,7 +13479,7 @@
     "/api/social-accounts/{id}/check": {
       "post": {
         "tags": ["Social accounts"],
-        "summary": "Check token health (expiry, and with `live` the platform itself) (Mac only)",
+        "summary": "Check token health (expiry, and with `live` the platform itself) (owner)",
         "description": "Without `live`: expiry-based health. With `live`: Meta `debug_token` (needs the App ID and secret from the Mac's Keychain; they are not stored) or LinkedIn `userinfo`. An invalid token moves the account to `needs_reauth`.",
         "parameters": [
           {
@@ -13086,7 +13550,7 @@
     "/api/social-accounts/{id}/disconnect": {
       "post": {
         "tags": ["Social accounts"],
-        "summary": "Disconnect: delete the vaulted token and disable the account (Mac only)",
+        "summary": "Disconnect: delete the vaulted token and disable the account (owner)",
         "description": "Refused (409) while the account has pending or publishing schedules. The account row stays (history); connecting it again re-enables it.",
         "parameters": [
           {
@@ -18011,7 +18475,7 @@
     "/api/publishing/cloud": {
       "put": {
         "tags": ["Publishing"],
-        "summary": "Set the cloud publisher URL and bearer token (Mac only)",
+        "summary": "Set the cloud publisher URL and bearer token (owner)",
         "description": "Probes `{url}/health` and `{url}/v1/orders` with the token first; the token is sealed with the token vault and only handed to the worker.",
         "requestBody": {
           "required": true,
@@ -18045,7 +18509,7 @@
             }
           },
           "403": {
-            "description": "Not called from the Mac itself (`forbidden`).",
+            "description": "Not called by the owner (`forbidden`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -18068,7 +18532,7 @@
       },
       "delete": {
         "tags": ["Publishing"],
-        "summary": "Forget the cloud publisher; this Mac publishes again (Mac only)",
+        "summary": "Forget the cloud publisher; this Mac publishes again (owner)",
         "description": "Refused (409) while schedules handed to the cloud publisher are pending or publishing there, or cancelled here but not yet cancelled there: without the cloud publisher the Mac could neither cancel nor follow them. With `force=true` it is cleared anyway; those orders stay at the cloud publisher and still publish (the Mac never publishes them).",
         "parameters": [
           {
@@ -18093,7 +18557,7 @@
             }
           },
           "403": {
-            "description": "Not called from the Mac itself (`forbidden`).",
+            "description": "Not called by the owner (`forbidden`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -18118,7 +18582,7 @@
     "/api/publishing/settings": {
       "patch": {
         "tags": ["Publishing"],
-        "summary": "Change publishing settings: maximum lateness (Mac only)",
+        "summary": "Change publishing settings: maximum lateness (owner)",
         "description": "`maxLatenessMinutes` (default 120): a schedule whose time passed more than this long ago (the Mac was asleep, the cloud publisher was down) is not published; it fails as missed and the owner reschedules it.",
         "requestBody": {
           "required": true,
@@ -18152,7 +18616,7 @@
             }
           },
           "403": {
-            "description": "Not called from the Mac itself (`forbidden`).",
+            "description": "Not called by the owner (`forbidden`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -18329,7 +18793,7 @@
     "/api/ai/keys": {
       "get": {
         "tags": ["AI"],
-        "summary": "Stored AI provider keys (hint, last check, models; never the key) (Mac only)",
+        "summary": "Stored AI provider keys (hint, last check, models; never the key) (owner)",
         "responses": {
           "200": {
             "description": "Keys.",
@@ -18342,7 +18806,7 @@
             }
           },
           "403": {
-            "description": "Not called from the Mac itself (`forbidden`).",
+            "description": "Not called by the owner (`forbidden`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -18357,7 +18821,7 @@
     "/api/ai/keys/{provider}": {
       "put": {
         "tags": ["AI"],
-        "summary": "Check and store an API key in the vault (Mac only)",
+        "summary": "Check and store an API key in the vault (owner)",
         "description": "Lists the provider's models with the key first (free). A key the provider refuses is not stored (400). When the provider cannot be reached the key is stored unchecked. 409 when the vault key is missing.",
         "parameters": [
           {
@@ -18401,7 +18865,7 @@
             }
           },
           "403": {
-            "description": "Not called from the Mac itself (`forbidden`).",
+            "description": "Not called by the owner (`forbidden`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -18424,7 +18888,7 @@
       },
       "delete": {
         "tags": ["AI"],
-        "summary": "Forget the stored key (the worker falls back to its .env) (Mac only)",
+        "summary": "Forget the stored key (the worker falls back to its .env) (owner)",
         "parameters": [
           {
             "schema": {
@@ -18447,7 +18911,7 @@
             }
           },
           "403": {
-            "description": "Not called from the Mac itself (`forbidden`).",
+            "description": "Not called by the owner (`forbidden`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -18462,7 +18926,7 @@
     "/api/ai/keys/{provider}/check": {
       "post": {
         "tags": ["AI"],
-        "summary": "Check the stored key again (models.list; free) (Mac only)",
+        "summary": "Check the stored key again (models.list; free) (owner)",
         "parameters": [
           {
             "schema": {
@@ -18485,7 +18949,7 @@
             }
           },
           "403": {
-            "description": "Not called from the Mac itself (`forbidden`).",
+            "description": "Not called by the owner (`forbidden`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -18552,7 +19016,7 @@
     "/api/ai/budget": {
       "put": {
         "tags": ["AI"],
-        "summary": "Set (or clear with null) the monthly budget of the paid AI services in USD (Mac only)",
+        "summary": "Set (or clear with null) the monthly budget of the paid AI services in USD (owner)",
         "requestBody": {
           "required": true,
           "content": {
@@ -18585,7 +19049,7 @@
             }
           },
           "403": {
-            "description": "Not called from the Mac itself (`forbidden`).",
+            "description": "Not called by the owner (`forbidden`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -18617,7 +19081,7 @@
       },
       "put": {
         "tags": ["AI"],
-        "summary": "Change the Claude-limit behaviour, the monthly budget or stop-at-budget (Mac only)",
+        "summary": "Change the Claude-limit behaviour, the monthly budget or stop-at-budget (owner)",
         "description": "Only the fields sent change. `monthlyBudgetUsd` is the same budget `PUT /api/ai/budget` sets. A new `claudeLimit` drops the answer given under the old one. The worker is told to read its settings again.",
         "requestBody": {
           "required": true,
@@ -18651,7 +19115,7 @@
             }
           },
           "403": {
-            "description": "Not called from the Mac itself (`forbidden`).",
+            "description": "Not called by the owner (`forbidden`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -18666,7 +19130,7 @@
     "/api/ai/claude-limit/decision": {
       "post": {
         "tags": ["AI"],
-        "summary": "Answer the Claude limit: go on with Gemini, or wait for the reset (Mac only)",
+        "summary": "Answer the Claude limit: go on with Gemini, or wait for the reset (owner)",
         "description": "The answer holds until `until`: by default presence `claude.limit.resetsAt` (when still ahead), else five hours from now. 400 when `until` is not in the future. The worker is told to read its settings again.",
         "requestBody": {
           "required": true,
@@ -18700,7 +19164,7 @@
             }
           },
           "403": {
-            "description": "Not called from the Mac itself (`forbidden`).",
+            "description": "Not called by the owner (`forbidden`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -18830,6 +19294,142 @@
           },
           "401": {
             "description": "Missing or wrong worker token (plain text)."
+          }
+        }
+      }
+    },
+    "/api/host/settings": {
+      "get": {
+        "tags": ["Host settings"],
+        "summary": "The Mac app's own settings as it last sent them, and recent changes (owner)",
+        "description": "`state` is null until the Mac app synced once. `live` is false when its last sync is older than 30 s (changes wait). Key values are never returned, only whether each is saved.",
+        "responses": {
+          "200": {
+            "description": "The settings.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HostSettingsView"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not called by the owner / the Mac itself (`forbidden`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/host/settings/changes": {
+      "post": {
+        "tags": ["Host settings"],
+        "summary": "Queue a change of the Mac app's settings (owner)",
+        "description": "The Mac app applies it on its next sync (a few seconds) and reports the result in the view. Refused (409) when it would cut the route the request came through (turning off remote access, changing its address or token through the tunnel; turning off local network access through the LAN), or when a key must be stored but the vault key is missing.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HostSettingsChangeCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Queued.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HostSettingsChange"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation error (`validation_error`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not called by the owner / the Mac itself (`forbidden`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "State conflict (`conflict`, `invalid_transition`, `hash_mismatch`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/host/settings/sync": {
+      "post": {
+        "tags": ["Host settings"],
+        "summary": "The Mac app's settings sync: state and results in, pending changes out (Mac only)",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HostSettingsSync"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Pending changes, oldest first, key values included.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HostSettingsSyncResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation error (`validation_error`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not called by the owner / the Mac itself (`forbidden`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
           }
         }
       }
@@ -22609,7 +23209,7 @@
     "/api/devices": {
       "get": {
         "tags": ["Devices"],
-        "summary": "List paired devices (Mac only)",
+        "summary": "List paired devices (owner)",
         "responses": {
           "200": {
             "description": "Newest first, revoked ones included.",
@@ -22637,8 +23237,8 @@
     "/api/devices/{id}/revoke": {
       "post": {
         "tags": ["Devices"],
-        "summary": "Revoke a paired device (Mac only)",
-        "description": "Its token stops working immediately and its open live streams (jobs, conversations) are closed. Revoking twice is a no-op.",
+        "summary": "Revoke a paired device (owner)",
+        "description": "Its token stops working immediately and its open live streams (jobs, conversations) are closed. Revoking twice is a no-op. A phone cannot revoke itself (409; it forgets the Mac instead).",
         "parameters": [
           {
             "schema": {
@@ -22674,6 +23274,16 @@
           },
           "404": {
             "description": "Resource not found (`not_found`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "State conflict (`conflict`, `invalid_transition`, `hash_mismatch`).",
             "content": {
               "application/json": {
                 "schema": {

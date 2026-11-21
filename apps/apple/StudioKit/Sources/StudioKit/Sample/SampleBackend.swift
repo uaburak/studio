@@ -22,6 +22,8 @@ public actor SampleBackend: ConversationService, StudioDataService {
     /// Posts approved although their checks held the approval back (the user confirmed: E7).
     public private(set) var approvalsDespiteChecks: [EntityID] = []
     private var counter = 0
+    /// Ayarlar: the Mac's own settings, AI keys and preferences, devices (SampleBackend+Settings.swift).
+    var settingsSample = SampleSettings()
     /// Simulated upload duration per image (0 in tests).
     private let uploadDelay: Duration
 
