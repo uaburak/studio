@@ -13,6 +13,7 @@
 // shown in the app (status, log tails, notes) goes through the redactor first (G2).
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { pathWithTools, studioToolsDir } from "@studio/contract";
 import type { HostSnapshot, HostStatus, ServiceName, ServicePhase } from "../../shared/ipc.ts";
 import { snapshotDatabase } from "./backup.ts";
 import type { Advertiser } from "./bonjour.ts";
@@ -239,6 +240,8 @@ export function buildSpecs(input: {
     STUDIO_HUB_URL: `ws://127.0.0.1:${input.apiPort}/api/hub`,
     STUDIO_WORKER_TOKEN: input.token,
     STUDIO_STATE_DIR: join(input.stateDir, "worker"),
+    // Studio's own tools (Ayarlar → Gelişmiş → Araçlar), installed by the worker's `tool.install`.
+    STUDIO_TOOLS_DIR: studioToolsDir(input.stateDir),
     STUDIO_SHUTDOWN_TIMEOUT_S: "5",
   };
   if (layout.skillsDir) workerEnv.STUDIO_SKILLS_DIR = layout.skillsDir;
@@ -550,7 +553,9 @@ export class LocalHost {
     }
 
     // 2. Tools and sources.
-    const path = await deps.loginShellPath();
+    // Studio's own tools first (P1): Claude Code, ffmpeg, cloudflared installed from Settings or
+    // the chat are found before (and without) Homebrew.
+    const path = pathWithTools(await deps.loginShellPath(), studioToolsDir(stateDir));
     if (signal.aborted) return;
     let runtime = deps.nodeRuntime?.(layout, path) ?? null;
     if (!runtime) {
@@ -750,7 +755,7 @@ export class LocalHost {
     const cloudflared = this.deps.which("cloudflared", target.path);
     if (!cloudflared) {
       this.tunnelNote =
-        "cloudflared bulunamadı (`brew install cloudflared` ile kurup Studio'yu yeniden başlat).";
+        "cloudflared gerekli · Ayarlar → Gelişmiş → Araçlar'dan Kur, sonra sunucuyu yeniden başlat.";
       return;
     }
     const host = guards.normalizedHostname(config.remoteHostname);

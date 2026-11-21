@@ -1150,7 +1150,7 @@ describe("the code engine (content.generate, engine: code)", () => {
     const handler = createContentGenerateHandler(deps(api, runner, missing));
     const { job: j, ctx } = job({ engine: "code" });
     await expect(handler.run(j.payload as never, ctx)).rejects.toThrow(
-      /Python ortamı hazır değil.*code-engine:setup/,
+      /Python ortamı hazır değil.*Python gerekli/,
     );
     expect(state.versionCreates).toHaveLength(0);
   });

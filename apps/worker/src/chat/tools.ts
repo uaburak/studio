@@ -86,6 +86,12 @@ import {
   type TemplateToolEnv,
 } from "./template-tools.ts";
 import { type LedgerEntry, ToolCallLedger, toolCallKey } from "./tool-ledger.ts";
+import {
+  installToolTool,
+  listToolsTool,
+  TOOL_MANAGER_TOOLS,
+  type ToolManagerToolEnv,
+} from "./tool-manager-tools.ts";
 import { conversationWorkDir } from "./workdir.ts";
 import { RunClosedError, type TurnWriter } from "./writer.ts";
 
@@ -891,6 +897,8 @@ export const STUDIO_TOOLS: readonly StudioToolDefinition[] = [
   ...TEMPLATE_TOOLS,
   // First comment and alt texts (N13; publish-tools.ts).
   ...PUBLISH_TOOLS,
+  // The Mac's tools: status and consent-gated installs (tool-manager-tools.ts).
+  ...TOOL_MANAGER_TOOLS,
 ];
 
 // --- input schemas -------------------------------------------------------------------------
@@ -1455,6 +1463,12 @@ export class StudioToolExecutor {
         return this.scheduleContent(stepId, args);
       case "publish_now":
         return this.publishNow(stepId, args);
+      case "list_tools":
+        return this.runSafe(stepId, name, "Araçlara bakılıyor…", "Araçlara bakıldı", () =>
+          listToolsTool(this.toolManagerEnv(stepId, name, null)),
+        );
+      case "install_tool":
+        return this.installTool(stepId, args);
       case "canvas_outline":
         return this.runSafe(stepId, name, "Tuval belgesi okunuyor…", "Tuval belgesi okundu", () =>
           canvasOutlineTool(this.canvasEnv(), args),
@@ -1513,6 +1527,89 @@ export class StudioToolExecutor {
           data: { ok: false, error: `Bilinmeyen araç: ${name}` },
           isError: true,
         };
+    }
+  }
+
+  /** What the tool-manager tools use of this turn (tool-manager-tools.ts). */
+  private toolManagerEnv(
+    stepId: string,
+    tool: string,
+    step: { index: number; runningLabel: string; doneLabel: string } | null,
+  ): ToolManagerToolEnv {
+    return {
+      api: this.options.api,
+      signal: this.options.signal,
+      consent: (input) => {
+        if (!step) throw new Error("consent needs a step");
+        return this.awaitConsent({
+          tool,
+          title: input.title,
+          detail: input.detail,
+          stepId,
+          stepIndex: step.index,
+          doneLabel: step.doneLabel,
+        });
+      },
+      idle: (fn) => this.idle(fn),
+      sleep: (ms, signal) => this.sleep(ms, signal),
+      progress: async (summary) => {
+        if (!step) return;
+        await this.options.writer.setPart(
+          {
+            type: "tool_step",
+            id: stepId,
+            name: tool,
+            label: step.runningLabel,
+            state: "running",
+            summary: summary.slice(0, 300),
+          },
+          step.index,
+        );
+      },
+      ...(this.options.jobPollIntervalMs !== undefined
+        ? { jobPollMs: this.options.jobPollIntervalMs }
+        : {}),
+    };
+  }
+
+  /** `install_tool`: a consent card with source and size, then the `tool.install` job. */
+  private async installTool(
+    stepId: string,
+    args: Record<string, unknown>,
+  ): Promise<StudioToolExecutionResult> {
+    const tool = "install_tool";
+    const runningLabel = "Araç kuruluyor…";
+    const stepIndex = await this.options.writer.setPart({
+      type: "tool_step",
+      id: stepId,
+      name: tool,
+      label: runningLabel,
+      state: "running",
+      summary: null,
+    });
+    try {
+      const out = await installToolTool(
+        this.toolManagerEnv(stepId, tool, {
+          index: stepIndex,
+          runningLabel,
+          doneLabel: "Araç kurulumu",
+        }),
+        args,
+      );
+      await this.options.writer.setPart(
+        {
+          type: "tool_step",
+          id: stepId,
+          name: tool,
+          label: out.label ?? "Araç kuruldu",
+          state: "done",
+          summary: out.summary.slice(0, 300),
+        },
+        stepIndex,
+      );
+      return { data: out.data, isError: false };
+    } catch (error) {
+      return this.failStep(stepId, tool, runningLabel, stepIndex, error);
     }
   }
 

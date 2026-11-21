@@ -286,6 +286,8 @@ import {
   type TemplateUse,
   TemplateUseResult,
 } from "./template.ts";
+import type { ToolId, ToolInstallRequest } from "./tools.ts";
+import { ToolsControl } from "./tools.ts";
 
 export class ApiError extends Error {
   constructor(
@@ -1145,6 +1147,20 @@ export function createApiClient(options: ApiClientOptions = {}) {
       /** Ask the worker to start `agy acp --login` (Google sign-in in the browser; Mac only). */
       antigravityLogin: (init?: RequestInit) =>
         call(AiProvidersControl, "/api/workers/antigravity/login", { method: "POST", init }),
+    },
+
+    tools: {
+      /** The tools Studio uses on the Mac (ffmpeg, Claude Code …) as the worker last reported them. */
+      list: (init?: RequestInit) => call(ToolsControl, "/api/tools", { init }),
+      /** Ask the worker to look for the tools again (the answer arrives as presence `tools`). */
+      refresh: (init?: RequestInit) =>
+        call(ToolsControl, "/api/tools/refresh", { method: "POST", init }),
+      /** Start installing (or with `update`, updating) a tool: the `tool.install` job. */
+      install: (id: ToolId, body: ToolInstallRequest = {}, init?: RequestInit) =>
+        call(Job, `/api/tools/${enc(id)}/install`, { method: "POST", json: body, init }),
+      /** Remove Studio's own copy of a tool: the `tool.uninstall` job. */
+      uninstall: (id: ToolId, init?: RequestInit) =>
+        call(Job, `/api/tools/${enc(id)}/uninstall`, { method: "POST", init }),
     },
 
     pairing: {

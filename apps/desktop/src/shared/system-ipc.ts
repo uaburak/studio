@@ -29,7 +29,7 @@ export interface ToolInfo {
   path: string | null;
   /** What it is for, or what to do when it is missing (Turkish). */
   detail: string;
-  /** The one-line install (`brew install ffmpeg`) when missing. */
+  /** How to install it when missing ("Ayarlar → Gelişmiş → Araçlar → Kur"). */
   install: string | null;
 }
 
@@ -81,8 +81,6 @@ export interface RuntimeInfo {
 export const SYSTEM_IPC = {
   health: "system:health",
   tools: "system:tools",
-  chromiumInstall: "system:chromium-install",
-  chromiumChanged: "system:chromium-changed",
   workerEnv: "system:worker-env",
   workerEnvSet: "system:worker-env-set",
   workerEnvRemove: "system:worker-env-remove",
@@ -95,8 +93,6 @@ export const SYSTEM_IPC = {
 export interface PackagingBridge {
   health(): Promise<HostHealth>;
   tools(refresh?: boolean): Promise<ToolsReport>;
-  installChromium(): Promise<ChromiumStatus>;
-  onChromium(listener: (status: ChromiumStatus) => void): () => void;
   workerEnv: {
     get(): Promise<WorkerEnvView>;
     set(name: string, value: string): Promise<WorkerEnvView>;

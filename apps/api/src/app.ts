@@ -33,6 +33,7 @@ import { publishingRoutes } from "./routes/publishing.ts";
 import { scheduleRoutes } from "./routes/schedules.ts";
 import { socialAccountRoutes } from "./routes/social-accounts.ts";
 import { templateRoutes } from "./routes/templates.ts";
+import { toolRoutes } from "./routes/tools.ts";
 import { workerEngagementRoutes } from "./routes/worker-engagement.ts";
 import { workerRunRoutes } from "./routes/worker-runs.ts";
 import { workerScheduleRoutes } from "./routes/worker-schedules.ts";
@@ -120,6 +121,7 @@ app.route("/", approvalRoutes); // /api/approvals/*, /api/worker/approvals (URET
 app.route("/", publishingRoutes); // /api/publishing/*, /api/publish-logs, /api/worker/publishing/* (P3)
 app.route("/", aiRoutes); // /api/ai/*, /api/worker/ai/* (roadmap 7 + 11)
 app.route("/", hubRoutes); // /api/hub (worker WebSocket), /api/workers/presence
+app.route("/", toolRoutes); // /api/tools/* (in-app tool installs on the Mac)
 
 // --- Chat (A2): conversations, agent runs, plans, the worker's turn API -------------
 

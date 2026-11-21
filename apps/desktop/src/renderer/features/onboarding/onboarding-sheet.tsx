@@ -21,6 +21,7 @@ import {
 } from "../../state/studio.tsx";
 import { LivePairingCard } from "../settings/sections/devices.tsx";
 import { openSettings } from "../settings/store.ts";
+import { ToolRequired } from "../tools/tools.tsx";
 import { BrandForm, createBrandFromDraft, useBrandDraft } from "./brand-form.tsx";
 import {
   LOGIN_POLL_MS,
@@ -504,7 +505,7 @@ function ClaudeStep({
   if (account?.cliVersion) details.push(`Claude Code ${account.cliVersion}`);
   if (account?.detail && account.status !== "signed_in") details.push(account.detail);
   if (account?.status === "not_installed")
-    details.push("Kurulum: claude.com/claude-code, sonra Durumu yenile.");
+    details.push("Aşağıdan Anthropic'in resmi kaynağından kur; kurulunca giriş yap.");
   if (!online) details.push("Mac sunucusu çalışınca durum burada görünür (sonraki adım).");
   const signedIn = account?.status === "signed_in";
   const loginUrl = account?.loginUrl && !signedIn ? account.loginUrl : null;
@@ -516,6 +517,7 @@ function ClaudeStep({
       <div className="flex flex-col gap-2 rounded-[12px] border border-border px-4 py-3">
         <StatusLine tone={line.tone} text={line.text} />
         {details.length > 0 && <p className="text-footnote text-fg-2">{details.join(" · ")}</p>}
+        {account?.status === "not_installed" && <ToolRequired id="claude" />}
       </div>
       <div className="mt-3 flex flex-wrap items-center gap-2">
         <Button

@@ -8,6 +8,7 @@ import { Button, Switch, TextField } from "../../../components/ui/controls.tsx";
 import { bridge } from "../../../lib/bridge.ts";
 import { useHost, useSettings } from "../../../state/studio.tsx";
 import { systemBridge } from "../../accounts/use-accounts.ts";
+import { ToolRequired } from "../../tools/tools.tsx";
 import { ITEMS } from "../catalog.ts";
 import { FormFooter, Pane, Row, Subheader, useConfirm } from "../parts.tsx";
 import { hostStatusText } from "../status-text.ts";
@@ -81,7 +82,7 @@ export function AdvancedSection() {
       remoteDetail = `${phaseText}Anahtar kayıtlı · eşleşmiş telefonlar ev dışından https://${cleanHost} ile bağlanır.`;
     else
       remoteDetail =
-        "Kurulum: `brew install cloudflared`, sonra Cloudflare Zero Trust → Tunnels'tan aldığın CLOUDFLARE_TUNNEL_TOKEN'ı aşağıya kaydet.";
+        "Kurulum: Cloudflare Zero Trust → Tunnels'tan aldığın CLOUDFLARE_TUNNEL_TOKEN'ı aşağıya kaydet (cloudflared gerekiyorsa aşağıdan kur).";
   } else {
     remoteDetail = cleanHost
       ? `Kapalı. Açınca ev dışındaki iPhone https://${cleanHost} üzerinden Cloudflare Tunnel ile bağlanır.`
@@ -204,7 +205,11 @@ export function AdvancedSection() {
             title="Uzaktan erişim"
             ids={[ITEMS.remote.id, ITEMS.tunnel.id, ITEMS.forgetTunnel.id]}
           />
-          <Row item={ITEMS.remote} detail={remoteDetail}>
+          <Row
+            item={ITEMS.remote}
+            detail={remoteDetail}
+            footer={settings.remoteControlEnabled ? <ToolRequired id="cloudflared" /> : undefined}
+          >
             <Switch
               label={ITEMS.remote.title}
               checked={settings.remoteControlEnabled}

@@ -4,9 +4,9 @@
  */
 import { spawn } from "node:child_process";
 import { accessSync, constants as fsConstants } from "node:fs";
-import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { systemToolDirs, workerToolsBin } from "../tools/paths.ts";
 
 /** Encoded video size budget: the API stores video assets up to 50 MiB. */
 export const REEL_MAX_FILE_BYTES = 44 * 1024 * 1024;
@@ -114,21 +114,22 @@ function isExecutable(filePath: string): boolean {
 
 /** Folders searched after `PATH` (Finder-launched apps get a short PATH). */
 export function extraToolDirs(env: NodeJS.ProcessEnv = process.env): string[] {
-  const home = env.HOME || homedir();
-  return [
-    "/opt/homebrew/bin",
-    "/usr/local/bin",
-    path.join(home, ".local", "bin"),
-    path.join(home, ".studio", "bin"),
-  ];
+  return systemToolDirs(env);
 }
 
-/** First executable `name` in `PATH` + the usual tool folders. */
+/**
+ * First executable `name` in Studio's own `tools/bin` (Ayarlar → Gelişmiş → Araçlar), then `PATH`
+ * and the usual tool folders.
+ */
 export function findExecutable(
   names: readonly string[],
   env: NodeJS.ProcessEnv = process.env,
 ): string | null {
-  const dirs = [...(env.PATH ?? "").split(path.delimiter).filter(Boolean), ...extraToolDirs(env)];
+  const dirs = [
+    workerToolsBin(env),
+    ...(env.PATH ?? "").split(path.delimiter).filter(Boolean),
+    ...extraToolDirs(env),
+  ];
   for (const dir of dirs) {
     for (const name of names) {
       const candidate = path.join(dir, name);
@@ -174,7 +175,7 @@ export function resolveFfmpegBin(env: NodeJS.ProcessEnv = process.env): string |
 
 /** Turkish error when ffmpeg cannot be found. */
 export const FFMPEG_MISSING_MESSAGE =
-  "Reels için ffmpeg bulunamadı. Terminalde `brew install ffmpeg` ile kurun (Homebrew yoksa önce https://brew.sh) ya da STUDIO_FFMPEG_BIN ile ffmpeg'in yolunu verin; sonra Studio'yu yeniden başlatın.";
+  "ffmpeg gerekli · Reels için Ayarlar → Gelişmiş → Araçlar → ffmpeg'den Kur (ya da sohbette “ffmpeg'i kur” de). Yeniden başlatmak gerekmez.";
 
 export class FfmpegError extends Error {
   constructor(

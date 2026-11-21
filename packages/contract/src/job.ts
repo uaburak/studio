@@ -17,6 +17,7 @@ import { ContentCheckPayload } from "./content-check.ts";
 import { CommentsSuggestPayload, CommentsSyncPayload, InsightsSyncPayload } from "./engagement.ts";
 import { ApprovalTarget, MAX_GENERATION_VARIANTS } from "./generation.ts";
 import { ReelSpecPatch } from "./reel.ts";
+import { ToolInstallPayload, ToolStatus, ToolUninstallPayload } from "./tools.ts";
 
 export const JobId = z.string().min(1).max(128);
 export type JobId = z.infer<typeof JobId>;
@@ -48,6 +49,8 @@ export type JobId = z.infer<typeof JobId>;
  * - `insights.sync` reads published posts' statistics and follower counts (N15),
  *   `comments.sync` sends queued replies and reads new comments (N16) — the Hub queues both
  *   while the worker is connected; `comments.suggest` drafts a reply with AI (never sent).
+ * - `tool.install` / `tool.uninstall` install or remove one of the tools Studio uses (ffmpeg,
+ *   Claude Code, Python …) on the Mac from its official source (tools.ts, `ToolInstallPayload`).
  */
 export const JobType = z
   .enum([
@@ -68,6 +71,8 @@ export const JobType = z
     "comments.sync",
     "comments.suggest",
     "content.details",
+    "tool.install",
+    "tool.uninstall",
   ])
   .meta({ id: "JobType" });
 export type JobType = z.infer<typeof JobType>;
@@ -96,6 +101,8 @@ export const JOB_TYPE_REQUIREMENTS = {
   "comments.sync": { brand: false, content: false },
   "comments.suggest": { brand: true, content: false },
   "content.details": { brand: true, content: true },
+  "tool.install": { brand: false, content: false },
+  "tool.uninstall": { brand: false, content: false },
 } as const satisfies Record<JobType, { brand: boolean; content: boolean }>;
 
 export const MAX_JOB_PAYLOAD_BYTES = 100_000;
@@ -589,6 +596,7 @@ export const RETRYABLE_JOB_TYPES = [
   "canvas.apply",
   "canvas.create",
   "content.details",
+  "tool.install",
 ] as const satisfies readonly JobType[];
 
 /** A finished job the user may queue again ("Yeniden dene"): failed or cancelled, of a retryable type. */
@@ -616,6 +624,8 @@ export const JOB_PAYLOAD_SCHEMAS: Partial<Record<JobType, z.ZodType>> = {
   "comments.suggest": CommentsSuggestPayload,
   "canvas.create": CanvasCreatePayload,
   "content.details": ContentDetailsPayload,
+  "tool.install": ToolInstallPayload,
+  "tool.uninstall": ToolUninstallPayload,
 };
 
 // --- Live updates and worker presence (F1-6) --------------------------------
@@ -706,6 +716,11 @@ export const WorkerPresence = z
      * reported them (`worker.providers`); absent until a worker sent them.
      */
     providers: z.array(AiProviderStatus).optional(),
+    /**
+     * The tools Studio uses on the Mac (ffmpeg, Claude Code …) as the worker last reported them
+     * (`worker.tools`, tools.ts); absent until a worker sent them.
+     */
+    tools: z.array(ToolStatus).optional(),
   })
   .meta({ id: "WorkerPresence" });
 export type WorkerPresence = z.infer<typeof WorkerPresence>;

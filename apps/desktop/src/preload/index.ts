@@ -88,8 +88,6 @@ const bridge: StudioBridge = {
   packaging: {
     health: () => ipcRenderer.invoke(S.health),
     tools: (refresh) => ipcRenderer.invoke(S.tools, refresh === true),
-    installChromium: () => ipcRenderer.invoke(S.chromiumInstall),
-    onChromium: (listener) => subscribe(S.chromiumChanged, listener),
     workerEnv: {
       get: () => ipcRenderer.invoke(S.workerEnv),
       set: (name, value) => ipcRenderer.invoke(S.workerEnvSet, name, value),

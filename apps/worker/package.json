@@ -12,7 +12,8 @@
     "smoke": "tsx scripts/smoke.ts",
     "e2e": "tsx scripts/e2e.ts",
     "selftest": "tsx --env-file-if-exists=.env scripts/selftest.ts",
-    "code-engine:setup": "tsx --env-file-if-exists=.env scripts/setup-code-engine.ts"
+    "code-engine:setup": "tsx --env-file-if-exists=.env scripts/setup-code-engine.ts",
+    "tools:e2e": "tsx scripts/tools-e2e.ts"
   },
   "dependencies": {
     "@studio/contract": "workspace:*",

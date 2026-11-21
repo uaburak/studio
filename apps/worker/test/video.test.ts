@@ -176,7 +176,7 @@ function seams(
 describe("ffmpeg discovery and the Reels encoder", () => {
   it("explains a missing ffmpeg in Turkish with the brew fix", () => {
     expect(resolveFfmpegBin({ STUDIO_FFMPEG_BIN: "/nope/ffmpeg", PATH: "" })).toBeNull();
-    expect(FFMPEG_MISSING_MESSAGE).toContain("brew install ffmpeg");
+    expect(FFMPEG_MISSING_MESSAGE).toContain("ffmpeg gerekli");
   });
 
   it("keeps every reel under the 50 MiB asset limit", () => {
@@ -558,7 +558,7 @@ describe("voice-over and transcription", () => {
     const res = await transcribe({ path: "/tmp/c.mp4", mimeType: "video/mp4" });
     expect(res.provider).toBe("none");
     expect(res.note).toBe(WHISPER_MISSING_NOTE);
-    expect(res.note).toContain("brew install whisper-cpp");
+    expect(res.note).toContain("whisper.cpp kurulu değil");
     expect(parseWhisperJson({ transcription: [] }).words).toEqual([]);
   });
 });

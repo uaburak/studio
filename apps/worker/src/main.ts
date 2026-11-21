@@ -3,6 +3,8 @@ import { AgentRuntime } from "./agent-runtime.ts";
 import { runStdioMcpBridgeFromEnv } from "./chat/mcp-bridge.ts";
 import { loadConfig } from "./config.ts";
 import { createLogger } from "./log.ts";
+import { usePathWithTools } from "./tools/paths.ts";
+import { ToolService } from "./tools/service.ts";
 import { startWorker, WORKER_VERSION } from "./worker.ts";
 
 if (process.argv.includes("--studio-mcp-bridge")) {
@@ -10,6 +12,9 @@ if (process.argv.includes("--studio-mcp-bridge")) {
   process.exit(0);
 }
 
+// Studio's own tools (Ayarlar → Gelişmiş → Araçlar) first on PATH for every child: an installed
+// Claude Code / ffmpeg works at once, without restarting the worker.
+usePathWithTools();
 const config = loadConfig();
 const logger = createLogger(config.logLevel);
 
@@ -46,7 +51,18 @@ if (settings.enabled) {
 } else {
   logger.warn("STUDIO_CLAUDE_ENABLED=0: running without the AI-backed job types");
 }
-const worker = startWorker({ config, logger, ...(agent ? { agent } : {}) });
+// The in-app tool installs (`tool.install` / `tool.uninstall`), always announced: a fresh Mac
+// installs Claude Code with them before any AI runs.
+const tools = new ToolService({
+  stateDir: config.stateDir,
+  log: (line) => logger.info(`tools: ${line}`),
+  afterChange: async (id) => {
+    // A new / removed CLI: re-read its sign-in, so the announced job types follow.
+    if (id === "claude") await agent?.refreshClaudeStatus();
+    if (id === "gemini") await agent?.refreshGeminiStatus();
+  },
+});
+const worker = startWorker({ config, logger, tools, ...(agent ? { agent } : {}) });
 
 let stopping = false;
 async function shutdown(signal: string) {

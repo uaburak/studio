@@ -52,6 +52,7 @@ import {
 } from "../../../lib/spend.ts";
 import { usageMeters } from "../../../lib/usage.ts";
 import { isHostUp, useHost, useJobs, useSettings } from "../../../state/studio.tsx";
+import { ToolRequired } from "../../tools/tools.tsx";
 import { ITEMS, type SettingsItem } from "../catalog.ts";
 import {
   CLAUDE_LIMIT_OPTIONS,
@@ -251,6 +252,8 @@ function ClaudeRow() {
             error={limitError}
             onDecide={(next) => void decide(next)}
           />
+        ) : account?.status === "not_installed" ? (
+          <ToolRequired id="claude" />
         ) : undefined
       }
     >
@@ -380,6 +383,11 @@ function GeminiRow() {
     <Row
       item={ITEMS.gemini}
       detail={geminiStatusLines(account, online, ITEMS.gemini.detail).join("\n")}
+      footer={
+        account && account.cliVersion === null && !account.apiKeyConfigured ? (
+          <ToolRequired id="gemini" />
+        ) : undefined
+      }
     >
       <Button
         disabled={!online || busy}

@@ -260,6 +260,7 @@ export const WorkerCommand = z
     "codex.login",
     "antigravity.login",
     "ai.credentials",
+    "tools.status",
   ])
   .meta({ id: "WorkerCommand" });
 export type WorkerCommand = z.infer<typeof WorkerCommand>;

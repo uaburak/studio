@@ -3089,7 +3089,9 @@
           "insights.sync",
           "comments.sync",
           "comments.suggest",
-          "content.details"
+          "content.details",
+          "tool.install",
+          "tool.uninstall"
         ]
       },
       "JobStatus": {
@@ -6702,6 +6704,12 @@
             "items": {
               "$ref": "#/components/schemas/AiProviderStatus"
             }
+          },
+          "tools": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ToolStatus"
+            }
           }
         },
         "required": ["online", "lastSeenAt", "workers", "currentJobs", "queueLength"]
@@ -7011,6 +7019,97 @@
         "type": "string",
         "enum": ["ready", "signed_out", "signing_in", "not_installed", "not_configured", "error"]
       },
+      "ToolStatus": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "$ref": "#/components/schemas/ToolId"
+          },
+          "label": {
+            "type": "string"
+          },
+          "purpose": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          },
+          "sourceUrl": {
+            "type": "string"
+          },
+          "sizeBytes": {
+            "type": ["integer", "null"],
+            "minimum": 0
+          },
+          "state": {
+            "$ref": "#/components/schemas/ToolState"
+          },
+          "version": {
+            "type": ["string", "null"]
+          },
+          "targetVersion": {
+            "type": ["string", "null"]
+          },
+          "path": {
+            "type": ["string", "null"]
+          },
+          "location": {
+            "type": ["string", "null"],
+            "enum": ["studio", "system", null]
+          },
+          "installable": {
+            "type": "boolean"
+          },
+          "removable": {
+            "type": "boolean"
+          },
+          "optional": {
+            "type": "boolean"
+          },
+          "note": {
+            "type": ["string", "null"]
+          },
+          "error": {
+            "type": ["string", "null"]
+          },
+          "progress": {
+            "type": ["number", "null"],
+            "minimum": 0,
+            "maximum": 1
+          },
+          "jobId": {
+            "type": ["string", "null"]
+          }
+        },
+        "required": [
+          "id",
+          "label",
+          "purpose",
+          "source",
+          "sourceUrl",
+          "sizeBytes",
+          "state",
+          "version",
+          "targetVersion",
+          "path",
+          "location",
+          "installable",
+          "removable",
+          "optional",
+          "note",
+          "error",
+          "progress",
+          "jobId"
+        ]
+      },
+      "ToolId": {
+        "type": "string",
+        "enum": ["claude", "gemini", "chromium", "ffmpeg", "python", "cloudflared", "whisper"]
+      },
+      "ToolState": {
+        "type": "string",
+        "enum": ["installed", "missing", "outdated", "installing", "failed"]
+      },
       "ClaudeControl": {
         "type": "object",
         "properties": {
@@ -7075,6 +7174,37 @@
           }
         },
         "required": ["providers", "online", "sent"]
+      },
+      "ToolsControl": {
+        "type": "object",
+        "properties": {
+          "tools": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ToolStatus"
+            }
+          },
+          "online": {
+            "type": "boolean"
+          },
+          "reportedAt": {
+            "type": ["string", "null"],
+            "format": "date-time"
+          },
+          "sent": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "required": ["tools", "online", "reportedAt", "sent"]
+      },
+      "ToolInstallRequest": {
+        "type": "object",
+        "properties": {
+          "update": {
+            "type": "boolean"
+          }
+        }
       },
       "ConversationList": {
         "type": "object",
@@ -8254,6 +8384,9 @@
             "type": ["string", "null"],
             "default": null
           },
+          "generate": {
+            "type": "boolean"
+          },
           "status": {
             "$ref": "#/components/schemas/PlanItemStatus"
           },
@@ -8466,6 +8599,9 @@
           "imageView": {
             "type": ["string", "null"],
             "maxLength": 80
+          },
+          "generate": {
+            "type": "boolean"
           }
         },
         "required": ["platforms", "contentType", "title"]
@@ -8537,7 +8673,15 @@
       },
       "PlanGenerateSkipReason": {
         "type": "string",
-        "enum": ["generating", "generated", "edited", "approved", "published", "no_content"]
+        "enum": [
+          "generating",
+          "generated",
+          "edited",
+          "approved",
+          "published",
+          "no_content",
+          "manual"
+        ]
       },
       "PlanGenerate": {
         "type": "object",
@@ -8642,6 +8786,9 @@
           "imageView": {
             "type": ["string", "null"],
             "maxLength": 80
+          },
+          "generate": {
+            "type": "boolean"
           }
         },
         "required": ["platforms", "contentType", "title"]
@@ -8707,6 +8854,9 @@
           "imageView": {
             "type": ["string", "null"],
             "maxLength": 80
+          },
+          "generate": {
+            "type": "boolean"
           }
         }
       },
@@ -9938,6 +10088,9 @@
                 "imageView": {
                   "type": ["string", "null"],
                   "maxLength": 80
+                },
+                "generate": {
+                  "type": "boolean"
                 }
               },
               "required": ["platforms", "contentType", "title"]
@@ -18958,6 +19111,152 @@
         }
       }
     },
+    "/api/tools": {
+      "get": {
+        "tags": ["Tools"],
+        "summary": "The tools Studio uses on the Mac, as the worker last reported them",
+        "description": "One row per tool (ffmpeg, Claude Code, Gemini CLI, Chromium, Python, cloudflared, whisper.cpp): state, version, path, Studio's own copy or the Mac's, source and size. The same list arrives live as presence `tools` on /api/jobs/stream. Empty until a worker reported it.",
+        "responses": {
+          "200": {
+            "description": "Latest report.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ToolsControl"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/tools/refresh": {
+      "post": {
+        "tags": ["Tools"],
+        "summary": "Ask the worker to look for the tools again",
+        "description": "The answer arrives as presence `tools`. 409 when no worker is connected.",
+        "responses": {
+          "200": {
+            "description": "Sent to the connected worker(s).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ToolsControl"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "State conflict (`conflict`, `invalid_transition`, `hash_mismatch`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/tools/{id}/install": {
+      "post": {
+        "tags": ["Tools"],
+        "summary": "Install (or update) a tool on the Mac from its official source",
+        "description": "Queues a `tool.install` job (follow it on /api/jobs/stream; presence `tools` shows the progress). The download is verified (SHA-256 / npm integrity / Developer ID signature) before anything is unpacked. A tool the Mac already has (`location: system`) is never installed over (409), nor one that cannot be installed in the app (409). A second request while one runs returns the running job.",
+        "parameters": [
+          {
+            "schema": {
+              "$ref": "#/components/schemas/ToolId"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ToolInstallRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "The install job (queued or already running).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Job"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation error (`validation_error`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "State conflict (`conflict`, `invalid_transition`, `hash_mismatch`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/tools/{id}/uninstall": {
+      "post": {
+        "tags": ["Tools"],
+        "summary": "Remove Studio's own copy of a tool",
+        "description": "Queues a `tool.uninstall` job. A copy the Mac already had (Homebrew, PATH) is never touched: 409 when Studio has no copy of its own.",
+        "parameters": [
+          {
+            "schema": {
+              "$ref": "#/components/schemas/ToolId"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "The uninstall job.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Job"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "State conflict (`conflict`, `invalid_transition`, `hash_mismatch`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/conversations/{id}/stream": {
       "get": {
         "tags": ["Conversations"],
@@ -20177,7 +20476,7 @@
       "post": {
         "tags": ["Plans"],
         "summary": "Request generation for accepted plan items",
-        "description": "Creates one `content.generate` job per item (payload: `ContentGeneratePayload`). Without `itemIds`: only the items that still need a design (no successful generation yet, or the last one failed or was stopped), never a post that is generating, in the trash, edited, approved, scheduled or published — those come back in `skipped`. Named items must be accepted, still have their post and not be generating; one that already has a design needs `force`, an edited or approved one also `overwriteEdits` (the user confirmed); published posts are never regenerated (409 with one issue per item).",
+        "description": "Creates one `content.generate` job per item (payload: `ContentGeneratePayload`). Without `itemIds`: only the items that still need a design (no successful generation yet, or the last one failed or was stopped), never a post that is generating, in the trash, edited or uploaded, approved, scheduled or published, nor an item the user makes by hand (`generate: false`) — those come back in `skipped`. Named items must be accepted, still have their post and not be generating; one that already has a design or is made by hand needs `force`, an edited or approved one also `overwriteEdits` (the user confirmed); published posts are never regenerated (409 with one issue per item).",
         "parameters": [
           {
             "schema": {
